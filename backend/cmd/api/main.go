@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -22,7 +23,9 @@ func main() {
 	router.Use(httpx.RequestIDMiddleware)
 	router.Use(middleware.Logger)
 	router.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
