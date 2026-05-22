@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -13,11 +14,16 @@ type Config struct {
 }
 
 func Load() (Config, error) {
+	cookieSecure, err := strconv.ParseBool(getenv("COOKIE_SECURE", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("COOKIE_SECURE must be a valid boolean: %w", err)
+	}
+
 	cfg := Config{
 		HTTPAddr:      getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		SessionSecret: os.Getenv("SESSION_SECRET"),
-		CookieSecure:  getenv("COOKIE_SECURE", "false") == "true",
+		CookieSecure:  cookieSecure,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

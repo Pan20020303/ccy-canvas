@@ -3,6 +3,7 @@ package httpx
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"ccy-canvas/backend/internal/shared/apperror"
@@ -61,6 +62,9 @@ func DecodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
+		return apperror.Wrap(apperror.CodeInvalidInput, "Invalid request body", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return apperror.Wrap(apperror.CodeInvalidInput, "Invalid request body", err)
 	}
 	return nil
