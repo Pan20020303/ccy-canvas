@@ -1,0 +1,689 @@
+
+> dev
+> vite --host 127.0.0.1 --port 5173
+
+
+  [32m[1mVITE[22m v7.3.3[39m  [2mready in [0m[1m5006[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m[32m  ➜[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+[2m1:11:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:11:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:11:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m1:11:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m1:12:11 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:12:11 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m1:12:11 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m1:13:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:13:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m1:13:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m1:15:20 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:15:20 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/store.ts (resolved id: D:/code/ccy-canvas/src/app/store.ts) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m1:16:43 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m1:19:43 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m1:19:48 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m1:19:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32m✨ new dependencies optimized: [33m@radix-ui/react-slot, class-variance-authority, vaul, @radix-ui/react-switch, @radix-ui/react-select, tailwind-merge[32m[39m
+[2m1:19:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32m✨ optimized dependencies changed. reloading[39m
+[2m1:19:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m1:19:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m1:19:59 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Navbar.tsx, /src/styles/index.css[22m
+[2m1:20:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Modals.tsx, /src/styles/index.css[22m
+[2m1:20:36 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Modals.tsx, /src/styles/index.css[22m
+[2m1:20:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/Navbar.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/Toolbar.tsx, /src/app/components/Modals.tsx[22m
+[2m1:21:14 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m1:21:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m1:21:36 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminShell.tsx[22m
+[2m1:21:41 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminSidebar.tsx[22m
+[2m1:21:56 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m1:21:56 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 228 |[31m                 [33m<[31m[33mdiv[31m className[33m=[31m[32m"flex-1 text-center text-sm text-white"[31m[33m>[31m{draft[33m.[31mpriority}[33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+[31m[1m>[22m[31m[90m 229 |[31m                 [33m<[31m[33mbutton[31m className[33m=[31m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[31m onClick[33m=[31m{() [33m=>[31m setDraft((state) [33m=>[31m ({ [33m...[31mstate[33m,[31m priority[33m:[31m state[33m.[31mpriority [33m+[31m [35m1[31m) }))}[33m>[31m
+ [90m     |[31m                                                                                                                                                                                                                                 [31m[1m^[22m[31m
+ [90m 230 |[31m                   [33m<[31m[33mPlus[31m className[33m=[31m[32m"h-4 w-4"[31m [33m/[31m[33m>[31m
+ [90m 231 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 232 |[31m               [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+      at constructor (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6616:19)
+      at TypeScriptParserMixin.unexpected (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6636:16)
+      at TypeScriptParserMixin.expect (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6916:12)
+      at TypeScriptParserMixin.parseObjectLike (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11839:14)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11356:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11692:28)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at TypeScriptParserMixin.parseFunctionBody (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12110:24)
+      at TypeScriptParserMixin.parseArrowExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12092:10)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11704:12)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+[2m1:22:06 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m1:22:22 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m1:22:28 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigPage.tsx[22m
+[2m1:22:28 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[39m                 [33m<[39m[33m/[39m[33mbutton[39m[33m>[39m
+ [90m 228 |[39m                 [33m<[39m[33mdiv[39m className[33m=[39m[32m"flex-1 text-center text-sm text-white"[39m[33m>[39m{draft[33m.[39mpriority}[33m<[39m[33m/[39m[33mdiv[39m[33m>[39m
+[31m[1m>[22m[39m[90m 229 |[39m                 [33m<[39m[33mbutton[39m className[33m=[39m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[39m onClick[33m=[39m{() [33m=>[39m setDraft((state) [33m=>[39m ({ [33m...[39mstate[33m,[39m priority[33m:[39m state[33m.[39mpriority [33m+[39m [35m1[39m) }))}[33m>[39m
+ [90m     |[39m                                                                                                                                                                                                                                 [31m[1m^[22m[39m
+ [90m 230 |[39m                   [33m<[39m[33mPlus[39m className[33m=[39m[32m"h-4 w-4"[39m [33m/[39m[33m>[39m
+ [90m 231 |[39m                 [33m<[39m[33m/[39m[33mbutton[39m[33m>[39m
+ [90m 232 |[39m               [33m<[39m[33m/[39m[33mdiv[39m[33m>[39m[0m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+[2m1:22:35 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m1:22:35 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 228 |[31m                 [33m<[31m[33mdiv[31m className[33m=[31m[32m"flex-1 text-center text-sm text-white"[31m[33m>[31m{draft[33m.[31mpriority}[33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+[31m[1m>[22m[31m[90m 229 |[31m                 [33m<[31m[33mbutton[31m className[33m=[31m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[31m onClick[33m=[31m{() [33m=>[31m setDraft((state) [33m=>[31m ({ [33m...[31mstate[33m,[31m priority[33m:[31m state[33m.[31mpriority [33m+[31m [35m1[31m) }))}[33m>[31m
+ [90m     |[31m                                                                                                                                                                                                                                 [31m[1m^[22m[31m
+ [90m 230 |[31m                   [33m<[31m[33mPlus[31m className[33m=[31m[32m"h-4 w-4"[31m [33m/[31m[33m>[31m
+ [90m 231 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 232 |[31m               [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+      at constructor (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6616:19)
+      at TypeScriptParserMixin.unexpected (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6636:16)
+      at TypeScriptParserMixin.expect (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6916:12)
+      at TypeScriptParserMixin.parseObjectLike (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11839:14)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11356:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11692:28)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at TypeScriptParserMixin.parseFunctionBody (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12110:24)
+      at TypeScriptParserMixin.parseArrowExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12092:10)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11704:12)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+[2m1:22:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminSidebar.tsx[22m
+[2m1:22:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminShell.tsx[22m
+[2m1:23:01 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminOverviewPlaceholder.tsx[22m
+[2m1:23:09 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[39m                 [33m<[39m[33m/[39m[33mbutton[39m[33m>[39m
+ [90m 228 |[39m                 [33m<[39m[33mdiv[39m className[33m=[39m[32m"flex-1 text-center text-sm text-white"[39m[33m>[39m{draft[33m.[39mpriority}[33m<[39m[33m/[39m[33mdiv[39m[33m>[39m
+[31m[1m>[22m[39m[90m 229 |[39m                 [33m<[39m[33mbutton[39m className[33m=[39m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[39m onClick[33m=[39m{() [33m=>[39m setDraft((state) [33m=>[39m ({ [33m...[39mstate[33m,[39m priority[33m:[39m state[33m.[39mpriority [33m+[39m [35m1[39m) }))}[33m>[39m
+ [90m     |[39m                                                                                                                                                                                                                                 [31m[1m^[22m[39m
+ [90m 230 |[39m                   [33m<[39m[33mPlus[39m className[33m=[39m[32m"h-4 w-4"[39m [33m/[39m[33m>[39m
+ [90m 231 |[39m                 [33m<[39m[33m/[39m[33mbutton[39m[33m>[39m
+ [90m 232 |[39m               [33m<[39m[33m/[39m[33mdiv[39m[33m>[39m[0m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+[2m1:23:10 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 228 |[31m                 [33m<[31m[33mdiv[31m className[33m=[31m[32m"flex-1 text-center text-sm text-white"[31m[33m>[31m{draft[33m.[31mpriority}[33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+[31m[1m>[22m[31m[90m 229 |[31m                 [33m<[31m[33mbutton[31m className[33m=[31m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[31m onClick[33m=[31m{() [33m=>[31m setDraft((state) [33m=>[31m ({ [33m...[31mstate[33m,[31m priority[33m:[31m state[33m.[31mpriority [33m+[31m [35m1[31m) }))}[33m>[31m
+ [90m     |[31m                                                                                                                                                                                                                                 [31m[1m^[22m[31m
+ [90m 230 |[31m                   [33m<[31m[33mPlus[31m className[33m=[31m[32m"h-4 w-4"[31m [33m/[31m[33m>[31m
+ [90m 231 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 232 |[31m               [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+      at constructor (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6616:19)
+      at TypeScriptParserMixin.unexpected (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6636:16)
+      at TypeScriptParserMixin.expect (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6916:12)
+      at TypeScriptParserMixin.parseObjectLike (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11839:14)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11356:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11692:28)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at TypeScriptParserMixin.parseFunctionBody (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12110:24)
+      at TypeScriptParserMixin.parseArrowExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12092:10)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11704:12)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+[2m1:23:44 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 228 |[31m                 [33m<[31m[33mdiv[31m className[33m=[31m[32m"flex-1 text-center text-sm text-white"[31m[33m>[31m{draft[33m.[31mpriority}[33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+[31m[1m>[22m[31m[90m 229 |[31m                 [33m<[31m[33mbutton[31m className[33m=[31m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[31m onClick[33m=[31m{() [33m=>[31m setDraft((state) [33m=>[31m ({ [33m...[31mstate[33m,[31m priority[33m:[31m state[33m.[31mpriority [33m+[31m [35m1[31m) }))}[33m>[31m
+ [90m     |[31m                                                                                                                                                                                                                                 [31m[1m^[22m[31m
+ [90m 230 |[31m                   [33m<[31m[33mPlus[31m className[33m=[31m[32m"h-4 w-4"[31m [33m/[31m[33m>[31m
+ [90m 231 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 232 |[31m               [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+      at constructor (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6616:19)
+      at TypeScriptParserMixin.unexpected (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6636:16)
+      at TypeScriptParserMixin.expect (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6916:12)
+      at TypeScriptParserMixin.parseObjectLike (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11839:14)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11356:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11692:28)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at TypeScriptParserMixin.parseFunctionBody (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12110:24)
+      at TypeScriptParserMixin.parseArrowExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12092:10)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11704:12)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+[2m1:23:48 PM[22m [31m[1m[vite][22m[39m [31mInternal server error: D:\code\ccy-canvas\src\app\components\admin\ModelConfigDrawer.tsx: Unexpected token, expected "," (229:224)
+
+[0m [90m 227 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 228 |[31m                 [33m<[31m[33mdiv[31m className[33m=[31m[32m"flex-1 text-center text-sm text-white"[31m[33m>[31m{draft[33m.[31mpriority}[33m<[31m[33m/[31m[33mdiv[31m[33m>[31m
+[31m[1m>[22m[31m[90m 229 |[31m                 [33m<[31m[33mbutton[31m className[33m=[31m[32m"flex h-full w-12 items-center justify-center text-neutral-400 transition hover:bg-white/[0.06] hover:text-white"[31m onClick[33m=[31m{() [33m=>[31m setDraft((state) [33m=>[31m ({ [33m...[31mstate[33m,[31m priority[33m:[31m state[33m.[31mpriority [33m+[31m [35m1[31m) }))}[33m>[31m
+ [90m     |[31m                                                                                                                                                                                                                                 [31m[1m^[22m[31m
+ [90m 230 |[31m                   [33m<[31m[33mPlus[31m className[33m=[31m[32m"h-4 w-4"[31m [33m/[31m[33m>[31m
+ [90m 231 |[31m                 [33m<[31m[33m/[31m[33mbutton[31m[33m>[31m
+ [90m 232 |[31m               [33m<[31m[33m/[31m[33mdiv[31m[33m>[31m[0m[39m
+  Plugin: [35mvite:react-babel[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/admin/ModelConfigDrawer.tsx[39m:229:224
+[33m  227 |                  </button>
+  228 |                  <div className="flex-1 text-center text-sm text-white">{draft.priority}</div>
+  229 |  ...etDraft((state) => ({ ...state, priority: state.priority + 1) }))}>
+      |                                                                 ^
+  230 |                    <Plus className="h-4 w-4" />
+  231 |                  </button>[39m
+      at constructor (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:365:19)
+      at TypeScriptParserMixin.raise (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6616:19)
+      at TypeScriptParserMixin.unexpected (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6636:16)
+      at TypeScriptParserMixin.expect (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:6916:12)
+      at TypeScriptParserMixin.parseObjectLike (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11839:14)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11356:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11692:28)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at TypeScriptParserMixin.parseFunctionBody (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12110:24)
+      at TypeScriptParserMixin.parseArrowExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12092:10)
+      at TypeScriptParserMixin.parseParenAndDistinguishExpression (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11704:12)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11348:23)
+      at TypeScriptParserMixin.parseExprAtom (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:4776:20)
+      at TypeScriptParserMixin.parseExprSubscripts (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11098:23)
+      at TypeScriptParserMixin.parseUpdate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11083:21)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:11063:23)
+      at TypeScriptParserMixin.parseMaybeUnary (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9854:18)
+      at TypeScriptParserMixin.parseMaybeUnaryOrPrivate (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10916:61)
+      at TypeScriptParserMixin.parseExprOps (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10921:23)
+      at TypeScriptParserMixin.parseMaybeConditional (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10898:23)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10848:21)
+      at TypeScriptParserMixin.parseMaybeAssign (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:9803:20)
+      at D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:39
+      at TypeScriptParserMixin.allowInAnd (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12443:12)
+      at TypeScriptParserMixin.parseMaybeAssignAllowIn (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:10817:17)
+      at TypeScriptParserMixin.parseMaybeAssignAllowInOrVoidPattern (D:\code\ccy-canvas\node_modules\@babel\parser\lib\index.js:12510:17)
+[2m1:23:56 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m2:02:05 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminSidebar.tsx[22m
+[2m2:02:16 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminShell.tsx[22m
+[2m2:02:27 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminOverviewPlaceholder.tsx[22m
+[2m2:02:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigPage.tsx[22m
+[2m2:02:59 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m2:03:28 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m2:03:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m2:03:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:03:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:13:49 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/Toolbar.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/styles/index.css[22m
+[2m2:13:50 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:13:50 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:15:56 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:17:32 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:17:57 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:17:57 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:17:57 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:44:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:44:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:44:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:44:25 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:44:25 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:44:25 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:44:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:44:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:44:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:44:48 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:44:49 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:44:49 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:44:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:44:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:44:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:45:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:45:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:45:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:45:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:45:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:45:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:46:07 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:46:07 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:46:07 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:46:45 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:48:36 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Toolbar.tsx, /src/styles/index.css[22m
+[2m2:48:43 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminShell.tsx[22m
+[2m2:48:58 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminShell.tsx[22m
+[2m2:49:08 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminSidebar.tsx[22m
+[2m2:49:27 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminSidebar.tsx[22m
+[2m2:49:34 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminOverviewPlaceholder.tsx[22m
+[2m2:49:43 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/AdminOverviewPlaceholder.tsx[22m
+[2m2:49:49 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigPage.tsx[22m
+[2m2:50:11 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigPage.tsx[22m
+[2m2:50:19 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m2:50:46 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m2:50:53 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m2:51:59 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m2:52:41 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m2:53:12 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m2:53:12 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:53:12 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m2:53:20 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/auth/AuthProvider.tsx, /src/styles/index.css[22m
+[2m2:53:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/auth/AuthProvider.tsx[22m Could not Fast Refresh ("useAuth" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:53:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/Modals.tsx, /src/app/routes.tsx[22m
+[2m2:53:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m2:53:21 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m3:07:46 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/styles/index.css[22m
+[2m3:07:46 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:07:46 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m3:08:12 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/TaskQueue.tsx, /src/styles/index.css[22m
+[2m3:08:44 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/TaskQueue.tsx, /src/styles/index.css[22m
+[2m3:08:59 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Navbar.tsx, /src/styles/index.css[22m
+[2m3:09:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/routes.tsx, /src/styles/index.css[22m
+[2m3:09:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m3:09:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m3:09:16 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m3:10:17 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/components/Canvas.tsx (resolved id: D:/code/ccy-canvas/src/app/components/Canvas.tsx) in D:/code/ccy-canvas/src/app/routes.tsx. Does the file exist?
+[2m3:10:20 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m3:10:33 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m3:12:46 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m3:13:50 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m3:20:27 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:20:41 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:22:34 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:22:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:22:47 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+399 |        title={lang === 'zh' ? '生成文本' : 'Generate Text'}
+400 |        tone="text"
+401 |        tone="image"
+    |        ^
+402 |        selected={selected}
+403 |        loading={data.status === 'generating'}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:22:55 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:22:55 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+399 |        title={lang === 'zh' ? '生成文本' : 'Generate Text'}
+400 |        tone="text"
+401 |        tone="image"
+    |        ^
+402 |        tone="video"
+403 |        selected={selected}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:22:55 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+400 |        tone="text"
+401 |        tone="image"
+402 |        tone="video"
+    |        ^
+403 |        selected={selected}
+404 |        loading={data.status === 'generating'}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:05 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:23:05 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+399 |        title={lang === 'zh' ? '生成文本' : 'Generate Text'}
+400 |        tone="text"
+401 |        tone="image"
+    |        ^
+402 |        tone="video"
+403 |        tone="audio"
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:05 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+400 |        tone="text"
+401 |        tone="image"
+402 |        tone="video"
+    |        ^
+403 |        tone="audio"
+404 |        selected={selected}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:05 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+401 |        tone="image"
+402 |        tone="video"
+403 |        tone="audio"
+    |        ^
+404 |        selected={selected}
+405 |        loading={data.status === 'generating'}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:14 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:23:14 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+399 |        title={lang === 'zh' ? '生成文本' : 'Generate Text'}
+400 |        tone="text"
+401 |        tone="image"
+    |        ^
+402 |        tone="video"
+403 |        tone="audio"
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:14 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+400 |        tone="text"
+401 |        tone="image"
+402 |        tone="video"
+    |        ^
+403 |        tone="audio"
+404 |        tone="neutral"
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:14 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+401 |        tone="image"
+402 |        tone="video"
+403 |        tone="audio"
+    |        ^
+404 |        tone="neutral"
+405 |        selected={selected}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:23:14 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+402 |        tone="video"
+403 |        tone="audio"
+404 |        tone="neutral"
+    |        ^
+405 |        selected={selected}
+406 |        loading={data.status === 'generating'}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:24:42 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m3:24:42 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+399 |        title={lang === 'zh' ? '生成文本' : 'Generate Text'}
+400 |        tone="text"
+401 |        tone="image"
+    |        ^
+402 |        tone="video"
+403 |        tone="audio"
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:24:42 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+400 |        tone="text"
+401 |        tone="image"
+402 |        tone="video"
+    |        ^
+403 |        tone="audio"
+404 |        tone="neutral"
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:24:42 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+401 |        tone="image"
+402 |        tone="video"
+403 |        tone="audio"
+    |        ^
+404 |        tone="neutral"
+405 |        selected={selected}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:24:42 PM[22m [33m[1m[vite][22m[39m [33m[2m(client)[22m[39m [33mwarning: [33mDuplicate "tone" attribute in JSX element[33m
+402 |        tone="video"
+403 |        tone="audio"
+404 |        tone="neutral"
+    |        ^
+405 |        selected={selected}
+406 |        loading={data.status === 'generating'}
+[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mD:/code/ccy-canvas/src/app/components/nodes/CustomNodes.tsx[39m
+[2m3:25:06 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m4:01:19 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:01:19 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m4:01:19 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m4:02:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/styles/index.css[22m
+[2m4:02:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m4:02:40 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m4:04:25 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m4:09:09 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m4:12:01 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m4:12:59 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/nodes/CustomNodes.tsx[22m
+[2m4:14:31 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/styles/index.css[22m
+[2m4:14:31 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m4:14:31 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m4:15:26 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigPage.tsx[22m
+[2m4:16:01 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m4:16:41 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigTable.tsx[22m
+[2m4:21:51 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:21:51 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:21:51 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:21:51 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:21:51 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:22:38 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:22:38 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m4:22:38 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m4:23:19 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:24:38 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:26:06 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:26:06 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:26:06 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:26:06 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:26:06 PM[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m Pre-transform error: Failed to load url /src/app/model-config.ts (resolved id: D:/code/ccy-canvas/src/app/model-config.ts) in D:/code/ccy-canvas/src/app/store.ts. Does the file exist?
+[2m4:26:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/auth/ProtectedRoute.tsx, /src/app/components/Navbar.tsx, /src/app/components/RunTimer.tsx, /src/app/components/RegisterPage.tsx, /src/app/components/LoginPage.tsx, /src/app/components/SettingsModal.tsx, /src/app/components/Modals.tsx, /src/app/components/Toolbar.tsx, /src/app/components/admin/ModelConfigPage.tsx, /src/app/routes.tsx, /src/app/components/admin/AdminMembersPage.tsx, /src/app/components/admin/AdminInvitationsPage.tsx, /src/app/components/TaskQueue.tsx, /src/app/components/Canvas.tsx, /src/app/components/nodes/CustomNodes.tsx, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:26:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/app/routes.tsx[22m Could not Fast Refresh ("router" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m4:26:47 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/app/App.tsx[22m
+[2m4:26:57 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m
+[2m4:28:18 PM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/styles/index.css, /src/app/components/admin/ModelConfigDrawer.tsx[22m

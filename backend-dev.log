@@ -1,0 +1,76 @@
+2026/05/28 12:41:19 listening on :8081
+2026/05/28 12:41:29 "GET http://127.0.0.1:8081/api/health HTTP/1.1" from 127.0.0.1:4055 - 200 81B in 0s
+2026/05/28 12:41:44 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:2644 - 200 173B in 62.0988ms
+2026/05/28 12:41:44 "POST http://127.0.0.1:8081/api/admin/invitations HTTP/1.1" from 127.0.0.1:2644 - 201 248B in 13.074ms
+2026/05/28 12:44:16 "GET http://localhost:8081/ HTTP/1.1" from [::1]:8174 - 405 0B in 0s
+2026/05/28 12:44:16 "GET http://localhost:8081/api/health HTTP/1.1" from [::1]:8174 - 200 81B in 0s
+2026/05/28 12:44:17 request_id=req_15345b42-b55f-4a27-adab-2668800e997d status=401 error=UNAUTHENTICATED: Authentication required
+2026/05/28 12:44:17 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:11329 - 401 129B in 0s
+2026/05/28 12:44:33 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:5950 - 200 173B in 53.487ms
+2026/05/28 12:44:47 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:8015 - 200 173B in 54.0157ms
+2026/05/28 12:46:38 "POST http://127.0.0.1:8081/api/auth/logout HTTP/1.1" from 127.0.0.1:11292 - 200 77B in 0s
+2026/05/28 12:47:18 "POST http://127.0.0.1:8081/api/auth/register-by-invite HTTP/1.1" from 127.0.0.1:12538 - 200 180B in 64.7773ms
+2026/05/28 12:48:34 "POST http://127.0.0.1:8081/api/auth/logout HTTP/1.1" from 127.0.0.1:7970 - 200 77B in 0s
+2026/05/28 12:48:56 request_id=req_27745b08-cd0a-425d-a5e3-95339a30bd71 status=400 error=INVITATION_INVALID: Invitation code is invalid
+2026/05/28 12:48:56 "POST http://127.0.0.1:8081/api/auth/register-by-invite HTTP/1.1" from 127.0.0.1:1169 - 400 135B in 51.6725ms
+2026/05/28 12:48:57 request_id=req_0174606e-7de8-44b0-9b2c-40a464e6a20f status=400 error=INVITATION_INVALID: Invitation code is invalid
+2026/05/28 12:48:57 "POST http://127.0.0.1:8081/api/auth/register-by-invite HTTP/1.1" from 127.0.0.1:4901 - 400 135B in 49.2431ms
+2026/05/28 12:48:58 request_id=req_bf75199e-b86b-4b8f-851c-371baa05918b status=400 error=INVITATION_INVALID: Invitation code is invalid
+2026/05/28 12:48:58 "POST http://127.0.0.1:8081/api/auth/register-by-invite HTTP/1.1" from 127.0.0.1:2479 - 400 135B in 49.2884ms
+2026/05/28 12:50:17 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:4792 - 200 173B in 49.9684ms
+2026/05/28 13:08:56 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:6390 - 200 247B in 43.7898ms
+2026/05/28 13:14:04 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:10363 - 200 247B in 6.822ms
+2026/05/28 13:14:14 "GET http://localhost:8081/ HTTP/1.1" from [::1]:1194 - 405 0B in 1.1871ms
+2026/05/28 13:14:14 "GET http://localhost:8081/api/health HTTP/1.1" from [::1]:1194 - 200 81B in 0s
+2026/05/28 13:14:14 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:9476 - 200 247B in 4.151ms
+2026/05/28 13:15:52 "GET http://localhost:8081/ HTTP/1.1" from [::1]:9986 - 405 0B in 0s
+2026/05/28 13:15:52 "GET http://localhost:8081/api/health HTTP/1.1" from [::1]:9986 - 200 81B in 0s
+2026/05/28 13:17:38 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:2271 - 200 247B in 4.3013ms
+2026/05/28 13:17:47 "GET http://localhost:8081/ HTTP/1.1" from [::1]:4890 - 405 0B in 0s
+2026/05/28 13:17:47 "GET http://localhost:8081/api/health HTTP/1.1" from [::1]:4890 - 200 81B in 0s
+2026/05/28 13:17:47 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7976 - 200 247B in 4.5932ms
+2026/05/28 13:19:53 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:10284 - 200 247B in 5.5639ms
+2026/05/28 13:23:57 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7234 - 200 247B in 5.6415ms
+2026/05/28 13:24:41 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:9215 - 200 247B in 4.3717ms
+2026/05/28 13:58:24 request_id=req_8664c1e4-3318-4d68-af84-1bf282ed1cad status=401 error=UNAUTHENTICATED: Authentication required
+2026/05/28 13:58:24 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7130 - 401 129B in 5.2801ms
+2026/05/28 13:58:29 request_id=req_bcc4084b-8a74-4074-93da-0f5d03e45981 status=401 error=UNAUTHENTICATED: Authentication required
+2026/05/28 13:58:29 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:13488 - 401 129B in 11.8258ms
+2026/05/28 13:58:32 request_id=req_25852b28-a1ca-47be-893b-ce201451076b status=401 error=UNAUTHENTICATED: Authentication required
+2026/05/28 13:58:32 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:9156 - 401 129B in 0s
+2026/05/28 13:59:04 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:12183 - 200 173B in 134.8797ms
+2026/05/28 14:05:26 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:8852 - 200 247B in 27.1223ms
+2026/05/28 14:18:35 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:4855 - 200 247B in 27.6245ms
+2026/05/28 14:18:41 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:9862 - 200 247B in 7.3877ms
+2026/05/28 14:19:15 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:14946 - 200 247B in 6.4347ms
+2026/05/28 14:20:55 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:2368 - 200 247B in 4.2523ms
+2026/05/28 14:42:06 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:2050 - 200 247B in 34.3055ms
+2026/05/28 14:42:07 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:9285 - 200 247B in 4.5615ms
+2026/05/28 14:53:21 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:5517 - 200 247B in 24.7253ms
+2026/05/28 14:53:21 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:5518 - 200 247B in 4.5617ms
+2026/05/28 14:54:23 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7951 - 200 247B in 4.6971ms
+2026/05/28 14:54:50 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:14957 - 200 247B in 3.9862ms
+2026/05/28 14:55:00 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:6084 - 200 247B in 5.1149ms
+2026/05/28 14:57:58 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7483 - 200 247B in 6.0247ms
+2026/05/28 15:02:39 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:12796 - 200 247B in 86.3545ms
+2026/05/28 15:07:17 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:11411 - 200 247B in 17.1164ms
+2026/05/28 15:07:17 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:1452 - 200 247B in 3.2291ms
+2026/05/28 15:10:22 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:7099 - 200 247B in 14.8629ms
+2026/05/28 15:11:14 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:12332 - 200 247B in 7.7422ms
+2026/05/28 15:13:26 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:3108 - 200 247B in 10.5267ms
+2026/05/28 15:14:31 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:14948 - 200 247B in 6.5156ms
+2026/05/28 15:14:33 request_id=req_04ee53a5-933f-4c8c-9586-9c85724536df status=401 error=UNAUTHENTICATED: Authentication required
+2026/05/28 15:14:33 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:4338 - 401 129B in 2.2024ms
+2026/05/28 15:15:12 "POST http://127.0.0.1:8081/api/auth/login HTTP/1.1" from 127.0.0.1:8417 - 200 173B in 117.2841ms
+2026/05/28 16:00:23 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:13123 - 200 247B in 117.1838ms
+2026/05/28 16:00:23 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:14949 - 200 247B in 3.76ms
+2026/05/28 16:01:54 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:4220 - 200 247B in 11.6019ms
+2026/05/28 16:01:55 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:2064 - 200 247B in 3.159ms
+2026/05/28 16:13:14 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:13616 - 200 247B in 23.7949ms
+2026/05/28 16:13:14 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:13617 - 200 247B in 3.6724ms
+2026/05/28 16:13:32 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:11328 - 200 247B in 6.0776ms
+2026/05/28 16:13:32 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:14946 - 200 247B in 3.7713ms
+2026/05/28 16:14:13 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:5716 - 200 247B in 5.3171ms
+2026/05/28 16:14:13 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:4270 - 200 247B in 2.9709ms
+2026/05/28 16:19:52 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:6415 - 200 247B in 34.2295ms
+2026/05/28 16:19:53 "GET http://127.0.0.1:8081/api/auth/me HTTP/1.1" from 127.0.0.1:3125 - 200 247B in 2.9751ms

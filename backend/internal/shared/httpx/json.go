@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"ccy-canvas/backend/internal/shared/apperror"
@@ -33,11 +34,15 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, data any) {
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusInternalServerError
 	body := errorBody{Code: apperror.CodeInternal, Message: "Internal server error"}
+	requestID := RequestIDFrom(r.Context())
 
 	var appErr *apperror.Error
 	if errors.As(err, &appErr) {
 		body.Code = appErr.Code
 		body.Message = appErr.Message
+		if appErr.Err != nil {
+			body.Details = appErr.Err.Error()
+		}
 		switch appErr.Code {
 		case apperror.CodeUnauthenticated:
 			status = http.StatusUnauthorized
@@ -50,11 +55,13 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		}
 	}
 
+	log.Printf("request_id=%s status=%d error=%v", requestID, status, err)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(envelope{
 		Error:     body,
-		RequestID: RequestIDFrom(r.Context()),
+		RequestID: requestID,
 	})
 }
 
