@@ -343,11 +343,23 @@ const seedInvitations: AdminInvitation[] = [
 
 const runAborters: Record<string, AbortController> = {};
 
+let storageUserId = '';
+
+function storageKey(name: string): string {
+  return storageUserId ? `${name}-${storageUserId}` : name;
+}
+
 export const appStorage = {
-  getItem: (name: string) => localStorage.getItem(name),
-  setItem: (name: string, value: string) => localStorage.setItem(name, value),
-  removeItem: (name: string) => localStorage.removeItem(name),
+  getItem: (name: string) => localStorage.getItem(storageKey(name)),
+  setItem: (name: string, value: string) => localStorage.setItem(storageKey(name), value),
+  removeItem: (name: string) => localStorage.removeItem(storageKey(name)),
 };
+
+export function bindStorageToUser(userId: string) {
+  if (storageUserId === userId) return;
+  storageUserId = userId;
+  useStore.persist.rehydrate();
+}
 
 function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeId: string): UpstreamReferenceMedia {
   const upstreamIds = new Set(
@@ -365,16 +377,18 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
     }
 
     const data = (node.data ?? {}) as Record<string, unknown>;
-    const url = getReferencePayloadValue(node.id, data);
+    // Prefer the backend-relative path (/uploads/...) so the backend can read
+    // the file from disk and convert it for external providers like Sora.
+    const rawUrl = typeof data.url === 'string' ? data.url : '';
+    const uploadsPath = rawUrl.match(/\/uploads\/[^\s?#]+/)?.[0] ?? '';
+    const url = uploadsPath || getReferencePayloadValue(node.id, data);
     if (!url) {
       continue;
     }
 
-    if (node.type === 'referenceImageNode') {
+    if (node.type === 'referenceImageNode' || node.type === 'imageNode') {
       imageUrls.push(url);
-    }
-
-    if (node.type === 'referenceVideoNode') {
+    } else if (node.type === 'referenceVideoNode' || node.type === 'videoNode') {
       videoUrls.push(url);
     }
   }
@@ -712,13 +726,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   activeRun: null,
   runNode: async (nodeId, payload) => {
     const state = get();
-    const resolvedPrompt = payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
-      const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
-      if (!upstreamNode) return `@${ref}`;
-      const data = (upstreamNode.data ?? {}) as Record<string, string>;
-      return data.output ?? data.url ?? data.content ?? `@${ref}`;
-    });
-
     // Determine service type from the node type.
     const currentNode = state.nodes.find((n) => n.id === nodeId);
     const nodeType = currentNode?.type ?? '';
@@ -729,6 +736,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       audioNode: 'audio',
     };
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
+
+    // For video/audio nodes, upstream media goes via reference_images/reference_video fields,
+    // so strip @mentions from the prompt instead of inlining URLs.
+    const resolvedPrompt = (serviceType === 'video' || serviceType === 'audio')
+      ? payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, '').trim()
+      : payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
+          const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
+          if (!upstreamNode) return `@${ref}`;
+          const data = (upstreamNode.data ?? {}) as Record<string, string>;
+          return data.output ?? data.url ?? data.content ?? `@${ref}`;
+        });
 
     // Get aspectRatio (used as size ratio) and resolution from generation params.
     const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
@@ -750,6 +768,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const durationSeconds = genParams?.durationSeconds ?? undefined;
     const referenceMedia = collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
 
+    const aborter = new AbortController();
+    runAborters[nodeId] = aborter;
+    const timeout = setTimeout(() => aborter.abort(), 10 * 60 * 1000);
+
     try {
       const result = await apiGenerate({
         service_type: serviceType,
@@ -760,9 +782,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
         reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,
+        reference_mode: referenceMedia.imageUrls.length > 0
+          ? (referenceMedia.videoUrls.length > 0 ? 'image_reference' : 'auto')
+          : undefined,
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
-      });
+      }, aborter.signal);
 
       set((snapshot) => ({
         activeRun: null,
@@ -799,6 +824,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ? { ...node, data: { ...node.data, status: 'error', error: message } }
           : node),
       }));
+    } finally {
+      clearTimeout(timeout);
+      delete runAborters[nodeId];
     }
   },
   cancelNode: (nodeId) => {

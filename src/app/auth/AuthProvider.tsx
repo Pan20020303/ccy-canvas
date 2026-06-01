@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
 import { listAppProviderConfigs } from "../api/providerConfigs";
-import { useStore } from "../store";
+import { useStore, bindStorageToUser } from "../store";
 
 export type AuthUser = {
   id: string;
@@ -66,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refresh = async () => {
     try {
       const data = await apiClient.get<AuthPayload>("/api/auth/me");
+      bindStorageToUser(data.user.id);
       setUser(data.user);
       setCreditSummary(data.credit_summary ?? null);
       void loadBackendData();
@@ -91,6 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       async login(input) {
         const data = await apiClient.post<AuthPayload>("/api/auth/login", input);
+        bindStorageToUser(data.user.id);
         setUser(data.user);
         setCreditSummary(data.credit_summary ?? null);
         void loadBackendData();
@@ -103,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           name: input.name,
           invitation_code: input.invitationCode,
         });
+        bindStorageToUser(data.user.id);
         setUser(data.user);
         setCreditSummary(data.credit_summary ?? null);
         void loadBackendData();

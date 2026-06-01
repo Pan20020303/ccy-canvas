@@ -772,6 +772,7 @@ type generateInput struct {
 		ReferenceImages []string `json:"reference_images,omitempty" doc:"Reference image URLs"`
 		ReferenceVideo  string   `json:"reference_video,omitempty" doc:"Single reference video URL"`
 		ReferenceVideos []string `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
+		ReferenceMode   string   `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
 	}
 }
 
@@ -794,6 +795,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceImages: input.Body.ReferenceImages,
 		ReferenceVideo:  input.Body.ReferenceVideo,
 		ReferenceVideos: input.Body.ReferenceVideos,
+		ReferenceMode:   input.Body.ReferenceMode,
 	})
 	if err != nil {
 		return nil, toHTTPError(err)

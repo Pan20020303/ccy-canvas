@@ -272,13 +272,13 @@ describe("workspace control bar state", () => {
       id: "ref-image-2",
       type: "referenceImageNode",
       position: { x: 0, y: 0 },
-      data: { url: "https://example.com/reference-2.png" },
+      data: { url: "http://localhost:8080/uploads/2026-01/ref-2.png" },
     } as never);
     useStore.getState().addNode({
       id: "ref-video-1",
       type: "referenceVideoNode",
       position: { x: 0, y: 0 },
-      data: { url: "https://example.com/reference.mp4" },
+      data: { url: "http://localhost:8080/uploads/2026-01/ref.mp4" },
     } as never);
     useStore.getState().onConnect({
       source: "ref-image-2",
@@ -298,9 +298,10 @@ describe("workspace control bar state", () => {
     await useStore.getState().runNode("video-gen-1", { prompt: "animate this", model: "sora-v3-fast" });
 
     const [, init] = fetchMock.mock.calls[0];
-    expect(String(init.body)).toContain("\"reference_images\":[\"data:image/png;base64,from-drop\"]");
-    expect(String(init.body)).toContain("\"reference_video\":\"data:video/mp4;base64,from-drop\"");
-    expect(String(init.body)).not.toContain("https://example.com/reference-2.png");
-    expect(String(init.body)).not.toContain("https://example.com/reference.mp4");
+    // Backend-relative /uploads/ paths are extracted so the backend can read local files.
+    expect(String(init.body)).toContain("\"reference_images\":[\"/uploads/2026-01/ref-2.png\"]");
+    expect(String(init.body)).toContain("\"reference_video\":\"/uploads/2026-01/ref.mp4\"");
+    expect(String(init.body)).not.toContain("data:image/png;base64,from-drop");
+    expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
   });
 });

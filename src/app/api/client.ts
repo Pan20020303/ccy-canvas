@@ -126,10 +126,11 @@ export const apiClient = {
   get<T>(input: string) {
     return request<T>(input);
   },
-  post<T>(input: string, payload?: unknown) {
+  post<T>(input: string, payload?: unknown, signal?: AbortSignal) {
     return request<T>(input, {
       method: "POST",
       body: payload === undefined ? undefined : JSON.stringify(payload),
+      signal,
     });
   },
   put<T>(input: string, payload?: unknown) {

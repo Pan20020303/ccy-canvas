@@ -2,17 +2,27 @@
 package application
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/crypto"
 	"ccy-canvas/backend/internal/shared/apperror"
+
+	_ "golang.org/x/image/webp"
+	"golang.org/x/image/draw"
 )
 
 // Repository is the persistence port for the model catalog.
@@ -434,6 +444,7 @@ type GenerateRequest struct {
 	ReferenceImages []string
 	ReferenceVideo  string
 	ReferenceVideos []string
+	ReferenceMode   string // auto / start_frame / start_end / image_reference
 }
 
 // GenerateResult carries the generation result.
@@ -786,6 +797,60 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 
 // ─── Video Generation (sora-style: POST /v1/videos → poll GET /v1/videos/{id}) ──
 
+const maxRefImageDim = 1920
+const maxRefImageBytes = 4 * 1024 * 1024 // 4 MB JPEG budget
+
+// localPathToDataURL reads a local /uploads/... path, downscales if needed,
+// re-encodes as JPEG, and returns a data:image/jpeg;base64,... string.
+// Non-local paths (http/https or already data: URLs) are returned as-is.
+func localPathToDataURL(rawURL string) (string, error) {
+	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") || strings.HasPrefix(rawURL, "data:") {
+		return rawURL, nil
+	}
+	// Expect paths like "/uploads/2026-01/xxx.png".
+	if !strings.HasPrefix(rawURL, "/uploads/") {
+		return rawURL, nil
+	}
+	diskPath := filepath.Join("uploads", strings.TrimPrefix(rawURL, "/uploads/"))
+
+	f, err := os.Open(diskPath)
+	if err != nil {
+		return "", fmt.Errorf("open reference file %s: %w", diskPath, err)
+	}
+	defer f.Close()
+
+	src, _, err := image.Decode(f)
+	if err != nil {
+		return "", fmt.Errorf("decode reference image %s: %w", diskPath, err)
+	}
+
+	bounds := src.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w > maxRefImageDim || h > maxRefImageDim {
+		ratio := float64(maxRefImageDim) / float64(max(w, h))
+		nw, nh := int(float64(w)*ratio), int(float64(h)*ratio)
+		dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		draw.BiLinear.Scale(dst, dst.Bounds(), src, bounds, draw.Over, nil)
+		src = dst
+	}
+
+	var buf bytes.Buffer
+	quality := 85
+	for quality >= 40 {
+		buf.Reset()
+		if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: quality}); err != nil {
+			return "", fmt.Errorf("encode reference JPEG: %w", err)
+		}
+		if buf.Len() <= maxRefImageBytes {
+			break
+		}
+		quality -= 10
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
+	return "data:image/jpeg;base64," + encoded, nil
+}
+
 func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	aspectRatio := req.AspectRatio
 	if aspectRatio == "" {
@@ -811,7 +876,20 @@ func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req
 		"duration":     duration,
 	}
 	if len(req.ReferenceImages) > 0 {
-		body["reference_images"] = req.ReferenceImages
+		resolved := make([]string, 0, len(req.ReferenceImages))
+		for _, ref := range req.ReferenceImages {
+			du, err := localPathToDataURL(ref)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image: %v", err), err)
+			}
+			resolved = append(resolved, du)
+		}
+		body["reference_images"] = resolved
+		mode := req.ReferenceMode
+		if mode == "" {
+			mode = "auto"
+		}
+		body["reference_mode"] = mode
 	}
 	if req.ReferenceVideo != "" {
 		body["reference_video"] = req.ReferenceVideo

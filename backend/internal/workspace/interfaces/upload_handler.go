@@ -17,10 +17,12 @@ import (
 )
 
 const maxUploadSize = 50 * 1024 * 1024 // 50 MB
+const maxProxySize = 100 * 1024 * 1024 // 100 MB
 const uploadDir = "uploads"
 
-// RegisterUploadRoutes registers the file upload endpoint on the chi router (not huma, since huma doesn't handle multipart well).
+// RegisterUploadRoutes registers file upload and media proxy endpoints.
 func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
+	r.Get("/api/app/proxy-media", proxyMediaHandler(sm))
 	r.Post("/api/app/upload", func(w http.ResponseWriter, r *http.Request) {
 		// Auth check.
 		cookie, err := r.Cookie(session.CookieName)
@@ -102,4 +104,45 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			"content_type": contentType,
 		})
 	})
+}
+
+func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(session.CookieName)
+		if err != nil || cookie.Value == "" {
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+		if _, err := sm.Parse(cookie.Value); err != nil {
+			http.Error(w, "Invalid session", http.StatusUnauthorized)
+			return
+		}
+
+		target := r.URL.Query().Get("url")
+		if target == "" || (!strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://")) {
+			http.Error(w, "Missing or invalid url parameter", http.StatusBadRequest)
+			return
+		}
+
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Get(target)
+		if err != nil {
+			http.Error(w, "Failed to fetch media", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		ct := resp.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") {
+			http.Error(w, "Not a media resource", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if cl := resp.Header.Get("Content-Length"); cl != "" {
+			w.Header().Set("Content-Length", cl)
+		}
+		io.Copy(w, io.LimitReader(resp.Body, maxProxySize))
+	}
 }

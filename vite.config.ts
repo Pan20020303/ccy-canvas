@@ -12,6 +12,7 @@ export default defineConfig({
       "/api": {
         target: apiBaseUrl,
         changeOrigin: true,
+        timeout: 600000, // 10 min — video generation polls for up to ~8 min
       },
       "/uploads": {
         target: apiBaseUrl,

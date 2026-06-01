@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position } from '@xyflow/react';
 import {
@@ -13,6 +13,9 @@ import {
   Sparkles,
   Plus,
   X,
+  Play,
+  Pause,
+  Camera,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -279,6 +282,33 @@ const DurationPopover = ({
 
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
 
+/** Render text with inline mention thumbnails. Splits on `[@xxx]` tags. */
+function renderMentionRichText(text: string, mentions: { tag: string; id: string; thumb: string }[]): React.ReactNode {
+  if (!mentions.length) return text;
+
+  // Build a regex that matches any of the mention tags.
+  const escaped = mentions.map((m) => m.tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(${escaped.join('|')})`, 'g');
+  const parts = text.split(regex);
+
+  return parts.map((part, i) => {
+    const mention = mentions.find((m) => m.tag === part);
+    if (mention) {
+      return (
+        <span key={i} className="inline-flex items-center gap-1 rounded bg-white/[0.08] px-1 py-0.5 align-middle text-[12px] text-cyan-300">
+          {mention.thumb ? (
+            <img src={mention.thumb} alt="" className="inline-block h-4 w-4 rounded-sm object-cover" />
+          ) : (
+            <span className="inline-block h-4 w-4 rounded-sm bg-white/10 text-center text-[10px] leading-4">🖼</span>
+          )}
+          <span>{part.slice(2, -1)}</span>
+        </span>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
 const getAspectRatioClass = (aspectRatio: string | undefined, fallback: string) => {
   switch (aspectRatio) {
     case '1:1':
@@ -356,6 +386,18 @@ const PromptPanel = ({
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
   const upstreamIds = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
+  const upstreamNodes = useMemo(() => upstreamIds.map((id, idx) => {
+    const n = allNodes.find((node) => node.id === id);
+    const d = (n?.data ?? {}) as Record<string, string>;
+    const type = n?.type ?? '';
+    const isImage = type === 'imageNode' || type === 'referenceImageNode';
+    const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
+    const thumb = d.url || d.thumbnail || '';
+    const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : `节点 ${idx + 1}`;
+    const icon = isImage ? '🖼' : isVideo ? '🎬' : '📄';
+    return { id, type, thumb, label, icon };
+  }), [upstreamIds, allNodes]);
+
   const [text, setText] = useState('');
   const [mentionOpen, setMentionOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -449,17 +491,33 @@ const PromptPanel = ({
     setText(value);
     const cursor = taRef.current?.selectionStart ?? value.length;
     const before = value.slice(0, cursor);
-    const match = /@(\w*)$/.exec(before);
-    setMentionOpen(Boolean(match) && upstreamIds.length > 0);
+    const match = /@(\S*)$/.exec(before);
+    setMentionOpen(Boolean(match) && upstreamNodes.length > 0);
   };
 
-  const insertMention = (id: string) => {
+  // Track inserted mention tags: visual placeholder → node id.
+  const [mentions, setMentions] = useState<{ tag: string; id: string; thumb: string }[]>([]);
+
+  const insertMention = (upstream: typeof upstreamNodes[0]) => {
     const cursor = taRef.current?.selectionStart ?? text.length;
-    const before = text.slice(0, cursor).replace(/@(\w*)$/, `@${id.slice(0, 6)} `);
+    const before = text.slice(0, cursor).replace(/@\S*$/, '');
     const after = text.slice(cursor);
-    setText(before + after);
+    const tag = `[@${upstream.label}]`;
+    setText(before + tag + ' ' + after);
+    setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb }]);
     setMentionOpen(false);
     setTimeout(() => taRef.current?.focus(), 0);
+  };
+
+  // Convert visual tags back to @nodeId references before submitting.
+  const resolveTagsToMentions = (raw: string): string => {
+    let result = raw;
+    for (const m of mentions) {
+      if (result.includes(m.tag)) {
+        result = result.replace(m.tag, `@${m.id.slice(0, 12)}`);
+      }
+    }
+    return result;
   };
 
   const handleVendorChange = (nextVendor: string) => {
@@ -493,7 +551,7 @@ const PromptPanel = ({
 
   const submit = () => {
     if (!text.trim()) return;
-    runNode(nodeId, { prompt: text, model: activeModel });
+    runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -505,29 +563,38 @@ const PromptPanel = ({
 
   return (
     <div className="relative mt-6 -ml-[80px] w-[460px] rounded-2xl border border-white/[0.06] bg-[#15181d]/80 px-5 py-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.8)] backdrop-blur-2xl nodrag">
-      <textarea
-        ref={taRef}
-        value={text}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder={language === 'zh' ? '输入提示词，用 @ 引用已连接节点' : 'Enter a prompt - use @ to reference connected nodes'}
-        className="min-h-[88px] w-full resize-none bg-transparent text-[13px] leading-relaxed text-neutral-200 placeholder-neutral-500 focus:outline-none"
-      />
-      {mentionOpen ? (
-        <div className="absolute left-5 top-12 z-30 w-[200px] rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-2xl backdrop-blur-xl">
-          {upstreamIds.map((id) => {
-            const node = allNodes.find((item) => item.id === id);
-            return (
-              <button
-                key={id}
-                onClick={() => insertMention(id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-300 transition hover:bg-white/5"
-              >
-                <span className="text-cyan-300">@{id.slice(0, 6)}</span>
-                <span className="truncate text-neutral-500">{(node?.type || '').replace('Node', '')}</span>
-              </button>
-            );
-          })}
+      <div className="relative min-h-[88px]">
+        {/* Rich overlay — renders mention tags with thumbnails */}
+        <div className="pointer-events-none absolute inset-0 whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-200" aria-hidden>
+          {text ? renderMentionRichText(text, mentions) : <span className="text-neutral-500">{language === 'zh' ? '输入提示词，用 @ 引用已连接节点' : 'Enter a prompt - use @ to reference connected nodes'}</span>}
+        </div>
+        <textarea
+          ref={taRef}
+          value={text}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder=""
+          className="relative min-h-[88px] w-full resize-none bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none"
+          style={{ caretColor: '#e5e5e5' }}
+        />
+      </div>
+      {mentionOpen && upstreamNodes.length > 0 ? (
+        <div className="absolute left-5 top-14 z-30 w-[220px] rounded-xl border border-white/10 bg-[#1a1d22]/95 py-1.5 shadow-2xl backdrop-blur-xl">
+          {upstreamNodes.map((up) => (
+            <button
+              key={up.id}
+              onClick={() => insertMention(up)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
+            >
+              {up.thumb ? (
+                <img src={up.thumb} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
+              ) : (
+                <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
+              )}
+              <span className="text-neutral-200">{up.label}</span>
+              <span className="ml-auto text-[10px] text-neutral-600">(@{up.id.slice(-4)})</span>
+            </button>
+          ))}
         </div>
       ) : null}
       <div className="mt-3 flex items-center justify-between gap-2">
@@ -802,10 +869,10 @@ export const ImageNode = ({ id, data, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag', NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
           onDoubleClick={() => setPreview(true)}
         >
-          <img src={data.url} alt="" className="h-full w-full object-cover" onLoad={handleImageLoad} />
+          <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" onLoad={handleImageLoad} />
         </div>
       ) : (
         <div className={clsx('flex items-center justify-center rounded-[20px] border text-orange-100/45', NODE_TONE_STYLES.image.surface, aspectClass)}>
@@ -817,10 +884,225 @@ export const ImageNode = ({ id, data, selected }: any) => {
   );
 };
 
+const formatTime = (s: number) => {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+};
+
+function captureVideoFrame(video: HTMLVideoElement): string | null {
+  try {
+    const w = video.videoWidth || video.clientWidth;
+    const h = video.videoHeight || video.clientHeight;
+    if (!w || !h) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d')!.drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
+async function captureViaProxy(videoUrl: string, time: number): Promise<string | null> {
+  try {
+    const proxyUrl = `/api/app/proxy-media?url=${encodeURIComponent(videoUrl)}`;
+    const resp = await fetch(proxyUrl, { credentials: 'include' });
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    const localUrl = URL.createObjectURL(blob);
+    const v = document.createElement('video');
+    v.muted = true;
+    v.preload = 'auto';
+    v.src = localUrl;
+    await new Promise<void>((r, j) => { v.onloadeddata = () => r(); v.onerror = () => j(); v.load(); });
+    v.currentTime = time;
+    await new Promise<void>((r) => { v.onseeked = () => r(); });
+    const canvas = document.createElement('canvas');
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    canvas.getContext('2d')!.drawImage(v, 0, 0);
+    const dataUrl = canvas.toDataURL('image/png');
+    URL.revokeObjectURL(localUrl);
+    return dataUrl;
+  } catch {
+    return null;
+  }
+}
+
+const VideoHoverControls = ({
+  videoRef,
+  hovered,
+  onCapture,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  hovered: boolean;
+  onCapture: (mode: 'current' | 'first' | 'last') => void;
+}) => {
+  const language = useStore((state) => state.language);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const progressRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const onTime = () => setCurrentTime(v.currentTime);
+    const onMeta = () => setDuration(v.duration || 0);
+    v.addEventListener('play', onPlay);
+    v.addEventListener('pause', onPause);
+    v.addEventListener('timeupdate', onTime);
+    v.addEventListener('loadedmetadata', onMeta);
+    if (v.duration) setDuration(v.duration);
+    return () => {
+      v.removeEventListener('play', onPlay);
+      v.removeEventListener('pause', onPause);
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('loadedmetadata', onMeta);
+    };
+  }, [videoRef]);
+
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {});
+    else v.pause();
+  };
+
+  const seek = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const bar = progressRef.current;
+    const v = videoRef.current;
+    if (!bar || !v || !duration) return;
+    const rect = bar.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    v.currentTime = ratio * duration;
+  };
+
+  if (!hovered) return null;
+
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="absolute inset-x-0 bottom-0 z-10 flex items-center gap-2 rounded-b-[20px] bg-gradient-to-t from-black/70 to-transparent px-3 py-2 nodrag" onClick={(e) => e.stopPropagation()}>
+      <button onClick={togglePlay} className="flex h-6 w-6 shrink-0 items-center justify-center text-white/90 hover:text-white">
+        {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+      </button>
+      <span className="shrink-0 text-[10px] tabular-nums text-white/70">{formatTime(currentTime)}</span>
+      <div ref={progressRef} className="relative flex-1 cursor-pointer py-1" onClick={seek}>
+        <div className="h-1 rounded-full bg-white/20">
+          <div className="h-full rounded-full bg-white/80 transition-[width] duration-100" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white shadow" style={{ left: `${progress}%` }} />
+      </div>
+      <span className="shrink-0 text-[10px] tabular-nums text-white/70">{formatTime(duration)}</span>
+      <div
+        className="relative"
+        onMouseEnter={() => setCaptureOpen(true)}
+        onMouseLeave={() => setCaptureOpen(false)}
+      >
+        <button
+          onClick={(e) => { e.stopPropagation(); onCapture('current'); }}
+          className="flex h-6 w-6 shrink-0 items-center justify-center text-white/70 hover:text-white"
+        >
+          <Camera className="h-3.5 w-3.5" />
+        </button>
+        {captureOpen ? (
+          <div className="absolute bottom-full right-0 z-30 mb-0 min-w-[120px] rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-xl backdrop-blur-xl">
+            <button onClick={(e) => { e.stopPropagation(); onCapture('first'); setCaptureOpen(false); }} className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5">
+              {language === 'zh' ? '截取首帧' : 'First frame'}
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onCapture('last'); setCaptureOpen(false); }} className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5">
+              {language === 'zh' ? '截取尾帧' : 'Last frame'}
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onCapture('current'); setCaptureOpen(false); }} className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5">
+              {language === 'zh' ? '截取当前帧' : 'Current frame'}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
 export const VideoNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
+  const addNode = useStore((state) => state.addNode);
+  const nodes = useStore((state) => state.nodes);
   const [preview, setPreview] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
+
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const handleMouseEnter = () => {
+    clearTimeout(hoverTimeout.current);
+    setHovered(true);
+    videoRef.current?.play().catch(() => {});
+  };
+  const handleMouseLeave = () => {
+    hoverTimeout.current = setTimeout(() => {
+      setHovered(false);
+      const v = videoRef.current;
+      if (v) { v.pause(); v.currentTime = 0; }
+    }, 150);
+  };
+
+  const handleCapture = useCallback(async (mode: 'current' | 'first' | 'last') => {
+    const v = videoRef.current;
+    if (!v || !data.url) return;
+
+    const targetTime = mode === 'first' ? 0 : mode === 'last' ? Math.max(0, (v.duration || 0) - 0.05) : v.currentTime;
+
+    if (mode !== 'current') {
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => { v.removeEventListener('seeked', onSeeked); resolve(); };
+        v.addEventListener('seeked', onSeeked);
+        v.currentTime = targetTime;
+      });
+    }
+
+    let dataUrl = captureVideoFrame(v);
+    if (!dataUrl) {
+      dataUrl = await captureViaProxy(data.url, targetTime);
+    }
+    if (!dataUrl) return;
+
+    // Convert data URL to blob and upload to backend for a stable, lightweight URL.
+    let stableUrl = dataUrl;
+    try {
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const form = new FormData();
+      form.append('file', blob, `capture-${mode}-${Date.now()}.png`);
+      const uploadResp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
+      if (uploadResp.ok) {
+        const json = await uploadResp.json();
+        const rawUrl = json?.data?.url as string;
+        if (rawUrl) {
+          const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '') as string;
+          stableUrl = apiBase ? `${apiBase.replace(/\/+$/, '')}${rawUrl}` : rawUrl;
+        }
+      }
+    } catch { /* fall back to dataUrl if upload fails */ }
+
+    const thisNode = nodes.find((n) => n.id === id);
+    const pos = thisNode?.position ?? { x: 0, y: 0 };
+    const label = mode === 'first' ? '首帧截图' : mode === 'last' ? '尾帧截图' : '视频截图';
+    addNode({
+      id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      type: 'referenceImageNode',
+      position: { x: pos.x + 340, y: pos.y },
+      data: { url: stableUrl, sourceName: label },
+    } as any);
+  }, [addNode, data.url, id, nodes]);
+
   return (
     <BaseNode
       icon={Video}
@@ -832,20 +1114,27 @@ export const VideoNode = ({ id, data, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
       <div
-        className={clsx(
-          'relative flex items-center justify-center overflow-hidden rounded-[20px] border text-violet-100/40',
-          NODE_TONE_STYLES.video.surface,
-          aspectClass,
-          data.url && 'cursor-zoom-in nodrag',
-        )}
-        onDoubleClick={() => data.url && setPreview(true)}
+        className="relative"
+        onMouseEnter={data.url ? handleMouseEnter : undefined}
+        onMouseLeave={data.url ? handleMouseLeave : undefined}
       >
-        {data.url ? (
-          <video src={data.url} className="absolute inset-0 h-full w-full object-cover" muted />
-        ) : data.poster ? (
-          <img src={data.poster} alt="" className="absolute inset-0 h-full w-full object-cover opacity-60" />
-        ) : null}
-        {!data.url ? <Video className="relative z-10 h-6 w-6" /> : null}
+        <div
+          className={clsx(
+            'relative flex items-center justify-center overflow-hidden rounded-[20px] border text-violet-100/40',
+            NODE_TONE_STYLES.video.surface,
+            aspectClass,
+            data.url && 'cursor-zoom-in',
+          )}
+          onDoubleClick={() => data.url && setPreview(true)}
+        >
+          {data.url ? (
+            <video ref={videoRef} src={data.url} draggable={false} className="absolute inset-0 h-full w-full object-cover select-none" muted loop preload="auto" />
+          ) : data.poster ? (
+            <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
+          ) : null}
+          {!data.url ? <Video className="relative z-10 h-6 w-6" /> : null}
+        </div>
+        {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
       {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
@@ -866,14 +1155,14 @@ export const ReferenceImageNode = ({ data, selected }: any) => {
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag",
+          "relative overflow-hidden rounded-[20px] border cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
           aspectClass,
         )}
         onDoubleClick={() => data.url && setPreview(true)}
       >
         {data.url ? (
-          <img src={data.url} alt={data.sourceName || ""} className="h-full w-full object-cover" />
+          <img src={data.url} alt={data.sourceName || ""} draggable={false} className="h-full w-full object-cover select-none" />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
             <ImageIcon className="h-6 w-6 text-sky-100/40" />
@@ -904,14 +1193,14 @@ export const ReferenceVideoNode = ({ data, selected }: any) => {
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag",
+          "relative overflow-hidden rounded-[20px] border cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
           aspectClass,
         )}
         onDoubleClick={() => data.url && setPreview(true)}
       >
         {data.url ? (
-          <video src={data.url} className="absolute inset-0 h-full w-full object-cover" muted />
+          <video src={data.url} draggable={false} className="absolute inset-0 h-full w-full object-cover select-none" muted />
         ) : (
           <div className="flex h-full w-full items-center justify-center">
             <Video className="h-6 w-6 text-sky-100/40" />
@@ -974,7 +1263,7 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[20px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
-        {data.url ? <img src={data.url} alt="" className="h-full w-full object-cover" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
+        {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
       </div>
     </BaseNode>
   );

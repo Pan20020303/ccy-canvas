@@ -6,7 +6,9 @@ import {
   BackgroundVariant,
   ReactFlowProvider,
   useReactFlow,
+  useViewport,
   type Connection,
+  type Node,
   type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -42,11 +44,115 @@ const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string }[] = 
 ];
 
 const GRID_SIZE = 24;
+const GUIDE_THRESHOLD = 5;
 
 const snapPosition = (position: { x: number; y: number }) => ({
   x: Math.round(position.x / GRID_SIZE) * GRID_SIZE,
   y: Math.round(position.y / GRID_SIZE) * GRID_SIZE,
 });
+
+type GuideLine = { orientation: 'h' | 'v'; pos: number; from: number; to: number };
+
+function getNodeBounds(node: Node) {
+  const w = node.measured?.width ?? node.width ?? 300;
+  const h = node.measured?.height ?? node.height ?? 200;
+  const x = node.position.x;
+  const y = node.position.y;
+  return {
+    left: x, right: x + w, top: y, bottom: y + h,
+    cx: x + w / 2, cy: y + h / 2, w, h,
+  };
+}
+
+function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; snapDx: number; snapDy: number } {
+  const db = getNodeBounds(dragged);
+  const guides: GuideLine[] = [];
+
+  // Track closest distance for X and Y independently.
+  let bestDistX = GUIDE_THRESHOLD;
+  let bestDistY = GUIDE_THRESHOLD;
+  let snapDx = 0;
+  let snapDy = 0;
+
+  const dragXAnchors = [db.left, db.cx, db.right];
+  const dragYAnchors = [db.top, db.cy, db.bottom];
+
+  for (const other of others) {
+    if (other.id === dragged.id) continue;
+    const ob = getNodeBounds(other);
+    const otherXAnchors = [ob.left, ob.cx, ob.right];
+    const otherYAnchors = [ob.top, ob.cy, ob.bottom];
+
+    for (const dx of dragXAnchors) {
+      for (const ox of otherXAnchors) {
+        const dist = Math.abs(dx - ox);
+        if (dist < bestDistX) {
+          bestDistX = dist;
+          snapDx = ox - dx;
+        }
+      }
+    }
+
+    for (const dy of dragYAnchors) {
+      for (const oy of otherYAnchors) {
+        const dist = Math.abs(dy - oy);
+        if (dist < bestDistY) {
+          bestDistY = dist;
+          snapDy = oy - dy;
+        }
+      }
+    }
+  }
+
+  // Recompute bounds after snapping to build accurate guide lines.
+  const snappedLeft = db.left + snapDx;
+  const snappedRight = db.right + snapDx;
+  const snappedCx = db.cx + snapDx;
+  const snappedTop = db.top + snapDy;
+  const snappedBottom = db.bottom + snapDy;
+  const snappedCy = db.cy + snapDy;
+
+  for (const other of others) {
+    if (other.id === dragged.id) continue;
+    const ob = getNodeBounds(other);
+
+    for (const sx of [snappedLeft, snappedCx, snappedRight]) {
+      for (const ox of [ob.left, ob.cx, ob.right]) {
+        if (Math.abs(sx - ox) < 0.5) {
+          guides.push({ orientation: 'v', pos: ox, from: Math.min(snappedTop, ob.top), to: Math.max(snappedBottom, ob.bottom) });
+        }
+      }
+    }
+
+    for (const sy of [snappedTop, snappedCy, snappedBottom]) {
+      for (const oy of [ob.top, ob.cy, ob.bottom]) {
+        if (Math.abs(sy - oy) < 0.5) {
+          guides.push({ orientation: 'h', pos: oy, from: Math.min(snappedLeft, ob.left), to: Math.max(snappedRight, ob.right) });
+        }
+      }
+    }
+  }
+
+  return { guides, snapDx, snapDy };
+}
+
+function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
+  const { x, y, zoom } = useViewport();
+  if (!guides.length) return null;
+  return (
+    <svg className="pointer-events-none absolute inset-0 z-[5] h-full w-full overflow-visible">
+      <g transform={`translate(${x},${y}) scale(${zoom})`}>
+        {guides.map((g, i) =>
+          g.orientation === 'v' ? (
+            <line key={i} x1={g.pos} y1={g.from - 20} x2={g.pos} y2={g.to + 20} stroke="#22d3ee" strokeWidth={1 / zoom} strokeDasharray={`${4 / zoom} ${3 / zoom}`} />
+          ) : (
+            <line key={i} x1={g.from - 20} y1={g.pos} x2={g.to + 20} y2={g.pos} stroke="#22d3ee" strokeWidth={1 / zoom} strokeDasharray={`${4 / zoom} ${3 / zoom}`} />
+          ),
+        )}
+      </g>
+    </svg>
+  );
+}
 
 const InnerCanvas = () => {
   const {
@@ -76,6 +182,7 @@ const InnerCanvas = () => {
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
   const [dropMessage, setDropMessage] = useState<string | null>(null);
+  const [guides, setGuides] = useState<GuideLine[]>([]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -116,20 +223,44 @@ const InnerCanvas = () => {
         return;
       }
 
+      const posChange = changes.find((c): c is NodeChange & { type: 'position'; id: string; position: { x: number; y: number }; dragging?: boolean } =>
+        c.type === 'position' && 'position' in c && c.position != null,
+      );
+
+      if (posChange?.dragging) {
+        const draggedNode = nodes.find((n) => n.id === posChange.id);
+        if (draggedNode) {
+          const virtual = { ...draggedNode, position: posChange.position };
+          const { guides: newGuides, snapDx, snapDy } = computeGuides(virtual, nodes);
+          setGuides(newGuides);
+
+          const snapped = {
+            x: posChange.position.x + snapDx,
+            y: posChange.position.y + snapDy,
+          };
+          // If no alignment found on an axis, fall back to grid snap on that axis.
+          if (snapDx === 0) snapped.x = snapPosition(posChange.position).x;
+          if (snapDy === 0) snapped.y = snapPosition(posChange.position).y;
+
+          onNodesChange(changes.map((c) =>
+            c === posChange ? { ...posChange, position: snapped } : c,
+          ));
+          return;
+        }
+      }
+
+      if (posChange && !posChange.dragging) {
+        setGuides([]);
+      }
+
       onNodesChange(
         changes.map((change) => {
-          if (change.type !== 'position' || !change.position) {
-            return change;
-          }
-
-          return {
-            ...change,
-            position: snapPosition(change.position),
-          };
+          if (change.type !== 'position' || !('position' in change) || !change.position) return change;
+          return { ...change, position: snapPosition(change.position) };
         }),
       );
     },
-    [onNodesChange, snapToGrid],
+    [nodes, onNodesChange, snapToGrid],
   );
 
   const onPaneContextMenu = useCallback((event: any) => {
@@ -268,7 +399,7 @@ const InnerCanvas = () => {
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}
         onNodeDragStart={() => setNodeDragging(true)}
-        onNodeDragStop={() => setNodeDragging(false)}
+        onNodeDragStop={() => { setNodeDragging(false); setGuides([]); }}
         nodeTypes={nodeTypes}
         fitView
         className="touch-none"
@@ -304,6 +435,7 @@ const InnerCanvas = () => {
             }}
           />
         ) : null}
+        {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
 
       {selectedIds.length >= 2 && !picker ? (

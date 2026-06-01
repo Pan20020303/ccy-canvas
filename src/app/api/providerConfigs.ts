@@ -132,6 +132,7 @@ export type GeneratePayload = {
   duration?: number;     // video duration in seconds
   aspect_ratio?: string; // video aspect ratio: "16:9", "9:16", etc.
   reference_images?: string[];
+  reference_mode?: string;
   reference_video?: string;
   reference_videos?: string[];
 };
@@ -141,6 +142,6 @@ export type GenerateResult = {
   content: string;
 };
 
-export function generate(payload: GeneratePayload): Promise<GenerateResult> {
-  return apiClient.post<GenerateResult>("/api/app/generate", payload);
+export function generate(payload: GeneratePayload, signal?: AbortSignal): Promise<GenerateResult> {
+  return apiClient.post<GenerateResult>("/api/app/generate", payload, signal);
 }
