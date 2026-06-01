@@ -193,30 +193,16 @@ describe("workspace control bar state", () => {
     expect((first?.data as Record<string, unknown>)?.generationParams).toMatchObject({ durationSeconds: 10 });
   });
 
-  it("uses node generation params when dispatching a run", async () => {
+  it("does not call providers directly while backend generation jobs are pending", async () => {
     const { useStore } = await loadStore();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ data: [{ url: "https://example.com/out.png" }] }),
-    });
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const imageConfig = useStore.getState().modelConfigs.find((config) => config.serviceType === "image");
-    if (!imageConfig) {
-      throw new Error("Expected seeded image config");
-    }
-    useStore.getState().upsertModelConfig({ ...imageConfig, apiKey: "test-key" });
-
-    useStore.getState().updateNodeGenerationParams("2", {
-      aspectRatio: "5:4",
-      resolution: "2K",
-      model: "gpt-image-2",
-    });
 
     await useStore.getState().runNode("2", { prompt: "test", model: "gpt-image-2" });
 
-    const [, init] = fetchMock.mock.calls[0];
-    expect(String(init.body)).toContain("5:4");
-    expect(String(init.body)).toContain("2K");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("error");
+    expect((imageNode?.data as Record<string, unknown>)?.error).toContain("backend generation");
   });
 });

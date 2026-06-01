@@ -30,6 +30,42 @@ describe("model templates", () => {
     expect(getModelTemplate("gpt-image-2")?.durationRange).toBeUndefined();
   });
 
+  it("recognizes configured sora video models as template-driven video models", () => {
+    const template = getModelTemplate("sora-v3-fast");
+    expect(template?.serviceType).toBe("video");
+    expect(template?.supportsDuration).toBe(true);
+    expect(template?.supportsAspectRatio).toBe(true);
+    expect(template?.supportsResolution).toBe(true);
+  });
+
+  it("matches sora-v3-fast options from relay-video-test html", () => {
+    const template = getModelTemplate("sora-v3-fast");
+    expect(template?.supportsMode).toBeFalsy();
+    expect(template?.supportsAutoAspect).toBeFalsy();
+    expect(template?.aspectRatioOptions).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]);
+    expect(template?.resolutionOptions).toEqual(["480p", "720p"]);
+    expect(template?.durationRange).toEqual({
+      min: 5,
+      max: 15,
+      step: 1,
+      defaultValue: 5,
+    });
+  });
+
+  it("matches sora-2 options from relay-video-test html", () => {
+    const template = getModelTemplate("sora-2");
+    expect(template?.supportsMode).toBeFalsy();
+    expect(template?.supportsAutoAspect).toBeFalsy();
+    expect(template?.aspectRatioOptions).toEqual(["16:9", "9:16"]);
+    expect(template?.resolutionOptions).toEqual(["720p"]);
+    expect(template?.durationRange).toEqual({
+      min: 4,
+      max: 12,
+      step: 4,
+      defaultValue: 8,
+    });
+  });
+
   it("exports a non-empty template registry", () => {
     expect(Object.keys(modelTemplates).length).toBeGreaterThan(0);
   });

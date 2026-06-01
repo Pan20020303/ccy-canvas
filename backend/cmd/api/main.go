@@ -9,9 +9,16 @@ import (
 	identityapp "ccy-canvas/backend/internal/identity/application"
 	identityinfra "ccy-canvas/backend/internal/identity/infrastructure"
 	identityhttp "ccy-canvas/backend/internal/identity/interfaces"
+	"ccy-canvas/backend/internal/modelcatalog/application"
+	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
+	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
+	workspaceinfra "ccy-canvas/backend/internal/workspace/infrastructure"
+	workspacehttp "ccy-canvas/backend/internal/workspace/interfaces"
+	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/config"
 	"ccy-canvas/backend/internal/platform/database"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
+	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
 	"ccy-canvas/backend/internal/shared/httpx"
@@ -36,10 +43,18 @@ func main() {
 	queries := sqlc.New(pool)
 	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
 	passwordService := password.NewService()
+
+	// Identity & Auth
 	creditService := creditinfra.NewService(queries)
 	identityRepository := identityinfra.NewRepository(pool, queries)
 	identityService := identityapp.NewService(identityRepository, passwordService, creditService)
 	identityHandler := identityhttp.NewHandler(identityService, creditService, sessionManager)
+
+	// Model Catalog
+	catalogRepo := infrastructure.NewRepository(queries)
+	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey)
+	catalogHandler := modelhttp.NewHandler(catalogService)
+
 	allowedOrigins := []string{
 		"http://localhost:5173",
 		"http://127.0.0.1:5173",
@@ -51,7 +66,7 @@ func main() {
 		allowedOriginSet[origin] = struct{}{}
 	}
 
-	router := chi.NewRouter()
+	router := chi.NewMux()
 	router.Use(middleware.RealIP)
 	router.Use(httpx.RequestIDMiddleware)
 	router.Use(httpx.CORSMiddleware(allowedOrigins))
@@ -63,7 +78,33 @@ func main() {
 	router.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// File upload + static file serving.
+	workspacehttp.RegisterUploadRoutes(router, sessionManager)
+	fileServer := http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads")))
+	router.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+		fileServer.ServeHTTP(w, r)
+	})
+
+	// Existing chi identity routes (login / register / logout / me / invitations).
 	identityHandler.Routes(router)
+
+	// Huma API: OpenAPI 3.1 at /api/openapi.json + per-operation auth middleware.
+	api := httpapi.New(router)
+	api.UseMiddleware(authn.Middleware(api, sessionManager))
+
+	// Admin management routes (users, invitations, stats, logs).
+	adminHandler := identityhttp.NewAdminHandler(queries)
+	adminHandler.RegisterRoutes(api)
+
+	// Model catalog routes.
+	catalogHandler.RegisterRoutes(api)
+
+	// Workspace routes (projects + canvas).
+	workspaceRepo := workspaceinfra.NewRepository(queries)
+	workspaceHandler := workspacehttp.NewHandler(workspaceRepo)
+	workspaceHandler.RegisterRoutes(api)
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {

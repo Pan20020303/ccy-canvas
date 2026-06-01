@@ -14,14 +14,10 @@ import {
   applyEdgeChanges,
 } from '@xyflow/react';
 
-import {
-  getDefaultSubmitEndpoint,
-  ModelConfig,
-  normalizeModelBaseUrl,
-  resolveModelConfigForSelection,
-  ServiceType,
-} from './model-config';
-import { buildModelRequestBody, getModelTemplate } from './model-templates';
+import type { AppProviderConfig } from './api/providerConfigs';
+import { generate as apiGenerate } from './api/providerConfigs';
+import type { BackendProject } from './api/projects';
+import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas } from './api/projects';
 
 type Language = 'en' | 'zh';
 
@@ -131,9 +127,17 @@ type AppState = {
   spaceSnapshotsById: Record<string, SpaceSnapshot>;
   createProject: (name?: string) => void;
   switchProject: (id: string) => void;
-  modelConfigs: ModelConfig[];
-  upsertModelConfig: (config: ModelConfig) => void;
-  removeModelConfig: (id: string) => void;
+  /** Provider configs loaded from the backend — replaces the old local modelConfigs. */
+  backendModels: AppProviderConfig[];
+  setBackendModels: (models: AppProviderConfig[]) => void;
+  /** Backend project integration */
+  backendProjects: BackendProject[];
+  activeBackendProjectId: string | null;
+  backendSyncing: boolean;
+  loadBackendProjects: () => Promise<void>;
+  createBackendProject: (name: string) => Promise<BackendProject | null>;
+  switchBackendProject: (id: string) => Promise<void>;
+  saveCanvasToBackend: () => Promise<void>;
   spaceMembers: SpaceMember[];
   invitations: AdminInvitation[];
   groups: Group[];
@@ -304,80 +308,7 @@ const normalizeHistoryItem = (
 
 const createdAt = Date.now();
 
-const seedModelConfigs: ModelConfig[] = [
-  {
-    id: 'cfg-text-openai',
-    serviceType: 'text',
-    vendor: 'OpenAI',
-    protocol: 'openai',
-    name: 'OpenAI Text',
-    baseUrl: 'https://api.openai.com/v1',
-    apiKey: '',
-    submitEndpoint: '/chat/completions',
-    queryEndpoint: '',
-    modelList: ['gpt-4.1-mini', 'gpt-4.1'],
-    defaultModel: 'gpt-4.1-mini',
-    priority: 1,
-    enabled: true,
-    isDefault: true,
-    createdAt,
-    updatedAt: createdAt,
-  },
-  {
-    id: 'cfg-image-openai',
-    serviceType: 'image',
-    vendor: 'OpenAI',
-    protocol: 'openai',
-    name: 'OpenAI Image',
-    baseUrl: 'https://api.openai.com/v1',
-    apiKey: '',
-    submitEndpoint: '/images/generations',
-    queryEndpoint: '',
-    modelList: ['gpt-image-1', 'gpt-image-2'],
-    defaultModel: 'gpt-image-2',
-    priority: 1,
-    enabled: true,
-    isDefault: true,
-    createdAt,
-    updatedAt: createdAt,
-  },
-  {
-    id: 'cfg-video-runway',
-    serviceType: 'video',
-    vendor: 'Runway',
-    protocol: 'custom',
-    name: 'Runway Video',
-    baseUrl: 'https://api.runwayml.com/v1',
-    apiKey: '',
-    submitEndpoint: '/generations',
-    queryEndpoint: '',
-    modelList: ['runway-gen3'],
-    defaultModel: 'runway-gen3',
-    priority: 1,
-    enabled: true,
-    isDefault: true,
-    createdAt,
-    updatedAt: createdAt,
-  },
-  {
-    id: 'cfg-audio-suno',
-    serviceType: 'audio',
-    vendor: 'Suno',
-    protocol: 'custom',
-    name: 'Suno Audio',
-    baseUrl: 'https://api.suno.ai/v1',
-    apiKey: '',
-    submitEndpoint: '/generations',
-    queryEndpoint: '',
-    modelList: ['suno-v4'],
-    defaultModel: 'suno-v4',
-    priority: 1,
-    enabled: true,
-    isDefault: true,
-    createdAt,
-    updatedAt: createdAt,
-  },
-];
+// seedModelConfigs removed — models are now loaded from the backend via GET /api/app/models.
 
 const seedSpaces: WorkspaceSpace[] = [
   { id: 'space-personal', name: '我的空间', type: 'personal', role: 'owner', createdAt: createdAt },
@@ -573,23 +504,130 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
   }),
 
-  modelConfigs: seedModelConfigs,
-  upsertModelConfig: (config) => set((state) => {
-    const candidate = { ...config, updatedAt: Date.now() };
-    const next = state.modelConfigs.some((item) => item.id === candidate.id)
-      ? state.modelConfigs.map((item) => item.id === candidate.id ? candidate : item)
-      : [{ ...candidate, createdAt: candidate.createdAt || Date.now() }, ...state.modelConfigs];
+  // Backend-driven model list.
+  backendModels: [],
+  setBackendModels: (models) => set({ backendModels: models }),
 
-    return {
-      modelConfigs: next.map((item) => {
-        if (item.serviceType === candidate.serviceType && candidate.isDefault && item.id !== candidate.id) {
-          return { ...item, isDefault: false };
+  // Backend project integration.
+  backendProjects: [],
+  activeBackendProjectId: null,
+  backendSyncing: false,
+
+  loadBackendProjects: async () => {
+    set({ backendSyncing: true });
+    try {
+      const projects = await listProjects();
+      if (projects.length === 0) return;
+      const first = projects[0];
+      set({ backendProjects: projects, activeBackendProjectId: first.id });
+      // Load canvas for the first/active project.
+      try {
+        const canvas = await getCanvas(first.id);
+        set((state) => {
+          const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : state.nodes;
+          // Clear stale running/error status from persisted nodes.
+          const nodes = rawNodes.map((n) => {
+            const d = n.data as Record<string, unknown> | undefined;
+            if (d?.status === 'running' || d?.status === 'generating') {
+              return { ...n, data: { ...d, status: 'idle', error: undefined } };
+            }
+            return n;
+          });
+          const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : state.edges;
+          const projectStateById = {
+            ...state.projectStateById,
+            [first.id]: createCanvasSnapshot(nodes, edges, state.groups),
+          };
+          return { nodes, edges, activeProjectId: first.id, projectStateById };
+        });
+      } catch {
+        // Canvas not yet saved — keep local state.
+      }
+    } catch {
+      // Not authenticated or network error — silently continue with local state.
+    } finally {
+      set({ backendSyncing: false });
+    }
+  },
+
+  createBackendProject: async (name) => {
+    try {
+      const project = await apiCreateProject(name);
+      set((state) => ({
+        backendProjects: [project, ...state.backendProjects],
+        activeBackendProjectId: project.id,
+        activeProjectId: project.id,
+        nodes: [],
+        edges: [],
+        groups: [],
+        projectStateById: {
+          ...syncActiveProjectState(state).projectStateById,
+          [project.id]: createEmptyCanvasState(),
+        },
+      }));
+      return project;
+    } catch {
+      return null;
+    }
+  },
+
+  switchBackendProject: async (id) => {
+    const state = get();
+    // Save current canvas first.
+    if (state.activeBackendProjectId) {
+      try {
+        await saveCanvas(state.activeBackendProjectId, state.nodes, state.edges);
+      } catch {
+        // Non-fatal — continue switching.
+      }
+    }
+    set({ activeBackendProjectId: id, backendSyncing: true });
+    try {
+      const canvas = await getCanvas(id);
+      const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
+      const nodes = rawNodes.map((n) => {
+        const d = n.data as Record<string, unknown> | undefined;
+        if (d?.status === 'running' || d?.status === 'generating') {
+          return { ...n, data: { ...d, status: 'idle', error: undefined } };
         }
-        return item;
-      }),
-    };
-  }),
-  removeModelConfig: (id) => set((state) => ({ modelConfigs: state.modelConfigs.filter((item) => item.id !== id) })),
+        return n;
+      });
+      const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
+      set((state) => ({
+        nodes,
+        edges,
+        groups: [],
+        activeProjectId: id,
+        projectStateById: {
+          ...state.projectStateById,
+          [id]: createCanvasSnapshot(nodes, edges, []),
+        },
+      }));
+    } catch {
+      // Canvas not yet saved — load empty canvas.
+      set({ nodes: [], edges: [], groups: [], activeProjectId: id });
+    } finally {
+      set({ backendSyncing: false });
+    }
+  },
+
+  saveCanvasToBackend: async () => {
+    const { activeBackendProjectId, nodes, edges } = get();
+    if (!activeBackendProjectId) return;
+    // Strip transient runtime status before persisting so reloads don't show stale running state.
+    const cleanNodes = nodes.map((n) => {
+      const d = n.data as Record<string, unknown> | undefined;
+      if (d?.status === 'running' || d?.status === 'generating') {
+        return { ...n, data: { ...d, status: 'idle', error: undefined } };
+      }
+      return n;
+    });
+    try {
+      await saveCanvas(activeBackendProjectId, cleanNodes, edges);
+    } catch {
+      // Silent — save errors should not interrupt the user.
+    }
+  },
 
   spaceMembers: seedSpaceMembers,
   invitations: seedInvitations,
@@ -630,33 +668,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   activeRun: null,
   runNode: async (nodeId, payload) => {
     const state = get();
-    const currentNode = state.nodes.find((node) => node.id === nodeId);
-    const generationParams = ((currentNode?.data as Record<string, unknown> | undefined)?.generationParams ?? {}) as NodeGenerationParams;
-    const nodeTypeToServiceType: Record<string, ServiceType> = {
-      textNode: 'text',
-      imageNode: 'image',
-      videoNode: 'video',
-      audioNode: 'audio',
-      panoramaNode: 'image',
-    };
-    const serviceType = nodeTypeToServiceType[currentNode?.type ?? 'textNode'] ?? 'text';
-    const config = resolveModelConfigForSelection(state.modelConfigs, serviceType, payload.model);
-    const patch = (data: Record<string, unknown>) =>
-      set((snapshot) => {
-        const nodes = snapshot.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...data } } : node);
-        const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
-        return {
-          nodes,
-          projectStateById,
-          ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
-        };
-      });
-
-    if (!config || !config.baseUrl || !config.apiKey) {
-      patch({ status: 'error', error: 'Model URL or API key not configured' });
-      return;
-    }
-
     const resolvedPrompt = payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
       const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
       if (!upstreamNode) return `@${ref}`;
@@ -664,105 +675,82 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       return data.output ?? data.url ?? data.content ?? `@${ref}`;
     });
 
-    const taskId = `t-${Date.now()}`;
-    const startedAt = Date.now();
-    const controller = new AbortController();
-    runAborters[nodeId] = controller;
-    const timeout = setTimeout(() => controller.abort(), 8 * 60 * 1000);
-    const modelName = payload.model?.trim() || config.defaultModel;
-    const template = getModelTemplate(modelName);
+    // Determine service type from the node type.
+    const currentNode = state.nodes.find((n) => n.id === nodeId);
+    const nodeType = currentNode?.type ?? '';
+    const serviceTypeMap: Record<string, string> = {
+      textNode: 'text',
+      imageNode: 'image',
+      videoNode: 'video',
+      audioNode: 'audio',
+    };
+    const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
+    // Get aspectRatio (used as size ratio) and resolution from generation params.
+    const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
+    // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
+    const aspectRatio = genParams?.aspectRatio ?? 'auto';
+    // Resolution field might be "自适应·1K" or "1k" — normalize.
+    const rawRes = genParams?.resolution ?? '1k';
+    const resolution = rawRes.replace(/[^0-9kK]/g, '').toLowerCase() || '1k';
+
+    // Set status to running — clear error but keep old url/content until new result arrives.
     set((snapshot) => ({
-      activeRun: { nodeId, startedAt },
+      activeRun: { nodeId, startedAt: Date.now() },
       nodes: snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'generating', error: undefined, prompt: payload.prompt, model: modelName } }
+        ? { ...node, data: { ...node.data, status: 'running', error: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model } }
         : node),
-      tasks: [{ id: taskId, type: config.serviceType, status: 'generating', progress: 0 }, ...snapshot.tasks],
     }));
 
-    const finishTask = (status: TaskStatus) => {
-      set((snapshot) => ({
-        tasks: snapshot.tasks.map((task) => task.id === taskId ? { ...task, status, progress: 100 } : task),
-        activeRun: snapshot.activeRun?.nodeId === nodeId ? null : snapshot.activeRun,
-      }));
-    };
-
-    const baseUrl = normalizeModelBaseUrl(config.baseUrl);
-    const endpointPath = getDefaultSubmitEndpoint(config);
-    const endpoint = `${baseUrl}${endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    };
+    // Video-specific: duration from genParams.
+    const durationSeconds = genParams?.durationSeconds ?? undefined;
 
     try {
-      let body: Record<string, unknown>;
-      if (config.serviceType === 'text') {
-        body = { model: modelName, messages: [{ role: 'user', content: resolvedPrompt }] };
-      } else if (config.serviceType === 'image') {
-        body = {
-          ...buildModelRequestBody(template, resolvedPrompt, {
-            ...generationParams,
-            model: modelName,
-          }),
-          n: 1,
-        };
-      } else {
-        body = buildModelRequestBody(template, resolvedPrompt, {
-          ...generationParams,
-          model: modelName,
-        });
-      }
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+      const result = await apiGenerate({
+        service_type: serviceType,
+        model: payload.model ?? '',
+        prompt: resolvedPrompt,
+        size: aspectRatio,
+        resolution,
+        duration: durationSeconds,
+        aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
       });
-      const rawText = await response.text();
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}${rawText ? `: ${rawText.slice(0, 200)}` : ''}`);
-      }
 
-      let json: any;
-      try {
-        json = JSON.parse(rawText);
-      } catch {
-        const hint = rawText.trim().startsWith('<')
-          ? 'endpoint returned HTML (check base URL and endpoint path)'
-          : 'response was not JSON';
-        throw new Error(`${hint}: ${rawText.slice(0, 160)}`);
-      }
+      set((snapshot) => ({
+        activeRun: null,
+        nodes: snapshot.nodes.map((node) => node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                status: 'done',
+                ...(result.type === 'url'
+                  ? { url: result.content, output: result.content }
+                  : { content: result.content, output: result.content }),
+              },
+            }
+          : node),
+      }));
 
-      if (json.error) {
-        const error = json.error;
-        throw new Error(error.message || error.code || JSON.stringify(error).slice(0, 200));
-      }
-
-      const title = resolvedPrompt.slice(0, 60) || config.name;
-      if (config.serviceType === 'text') {
-        const output = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? '';
-        patch({ status: 'completed', output, content: output });
-        get().addHistory({ id: `h-${Date.now()}`, title, type: 'text', timestamp: Date.now(), content: output, promptExcerpt: resolvedPrompt });
-      } else if (config.serviceType === 'image') {
-        const url = json.data?.[0]?.url || (json.data?.[0]?.b64_json ? `data:image/png;base64,${json.data[0].b64_json}` : null);
-        if (!url) throw new Error('No image in response');
-        patch({ status: 'completed', url });
-        get().addHistory({ id: `h-${Date.now()}`, title, type: 'image', timestamp: Date.now(), thumbnail: url, promptExcerpt: resolvedPrompt });
-      } else {
-        const url = json.url || json.data?.[0]?.url || json.output?.url;
-        patch({ status: 'completed', url, output: JSON.stringify(json).slice(0, 500) });
-        get().addHistory({ id: `h-${Date.now()}`, title, type: config.serviceType, timestamp: Date.now(), thumbnail: url, promptExcerpt: resolvedPrompt });
-      }
-      finishTask('completed');
-    } catch (error: any) {
-      const message = controller.signal.aborted ? 'Aborted (timeout or cancelled)' : (error?.message || 'Request failed');
-      patch({ status: 'error', error: message });
-      finishTask('failed');
-    } finally {
-      clearTimeout(timeout);
-      delete runAborters[nodeId];
+      // Add to history for the file manager panel.
+      get().addHistory({
+        id: `gen-${Date.now()}`,
+        title: payload.prompt.slice(0, 60),
+        type: serviceType,
+        mediaType: serviceType as 'text' | 'image' | 'video' | 'audio',
+        timestamp: Date.now(),
+        thumbnail: result.type === 'url' ? result.content : undefined,
+        content: result.type === 'text' ? result.content : undefined,
+        promptExcerpt: payload.prompt.slice(0, 120),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Generation failed';
+      set((snapshot) => ({
+        activeRun: null,
+        nodes: snapshot.nodes.map((node) => node.id === nodeId
+          ? { ...node, data: { ...node.data, status: 'error', error: message } }
+          : node),
+      }));
     }
   },
   cancelNode: (nodeId) => {
@@ -854,7 +842,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     projects: state.projects,
     activeProjectId: state.activeProjectId,
     projectStateById: state.projectStateById,
-    modelConfigs: state.modelConfigs,
     spaceMembers: state.spaceMembers,
     invitations: state.invitations,
     groups: state.groups,

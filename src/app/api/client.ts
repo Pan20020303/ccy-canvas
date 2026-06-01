@@ -86,6 +86,17 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
       });
     }
 
+    // Huma problem+json format: { $schema, title, status, detail }
+    if (body && typeof body === "object" && "detail" in body) {
+      const humaErr = body as { title?: string; detail?: string; status?: number };
+      throw new ApiClientError({
+        code: humaErr.title ?? "ERROR",
+        message: humaErr.detail ?? "Request failed",
+        status: response.status,
+        rawBody,
+      });
+    }
+
     const contentType = response.headers.get("content-type") ?? "";
     const fallbackMessage = contentType.includes("text/html")
       ? "Unexpected HTML response from API"
@@ -120,5 +131,20 @@ export const apiClient = {
       method: "POST",
       body: payload === undefined ? undefined : JSON.stringify(payload),
     });
+  },
+  put<T>(input: string, payload?: unknown) {
+    return request<T>(input, {
+      method: "PUT",
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+  },
+  patch<T>(input: string, payload?: unknown) {
+    return request<T>(input, {
+      method: "PATCH",
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+  },
+  delete<T>(input: string) {
+    return request<T>(input, { method: "DELETE" });
   },
 };

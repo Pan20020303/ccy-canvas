@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { History, Languages, LogOut, Settings as SettingsIcon, Shield, User as UserIcon } from "lucide-react";
+import { History, Languages, LogOut, Settings as SettingsIcon, Shield, User as UserIcon, Zap } from "lucide-react";
 
 import { useAuth } from "../auth/AuthProvider";
 import { t } from "../i18n";
@@ -10,7 +10,7 @@ import { TaskQueue } from "./TaskQueue";
 
 export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
-  const { user, logout } = useAuth();
+  const { user, creditSummary, logout } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -30,6 +30,15 @@ export const Navbar = () => {
           <Languages className="h-3.5 w-3.5" />
           <span>{language === "en" ? "EN" : "\u4e2d\u6587"}</span>
         </button>
+
+        {user && creditSummary ? (
+          <div className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-neutral-300">
+            <Zap className="h-3 w-3 text-amber-400" />
+            <span className="tabular-nums">{creditSummary.current_balance}</span>
+            <span className="text-neutral-600">/</span>
+            <span className="tabular-nums text-neutral-500">{creditSummary.daily_quota}</span>
+          </div>
+        ) : null}
 
         {user ? <TaskQueue /> : null}
 

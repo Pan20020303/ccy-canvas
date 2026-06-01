@@ -83,10 +83,19 @@ export const Toolbar = () => {
   const spaces = useStore((state) => state.spaces);
   const activeSpaceId = useStore((state) => state.activeSpaceId);
   const switchSpace = useStore((state) => state.switchSpace);
-  const projects = useStore((state) => state.projects);
+  const localProjects = useStore((state) => state.projects);
+  const backendProjects = useStore((state) => state.backendProjects);
   const activeProjectId = useStore((state) => state.activeProjectId);
+  const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const switchProject = useStore((state) => state.switchProject);
+  const switchBackendProject = useStore((state) => state.switchBackendProject);
   const createProject = useStore((state) => state.createProject);
+  const createBackendProject = useStore((state) => state.createBackendProject);
+  // Use backend projects if loaded, otherwise fall back to local.
+  const projects = backendProjects.length > 0
+    ? backendProjects.map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime(), updatedAt: new Date(p.updated_at).getTime() }))
+    : localProjects;
+  const effectiveActiveProjectId = activeBackendProjectId ?? activeProjectId;
   const setSettingsOpen = useStore((state) => state.setSettingsOpen);
   const dict = t[language];
 
@@ -120,7 +129,12 @@ export const Toolbar = () => {
   };
 
   const submitProject = () => {
-    createProject(newProjectName.trim() || undefined);
+    const name = newProjectName.trim();
+    if (backendProjects.length > 0) {
+      void createBackendProject(name || '新画布');
+    } else {
+      createProject(name || undefined);
+    }
     setNewProjectName('');
     setIsCreatingProject(false);
   };
@@ -253,9 +267,15 @@ export const Toolbar = () => {
                 {projects.map((project) => (
                   <button
                     key={project.id}
-                    onClick={() => switchProject(project.id)}
+                    onClick={() => {
+                      if (backendProjects.length > 0) {
+                        void switchBackendProject(project.id);
+                      } else {
+                        switchProject(project.id);
+                      }
+                    }}
                     className={`rounded-xl border px-3 py-2.5 text-left transition ${
-                      project.id === activeProjectId
+                      project.id === effectiveActiveProjectId
                         ? 'border-cyan-400/30 bg-cyan-500/10 text-cyan-300'
                         : 'border-white/5 bg-white/[0.02] text-neutral-200 hover:border-white/10 hover:bg-white/[0.04]'
                     }`}
@@ -270,7 +290,7 @@ export const Toolbar = () => {
                           {formatShortDate(project.createdAt, language)}
                         </div>
                       </div>
-                      {project.id === activeProjectId ? <Check className="h-3.5 w-3.5 flex-shrink-0" /> : null}
+                      {project.id === effectiveActiveProjectId ? <Check className="h-3.5 w-3.5 flex-shrink-0" /> : null}
                     </div>
                   </button>
                 ))}

@@ -8,6 +8,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type CanvasSnapshot struct {
+	ID        pgtype.UUID        `json:"id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Nodes     []byte             `json:"nodes"`
+	Edges     []byte             `json:"edges"`
+	Version   int32              `json:"version"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type CreditAccount struct {
 	ID             pgtype.UUID        `json:"id"`
 	UserID         pgtype.UUID        `json:"user_id"`
@@ -33,6 +43,21 @@ type CreditLedgerEntry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type GenerationLog struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	NodeID      string             `json:"node_id"`
+	ServiceType string             `json:"service_type"`
+	Model       string             `json:"model"`
+	Prompt      string             `json:"prompt"`
+	Status      string             `json:"status"`
+	ResultUrl   string             `json:"result_url"`
+	ErrorMsg    string             `json:"error_msg"`
+	DurationMs  int32              `json:"duration_ms"`
+	Cost        pgtype.Numeric     `json:"cost"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Invitation struct {
 	ID                pgtype.UUID        `json:"id"`
 	CodeHash          string             `json:"code_hash"`
@@ -53,6 +78,70 @@ type InvitationRedemption struct {
 	UserID       pgtype.UUID        `json:"user_id"`
 	Email        string             `json:"email"`
 	RedeemedAt   pgtype.Timestamptz `json:"redeemed_at"`
+}
+
+type ModelDefinition struct {
+	ID                pgtype.UUID        `json:"id"`
+	ProviderID        pgtype.UUID        `json:"provider_id"`
+	ExternalModelName string             `json:"external_model_name"`
+	DisplayName       string             `json:"display_name"`
+	Capability        string             `json:"capability"`
+	Status            string             `json:"status"`
+	ParameterSchema   []byte             `json:"parameter_schema"`
+	DefaultParameters []byte             `json:"default_parameters"`
+	PricingRule       []byte             `json:"pricing_rule"`
+	CostSnapshot      []byte             `json:"cost_snapshot"`
+	SortOrder         int32              `json:"sort_order"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ModelPermissionRule struct {
+	ID        pgtype.UUID        `json:"id"`
+	ModelID   pgtype.UUID        `json:"model_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Role      pgtype.Text        `json:"role"`
+	Allowed   bool               `json:"allowed"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type Project struct {
+	ID        pgtype.UUID        `json:"id"`
+	OwnerID   pgtype.UUID        `json:"owner_id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProviderConfig struct {
+	ID              pgtype.UUID        `json:"id"`
+	ServiceType     string             `json:"service_type"`
+	Vendor          string             `json:"vendor"`
+	Name            string             `json:"name"`
+	ApiSpec         string             `json:"api_spec"`
+	BaseUrl         string             `json:"base_url"`
+	EncryptedApiKey string             `json:"encrypted_api_key"`
+	SubmitEndpoint  string             `json:"submit_endpoint"`
+	QueryEndpoint   string             `json:"query_endpoint"`
+	ModelList       []string           `json:"model_list"`
+	DefaultModel    string             `json:"default_model"`
+	Priority        int32              `json:"priority"`
+	IsDefault       bool               `json:"is_default"`
+	Status          string             `json:"status"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RelayProvider struct {
+	ID              pgtype.UUID        `json:"id"`
+	Name            string             `json:"name"`
+	ProviderType    string             `json:"provider_type"`
+	BaseUrl         string             `json:"base_url"`
+	EncryptedApiKey string             `json:"encrypted_api_key"`
+	Status          string             `json:"status"`
+	LastSyncAt      pgtype.Timestamptz `json:"last_sync_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type User struct {

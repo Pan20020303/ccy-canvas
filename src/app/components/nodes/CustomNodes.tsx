@@ -16,8 +16,51 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
-import { getEnabledConfigsForServiceType, ServiceType } from '../../model-config';
+import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
+
+// ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
+
+/** Water sweep — left-to-right fill inside the node (lives inside overflow-hidden container). */
+function NodeLoadingWater() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 200);
+    return () => clearInterval(id);
+  }, []);
+  const progress = Math.min(100, (elapsed / 60) * 100);
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[22px]">
+      <div
+        className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500/20 via-cyan-400/10 to-transparent transition-[width] duration-1000 ease-linear"
+        style={{ width: `${progress}%` }}
+      />
+      <div
+        className="absolute inset-y-0 w-10 animate-pulse bg-gradient-to-r from-transparent via-cyan-400/25 to-transparent transition-[left] duration-1000 ease-linear"
+        style={{ left: `${progress}%` }}
+      />
+    </div>
+  );
+}
+
+/** Timer badge — sits OUTSIDE the node frame, at top-right corner. */
+function NodeLoadingTimer() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 200);
+    return () => clearInterval(id);
+  }, []);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const ss = String(elapsed % 60).padStart(2, '0');
+  return (
+    <div className="pointer-events-none absolute -top-5 right-0 flex items-center gap-1 rounded bg-black/60 px-1.5 py-[2px] text-[9px] font-mono leading-none text-cyan-300/80 backdrop-blur-sm">
+      <div className="h-1 w-1 animate-pulse rounded-full bg-cyan-400" />
+      {mm}:{ss}
+    </div>
+  );
+}
 
 const Dropdown = ({
   label,
@@ -310,7 +353,7 @@ const PromptPanel = ({
   const edges = useStore((state) => state.edges);
   const allNodes = useStore((state) => state.nodes);
   const runNode = useStore((state) => state.runNode);
-  const modelConfigs = useStore((state) => state.modelConfigs);
+  const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
   const upstreamIds = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
   const [text, setText] = useState('');
@@ -320,13 +363,14 @@ const PromptPanel = ({
   const params = getNodeParams(currentNode?.data);
 
   const enabledConfigs = useMemo(
-    () => getEnabledConfigsForServiceType(modelConfigs, serviceType)
-      .map((config) => ({
-        ...config,
-        modelList: config.modelList.filter((modelName) => !!getModelTemplate(modelName)),
-      }))
-      .filter((config) => config.modelList.length > 0),
-    [modelConfigs, serviceType],
+    () => backendModels
+      .filter((pc) => pc.service_type === serviceType)
+      .map((pc) => ({
+        vendor: pc.vendor,
+        name: pc.name,
+        modelList: pc.model_list,
+      })),
+    [backendModels, serviceType],
   );
 
   const vendorOptions = useMemo(
@@ -571,12 +615,9 @@ const BaseNode = ({
         >
           <div>{children}</div>
           {error ? <div className="break-words px-3 pb-3 text-[11px] text-rose-300">{error}</div> : null}
-          {loading ? (
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-              <div className="absolute inset-y-0 -left-1/3 w-1/3 animate-[node-sweep_1.8s_linear_infinite] bg-gradient-to-r from-transparent via-cyan-400/30 to-transparent" />
-            </div>
-          ) : null}
+          {loading ? <NodeLoadingWater /> : null}
         </div>
+        {loading ? <NodeLoadingTimer /> : null}
 
         <Handle
           type="target"
@@ -612,23 +653,87 @@ const BaseNode = ({
 };
 
 const PreviewModal = ({ kind, src, onClose }: { kind: 'image' | 'video'; src: string; onClose: () => void }) => {
+  const [zoom, setZoom] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const dragging = useRef(false);
+  const lastPos = useRef({ x: 0, y: 0 });
+
+  // ESC to close.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Scroll to zoom (image only).
+  const onWheel = (e: React.WheelEvent) => {
+    if (kind !== 'image') return;
+    e.stopPropagation();
+    setZoom((z) => Math.min(5, Math.max(0.2, z - e.deltaY * 0.001)));
+  };
+
+  // Drag to pan (image only).
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (kind !== 'image') return;
+    dragging.current = true;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragging.current) return;
+    setPos((p) => ({ x: p.x + e.clientX - lastPos.current.x, y: p.y + e.clientY - lastPos.current.y }));
+    lastPos.current = { x: e.clientX, y: e.clientY };
+  };
+  const onPointerUp = () => { dragging.current = false; };
+
+  const handleDownload = () => {
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = kind === 'image' ? 'generated-image.png' : 'generated-video.mp4';
+    a.target = '_blank';
+    a.click();
+  };
+
   return createPortal(
     <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 p-8 backdrop-blur-md"
+      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/90 backdrop-blur-md"
       onClick={onClose}
-      onWheel={(event) => event.stopPropagation()}
+      onWheel={onWheel}
     >
-      <button
-        onClick={onClose}
-        className="absolute right-6 top-6 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
+      {/* Top-right toolbar */}
+      <div className="absolute right-5 top-5 z-10 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        {kind === 'image' && (
+          <>
+            <button onClick={() => setZoom((z) => Math.min(5, z + 0.3))} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs text-white hover:bg-white/20">+</button>
+            <button onClick={() => { setZoom(1); setPos({ x: 0, y: 0 }); }} className="flex h-8 items-center rounded-full bg-white/10 px-2.5 text-[10px] text-white/70 hover:bg-white/20">{Math.round(zoom * 100)}%</button>
+            <button onClick={() => setZoom((z) => Math.max(0.2, z - 0.3))} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs text-white hover:bg-white/20">−</button>
+          </>
+        )}
+        <button onClick={handleDownload} className="flex h-8 items-center gap-1 rounded-full bg-white/10 px-3 text-[10px] text-white/70 hover:bg-white/20">↓</button>
+        <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Content */}
+      <div
+        className={clsx('max-h-[92vh] max-w-[92vw]', kind === 'image' && 'cursor-grab active:cursor-grabbing')}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onDoubleClick={() => { setZoom(zoom === 1 ? 2 : 1); setPos({ x: 0, y: 0 }); }}
       >
-        <X className="h-5 w-5" />
-      </button>
-      <div className="max-h-[90vh] max-w-[90vw]" onClick={(event) => event.stopPropagation()}>
         {kind === 'image' ? (
-          <img src={src} alt="" className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl" />
+          <img
+            src={src}
+            alt=""
+            draggable={false}
+            className="max-h-[92vh] max-w-[92vw] rounded-lg object-contain shadow-2xl select-none transition-transform duration-150"
+            style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${zoom})` }}
+          />
         ) : (
-          <video src={src} controls autoPlay className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl" />
+          <video src={src} controls autoPlay className="max-h-[92vh] max-w-[92vw] rounded-lg shadow-2xl" />
         )}
       </div>
     </div>,
@@ -644,7 +749,7 @@ export const TextNode = ({ id, data, selected }: any) => {
       title={language === 'zh' ? '生成文本' : 'Generate Text'}
       tone="text"
       selected={selected}
-      loading={data.status === 'generating'}
+      loading={data.status === 'generating' || data.status === 'running'}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
@@ -658,14 +763,40 @@ export const TextNode = ({ id, data, selected }: any) => {
 export const ImageNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
-  const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
+  const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
+  const paramAspect = getNodeParams(data).aspectRatio;
+
+  // Use the actual loaded image ratio if available, otherwise fall back to param.
+  const effectiveAspect = naturalRatio ?? paramAspect;
+  const aspectClass = getAspectRatioClass(effectiveAspect, 'aspect-video');
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (w && h) {
+      const r = w / h;
+      // Map to closest named ratio.
+      if (r > 1.9) setNaturalRatio('2:1');
+      else if (r > 1.6) setNaturalRatio('16:9');
+      else if (r > 1.4) setNaturalRatio('3:2');
+      else if (r > 1.2) setNaturalRatio('4:3');
+      else if (r > 1.05) setNaturalRatio('5:4');
+      else if (r > 0.95) setNaturalRatio('1:1');
+      else if (r > 0.8) setNaturalRatio('4:5');
+      else if (r > 0.7) setNaturalRatio('3:4');
+      else if (r > 0.6) setNaturalRatio('2:3');
+      else setNaturalRatio('9:16');
+    }
+  };
+
   return (
     <BaseNode
       icon={ImageIcon}
       tone="image"
       title={language === 'zh' ? '生成图像' : 'Generate Image'}
       selected={selected}
-      loading={data.status === 'generating'}
+      loading={data.status === 'generating' || data.status === 'running'}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
@@ -674,7 +805,7 @@ export const ImageNode = ({ id, data, selected }: any) => {
           className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag', NODE_TONE_STYLES.image.surface, aspectClass)}
           onDoubleClick={() => setPreview(true)}
         >
-          <img src={data.url} alt="" className="h-full w-full object-cover" />
+          <img src={data.url} alt="" className="h-full w-full object-cover" onLoad={handleImageLoad} />
         </div>
       ) : (
         <div className={clsx('flex items-center justify-center rounded-[20px] border text-orange-100/45', NODE_TONE_STYLES.image.surface, aspectClass)}>
@@ -696,7 +827,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       tone="video"
       title={language === 'zh' ? '生成视频' : 'Generate Video'}
       selected={selected}
-      loading={data.status === 'generating'}
+      loading={data.status === 'generating' || data.status === 'running'}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
@@ -729,7 +860,7 @@ export const AudioNode = ({ id, data, selected }: any) => {
       tone="audio"
       title={language === 'zh' ? '生成音频' : 'Generate Audio'}
       selected={selected}
-      loading={data.status === 'generating'}
+      loading={data.status === 'generating' || data.status === 'running'}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
@@ -762,7 +893,7 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
       tone="neutral"
       title={language === 'zh' ? '生成全景' : '360 Environment'}
       selected={selected}
-      loading={data.status === 'generating'}
+      loading={data.status === 'generating' || data.status === 'running'}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >

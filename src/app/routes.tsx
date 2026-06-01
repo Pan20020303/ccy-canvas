@@ -1,12 +1,14 @@
 import { createBrowserRouter, Navigate } from "react-router";
+import { useEffect } from "react";
 
+import { listAppProviderConfigs } from "./api/providerConfigs";
 import { useAuth } from "./auth/AuthProvider";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { AdminInvitationsPage } from "./components/admin/AdminInvitationsPage";
+import { AdminLogsPage } from "./components/admin/AdminLogsPage";
 import { AdminMembersPage } from "./components/admin/AdminMembersPage";
-import { AdminOverviewPlaceholder } from "./components/admin/AdminOverviewPlaceholder";
-import { AdminShell } from "./components/admin/AdminShell";
-import { ModelConfigPage } from "./components/admin/ModelConfigPage";
+import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
+import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { Canvas } from "./components/Canvas";
 import { LoginPage } from "./components/LoginPage";
 import { Modals } from "./components/Modals";
@@ -17,16 +19,40 @@ import { SettingsModal } from "./components/SettingsModal";
 import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
 
-const Workspace = () => (
-  <div className="relative h-screen w-full overflow-hidden bg-[#0a0a0a] font-sans text-neutral-200 selection:bg-cyan-500/30">
-    <Navbar />
-    <Toolbar />
-    <Canvas />
-    <RunTimer />
-    <Modals />
-    <SettingsModal />
-  </div>
-);
+const Workspace = () => {
+  const setBackendModels = useStore((state) => state.setBackendModels);
+
+  useEffect(() => {
+    let ignore = false;
+
+    listAppProviderConfigs()
+      .then((configs) => {
+        if (!ignore) {
+          setBackendModels(configs);
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          setBackendModels([]);
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [setBackendModels]);
+
+  return (
+    <div className="relative h-screen w-full overflow-hidden bg-[#0a0a0a] font-sans text-neutral-200 selection:bg-cyan-500/30">
+      <Navbar />
+      <Toolbar />
+      <Canvas />
+      <RunTimer />
+      <Modals />
+      <SettingsModal />
+    </div>
+  );
+};
 
 const HomeRedirect = () => {
   const { loading, user } = useAuth();
@@ -46,15 +72,6 @@ const HomeRedirect = () => {
 
   return <Navigate to={user.role === "admin" ? "/admin" : "/app"} replace />;
 };
-
-const AdminPlaceholderPage = ({ title }: { title: string }) => (
-  <AdminShell
-    title={title}
-    description="这个模块已经进入管理后台的开发范围。当前阶段先完成团队空间、成员权限和模型配置，随后继续补齐这里的真实业务能力。"
-  >
-    <AdminOverviewPlaceholder title={title} />
-  </AdminShell>
-);
 
 export const router = createBrowserRouter([
   {
@@ -81,7 +98,7 @@ export const router = createBrowserRouter([
     path: "/admin",
     Component: () => (
       <ProtectedRoute requireRole="admin">
-        <ModelConfigPage />
+        <AdminModelCatalogPage />
       </ProtectedRoute>
     ),
   },
@@ -89,7 +106,7 @@ export const router = createBrowserRouter([
     path: "/admin/overview",
     Component: () => (
       <ProtectedRoute requireRole="admin">
-        <AdminPlaceholderPage title="概览" />
+        <AdminOverviewPage />
       </ProtectedRoute>
     ),
   },
@@ -113,7 +130,7 @@ export const router = createBrowserRouter([
     path: "/admin/logs",
     Component: () => (
       <ProtectedRoute requireRole="admin">
-        <AdminPlaceholderPage title="日志" />
+        <AdminLogsPage />
       </ProtectedRoute>
     ),
   },

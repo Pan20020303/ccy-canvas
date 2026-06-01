@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
+import { listAppProviderConfigs } from "../api/providerConfigs";
+import { useStore } from "../store";
 
 export type AuthUser = {
   id: string;
@@ -49,11 +51,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [creditSummary, setCreditSummary] = useState<CreditSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const setBackendModels = useStore((s) => s.setBackendModels);
+  const loadBackendProjects = useStore((s) => s.loadBackendProjects);
+
+  // After successful auth, load backend data (models + projects/canvas).
+  const loadBackendData = async () => {
+    try {
+      const configs = await listAppProviderConfigs();
+      setBackendModels(configs);
+    } catch { /* not authenticated or unavailable */ }
+    await loadBackendProjects();
+  };
+
   const refresh = async () => {
     try {
       const data = await apiClient.get<AuthPayload>("/api/auth/me");
       setUser(data.user);
       setCreditSummary(data.credit_summary ?? null);
+      void loadBackendData();
       return data.user;
     } catch {
       setUser(null);
@@ -66,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void refresh();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -77,6 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const data = await apiClient.post<AuthPayload>("/api/auth/login", input);
         setUser(data.user);
         setCreditSummary(data.credit_summary ?? null);
+        void loadBackendData();
         return data.user;
       },
       async registerByInvite(input) {
@@ -88,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setUser(data.user);
         setCreditSummary(data.credit_summary ?? null);
+        void loadBackendData();
         return data.user;
       },
       async logout() {

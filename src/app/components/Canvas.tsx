@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -56,12 +56,49 @@ const InnerCanvas = () => {
     snapToGrid,
     setSnapToGrid,
   } = useStore();
+  const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
+  const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const language = useStore((state) => state.language);
   const dict = t[language];
   const { screenToFlowPosition, fitView } = useReactFlow();
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // --- cursor state ---
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [nodeDragging, setNodeDragging] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) setSpaceHeld(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpaceHeld(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  const cursorMode = nodeDragging ? 'canvas-mode-grabbing' : spaceHeld ? 'canvas-mode-grab' : '';
+
+  // Debounced auto-save to backend (2 s after last change).
+  useEffect(() => {
+    if (!activeBackendProjectId) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      void saveCanvasToBackend();
+    }, 2000);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, activeBackendProjectId]);
 
   const [picker, setPicker] = useState<{ x: number; y: number; flowX: number; flowY: number; fromConnection: boolean } | null>(null);
 
@@ -145,11 +182,60 @@ const InnerCanvas = () => {
     connectingFrom.current = null;
   };
 
+  // Drag & drop files from desktop → create image/video nodes.
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const onDrop = useCallback(async (event: React.DragEvent) => {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files);
+    if (!files.length || !wrapperRef.current) return;
+
+    const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    let offsetY = 0;
+
+    for (const file of files) {
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/');
+      if (!isImage && !isVideo) continue;
+
+      // Upload to backend, get a stable URL.
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const resp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
+        if (!resp.ok) continue;
+        const json = await resp.json();
+        const url = json?.data?.url as string;
+        if (!url) continue;
+
+        const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const pos = snapToGrid
+          ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+          : { x: flowPos.x, y: flowPos.y + offsetY };
+
+        addNode({
+          id,
+          type: isImage ? 'imageNode' : 'videoNode',
+          position: pos,
+          data: { url, status: 'done' },
+        });
+        offsetY += 320;
+      } catch {
+        // Skip failed uploads silently.
+      }
+    }
+  }, [addNode, screenToFlowPosition, snapToGrid]);
+
   return (
     <div
       ref={wrapperRef}
-      className="relative h-screen w-full bg-[#0a0a0a]"
+      className={`relative h-screen w-full bg-[#0a0a0a] ${cursorMode}`}
       onContextMenu={(event) => event.preventDefault()}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
     >
       <ReactFlow
         nodes={nodes}
@@ -160,6 +246,8 @@ const InnerCanvas = () => {
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}
+        onNodeDragStart={() => setNodeDragging(true)}
+        onNodeDragStop={() => setNodeDragging(false)}
         nodeTypes={nodeTypes}
         fitView
         className="touch-none"

@@ -11,6 +11,104 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adjustCreditBalance = `-- name: AdjustCreditBalance :one
+UPDATE credit_accounts
+SET current_balance = current_balance + $2,
+    updated_at = now()
+WHERE user_id = $1
+RETURNING id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on, status, updated_at
+`
+
+type AdjustCreditBalanceParams struct {
+	UserID         pgtype.UUID `json:"user_id"`
+	CurrentBalance int32       `json:"current_balance"`
+}
+
+func (q *Queries) AdjustCreditBalance(ctx context.Context, arg AdjustCreditBalanceParams) (CreditAccount, error) {
+	row := q.db.QueryRow(ctx, adjustCreditBalance, arg.UserID, arg.CurrentBalance)
+	var i CreditAccount
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.DailyQuota,
+		&i.CurrentBalance,
+		&i.ResetTimezone,
+		&i.LastResetOn,
+		&i.Status,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const adjustCreditQuota = `-- name: AdjustCreditQuota :one
+UPDATE credit_accounts
+SET daily_quota = $2,
+    updated_at = now()
+WHERE user_id = $1
+RETURNING id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on, status, updated_at
+`
+
+type AdjustCreditQuotaParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	DailyQuota int32       `json:"daily_quota"`
+}
+
+func (q *Queries) AdjustCreditQuota(ctx context.Context, arg AdjustCreditQuotaParams) (CreditAccount, error) {
+	row := q.db.QueryRow(ctx, adjustCreditQuota, arg.UserID, arg.DailyQuota)
+	var i CreditAccount
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.DailyQuota,
+		&i.CurrentBalance,
+		&i.ResetTimezone,
+		&i.LastResetOn,
+		&i.Status,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const countProviderConfigs = `-- name: CountProviderConfigs :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'enabled')::int AS enabled
+FROM provider_configs
+`
+
+type CountProviderConfigsRow struct {
+	Total   int32 `json:"total"`
+	Enabled int32 `json:"enabled"`
+}
+
+func (q *Queries) CountProviderConfigs(ctx context.Context) (CountProviderConfigsRow, error) {
+	row := q.db.QueryRow(ctx, countProviderConfigs)
+	var i CountProviderConfigsRow
+	err := row.Scan(&i.Total, &i.Enabled)
+	return i, err
+}
+
+const countUsers = `-- name: CountUsers :one
+
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE role = 'admin')::int AS admins,
+       count(*) FILTER (WHERE status = 'active')::int AS active
+FROM users
+`
+
+type CountUsersRow struct {
+	Total  int32 `json:"total"`
+	Admins int32 `json:"admins"`
+	Active int32 `json:"active"`
+}
+
+// ─── Admin: Stats ────────────────────────────────────────────────────────────
+func (q *Queries) CountUsers(ctx context.Context) (CountUsersRow, error) {
+	row := q.db.QueryRow(ctx, countUsers)
+	var i CountUsersRow
+	err := row.Scan(&i.Total, &i.Admins, &i.Active)
+	return i, err
+}
+
 const createCreditAccount = `-- name: CreateCreditAccount :one
 INSERT INTO credit_accounts (user_id, daily_quota, current_balance)
 VALUES ($1, $2, $2)
@@ -161,6 +259,15 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const deleteUser = `-- name: DeleteUser :exec
+DELETE FROM users WHERE id = $1
+`
+
+func (q *Queries) DeleteUser(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUser, id)
+	return err
+}
+
 const getCreditAccountByUserID = `-- name: GetCreditAccountByUserID :one
 SELECT id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on, status, updated_at
 FROM credit_accounts
@@ -268,6 +375,156 @@ func (q *Queries) IncrementInvitationUse(ctx context.Context, id pgtype.UUID) er
 	return err
 }
 
+const listInvitations = `-- name: ListInvitations :many
+
+SELECT i.id, i.code_hash, i.role, i.initial_daily_quota, i.max_uses, i.used_count,
+       i.expires_at, i.created_by, i.note, i.created_at, i.revoked_at,
+       u.name AS creator_name
+FROM invitations i
+LEFT JOIN users u ON u.id = i.created_by
+ORDER BY i.created_at DESC
+`
+
+type ListInvitationsRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	CodeHash          string             `json:"code_hash"`
+	Role              string             `json:"role"`
+	InitialDailyQuota int32              `json:"initial_daily_quota"`
+	MaxUses           int32              `json:"max_uses"`
+	UsedCount         int32              `json:"used_count"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	CreatedBy         pgtype.UUID        `json:"created_by"`
+	Note              string             `json:"note"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	RevokedAt         pgtype.Timestamptz `json:"revoked_at"`
+	CreatorName       pgtype.Text        `json:"creator_name"`
+}
+
+// ─── Admin: Invitations ──────────────────────────────────────────────────────
+func (q *Queries) ListInvitations(ctx context.Context) ([]ListInvitationsRow, error) {
+	rows, err := q.db.Query(ctx, listInvitations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInvitationsRow{}
+	for rows.Next() {
+		var i ListInvitationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CodeHash,
+			&i.Role,
+			&i.InitialDailyQuota,
+			&i.MaxUses,
+			&i.UsedCount,
+			&i.ExpiresAt,
+			&i.CreatedBy,
+			&i.Note,
+			&i.CreatedAt,
+			&i.RevokedAt,
+			&i.CreatorName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsers = `-- name: ListUsers :many
+
+SELECT u.id, u.email, u.name, u.role, u.status, u.last_login_at, u.created_at,
+       COALESCE(ca.daily_quota, 0)::int AS daily_quota,
+       COALESCE(ca.current_balance, 0)::int AS current_balance
+FROM users u
+LEFT JOIN credit_accounts ca ON ca.user_id = u.id
+ORDER BY u.created_at DESC
+`
+
+type ListUsersRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	Email          string             `json:"email"`
+	Name           string             `json:"name"`
+	Role           string             `json:"role"`
+	Status         string             `json:"status"`
+	LastLoginAt    pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	DailyQuota     int32              `json:"daily_quota"`
+	CurrentBalance int32              `json:"current_balance"`
+}
+
+// ─── Admin: Users ────────────────────────────────────────────────────────────
+func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
+	rows, err := q.db.Query(ctx, listUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsersRow{}
+	for rows.Next() {
+		var i ListUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Name,
+			&i.Role,
+			&i.Status,
+			&i.LastLoginAt,
+			&i.CreatedAt,
+			&i.DailyQuota,
+			&i.CurrentBalance,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeInvitation = `-- name: RevokeInvitation :one
+UPDATE invitations SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
+RETURNING id, code_hash, role, initial_daily_quota, max_uses, used_count, expires_at, created_by, note, created_at, revoked_at
+`
+
+func (q *Queries) RevokeInvitation(ctx context.Context, id pgtype.UUID) (Invitation, error) {
+	row := q.db.QueryRow(ctx, revokeInvitation, id)
+	var i Invitation
+	err := row.Scan(
+		&i.ID,
+		&i.CodeHash,
+		&i.Role,
+		&i.InitialDailyQuota,
+		&i.MaxUses,
+		&i.UsedCount,
+		&i.ExpiresAt,
+		&i.CreatedBy,
+		&i.Note,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const sumCreditsConsumedToday = `-- name: SumCreditsConsumedToday :one
+SELECT COALESCE(SUM(ABS(amount)), 0)::int AS total
+FROM credit_ledger_entries
+WHERE type IN ('charge', 'reserve')
+  AND created_at >= CURRENT_DATE
+`
+
+func (q *Queries) SumCreditsConsumedToday(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, sumCreditsConsumedToday)
+	var total int32
+	err := row.Scan(&total)
+	return total, err
+}
+
 const updateUserLastLogin = `-- name: UpdateUserLastLogin :exec
 UPDATE users
 SET last_login_at = now(), updated_at = now()
@@ -277,4 +534,78 @@ WHERE id = $1
 func (q *Queries) UpdateUserLastLogin(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, updateUserLastLogin, id)
 	return err
+}
+
+const updateUserRole = `-- name: UpdateUserRole :one
+UPDATE users SET role = $2, updated_at = now() WHERE id = $1
+RETURNING id, email, name, role, status, last_login_at, created_at, updated_at
+`
+
+type UpdateUserRoleParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Role string      `json:"role"`
+}
+
+type UpdateUserRoleRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Email       string             `json:"email"`
+	Name        string             `json:"name"`
+	Role        string             `json:"role"`
+	Status      string             `json:"status"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) (UpdateUserRoleRow, error) {
+	row := q.db.QueryRow(ctx, updateUserRole, arg.ID, arg.Role)
+	var i UpdateUserRoleRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.Role,
+		&i.Status,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateUserStatus = `-- name: UpdateUserStatus :one
+UPDATE users SET status = $2, updated_at = now() WHERE id = $1
+RETURNING id, email, name, role, status, last_login_at, created_at, updated_at
+`
+
+type UpdateUserStatusParams struct {
+	ID     pgtype.UUID `json:"id"`
+	Status string      `json:"status"`
+}
+
+type UpdateUserStatusRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Email       string             `json:"email"`
+	Name        string             `json:"name"`
+	Role        string             `json:"role"`
+	Status      string             `json:"status"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) (UpdateUserStatusRow, error) {
+	row := q.db.QueryRow(ctx, updateUserStatus, arg.ID, arg.Status)
+	var i UpdateUserStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.Role,
+		&i.Status,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
