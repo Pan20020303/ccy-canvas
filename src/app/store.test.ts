@@ -193,16 +193,114 @@ describe("workspace control bar state", () => {
     expect((first?.data as Record<string, unknown>)?.generationParams).toMatchObject({ durationSeconds: 10 });
   });
 
-  it("does not call providers directly while backend generation jobs are pending", async () => {
+  it("sends generation requests through the backend app api instead of calling vendors directly", async () => {
     const { useStore } = await loadStore();
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        error: {
+          code: "backend_generation_error",
+          message: "backend generation unavailable",
+        },
+        request_id: "req-backend-error",
+      }),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await useStore.getState().runNode("2", { prompt: "test", model: "gpt-image-2" });
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/app/generate");
     const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
     expect((imageNode?.data as Record<string, unknown>)?.status).toBe("error");
-    expect((imageNode?.data as Record<string, unknown>)?.error).toContain("backend generation");
+    expect((imageNode?.data as Record<string, unknown>)?.error).toContain("backend generation unavailable");
+  });
+
+  it("includes upstream reference images in image generation payloads", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.png" },
+        request_id: "req-image-ref",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "ref-image-1",
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference.png" },
+    } as never);
+    useStore.getState().onConnect({
+      source: "ref-image-1",
+      target: "2",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    await useStore.getState().runNode("2", { prompt: "use the reference", model: "gpt-image-2" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain("\"reference_images\":[\"https://example.com/reference.png\"]");
+  });
+
+  it("includes upstream reference images and videos in video generation payloads", async () => {
+    const { useStore } = await loadStore();
+    const { setReferencePayloadValue } = await import("./reference-media");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.mp4" },
+        request_id: "req-video-ref",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "video-gen-1",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "ref-image-2",
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference-2.png" },
+    } as never);
+    useStore.getState().addNode({
+      id: "ref-video-1",
+      type: "referenceVideoNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference.mp4" },
+    } as never);
+    useStore.getState().onConnect({
+      source: "ref-image-2",
+      target: "video-gen-1",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    useStore.getState().onConnect({
+      source: "ref-video-1",
+      target: "video-gen-1",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+    setReferencePayloadValue("ref-image-2", "data:image/png;base64,from-drop");
+    setReferencePayloadValue("ref-video-1", "data:video/mp4;base64,from-drop");
+
+    await useStore.getState().runNode("video-gen-1", { prompt: "animate this", model: "sora-v3-fast" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain("\"reference_images\":[\"data:image/png;base64,from-drop\"]");
+    expect(String(init.body)).toContain("\"reference_video\":\"data:video/mp4;base64,from-drop\"");
+    expect(String(init.body)).not.toContain("https://example.com/reference-2.png");
+    expect(String(init.body)).not.toContain("https://example.com/reference.mp4");
   });
 });

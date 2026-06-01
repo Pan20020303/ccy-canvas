@@ -769,6 +769,9 @@ type generateInput struct {
 		Resolution  string `json:"resolution,omitempty" doc:"Output resolution (image: 1k/2k/4k, video: 480p/720p)"`
 		Duration    int    `json:"duration,omitempty" doc:"Video duration in seconds"`
 		AspectRatio string `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
+		ReferenceImages []string `json:"reference_images,omitempty" doc:"Reference image URLs"`
+		ReferenceVideo  string   `json:"reference_video,omitempty" doc:"Single reference video URL"`
+		ReferenceVideos []string `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
 	}
 }
 
@@ -788,6 +791,9 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		Resolution:  input.Body.Resolution,
 		Duration:    input.Body.Duration,
 		AspectRatio: input.Body.AspectRatio,
+		ReferenceImages: input.Body.ReferenceImages,
+		ReferenceVideo:  input.Body.ReferenceVideo,
+		ReferenceVideos: input.Body.ReferenceVideos,
 	})
 	if err != nil {
 		return nil, toHTTPError(err)

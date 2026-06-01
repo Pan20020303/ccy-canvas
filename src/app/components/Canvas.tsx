@@ -23,6 +23,12 @@ import {
 } from 'lucide-react';
 
 import { useStore } from '../store';
+import {
+  getReferenceNodeTypeFromMimeType,
+  readFileAsDataUrl,
+  resolveBackendAssetUrl,
+  setReferencePayloadValue,
+} from '../reference-media';
 import { nodeTypes } from './nodes/CustomNodes';
 import { t } from '../i18n';
 
@@ -69,6 +75,7 @@ const InnerCanvas = () => {
   // --- cursor state ---
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
+  const [dropMessage, setDropMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -190,6 +197,7 @@ const InnerCanvas = () => {
 
   const onDrop = useCallback(async (event: React.DragEvent) => {
     event.preventDefault();
+    setDropMessage(null);
     const files = Array.from(event.dataTransfer.files);
     if (!files.length || !wrapperRef.current) return;
 
@@ -197,34 +205,47 @@ const InnerCanvas = () => {
     let offsetY = 0;
 
     for (const file of files) {
-      const isImage = file.type.startsWith('image/');
-      const isVideo = file.type.startsWith('video/');
-      if (!isImage && !isVideo) continue;
+      const nodeType = getReferenceNodeTypeFromMimeType(file?.type);
+      if (!nodeType) continue;
 
       // Upload to backend, get a stable URL.
       const form = new FormData();
       form.append('file', file);
       try {
+        const referenceValuePromise = readFileAsDataUrl(file);
         const resp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
-        if (!resp.ok) continue;
+        if (!resp.ok) {
+          const bodyText = await resp.text();
+          setDropMessage(`Upload failed (${resp.status}): ${bodyText || file.name}`);
+          continue;
+        }
         const json = await resp.json();
-        const url = json?.data?.url as string;
+        const rawUrl = json?.data?.url as string;
+        if (!rawUrl) {
+          setDropMessage(`Upload response missing file url: ${file.name}`);
+          continue;
+        }
+        const url = resolveBackendAssetUrl(rawUrl, import.meta.env.VITE_API_BASE_URL ?? '');
         if (!url) continue;
 
         const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const pos = snapToGrid
           ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
           : { x: flowPos.x, y: flowPos.y + offsetY };
+        const referenceValue = await referenceValuePromise;
 
         addNode({
           id,
-          type: isImage ? 'imageNode' : 'videoNode',
+          type: nodeType,
           position: pos,
-          data: { url, status: 'done' },
+          data: { url, status: 'done', sourceName: file.name },
         });
+        if (referenceValue) {
+          setReferencePayloadValue(id, referenceValue);
+        }
         offsetY += 320;
-      } catch {
-        // Skip failed uploads silently.
+      } catch (error) {
+        setDropMessage(error instanceof Error ? error.message : `Upload failed: ${file.name}`);
       }
     }
   }, [addNode, screenToFlowPosition, snapToGrid]);
@@ -335,6 +356,11 @@ const InnerCanvas = () => {
       ) : null}
 
       <div className="absolute bottom-6 left-6 z-40 flex flex-col gap-3">
+        {dropMessage ? (
+          <div className="max-w-[320px] rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-xs text-rose-200 shadow-2xl backdrop-blur-xl">
+            {dropMessage}
+          </div>
+        ) : null}
         <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/45 px-3 py-2 shadow-2xl backdrop-blur-xl">
           <ControlButton
             active={showMiniMap}

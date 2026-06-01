@@ -96,13 +96,10 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 		// Return URL path (served as static files).
 		url := fmt.Sprintf("/uploads/%s/%s", dateDir, filename)
 
-		httpx.WriteJSON(w, r, http.StatusOK, map[string]interface{}{
-			"data": map[string]string{
-				"url":          url,
-				"filename":     header.Filename,
-				"content_type": contentType,
-			},
-			"request_id": httpx.RequestIDFrom(r.Context()),
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{
+			"url":          url,
+			"filename":     header.Filename,
+			"content_type": contentType,
 		})
 	})
 }

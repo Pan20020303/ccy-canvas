@@ -13,6 +13,10 @@ export default defineConfig({
         target: apiBaseUrl,
         changeOrigin: true,
       },
+      "/uploads": {
+        target: apiBaseUrl,
+        changeOrigin: true,
+      },
     },
   },
 });

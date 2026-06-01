@@ -131,6 +131,9 @@ export type GeneratePayload = {
   resolution?: string;   // image: "1k"/"2k"/"4k", video: "480p"/"720p"
   duration?: number;     // video duration in seconds
   aspect_ratio?: string; // video aspect ratio: "16:9", "9:16", etc.
+  reference_images?: string[];
+  reference_video?: string;
+  reference_videos?: string[];
 };
 
 export type GenerateResult = {

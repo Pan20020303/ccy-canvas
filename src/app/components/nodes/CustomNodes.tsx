@@ -852,6 +852,82 @@ export const VideoNode = ({ id, data, selected }: any) => {
   );
 };
 
+export const ReferenceImageNode = ({ data, selected }: any) => {
+  const language = useStore((state) => state.language);
+  const [preview, setPreview] = useState(false);
+  const aspectClass = getAspectRatioClass(undefined, "aspect-video");
+
+  return (
+    <BaseNode
+      icon={ImageIcon}
+      tone="neutral"
+      title={language === "zh" ? "参考图片" : "Reference Image"}
+      selected={selected}
+    >
+      <div
+        className={clsx(
+          "relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag",
+          NODE_TONE_STYLES.neutral.surface,
+          aspectClass,
+        )}
+        onDoubleClick={() => data.url && setPreview(true)}
+      >
+        {data.url ? (
+          <img src={data.url} alt={data.sourceName || ""} className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <ImageIcon className="h-6 w-6 text-sky-100/40" />
+          </div>
+        )}
+      </div>
+      {data.sourceName ? (
+        <div className="px-2 pt-2 text-[11px] text-neutral-500 truncate" title={data.sourceName}>
+          {data.sourceName}
+        </div>
+      ) : null}
+      {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+    </BaseNode>
+  );
+};
+
+export const ReferenceVideoNode = ({ data, selected }: any) => {
+  const language = useStore((state) => state.language);
+  const [preview, setPreview] = useState(false);
+  const aspectClass = getAspectRatioClass(undefined, "aspect-video");
+
+  return (
+    <BaseNode
+      icon={Video}
+      tone="neutral"
+      title={language === "zh" ? "参考视频" : "Reference Video"}
+      selected={selected}
+    >
+      <div
+        className={clsx(
+          "relative overflow-hidden rounded-[20px] border cursor-zoom-in nodrag",
+          NODE_TONE_STYLES.neutral.surface,
+          aspectClass,
+        )}
+        onDoubleClick={() => data.url && setPreview(true)}
+      >
+        {data.url ? (
+          <video src={data.url} className="absolute inset-0 h-full w-full object-cover" muted />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center">
+            <Video className="h-6 w-6 text-sky-100/40" />
+          </div>
+        )}
+      </div>
+      {data.sourceName ? (
+        <div className="px-2 pt-2 text-[11px] text-neutral-500 truncate" title={data.sourceName}>
+          {data.sourceName}
+        </div>
+      ) : null}
+      {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
+    </BaseNode>
+  );
+};
+
 export const AudioNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
   return (
@@ -910,4 +986,6 @@ export const nodeTypes = {
   videoNode: VideoNode,
   audioNode: AudioNode,
   panoramaNode: PanoramaNode,
+  referenceImageNode: ReferenceImageNode,
+  referenceVideoNode: ReferenceVideoNode,
 };

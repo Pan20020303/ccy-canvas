@@ -18,6 +18,7 @@ import type { AppProviderConfig } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas } from './api/projects';
+import { clearReferencePayloadValue, getReferencePayloadValue } from './reference-media';
 
 type Language = 'en' | 'zh';
 
@@ -98,6 +99,11 @@ export type NodeGenerationParams = {
   resolution?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+};
+
+type UpstreamReferenceMedia = {
+  imageUrls: string[];
+  videoUrls: string[];
 };
 
 type AppState = {
@@ -343,6 +349,39 @@ export const appStorage = {
   removeItem: (name: string) => localStorage.removeItem(name),
 };
 
+function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeId: string): UpstreamReferenceMedia {
+  const upstreamIds = new Set(
+    edges
+      .filter((edge) => edge.target === targetNodeId)
+      .map((edge) => edge.source),
+  );
+
+  const imageUrls: string[] = [];
+  const videoUrls: string[] = [];
+
+  for (const node of nodes) {
+    if (!upstreamIds.has(node.id)) {
+      continue;
+    }
+
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    const url = getReferencePayloadValue(node.id, data);
+    if (!url) {
+      continue;
+    }
+
+    if (node.type === 'referenceImageNode') {
+      imageUrls.push(url);
+    }
+
+    if (node.type === 'referenceVideoNode') {
+      videoUrls.push(url);
+    }
+  }
+
+  return { imageUrls, videoUrls };
+}
+
 export const useStore = create<AppState>()(persist((set, get) => ({
   language: 'zh',
   toggleLanguage: () => set((state) => ({ language: state.language === 'en' ? 'zh' : 'en' })),
@@ -356,6 +395,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   onNodesChange: (changes: NodeChange[]) => {
     set((state) => {
+      for (const change of changes) {
+        if (change.type === 'remove') {
+          clearReferencePayloadValue(change.id);
+        }
+      }
       const nodes = applyNodeChanges(changes, state.nodes);
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
       return {
@@ -704,6 +748,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     // Video-specific: duration from genParams.
     const durationSeconds = genParams?.durationSeconds ?? undefined;
+    const referenceMedia = collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
 
     try {
       const result = await apiGenerate({
@@ -714,6 +759,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         resolution,
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
+        reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,
+        reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
+        reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
       });
 
       set((snapshot) => ({

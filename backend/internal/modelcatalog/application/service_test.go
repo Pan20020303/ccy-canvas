@@ -78,6 +78,30 @@ func (r *fakeRepository) SetModelStatus(_ context.Context, id, status string) (*
 	return &domain.ModelDefinition{ID: id, Status: domain.ModelStatus(status)}, nil
 }
 
+func (r *fakeRepository) ListProviderConfigs(context.Context) ([]domain.ProviderConfig, error) {
+	return nil, nil
+}
+
+func (r *fakeRepository) GetProviderConfigByID(context.Context, string) (*domain.ProviderConfig, error) {
+	return nil, nil
+}
+
+func (r *fakeRepository) CreateProviderConfig(context.Context, domain.ProviderConfig) (*domain.ProviderConfig, error) {
+	panic("not used")
+}
+
+func (r *fakeRepository) UpdateProviderConfig(context.Context, domain.ProviderConfig) (*domain.ProviderConfig, error) {
+	panic("not used")
+}
+
+func (r *fakeRepository) DeleteProviderConfig(context.Context, string) error {
+	panic("not used")
+}
+
+func (r *fakeRepository) ListEnabledProviderConfigs(context.Context) ([]domain.AppProviderConfig, error) {
+	return nil, nil
+}
+
 func TestSyncModelsCountsOnlyNewDrafts(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

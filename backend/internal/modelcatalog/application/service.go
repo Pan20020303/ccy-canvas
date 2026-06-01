@@ -431,6 +431,9 @@ type GenerateRequest struct {
 	Resolution  string // image: "1k"/"2k"/"4k"; video: "480p"/"720p"
 	Duration    int    // video duration in seconds
 	AspectRatio string // video aspect ratio: "16:9", "9:16", etc.
+	ReferenceImages []string
+	ReferenceVideo  string
+	ReferenceVideos []string
 }
 
 // GenerateResult carries the generation result.
@@ -508,6 +511,9 @@ func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req
 		"n":          1,
 		"size":       size,
 		"resolution": resolution,
+	}
+	if len(req.ReferenceImages) > 0 {
+		body["reference_images"] = req.ReferenceImages
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -803,6 +809,15 @@ func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req
 		"aspect_ratio": aspectRatio,
 		"resolution":   resolution,
 		"duration":     duration,
+	}
+	if len(req.ReferenceImages) > 0 {
+		body["reference_images"] = req.ReferenceImages
+	}
+	if req.ReferenceVideo != "" {
+		body["reference_video"] = req.ReferenceVideo
+	}
+	if len(req.ReferenceVideos) > 0 {
+		body["reference_videos"] = req.ReferenceVideos
 	}
 	bodyJSON, _ := json.Marshal(body)
 
