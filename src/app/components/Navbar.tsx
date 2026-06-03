@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { History, Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
+import { Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
 
 import { useAuth } from "../auth/AuthProvider";
 import { t } from "../i18n";
@@ -81,7 +81,6 @@ export const Navbar = () => {
                     <div className="text-[11px] text-neutral-500">{user.email}</div>
                   </div>
                   <MenuItem icon={UserIcon} label={dict.profile} onClick={() => { setMenuOpen(false); setProfileOpen(true); }} />
-                  <MenuItem icon={History} label={dict.history} onClick={() => { setMenuOpen(false); setProfileOpen(true); }} />
                   <MenuItem icon={SettingsIcon} label={language === "zh" ? "\u8bbe\u7f6e" : "Settings"} onClick={() => { setMenuOpen(false); setSettingsOpen(true); }} />
                   <ThemeToggleRow theme={theme} setTheme={setTheme} language={language} />
                   {user.role === "admin" ? (

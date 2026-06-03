@@ -48,6 +48,17 @@ html.theme-light .bg-\[\#181818\] {
   background-color: #ffffff !important;
 }
 
+/* History assets + Settings modal surfaces */
+html.theme-light .bg-\[\#262626\]\/96,
+html.theme-light .bg-\[\#0c0e11\] {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#1f1f1f\],
+html.theme-light .bg-\[\#111\] {
+  background-color: #f8f9fb !important;
+}
+
 /* ─── Translucent overlays (navbar, toolbars, modal scrim) ─────────────── */
 html.theme-light .bg-black\/40,
 html.theme-light .bg-black\/45,
@@ -65,12 +76,16 @@ html.theme-light .bg-black\/70,
 html.theme-light .bg-black\/80,
 html.theme-light .bg-black\/85,
 html.theme-light .bg-black\/90 {
-  background-color: rgba(28, 31, 36, 0.92) !important;
-  /* keep white text on these tooltips for contrast */
+  background-color: rgba(40, 44, 52, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
 }
-html.theme-light .bg-black\/80 .text-white,
-html.theme-light .bg-black\/70 .text-white,
-html.theme-light .bg-black\/60 .text-white {
+/* Force tooltip text to stay white over the dark pill, overriding the earlier
+   global text-white -> dark rule by adding more specific selectors. */
+html.theme-light .bg-black\/60 *,
+html.theme-light .bg-black\/70 *,
+html.theme-light .bg-black\/80 *,
+html.theme-light .bg-black\/85 *,
+html.theme-light .bg-black\/90 * {
   color: #ffffff !important;
 }
 
@@ -256,6 +271,21 @@ html.theme-light .prompt-editor-scroll::-webkit-scrollbar-thumb:hover {
 }
 html.theme-light .prompt-editor-scroll {
   scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+
+/* ─── Light-mode cursors — invert the dark fill to dark-on-light visibility.
+   The original cursors are dark-grey with a green dot which gets eaten by the
+   light background. Swap to: white-filled arrow with dark stroke + green dot. */
+html.theme-light {
+  --cursor-default: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M5 2 L5 24 L11 19 L14 28 L18 26 L14 18 L22 18 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='15' cy='6' r='5.5' fill='%2322c55e' stroke='%23ffffff' stroke-width='1.8'/></svg>") 5 2, default;
+
+  --cursor-pointer: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M11 3 v12 l3-3 l3 7 l3-1 l-3-7 h4 z' fill='%2306b6d4' stroke='%23ffffff' stroke-width='1.4'/></svg>") 8 2, pointer;
+
+  --cursor-text: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2020/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M9 4 h6 M9 20 h6 M12 4 v16' stroke='%231c1f24' stroke-width='1.8' fill='none'/></svg>") 12 12, text;
+
+  --cursor-grab: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M12 2 Q12 1 14.5 1 Q17 1 17 2 L17 13 Q19 11 21 13 Q23 11 25 13 Q26 13 26 16 Q26 27 18 27 L11 27 Q5 27 5 21 L5 18 Q5 13 8 13 L8 10 Q8 8 10.5 8 Q13 8 13 10 L13 13 Q13 16 12 16 L12 2 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='%23ffffff' stroke-width='1.8'/></svg>") 14 1, grab;
+
+  --cursor-grabbing: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M8 11 Q8 8 11 8 L20 8 Q23 8 24 10 Q25 10 26 12 L26 18 Q26 25 17 25 Q8 25 7 19 L7 13 Q7 11 8 11 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='%23ffffff' stroke-width='1.8'/></svg>") 13 11, grabbing;
 }
 
 /* Custom cursor skin — dark body + status dot */
