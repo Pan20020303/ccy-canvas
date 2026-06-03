@@ -1,5 +1,5 @@
 import { NavLink } from "react-router";
-import { BarChart3, BookKey, Boxes, Logs, ShieldCheck, Users } from "lucide-react";
+import { BarChart3, BookKey, Boxes, Logs, ShieldCheck, Users, Wrench } from "lucide-react";
 
 import logoUrl from "../../../imports/logo.png";
 
@@ -8,6 +8,7 @@ const items = [
   { to: "/admin/members", label: "成员", icon: Users },
   { to: "/admin/invitations", label: "邀请码", icon: BookKey },
   { to: "/admin", label: "模型配置", icon: Boxes },
+  { to: "/admin/skills", label: "通用技能", icon: Wrench },
   { to: "/admin/logs", label: "日志", icon: Logs },
 ];
 

@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
@@ -17,10 +19,13 @@ import (
 
 // Handler wires Skills + Agents user-facing endpoints.
 type Handler struct {
-	q *sqlc.Queries
+	q        *sqlc.Queries
+	executor *skillsapp.Executor
 }
 
-func NewHandler(q *sqlc.Queries) *Handler { return &Handler{q: q} }
+func NewHandler(q *sqlc.Queries, executor *skillsapp.Executor) *Handler {
+	return &Handler{q: q, executor: executor}
+}
 
 var userSec = []map[string][]string{{httpapi.SecuritySchemeName: {}}}
 
@@ -60,6 +65,14 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSec,
 		DefaultStatus: http.StatusNoContent,
 	}, h.deletePersonalSkill)
+	huma.Register(api, huma.Operation{
+		OperationID: "invoke-skill",
+		Method:      http.MethodPost,
+		Path:        "/api/app/skills/{id}/invoke",
+		Summary:     "Run a skill with the given JSON inputs",
+		Tags:        []string{"App", "Skills"},
+		Security:    userSec,
+	}, h.invokeSkill)
 
 	// User-facing agents.
 	huma.Register(api, huma.Operation{
@@ -263,6 +276,85 @@ func (h *Handler) deletePersonalSkill(ctx context.Context, input *deleteSkillInp
 		return nil, huma.Error500InternalServerError("Failed to delete skill")
 	}
 	return nil, nil
+}
+
+// ─── Skill invocation ────────────────────────────────────────────────────────
+
+type invokeSkillInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		Inputs json.RawMessage `json:"inputs,omitempty"`
+	}
+}
+
+type invokeSkillOutput struct {
+	Body struct {
+		Data struct {
+			Type       string          `json:"type"`
+			Content    string          `json:"content"`
+			Raw        json.RawMessage `json:"raw,omitempty"`
+			RunID      string          `json:"run_id"`
+			DurationMs int32           `json:"duration_ms"`
+		} `json:"data"`
+		RequestID string `json:"request_id"`
+	}
+}
+
+func (h *Handler) invokeSkill(ctx context.Context, input *invokeSkillInput) (*invokeSkillOutput, error) {
+	pgID, err := parseUUID(input.ID)
+	if err != nil {
+		return nil, err
+	}
+	skill, err := h.q.GetSkill(ctx, pgID)
+	if err != nil {
+		return nil, huma.Error404NotFound("Skill not found")
+	}
+	// Anyone can use a global skill; personal skills only by their owner.
+	uid := mustUserID(ctx)
+	if skill.Scope == "personal" {
+		if !skill.OwnerID.Valid || formatUUID(skill.OwnerID) != formatUUID(uid) {
+			return nil, huma.Error403Forbidden("Not allowed to invoke this skill")
+		}
+	}
+
+	// Insert a pending log row up front so the run is tracked even if the
+	// upstream call hangs / panics.
+	rawInputs := input.Body.Inputs
+	if len(rawInputs) == 0 {
+		rawInputs = json.RawMessage("{}")
+	}
+	startedAt := time.Now()
+	runRow, _ := h.q.InsertSkillRun(ctx, sqlc.InsertSkillRunParams{
+		UserID: uid, SkillID: pgID,
+		Inputs: rawInputs, Outputs: []byte("{}"),
+		Status: "pending",
+	})
+
+	result, runErr := h.executor.Invoke(ctx, skill, rawInputs)
+	durationMs := int32(time.Since(startedAt).Milliseconds())
+
+	if runErr != nil {
+		_ = h.q.UpdateSkillRunResult(ctx, sqlc.UpdateSkillRunResultParams{
+			ID: runRow.ID, Outputs: []byte("{}"),
+			Status: "error", ErrorMsg: runErr.Error(), DurationMs: durationMs,
+		})
+		return nil, huma.Error500InternalServerError("Skill execution failed: " + runErr.Error())
+	}
+
+	out := &invokeSkillOutput{}
+	out.Body.Data.Type = result.Type
+	out.Body.Data.Content = result.Content
+	out.Body.Data.Raw = result.Raw
+	out.Body.Data.RunID = formatUUID(runRow.ID)
+	out.Body.Data.DurationMs = durationMs
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+
+	outputsJSON, _ := json.Marshal(map[string]any{"type": result.Type, "content": result.Content})
+	_ = h.q.UpdateSkillRunResult(ctx, sqlc.UpdateSkillRunResultParams{
+		ID: runRow.ID, Outputs: outputsJSON,
+		Status: "success", ErrorMsg: "", DurationMs: durationMs,
+	})
+	return out, nil
 }
 
 // ─── Agent handlers ──────────────────────────────────────────────────────────

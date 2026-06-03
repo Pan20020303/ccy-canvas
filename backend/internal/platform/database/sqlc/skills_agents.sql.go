@@ -304,3 +304,60 @@ func (q *Queries) DeleteAgent(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteAgent, id)
 	return err
 }
+
+// ────────────────────────── SkillRun model ──────────────────────────
+
+type SkillRun struct {
+	ID         pgtype.UUID        `json:"id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	AgentID    pgtype.UUID        `json:"agent_id"`
+	SkillID    pgtype.UUID        `json:"skill_id"`
+	Inputs     []byte             `json:"inputs"`
+	Outputs    []byte             `json:"outputs"`
+	Status     string             `json:"status"`
+	ErrorMsg   string             `json:"error_msg"`
+	DurationMs int32              `json:"duration_ms"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type InsertSkillRunParams struct {
+	UserID     pgtype.UUID `json:"user_id"`
+	AgentID    pgtype.UUID `json:"agent_id"`
+	SkillID    pgtype.UUID `json:"skill_id"`
+	Inputs     []byte      `json:"inputs"`
+	Outputs    []byte      `json:"outputs"`
+	Status     string      `json:"status"`
+	ErrorMsg   string      `json:"error_msg"`
+	DurationMs int32       `json:"duration_ms"`
+}
+
+const insertSkillRun = `-- name: InsertSkillRun :one
+INSERT INTO skill_runs (user_id, agent_id, skill_id, inputs, outputs, status, error_msg, duration_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, user_id, agent_id, skill_id, inputs, outputs, status, error_msg, duration_ms, created_at
+`
+
+func (q *Queries) InsertSkillRun(ctx context.Context, arg InsertSkillRunParams) (SkillRun, error) {
+	row := q.db.QueryRow(ctx, insertSkillRun,
+		arg.UserID, arg.AgentID, arg.SkillID, arg.Inputs, arg.Outputs, arg.Status, arg.ErrorMsg, arg.DurationMs)
+	var i SkillRun
+	err := row.Scan(&i.ID, &i.UserID, &i.AgentID, &i.SkillID, &i.Inputs, &i.Outputs, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt)
+	return i, err
+}
+
+type UpdateSkillRunResultParams struct {
+	ID         pgtype.UUID `json:"id"`
+	Outputs    []byte      `json:"outputs"`
+	Status     string      `json:"status"`
+	ErrorMsg   string      `json:"error_msg"`
+	DurationMs int32       `json:"duration_ms"`
+}
+
+const updateSkillRunResult = `-- name: UpdateSkillRunResult :exec
+UPDATE skill_runs SET outputs = $2, status = $3, error_msg = $4, duration_ms = $5 WHERE id = $1
+`
+
+func (q *Queries) UpdateSkillRunResult(ctx context.Context, arg UpdateSkillRunResultParams) error {
+	_, err := q.db.Exec(ctx, updateSkillRunResult, arg.ID, arg.Outputs, arg.Status, arg.ErrorMsg, arg.DurationMs)
+	return err
+}

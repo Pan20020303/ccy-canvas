@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
-import { X, Keyboard } from 'lucide-react';
+import { X, Keyboard, Wrench, Bot } from 'lucide-react';
 import { useStore, DEFAULT_SHORTCUTS } from '../store';
+import { SkillsSettingsTab } from './settings/SkillsSettingsTab';
+import { AgentsSettingsTab } from './settings/AgentsSettingsTab';
 
 const SECTIONS = [
-  { id: 'shortcuts', icon: Keyboard, zh: '键盘快捷键', en: 'Keyboard shortcuts' },
+  { id: 'skills',    icon: Wrench,   zh: '我的技能',   en: 'My Skills'     },
+  { id: 'agents',    icon: Bot,      zh: '我的智能体', en: 'My Agents'     },
+  { id: 'shortcuts', icon: Keyboard, zh: '键盘快捷键', en: 'Shortcuts'     },
 ];
 
 const ACTION_LABELS: Record<string, { zh: string; en: string }> = {
@@ -76,7 +80,7 @@ const ShortcutKey = ({
 
 export const SettingsModal = () => {
   const { language, isSettingsOpen, setSettingsOpen, shortcuts, setShortcut, resetShortcuts } = useStore();
-  const [section, setSection] = useState('shortcuts');
+  const [section, setSection] = useState('skills');
   const [recording, setRecording] = useState<string | null>(null);
   const zh = language === 'zh';
 
@@ -135,7 +139,11 @@ export const SettingsModal = () => {
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">
-            {section === 'shortcuts' ? (
+            {section === 'skills' ? (
+              <SkillsSettingsTab />
+            ) : section === 'agents' ? (
+              <AgentsSettingsTab />
+            ) : section === 'shortcuts' ? (
               <>
                 <div className="text-sm text-neutral-200 mb-1">{zh ? '预设方案' : 'Preset'}</div>
                 <div className="text-xs text-neutral-500 mb-3">

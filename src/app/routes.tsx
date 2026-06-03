@@ -9,6 +9,7 @@ import { AdminLogsPage } from "./components/admin/AdminLogsPage";
 import { AdminMembersPage } from "./components/admin/AdminMembersPage";
 import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
 import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
+import { AdminSkillsPage } from "./components/admin/AdminSkillsPage";
 import { Canvas } from "./components/Canvas";
 import { LoginPage } from "./components/LoginPage";
 import { Modals } from "./components/Modals";
@@ -123,6 +124,14 @@ export const router = createBrowserRouter([
     Component: () => (
       <ProtectedRoute requireRole="admin">
         <AdminInvitationsPage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/skills",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminSkillsPage />
       </ProtectedRoute>
     ),
   },

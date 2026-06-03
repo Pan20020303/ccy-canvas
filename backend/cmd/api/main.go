@@ -12,6 +12,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 	skillshttp "ccy-canvas/backend/internal/skills/interfaces"
 	workspaceinfra "ccy-canvas/backend/internal/workspace/infrastructure"
 	workspacehttp "ccy-canvas/backend/internal/workspace/interfaces"
@@ -108,8 +109,9 @@ func main() {
 	workspaceHandler := workspacehttp.NewHandler(workspaceRepo)
 	workspaceHandler.RegisterRoutes(api)
 
-	// Skills + Agents routes (user CRUD + admin CRUD).
-	skillsHandler := skillshttp.NewHandler(queries)
+	// Skills + Agents routes (user CRUD + invoke + admin CRUD).
+	skillsExecutor := skillsapp.NewExecutor(catalogService)
+	skillsHandler := skillshttp.NewHandler(queries, skillsExecutor)
 	skillsHandler.RegisterRoutes(api)
 	skillsAdminHandler := skillshttp.NewAdminHandler(queries)
 	skillsAdminHandler.RegisterRoutes(api)
