@@ -32,11 +32,26 @@ Open <http://localhost:5173>.
 
 See [DEPLOY.md](./DEPLOY.md). Quick recipe:
 
+**Linux / macOS:**
 ```bash
 bash scripts/install.sh   # one-shot install / upgrade
 vim .env                  # set PUBLIC_API_BASE to your LAN IP
 bash scripts/build-web.sh
 bash scripts/start.sh
+```
+
+**Windows (PowerShell as Administrator):**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\install.ps1
+notepad .env              # set PUBLIC_API_BASE
+powershell -ExecutionPolicy Bypass -File scripts\windows\build-web.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\start.ps1
+```
+
+For production-grade Windows service (auto-restart, log rotation):
+```powershell
+choco install nssm
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-service-nssm.ps1
 ```
 
 ## Project Layout
