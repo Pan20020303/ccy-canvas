@@ -20,6 +20,7 @@ import (
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -516,6 +517,16 @@ func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 }
 
 func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	// Image-to-image (ref + prompt) requires the multipart /images/edits endpoint —
+	// the standard /images/generations is text-only and silently ignores reference
+	// fields, which previously produced visually unrelated outputs.
+	if len(req.ReferenceImages) > 0 {
+		return s.generateImageEdit(ctx, baseURL, apiKey, req)
+	}
+	return s.generateImageTextOnly(ctx, baseURL, apiKey, req)
+}
+
+func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	size := req.Size
 	if size == "" {
 		size = "1:1"
@@ -531,9 +542,6 @@ func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req
 		"n":          1,
 		"size":       size,
 		"resolution": resolution,
-	}
-	if len(req.ReferenceImages) > 0 {
-		body["reference_images"] = req.ReferenceImages
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -593,6 +601,148 @@ func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req
 	}
 
 	return &GenerateResult{Type: "url", Content: imageURL}, nil
+}
+
+// generateImageEdit calls /v1/images/edits with multipart/form-data so reference
+// images actually influence the result. Used whenever the request has at least
+// one reference image.
+func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	// Decode and re-encode each reference image as JPEG, downscaled if needed,
+	// using the same pipeline as the text-only flow so we send a sane payload.
+	type refImage struct {
+		name  string
+		bytes []byte
+	}
+	refs := make([]refImage, 0, len(req.ReferenceImages))
+	for i, raw := range req.ReferenceImages {
+		dataURL, err := localPathToDataURL(raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to load reference image #%d", i+1), err)
+		}
+		// localPathToDataURL returns data: for /uploads/* paths; for http(s)/remote
+		// URLs we fall back to fetching them ourselves so the upstream relay
+		// doesn't need network access back to us.
+		var b []byte
+		if strings.HasPrefix(dataURL, "data:") {
+			// data:image/jpeg;base64,XXXX
+			if idx := strings.Index(dataURL, "base64,"); idx > 0 {
+				decoded, derr := base64.StdEncoding.DecodeString(dataURL[idx+len("base64,"):])
+				if derr != nil {
+					return nil, apperror.Wrap(apperror.CodeInternal, "Failed to decode reference image", derr)
+				}
+				b = decoded
+			}
+		} else if strings.HasPrefix(dataURL, "http://") || strings.HasPrefix(dataURL, "https://") {
+			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			fr, ferr := http.NewRequestWithContext(fetchCtx, http.MethodGet, dataURL, nil)
+			if ferr != nil { cancel(); return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build fetch", ferr) }
+			fetchResp, ferr := (&http.Client{Timeout: 30 * time.Second}).Do(fr)
+			if ferr != nil { cancel(); return nil, apperror.Wrap(apperror.CodeInternal, "Failed to fetch reference URL", ferr) }
+			b, ferr = io.ReadAll(io.LimitReader(fetchResp.Body, 8*1024*1024))
+			fetchResp.Body.Close()
+			cancel()
+			if ferr != nil { return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read reference", ferr) }
+		}
+		if len(b) == 0 {
+			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Reference image #%d resolved to empty bytes", i+1))
+		}
+		refs = append(refs, refImage{name: fmt.Sprintf("ref-%d.jpg", i+1), bytes: b})
+	}
+
+	// Build multipart body.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for _, r := range refs {
+		// gpt-image-1 accepts image[] for multi-image edits.
+		part, err := mw.CreateFormFile("image[]", r.name)
+		if err != nil { return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build multipart", err) }
+		if _, err := part.Write(r.bytes); err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to write multipart image", err)
+		}
+	}
+	_ = mw.WriteField("model",  req.Model)
+	_ = mw.WriteField("prompt", req.Prompt)
+	_ = mw.WriteField("n",      "1")
+	if size := mapAspectRatioToOpenAISize(req.Size); size != "" {
+		_ = mw.WriteField("size", size)
+	}
+	_ = mw.Close()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/edits", &body)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build edit request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+
+	// Reuse the same flexible response parser as the text-only path.
+	return parseImageGenerationResponse(respBody)
+}
+
+// mapAspectRatioToOpenAISize converts our internal aspect-ratio + resolution
+// notation into a size string the OpenAI image edit endpoint accepts.
+// Returns "" if the input doesn't look like an aspect ratio (the caller can
+// then pass through whatever the relay supports).
+func mapAspectRatioToOpenAISize(size string) string {
+	switch strings.ToLower(strings.TrimSpace(size)) {
+	case "", "auto":
+		return "auto"
+	case "1:1":
+		return "1024x1024"
+	case "16:9", "4:3", "3:2", "5:4", "21:9", "2:1":
+		return "1536x1024"
+	case "9:16", "3:4", "2:3", "4:5", "1:2", "9:21":
+		return "1024x1536"
+	}
+	// Already pixel-sized (e.g. "1024x1024") or vendor-specific — pass through.
+	if strings.Contains(size, "x") {
+		return size
+	}
+	return ""
+}
+
+// parseImageGenerationResponse extracts a usable URL or b64_json from an
+// OpenAI-style image response. Shared by text-only and edit code paths.
+func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
+	// Async task envelope (some relays return {task_id: ...}).
+	var taskCheck map[string]interface{}
+	_ = json.Unmarshal(respBody, &taskCheck)
+	if id, ok := taskCheck["task_id"].(string); ok && id != "" {
+		return nil, apperror.New(apperror.CodeInternal, "Async task path not supported in edit mode yet; got task_id="+id)
+	}
+
+	var result struct {
+		Data []struct {
+			URL     string `json:"url"`
+			B64JSON string `json:"b64_json"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil || len(result.Data) == 0 {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
+	}
+	if result.Data[0].URL != "" {
+		return &GenerateResult{Type: "url", Content: result.Data[0].URL}, nil
+	}
+	if result.Data[0].B64JSON != "" {
+		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + result.Data[0].B64JSON}, nil
+	}
+	return nil, apperror.New(apperror.CodeInternal, "Provider returned an image entry with neither url nor b64_json")
 }
 
 // pollImageTask polls an async image generation task until it completes or times out.
