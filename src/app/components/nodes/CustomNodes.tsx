@@ -1007,6 +1007,18 @@ function NodeErrorBanner({ error }: { error: string }) {
       if (e.includes('prompt')) return language === 'zh' ? '提示词不能为空，请填写描述后重试。' : 'Prompt is required.';
       return language === 'zh' ? '请求参数有误，请检查后重试。' : 'Invalid request parameters.';
     }
+    // Upstream HTTP errors surfaced by readProviderError (e.g. "Provider HTTP 401: ...")
+    if (e.includes('provider http')) {
+      const m = error.match(/Provider HTTP (\d{3})/i);
+      const status = m ? Number(m[1]) : 0;
+      if (status === 401 || status === 403) return language === 'zh' ? '上游模型授权失败（401/403），请联系管理员检查 API key。' : 'Upstream auth failed — contact admin.';
+      if (status === 402)                   return language === 'zh' ? '上游账户余额不足（402），请联系管理员充值。' : 'Upstream credit insufficient.';
+      if (status === 404)                   return language === 'zh' ? '上游模型不存在（404），请检查模型名称是否正确。' : 'Upstream model not found.';
+      if (status === 429)                   return language === 'zh' ? '上游请求过于频繁（429），请稍后重试。' : 'Upstream rate limited.';
+      if (status === 408 || e.includes('timeout')) return language === 'zh' ? '上游请求超时，请稍后重试。' : 'Upstream timeout.';
+      if (status >= 500)                    return language === 'zh' ? '上游模型服务异常，请稍后重试。' : 'Upstream server error.';
+      return language === 'zh' ? '上游模型返回错误，详情见展开。' : 'Upstream returned an error.';
+    }
     return language === 'zh' ? '生成失败，请稍后重试。' : 'Generation failed — please retry.';
   })();
 
