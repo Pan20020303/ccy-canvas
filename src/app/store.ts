@@ -192,6 +192,7 @@ type AppState = {
   ungroupNodes: (groupId: string) => void;
   setGroupMembers: (groupId: string, nodeIds: string[]) => void;
   renameGroup: (groupId: string, name: string) => void;
+  moveGroup: (groupId: string, delta: { x: number; y: number }, options?: { captureUndo?: boolean }) => void;
   savedAssets: SavedAsset[];
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
@@ -1094,6 +1095,50 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
     return {
       groups,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  moveGroup: (groupId, delta, options) => set((state) => {
+    if (!delta.x && !delta.y) {
+      return {};
+    }
+
+    const target = state.groups.find((group) => group.id === groupId);
+    if (!target) {
+      return {};
+    }
+
+    const memberIds = new Set(target.nodeIds);
+    const nodes = state.nodes.map((node) => (
+      memberIds.has(node.id)
+        ? {
+            ...node,
+            position: {
+              x: node.position.x + delta.x,
+              y: node.position.y + delta.y,
+            },
+          }
+        : node
+    ));
+    const groups = state.groups.map((group) => (
+      group.id !== groupId
+        ? group
+        : {
+            ...group,
+            position: {
+              x: (group.position?.x ?? 0) + delta.x,
+              y: (group.position?.y ?? 0) + delta.y,
+            },
+          }
+    ));
+    const undoStack = options?.captureUndo ? pushUndoState(state) : state.undoStack;
+    const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
+
+    return {
+      nodes,
+      groups,
+      undoStack,
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };

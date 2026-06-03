@@ -41,6 +41,7 @@ import {
   getTextNodeMode,
   splitFilenameExtension,
 } from '../../text-node-modes';
+import { getGenerationProgressPercent } from './loading-progress';
 
 // ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
 
@@ -81,6 +82,77 @@ function NodeLoadingTimer() {
     <div className="pointer-events-none absolute -top-5 right-0 flex items-center gap-1 rounded bg-black/60 px-1.5 py-[2px] text-[9px] font-mono leading-none text-cyan-300/80 backdrop-blur-sm">
       <div className="h-1 w-1 animate-pulse rounded-full bg-cyan-400" />
       {mm}:{ss}
+    </div>
+  );
+}
+
+function useNodeLoadingProgress(nodeId: string, loading: boolean) {
+  const activeRun = useStore((state) => state.activeRun);
+  const [now, setNow] = useState(Date.now());
+  const fallbackStartedAtRef = useRef(Date.now());
+
+  useEffect(() => {
+    if (!loading) {
+      fallbackStartedAtRef.current = Date.now();
+      return;
+    }
+
+    fallbackStartedAtRef.current = Date.now();
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [loading, nodeId]);
+
+  if (!loading) {
+    return null;
+  }
+
+  const startedAt = activeRun?.nodeId === nodeId ? activeRun.startedAt : fallbackStartedAtRef.current;
+  return getGenerationProgressPercent(startedAt, now);
+}
+
+function NodeLoadingCenterBadge({ nodeId }: { nodeId: string }) {
+  const language = useStore((state) => state.language);
+  const progress = useNodeLoadingProgress(nodeId, true);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+      <div className="rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        {language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`}
+      </div>
+    </div>
+  );
+}
+
+function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: string; loading: boolean; hasPreview: boolean }) {
+  const language = useStore((state) => state.language);
+  const cancelNode = useStore((state) => state.cancelNode);
+  const progress = useNodeLoadingProgress(nodeId, loading);
+
+  if (!loading || progress == null) {
+    return null;
+  }
+
+  return (
+    <div
+      className={clsx(
+        'absolute inset-0 z-20 flex items-center justify-center',
+        hasPreview ? 'bg-black/18 backdrop-blur-[10px]' : 'bg-black/12 backdrop-blur-[4px]',
+      )}
+    >
+      <div className="flex items-center gap-3 rounded-2xl border border-white/35 bg-white/78 px-4 py-2 text-sm font-medium text-neutral-900 shadow-[0_16px_44px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+        <span>{language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`}</span>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            cancelNode(nodeId);
+          }}
+          className="rounded-full px-2 py-0.5 text-xs text-neutral-500 transition hover:bg-black/6 hover:text-neutral-800"
+        >
+          {language === 'zh' ? '取消' : 'Cancel'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -970,6 +1042,8 @@ const BaseNode = ({
   selected,
   promptPanel,
   loading,
+  loadingNodeId,
+  loadingOverlay,
   error,
   tone = 'neutral',
 }: {
@@ -982,6 +1056,8 @@ const BaseNode = ({
   selected?: boolean;
   promptPanel?: React.ReactNode;
   loading?: boolean;
+  loadingNodeId?: string;
+  loadingOverlay?: React.ReactNode;
   error?: string;
   tone?: keyof typeof NODE_TONE_STYLES;
 }) => {
@@ -1010,12 +1086,13 @@ const BaseNode = ({
             toneStyles.shell,
             selected ? toneStyles.selected : 'shadow-[0_16px_50px_-32px_rgba(0,0,0,0.9)]',
           )}
-        >
+          >
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
-          {loading ? <NodeLoadingWater /> : null}
+          {loading && !loadingOverlay ? <NodeLoadingWater /> : null}
+          {loading ? (loadingOverlay ?? (loadingNodeId ? <NodeLoadingCenterBadge nodeId={loadingNodeId} /> : null)) : null}
         </div>
-        {loading ? <NodeLoadingTimer /> : null}
+        {loading && !loadingOverlay ? <NodeLoadingTimer /> : null}
 
         <Handle
           type="target"
@@ -1221,6 +1298,7 @@ export const TextNode = ({ id, data, selected }: any) => {
       tone="text"
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
@@ -1268,6 +1346,8 @@ export const ImageNode = ({ id, data, selected }: any) => {
       title={language === 'zh' ? '生成图像' : 'Generate Image'}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
+      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
@@ -1517,6 +1597,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       title={language === 'zh' ? '生成视频' : 'Generate Video'}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
@@ -1663,6 +1744,7 @@ export const AudioNode = ({ id, data, selected }: any) => {
       title={language === 'zh' ? '生成音频' : 'Generate Audio'}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
@@ -1696,6 +1778,8 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
       title={language === 'zh' ? '生成全景' : '360 Environment'}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
+      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
@@ -1716,6 +1800,7 @@ const RenamableTextNode = ({ id, data, selected }: any) => {
       tone="text"
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
@@ -1761,6 +1846,8 @@ const RenamableImageNode = ({ id, data, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
+      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
@@ -1857,6 +1944,7 @@ const RenamableVideoNode = ({ id, data, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
@@ -1894,6 +1982,7 @@ const RenamableAudioNode = ({ id, data, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
@@ -1928,6 +2017,8 @@ const RenamablePanoramaNode = ({ id, data, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
+      loadingNodeId={id}
+      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >

@@ -113,6 +113,38 @@ describe("workspace project state", () => {
     });
   });
 
+  it("moves a whole group together with all member nodes", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addNode({
+      id: "group-image",
+      type: "imageNode",
+      position: { x: 100, y: 100 },
+      width: 200,
+      height: 160,
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "group-text",
+      type: "textNode",
+      position: { x: 360, y: 200 },
+      width: 180,
+      height: 140,
+      data: {},
+    } as never);
+    useStore.getState().createGroup(["group-image", "group-text"]);
+
+    const groupId = useStore.getState().groups.at(-1)?.id;
+    expect(groupId).toBeTruthy();
+
+    useStore.getState().moveGroup(groupId!, { x: 48, y: 24 }, { captureUndo: true });
+
+    const state = useStore.getState();
+    expect(state.groups.at(-1)?.position).toMatchObject({ x: 116, y: 56 });
+    expect(state.nodes.find((node) => node.id === "group-image")?.position).toEqual({ x: 148, y: 124 });
+    expect(state.nodes.find((node) => node.id === "group-text")?.position).toEqual({ x: 408, y: 224 });
+  });
+
   it("undoes the last canvas mutation with ctrl-z semantics", async () => {
     const { useStore } = await loadStore();
 

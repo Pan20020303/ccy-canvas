@@ -248,6 +248,7 @@ const InnerCanvas = () => {
   const removeGroup = useStore((state) => state.removeGroup);
   const ungroupNodes = useStore((state) => state.ungroupNodes);
   const setGroupMembers = useStore((state) => state.setGroupMembers);
+  const moveGroup = useStore((state) => state.moveGroup);
   const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
@@ -258,6 +259,13 @@ const InnerCanvas = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportRef = useRef(viewport);
+  const groupDragRef = useRef<{
+    groupId: string;
+    lastClientX: number;
+    lastClientY: number;
+    didCaptureUndo: boolean;
+  } | null>(null);
 
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
@@ -266,6 +274,10 @@ const InnerCanvas = () => {
   const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [bulkRouting, setBulkRouting] = useState<{ startClient: { x: number; y: number }; currentClient: { x: number; y: number } } | null>(null);
+
+  useEffect(() => {
+    viewportRef.current = viewport;
+  }, [viewport]);
 
   /** Group geometry uses the FIXED bounds saved at creation time —
    *  the container does not auto-resize when members move. Members can drift in/out
@@ -351,6 +363,42 @@ const InnerCanvas = () => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [copySelectedNodes, pasteCopiedNodes, removeGroup, selectedGroupId, undoCanvas]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const drag = groupDragRef.current;
+      if (!drag) {
+        return;
+      }
+
+      const dx = event.clientX - drag.lastClientX;
+      const dy = event.clientY - drag.lastClientY;
+      if (!dx && !dy) {
+        return;
+      }
+
+      drag.lastClientX = event.clientX;
+      drag.lastClientY = event.clientY;
+      const zoom = viewportRef.current.zoom || 1;
+      moveGroup(
+        drag.groupId,
+        { x: dx / zoom, y: dy / zoom },
+        { captureUndo: !drag.didCaptureUndo },
+      );
+      drag.didCaptureUndo = true;
+    };
+
+    const handlePointerUp = () => {
+      groupDragRef.current = null;
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [moveGroup]);
 
   const cursorMode = nodeDragging ? 'canvas-mode-grabbing' : spaceHeld ? 'canvas-mode-grab' : '';
 
@@ -767,10 +815,17 @@ const InnerCanvas = () => {
                 selected ? 'border-cyan-400/40 bg-cyan-400/[0.04]' : 'border-white/8',
               )}
               style={{ left, top, width, height }}
-              onMouseDown={(event) => {
+              onPointerDown={(event) => {
                 if (event.target !== event.currentTarget) return;
+                event.preventDefault();
                 event.stopPropagation();
                 setSelectedGroupId(group.id);
+                groupDragRef.current = {
+                  groupId: group.id,
+                  lastClientX: event.clientX,
+                  lastClientY: event.clientY,
+                  didCaptureUndo: false,
+                };
               }}
             >
               <GroupTitle
