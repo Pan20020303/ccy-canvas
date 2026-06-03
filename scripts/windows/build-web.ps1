@@ -7,14 +7,17 @@ Set-Location $root
 function Log($msg)  { Write-Host "==> $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "!!! $msg" -ForegroundColor Yellow }
 
-# Parse .env for PUBLIC_API_BASE
+# Parse .env for PUBLIC_API_BASE — explicit UTF-8 reader strips BOM.
 $apiBase = ''
 if (Test-Path .env) {
-  Get-Content .env | ForEach-Object {
-    if ($_ -match '^\s*PUBLIC_API_BASE\s*=\s*(.*)\s*$') {
+  $reader = New-Object System.IO.StreamReader((Resolve-Path .env).Path, [System.Text.Encoding]::UTF8, $true)
+  while (-not $reader.EndOfStream) {
+    $line = $reader.ReadLine()
+    if ($line -match '^\s*PUBLIC_API_BASE\s*=\s*(.*)\s*$') {
       $apiBase = $matches[1].Trim().Trim('"').Trim("'")
     }
   }
+  $reader.Close()
 }
 
 if ([string]::IsNullOrWhiteSpace($apiBase)) {

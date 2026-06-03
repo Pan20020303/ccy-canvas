@@ -29,13 +29,17 @@ if (-not (Test-Path $bin)) {
 try { docker start ccy-canvas-postgres 2>$null | Out-Null } catch {}
 
 # Load .env into the child process environment.
+# Use .NET API + explicit UTF-8 reader so BOM bytes never leak into a value.
 $envVars = @{}
 if (Test-Path .env) {
-  Get-Content .env | ForEach-Object {
-    if ($_ -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$') {
+  $reader = New-Object System.IO.StreamReader((Resolve-Path .env).Path, [System.Text.Encoding]::UTF8, $true)
+  while (-not $reader.EndOfStream) {
+    $line = $reader.ReadLine()
+    if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$') {
       $envVars[$matches[1]] = $matches[2].Trim().Trim('"').Trim("'")
     }
   }
+  $reader.Close()
 }
 
 # Use cmd /c with redirection to background-run the EXE and capture logs.

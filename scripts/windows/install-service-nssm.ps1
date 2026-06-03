@@ -37,14 +37,17 @@ nssm set $svc AppRotateOnline 1
 nssm set $svc AppRotateBytes 52428800   # 50 MB rotation
 nssm set $svc Start SERVICE_AUTO_START
 
-# Inject .env into the service environment.
+# Inject .env into the service environment (UTF-8 BOM-safe read).
 if (Test-Path .env) {
   $envLines = @()
-  Get-Content .env | ForEach-Object {
-    if ($_ -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$') {
+  $reader = New-Object System.IO.StreamReader((Resolve-Path .env).Path, [System.Text.Encoding]::UTF8, $true)
+  while (-not $reader.EndOfStream) {
+    $line = $reader.ReadLine()
+    if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$') {
       $envLines += "$($matches[1])=$($matches[2].Trim().Trim('`"').Trim(`"'`"))"
     }
   }
+  $reader.Close()
   nssm set $svc AppEnvironmentExtra ($envLines -join "`r`n")
 }
 

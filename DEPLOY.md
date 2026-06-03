@@ -466,5 +466,6 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\start.ps1
 | `start.ps1` 后立刻 stopped              | 看 `run\api.log` 最后 30 行；多数是 `.env` 没生效，去 `scripts\windows\status.ps1` 看进程是否真起来 |
 | 中文乱码（日志 / 控制台）               | PowerShell 里跑 `chcp 65001` 切换到 UTF-8；或加到 PS profile                                        |
 | `gzip` 命令不存在导致备份失败           | 装 Git for Windows，会自动带 gzip 到 PATH；或脚本会自动 fallback 到未压缩 .sql                      |
+| `.env` 打开是乱码 / Go 报无法连接数据库 | 旧脚本写入了 BOM 头。跑 `powershell -ExecutionPolicy Bypass -File scripts\windows\fix-env-encoding.ps1` 一键修复（重写为 UTF-8 无 BOM + LF）|
 
 ---
