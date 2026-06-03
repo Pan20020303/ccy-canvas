@@ -31,8 +31,8 @@ import (
 	"ccy-canvas/backend/internal/platform/crypto"
 	"ccy-canvas/backend/internal/shared/apperror"
 
-	_ "golang.org/x/image/webp"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 // Repository is the persistence port for the model catalog.
@@ -444,13 +444,14 @@ func (s *Service) ListAppProviderConfigs(ctx context.Context) ([]domain.AppProvi
 
 // GenerateRequest carries the user's generation request.
 type GenerateRequest struct {
-	ServiceType string // image / text / video / audio
-	Model       string // e.g. "gpt-image-2"
-	Prompt      string
-	Size        string // ratio like "1:1", "16:9", "auto"
-	Resolution  string // image: "1k"/"2k"/"4k"; video: "480p"/"720p"
-	Duration    int    // video duration in seconds
-	AspectRatio string // video aspect ratio: "16:9", "9:16", etc.
+	ServiceType     string // image / text / video / audio
+	Model           string // e.g. "gpt-image-2"
+	Prompt          string
+	Size            string // ratio like "1:1", "16:9", "auto"
+	Resolution      string // image: "1k"/"2k"/"4k"; video: "480p"/"720p"
+	Quality         string // image quality: auto / high / medium / low
+	Duration        int    // video duration in seconds
+	AspectRatio     string // video aspect ratio: "16:9", "9:16", etc.
 	ReferenceImages []string
 	ReferenceVideo  string
 	ReferenceVideos []string
@@ -527,21 +528,17 @@ func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req
 }
 
 func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
-	size := req.Size
-	if size == "" {
-		size = "1:1"
-	}
-	resolution := req.Resolution
-	if resolution == "" {
-		resolution = "1k"
-	}
+	size := mapAspectRatioToOpenAIImageSize(req.Size)
+	quality := normalizeOpenAIImageQuality(req.Quality)
 
 	body := map[string]interface{}{
-		"model":      req.Model,
-		"prompt":     req.Prompt,
-		"n":          1,
-		"size":       size,
-		"resolution": resolution,
+		"model":         req.Model,
+		"prompt":        req.Prompt,
+		"n":             1,
+		"size":          size,
+		"quality":       quality,
+		"background":    "auto",
+		"output_format": "png",
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -570,37 +567,11 @@ func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey str
 	}
 
 	// Parse response — supports both sync (standard OpenAI) and async (task-based) formats.
-	var result struct {
-		Data []struct {
-			URL     string `json:"url"`
-			B64JSON string `json:"b64_json"`
-			Status  string `json:"status"`
-			TaskID  string `json:"task_id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse provider response: %s", string(respBody[:min(len(respBody), 300)])))
-	}
-	if len(result.Data) == 0 {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Provider returned no images. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	if taskID := extractImageTaskID(respBody); taskID != "" {
+		return s.pollImageTask(ctx, baseURL, apiKey, taskID)
 	}
 
-	entry := result.Data[0]
-
-	// Async task: poll until completed.
-	if entry.TaskID != "" && entry.URL == "" && entry.B64JSON == "" {
-		return s.pollImageTask(ctx, baseURL, apiKey, entry.TaskID)
-	}
-
-	imageURL := entry.URL
-	if imageURL == "" && entry.B64JSON != "" {
-		imageURL = "data:image/png;base64," + entry.B64JSON
-	}
-	if imageURL == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Provider response has no url or b64_json. Raw: %s", string(respBody[:min(len(respBody), 800)])))
-	}
-
-	return &GenerateResult{Type: "url", Content: imageURL}, nil
+	return parseImageGenerationResponse(respBody)
 }
 
 // generateImageEdit calls /v1/images/edits with multipart/form-data so reference
@@ -635,13 +606,21 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 		} else if strings.HasPrefix(dataURL, "http://") || strings.HasPrefix(dataURL, "https://") {
 			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			fr, ferr := http.NewRequestWithContext(fetchCtx, http.MethodGet, dataURL, nil)
-			if ferr != nil { cancel(); return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build fetch", ferr) }
+			if ferr != nil {
+				cancel()
+				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build fetch", ferr)
+			}
 			fetchResp, ferr := (&http.Client{Timeout: 30 * time.Second}).Do(fr)
-			if ferr != nil { cancel(); return nil, apperror.Wrap(apperror.CodeInternal, "Failed to fetch reference URL", ferr) }
+			if ferr != nil {
+				cancel()
+				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to fetch reference URL", ferr)
+			}
 			b, ferr = io.ReadAll(io.LimitReader(fetchResp.Body, 8*1024*1024))
 			fetchResp.Body.Close()
 			cancel()
-			if ferr != nil { return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read reference", ferr) }
+			if ferr != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read reference", ferr)
+			}
 		}
 		if len(b) == 0 {
 			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Reference image #%d resolved to empty bytes", i+1))
@@ -653,19 +632,23 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	for _, r := range refs {
-		// gpt-image-1 accepts image[] for multi-image edits.
-		part, err := mw.CreateFormFile("image[]", r.name)
-		if err != nil { return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build multipart", err) }
+		part, err := mw.CreateFormFile("image", r.name)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build multipart", err)
+		}
 		if _, err := part.Write(r.bytes); err != nil {
 			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to write multipart image", err)
 		}
 	}
-	_ = mw.WriteField("model",  req.Model)
+	_ = mw.WriteField("model", req.Model)
 	_ = mw.WriteField("prompt", req.Prompt)
-	_ = mw.WriteField("n",      "1")
-	if size := mapAspectRatioToOpenAISize(req.Size); size != "" {
+	_ = mw.WriteField("n", "1")
+	if size := mapAspectRatioToOpenAIImageSize(req.Size); size != "" {
 		_ = mw.WriteField("size", size)
 	}
+	_ = mw.WriteField("quality", normalizeOpenAIImageQuality(req.Quality))
+	_ = mw.WriteField("background", "auto")
+	_ = mw.WriteField("output_format", "png")
 	_ = mw.Close()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/edits", &body)
@@ -699,7 +682,7 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 // notation into a size string the OpenAI image edit endpoint accepts.
 // Returns "" if the input doesn't look like an aspect ratio (the caller can
 // then pass through whatever the relay supports).
-func mapAspectRatioToOpenAISize(size string) string {
+func mapAspectRatioToOpenAIImageSize(size string) string {
 	switch strings.ToLower(strings.TrimSpace(size)) {
 	case "", "auto":
 		return "auto"
@@ -717,14 +700,20 @@ func mapAspectRatioToOpenAISize(size string) string {
 	return ""
 }
 
+func normalizeOpenAIImageQuality(quality string) string {
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case "high", "medium", "low":
+		return strings.ToLower(strings.TrimSpace(quality))
+	default:
+		return "auto"
+	}
+}
+
 // parseImageGenerationResponse extracts a usable URL or b64_json from an
 // OpenAI-style image response. Shared by text-only and edit code paths.
 func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
-	// Async task envelope (some relays return {task_id: ...}).
-	var taskCheck map[string]interface{}
-	_ = json.Unmarshal(respBody, &taskCheck)
-	if id, ok := taskCheck["task_id"].(string); ok && id != "" {
-		return nil, apperror.New(apperror.CodeInternal, "Async task path not supported in edit mode yet; got task_id="+id)
+	if taskID := extractImageTaskID(respBody); taskID != "" {
+		return nil, apperror.New(apperror.CodeInternal, "Async task path not supported in edit mode yet; got task_id="+taskID)
 	}
 
 	var result struct {
@@ -743,6 +732,17 @@ func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
 		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + result.Data[0].B64JSON}, nil
 	}
 	return nil, apperror.New(apperror.CodeInternal, "Provider returned an image entry with neither url nor b64_json")
+}
+
+func extractImageTaskID(respBody []byte) string {
+	var taskCheck map[string]interface{}
+	if err := json.Unmarshal(respBody, &taskCheck); err != nil {
+		return ""
+	}
+	if id, ok := taskCheck["task_id"].(string); ok && id != "" {
+		return id
+	}
+	return ""
 }
 
 // pollImageTask polls an async image generation task until it completes or times out.

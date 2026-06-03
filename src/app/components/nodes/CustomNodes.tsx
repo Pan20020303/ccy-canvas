@@ -169,17 +169,21 @@ const RatioPreview = ({ ratio }: { ratio: string }) => {
 const MediaParamsPopover = ({
   template,
   resolution,
+  quality,
   aspectRatio,
   duration,
   onResolution,
+  onQuality,
   onAspectRatio,
   onDuration,
 }: {
   template: ModelTemplate;
   resolution: string;
+  quality: string;
   aspectRatio: string;
   duration: number;
   onResolution: (v: string) => void;
+  onQuality: (v: string) => void;
   onAspectRatio: (v: string) => void;
   onDuration: (v: number) => void;
 }) => {
@@ -189,11 +193,13 @@ const MediaParamsPopover = ({
   const labelParts = [
     template.supportsAutoAspect && aspectRatio === 'auto' ? (language === 'zh' ? '自适应' : 'Auto') : aspectRatio,
     template.supportsResolution ? resolution : null,
+    template.supportsQuality ? quality : null,
     template.supportsDuration ? `${duration}s` : null,
   ].filter(Boolean);
 
   const hasAspect = template.supportsAspectRatio && template.aspectRatioOptions?.length;
   const hasResolution = template.supportsResolution && template.resolutionOptions?.length;
+  const hasQuality = template.supportsQuality && template.qualityOptions?.length;
   const hasDurationSlider = template.supportsDuration && template.durationRange && !template.durationOptions?.length;
   const hasDurationOptions = template.supportsDuration && template.durationOptions?.length;
 
@@ -258,6 +264,27 @@ const MediaParamsPopover = ({
                       className={clsx(
                         'rounded-lg py-2 text-sm transition',
                         option === resolution
+                          ? 'border border-white/15 bg-white/10 text-white'
+                          : 'text-neutral-400 hover:bg-white/5',
+                      )}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {hasQuality ? (
+              <>
+                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '质量' : 'Quality'}</div>
+                <div className="mb-4 grid grid-cols-2 gap-2">
+                  {template.qualityOptions!.map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => onQuality(option)}
+                      className={clsx(
+                        'rounded-lg py-2 text-sm transition',
+                        option === quality
                           ? 'border border-white/15 bg-white/10 text-white'
                           : 'text-neutral-400 hover:bg-white/5',
                       )}
@@ -589,6 +616,7 @@ const PromptPanel = ({
   const template = getModelTemplate(activeModel);
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
   const currentResolution = params.resolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
+  const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
   const currentAspectRatio = params.aspectRatio
     ?? (template?.supportsAutoAspect ? 'auto' : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0] ?? '');
   const currentDuration = params.durationSeconds ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
@@ -603,6 +631,7 @@ const PromptPanel = ({
     if (!params.model && activeModel) nextPatch.model = activeModel;
     if (template.supportsMode && !params.mode && currentMode) nextPatch.mode = currentMode;
     if (template.supportsResolution && !params.resolution && currentResolution) nextPatch.resolution = currentResolution;
+    if (template.supportsQuality && !params.quality && currentQuality) nextPatch.quality = currentQuality;
     if ((template.supportsAspectRatio || template.supportsAutoAspect) && !params.aspectRatio && currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
     if (template.supportsDuration && !params.durationSeconds && currentDuration) nextPatch.durationSeconds = currentDuration;
 
@@ -615,12 +644,14 @@ const PromptPanel = ({
     currentAspectRatio,
     currentDuration,
     currentMode,
+    currentQuality,
     currentResolution,
     nodeId,
     params.aspectRatio,
     params.durationSeconds,
     params.mode,
     params.model,
+    params.quality,
     params.resolution,
     params.vendor,
     template,
@@ -720,6 +751,7 @@ const PromptPanel = ({
       model: nextModel,
       mode: nextTemplate?.defaults?.mode ?? nextTemplate?.modeOptions?.[0],
       resolution: nextTemplate?.defaults?.resolution ?? nextTemplate?.resolutionOptions?.[0],
+      quality: nextTemplate?.defaults?.quality ?? nextTemplate?.qualityOptions?.[0],
       aspectRatio: nextTemplate?.supportsAutoAspect ? 'auto' : nextTemplate?.defaults?.aspectRatio ?? nextTemplate?.aspectRatioOptions?.[0],
       durationSeconds: nextTemplate?.durationRange?.defaultValue,
     });
@@ -732,6 +764,7 @@ const PromptPanel = ({
       model: nextModel,
       mode: nextTemplate?.defaults?.mode ?? nextTemplate?.modeOptions?.[0],
       resolution: nextTemplate?.defaults?.resolution ?? nextTemplate?.resolutionOptions?.[0],
+      quality: nextTemplate?.defaults?.quality ?? nextTemplate?.qualityOptions?.[0],
       aspectRatio: nextTemplate?.supportsAutoAspect ? 'auto' : nextTemplate?.defaults?.aspectRatio ?? nextTemplate?.aspectRatioOptions?.[0],
       durationSeconds: nextTemplate?.durationRange?.defaultValue,
     });
@@ -868,13 +901,15 @@ const PromptPanel = ({
             onChange={(value) => updateNodeGenerationParams(nodeId, { mode: value })}
           />
         ) : null}
-        {template && (template.supportsResolution || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration) ? (
+        {template && (template.supportsResolution || template.supportsQuality || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration) ? (
           <MediaParamsPopover
             template={template}
             resolution={currentResolution}
+            quality={currentQuality}
             aspectRatio={currentAspectRatio}
             duration={currentDuration}
             onResolution={(value) => updateNodeGenerationParams(nodeId, { resolution: value })}
+            onQuality={(value) => updateNodeGenerationParams(nodeId, { quality: value })}
             onAspectRatio={(value) => updateNodeGenerationParams(nodeId, { aspectRatio: value })}
             onDuration={(value) => updateNodeGenerationParams(nodeId, { durationSeconds: value })}
           />

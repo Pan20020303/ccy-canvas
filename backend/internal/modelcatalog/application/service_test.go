@@ -1,10 +1,15 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
@@ -12,13 +17,14 @@ import (
 )
 
 type fakeRepository struct {
-	provider       *domain.RelayProvider
-	models         []domain.ModelDefinition
-	existingModels map[string]bool
-	lastSyncID     string
-	statusUpdates  map[string]string
-	listUserID     string
-	listRole       string
+	provider        *domain.RelayProvider
+	models          []domain.ModelDefinition
+	existingModels  map[string]bool
+	lastSyncID      string
+	statusUpdates   map[string]string
+	listUserID      string
+	listRole        string
+	providerConfigs []domain.ProviderConfig
 }
 
 func (r *fakeRepository) GetRelayProvider(context.Context) (*domain.RelayProvider, error) {
@@ -79,7 +85,7 @@ func (r *fakeRepository) SetModelStatus(_ context.Context, id, status string) (*
 }
 
 func (r *fakeRepository) ListProviderConfigs(context.Context) ([]domain.ProviderConfig, error) {
-	return nil, nil
+	return r.providerConfigs, nil
 }
 
 func (r *fakeRepository) GetProviderConfigByID(context.Context, string) (*domain.ProviderConfig, error) {
@@ -240,4 +246,137 @@ func TestEnableModelRequiresPricingRule(t *testing.T) {
 	if repo.statusUpdates["unpriced"] != "" {
 		t.Fatalf("status update = %q, want none", repo.statusUpdates["unpriced"])
 	}
+}
+
+func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("path = %q, want /images/generations", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-api-key" {
+			t.Fatalf("Authorization header = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["size"] != "1536x1024" {
+			t.Fatalf("size = %v, want 1536x1024", body["size"])
+		}
+		if body["quality"] != "high" {
+			t.Fatalf("quality = %v, want high", body["quality"])
+		}
+		if _, ok := body["resolution"]; ok {
+			t.Fatalf("resolution should not be sent to OpenAI image endpoint")
+		}
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZmFrZQ=="}]}`))
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-1",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "gpt-image-2",
+		Prompt:      "draw a scooter",
+		Size:        "16:9",
+		Quality:     "high",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "data:image/png;base64,ZmFrZQ==" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/edits" {
+			t.Fatalf("path = %q, want /images/edits", r.URL.Path)
+		}
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatalf("parse media type: %v", err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("media type = %q", mediaType)
+		}
+		reader := multipartNewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(8 << 20)
+		if err != nil {
+			t.Fatalf("read form: %v", err)
+		}
+		if got := form.Value["quality"]; len(got) != 1 || got[0] != "medium" {
+			t.Fatalf("quality = %v, want [medium]", got)
+		}
+		if got := form.Value["size"]; len(got) != 1 || got[0] != "1024x1536" {
+			t.Fatalf("size = %v, want [1024x1536]", got)
+		}
+		if files := form.File["image"]; len(files) != 1 {
+			t.Fatalf("image files = %d, want 1", len(files))
+		}
+		if files := form.File["image[]"]; len(files) != 0 {
+			t.Fatalf("image[] files = %d, want 0", len(files))
+		}
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"ZmFrZQ=="}]}`))
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-1",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType:     "image",
+		Model:           "gpt-image-2",
+		Prompt:          "adapt this product poster into a realistic hero image",
+		Size:            "9:16",
+		Quality:         "medium",
+		ReferenceImages: []string{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0i0AAAAASUVORK5CYII="},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "data:image/png;base64,ZmFrZQ==" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func multipartNewReader(body io.Reader, boundary string) *multipart.Reader {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		panic(err)
+	}
+	return multipart.NewReader(bytes.NewReader(data), strings.TrimSpace(boundary))
 }

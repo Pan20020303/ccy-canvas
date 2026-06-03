@@ -775,7 +775,8 @@ type generateInput struct {
 		Model           string   `json:"model" minLength:"1" doc:"Model name"`
 		Prompt          string   `json:"prompt" minLength:"1" doc:"User prompt"`
 		Size            string   `json:"size,omitempty" doc:"Image ratio (e.g. 1:1, 16:9, auto)"`
-		Resolution      string   `json:"resolution,omitempty" doc:"Output resolution (image: 1k/2k/4k, video: 480p/720p)"`
+		Resolution      string   `json:"resolution,omitempty" doc:"Video resolution (e.g. 480p, 720p)"`
+		Quality         string   `json:"quality,omitempty" doc:"Image quality (auto, high, medium, low)"`
 		Duration        int      `json:"duration,omitempty" doc:"Video duration in seconds"`
 		AspectRatio     string   `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
 		ReferenceImages []string `json:"reference_images,omitempty" doc:"Reference image URLs"`
@@ -832,6 +833,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		Prompt:          input.Body.Prompt,
 		Size:            input.Body.Size,
 		Resolution:      input.Body.Resolution,
+		Quality:         input.Body.Quality,
 		Duration:        input.Body.Duration,
 		AspectRatio:     input.Body.AspectRatio,
 		ReferenceImages: input.Body.ReferenceImages,

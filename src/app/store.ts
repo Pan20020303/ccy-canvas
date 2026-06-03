@@ -134,6 +134,7 @@ export type NodeGenerationParams = {
   model?: string;
   mode?: string;
   resolution?: string;
+  quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
 };
@@ -1122,16 +1123,28 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
-    // For video/audio nodes, upstream media goes via reference_images/reference_video fields,
-    // so strip @mentions from the prompt instead of inlining URLs.
-    const strippedForMedia = (serviceType === 'video' || serviceType === 'audio')
+    const referenceMedia = collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
+    const shouldStripMentions = serviceType === 'video'
+      || serviceType === 'audio'
+      || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
+    // For media-generation routes that send structured references, strip @mentions
+    // from the prompt instead of inlining raw upload paths.
+    const strippedForMedia = shouldStripMentions
       ? payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, '').trim()
       : null;
-    // For video/audio, references are sent through reference_images/reference_video fields.
+    // When the prompt only contained @mentions, keep a sane natural-language fallback
+    // so backend validation and third-party relays receive a usable prompt.
     // If the prompt only contained @mentions and is now empty, fall back to a sane default
     // so the backend `minLength:1` validator doesn't reject the call.
     const resolvedPrompt = strippedForMedia !== null
-      ? (strippedForMedia || (serviceType === 'video' ? 'Generate a video from the provided reference media.' : 'Generate audio.'))
+      ? (
+        strippedForMedia
+        || (serviceType === 'video'
+          ? 'Generate a video from the provided reference media.'
+          : serviceType === 'image'
+            ? 'Generate an image using the provided reference media.'
+            : 'Generate audio.')
+      )
       : payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
           const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
           if (!upstreamNode) return `@${ref}`;
@@ -1144,8 +1157,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
     const aspectRatio = genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
-    const rawRes = genParams?.resolution ?? '1k';
-    const resolution = rawRes.replace(/[^0-9kK]/g, '').toLowerCase() || '1k';
+    const rawRes = genParams?.resolution ?? '720p';
+    const resolution = rawRes.replace(/[^0-9pP]/g, '').toLowerCase() || '720p';
+    const quality = (genParams?.quality ?? 'auto').trim().toLowerCase() || 'auto';
 
     // Set status to running — clear error but keep old url/content until new result arrives.
     set((snapshot) => ({
@@ -1157,7 +1171,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     // Video-specific: duration from genParams.
     const durationSeconds = genParams?.durationSeconds ?? undefined;
-    const referenceMedia = collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
 
     const aborter = new AbortController();
     runAborters[nodeId] = aborter;
@@ -1170,7 +1183,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         model: payload.model ?? '',
         prompt: resolvedPrompt,
         size: aspectRatio,
-        resolution,
+        resolution: serviceType === 'video' ? resolution : undefined,
+        quality: serviceType === 'image' ? quality : undefined,
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
         reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,

@@ -417,6 +417,39 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).toContain("\"reference_images\":[\"https://example.com/reference.png\"]");
   });
 
+  it("strips inline image mentions when structured reference images are present", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.png" },
+        request_id: "req-image-ref-strip",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "ref-image-strip",
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference.png" },
+    } as never);
+    useStore.getState().onConnect({
+      source: "ref-image-strip",
+      target: "2",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    await useStore.getState().runNode("2", { prompt: "make it glossy @ref-image-st", model: "gpt-image-2" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain("\"prompt\":\"make it glossy\"");
+    expect(String(init.body)).not.toContain("/uploads/");
+    expect(String(init.body)).not.toContain("@ref-image-st");
+  });
+
   it("includes upstream reference images and videos in video generation payloads", async () => {
     const { useStore } = await loadStore();
     const { setReferencePayloadValue } = await import("./reference-media");

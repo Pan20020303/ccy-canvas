@@ -13,9 +13,11 @@ export type ModelTemplate = {
   modelName: string;
   modeOptions?: string[];
   resolutionOptions?: string[];
+  qualityOptions?: string[];
   aspectRatioOptions?: string[];
   supportsMode?: boolean;
   supportsResolution?: boolean;
+  supportsQuality?: boolean;
   supportsAspectRatio?: boolean;
   supportsAutoAspect?: boolean;
   supportsDuration?: boolean;
@@ -25,6 +27,7 @@ export type ModelTemplate = {
   defaults?: {
     mode?: string;
     resolution?: string;
+    quality?: string;
     aspectRatio?: string;
   };
 };
@@ -33,6 +36,7 @@ export type ModelRequestParams = {
   model?: string;
   mode?: string;
   resolution?: string;
+  quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
 };
@@ -124,13 +128,13 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "OpenAI",
     serviceType: "image",
     modelName: "gpt-image-2",
-    supportsResolution: true,
+    supportsQuality: true,
     supportsAspectRatio: true,
     supportsAutoAspect: true,
-    resolutionOptions: ["1K", "2K", "4K"],
+    qualityOptions: ["Auto", "High", "Medium", "Low"],
     aspectRatioOptions: [...DEFAULT_ASPECT_RATIO_OPTIONS],
     defaults: {
-      resolution: "1K",
+      quality: "Auto",
       aspectRatio: "1:1",
     },
   },
@@ -182,6 +186,7 @@ export function buildModelRequestBody(
     model: params.model,
     mode: template?.supportsMode ? params.mode : undefined,
     size: template?.supportsResolution ? params.resolution : undefined,
+    quality: template?.supportsQuality ? params.quality : undefined,
     aspect_ratio: template?.supportsAspectRatio ? params.aspectRatio : undefined,
     duration: template?.supportsDuration ? params.durationSeconds : undefined,
   };

@@ -89,4 +89,11 @@ describe("model templates", () => {
       duration: 10,
     });
   });
+
+  it("uses quality controls for gpt-image-2 instead of legacy resolution presets", () => {
+    const template = getModelTemplate("gpt-image-2");
+    expect(template?.supportsQuality).toBe(true);
+    expect(template?.qualityOptions).toEqual(["Auto", "High", "Medium", "Low"]);
+    expect(template?.supportsResolution).not.toBe(true);
+  });
 });

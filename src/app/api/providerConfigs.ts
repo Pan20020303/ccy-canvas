@@ -175,7 +175,8 @@ export type GeneratePayload = {
   model: string;
   prompt: string;
   size?: string;         // image ratio: "1:1", "16:9", "auto"
-  resolution?: string;   // image: "1k"/"2k"/"4k", video: "480p"/"720p"
+  resolution?: string;   // video: "480p"/"720p"
+  quality?: string;      // image quality: "auto"/"high"/"medium"/"low"
   duration?: number;     // video duration in seconds
   aspect_ratio?: string; // video aspect ratio: "16:9", "9:16", etc.
   reference_images?: string[];
