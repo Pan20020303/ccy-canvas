@@ -33,6 +33,7 @@ import clsx from 'clsx';
 import { useStore } from '../../store';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
+import { ModelBrandIcon } from '../ModelBrandIcon';
 import {
   canUseReversePrompt,
   filterReversePromptModels,
@@ -90,12 +91,18 @@ const Dropdown = ({
   options,
   onChange,
   align = 'left',
+  renderOption,
+  menuMinWidth,
 }: {
   label?: React.ReactNode;
   value: string;
   options: string[];
   onChange: (v: string) => void;
   align?: 'left' | 'right';
+  /** Optional custom renderer for each option row (gets the raw option + selected state). */
+  renderOption?: (option: string, selected: boolean) => React.ReactNode;
+  /** Override the popup min-width — model dropdown needs more room for icons + duration. */
+  menuMinWidth?: number;
 }) => {
   const [open, setOpen] = useState(false);
   return (
@@ -113,26 +120,30 @@ const Dropdown = ({
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div
             className={clsx(
-              'absolute z-20 mb-1 mt-1 min-w-[140px] rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-2xl backdrop-blur-xl',
+              'absolute z-20 mb-1 mt-1 rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-2xl backdrop-blur-xl',
               align === 'right' ? 'right-0' : 'left-0',
               'bottom-full',
             )}
+            style={{ minWidth: menuMinWidth ?? 140 }}
           >
-            {options.map((option) => (
-              <button
-                key={option}
-                onClick={() => {
-                  onChange(option);
-                  setOpen(false);
-                }}
-                className={clsx(
-                  'w-full px-3 py-1.5 text-left text-xs transition hover:bg-white/5',
-                  option === value ? 'text-cyan-300' : 'text-neutral-300',
-                )}
-              >
-                {option}
-              </button>
-            ))}
+            {options.map((option) => {
+              const selected = option === value;
+              return (
+                <button
+                  key={option}
+                  onClick={() => {
+                    onChange(option);
+                    setOpen(false);
+                  }}
+                  className={clsx(
+                    'w-full px-3 py-1.5 text-left text-xs transition hover:bg-white/5',
+                    selected ? 'text-cyan-300' : 'text-neutral-300',
+                  )}
+                >
+                  {renderOption ? renderOption(option, selected) : option}
+                </button>
+              );
+            })}
           </div>
         </>
       ) : null}
@@ -797,10 +808,24 @@ const PromptPanel = ({
           <Dropdown value={activeVendor} options={vendorOptions} onChange={handleVendorChange} />
         ) : null}
         <Dropdown
-          label={<Sparkles className="h-3 w-3 text-neutral-400" />}
+          label={<ModelBrandIcon model={modelIsDisabled && params.model ? params.model : activeModel} size={14} />}
           value={modelIsDisabled && params.model ? `${params.model}（已停用）` : activeModel}
           options={availableModels}
           onChange={handleModelChange}
+          menuMinWidth={240}
+          renderOption={(option, selected) => {
+            // Show the model's default video duration on the right (when applicable).
+            const optTemplate = getModelTemplate(option);
+            const dur = optTemplate?.durationRange?.defaultValue
+              ?? optTemplate?.durationOptions?.[0];
+            return (
+              <div className="flex w-full items-center gap-2">
+                <ModelBrandIcon model={option} size={18} />
+                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
+                {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
+              </div>
+            );
+          }}
         />
         {template?.supportsMode && template.modeOptions?.length ? (
           <Dropdown
