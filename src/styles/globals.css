@@ -3,6 +3,33 @@
   100% { transform: translateX(450%); }
 }
 
+/* Theme palette — dark is the default; .theme-light overrides on <html>. */
+:root {
+  --ccy-bg: #0a0a0a;
+  --ccy-bg-soft: #15181d;
+  --ccy-fg: #e5e5e5;
+  --ccy-fg-soft: rgba(229, 229, 229, 0.75);
+  --ccy-border: rgba(255, 255, 255, 0.10);
+}
+html.theme-light {
+  --ccy-bg: #f5f6f8;
+  --ccy-bg-soft: #ffffff;
+  --ccy-fg: #1c1f24;
+  --ccy-fg-soft: rgba(28, 31, 36, 0.75);
+  --ccy-border: rgba(0, 0, 0, 0.10);
+  color-scheme: light;
+}
+html.theme-light body {
+  background: var(--ccy-bg);
+  color: var(--ccy-fg);
+}
+/* React Flow background dots — invert color so they're visible on light bg. */
+html.theme-light .react-flow__background pattern circle,
+html.theme-light .react-flow__background pattern path {
+  fill: #cbd0d6;
+  stroke: #cbd0d6;
+}
+
 /* Custom cursor skin — dark body + status dot */
 :root {
   /* Normal: dark arrow + green dot (图2) — dot near tip */

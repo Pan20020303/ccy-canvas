@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { History, Languages, LogOut, Settings as SettingsIcon, Shield, User as UserIcon, Zap } from "lucide-react";
+import { History, Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
 
 import { useAuth } from "../auth/AuthProvider";
 import { t } from "../i18n";
@@ -10,10 +10,21 @@ import { TaskQueue } from "./TaskQueue";
 
 export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
   const { user, creditSummary, logout } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Sync the chosen theme to <html data-theme=...> so CSS rules in globals.css
+  // can react. Default 'dark' matches the existing palette.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-theme", theme);
+    if (theme === "light") root.classList.add("theme-light");
+    else root.classList.remove("theme-light");
+  }, [theme]);
 
   return (
     <div className="absolute left-0 right-0 top-0 z-50 flex h-14 items-center justify-between border-b border-white/10 bg-black/40 px-6 backdrop-blur-md">
@@ -72,6 +83,7 @@ export const Navbar = () => {
                   <MenuItem icon={UserIcon} label={dict.profile} onClick={() => { setMenuOpen(false); setProfileOpen(true); }} />
                   <MenuItem icon={History} label={dict.history} onClick={() => { setMenuOpen(false); setProfileOpen(true); }} />
                   <MenuItem icon={SettingsIcon} label={language === "zh" ? "\u8bbe\u7f6e" : "Settings"} onClick={() => { setMenuOpen(false); setSettingsOpen(true); }} />
+                  <ThemeToggleRow theme={theme} setTheme={setTheme} language={language} />
                   {user.role === "admin" ? (
                     <MenuItem icon={Shield} label={dict.admin_settings} onClick={() => { setMenuOpen(false); navigate("/admin"); }} />
                   ) : null}
@@ -111,4 +123,48 @@ const MenuItem = ({
     <Icon className="h-3.5 w-3.5 text-neutral-400" />
     <span>{label}</span>
   </button>
+);
+
+/** Light / Dark mode segmented toggle, styled like a pill with two icons. */
+const ThemeToggleRow = ({
+  theme,
+  setTheme,
+  language,
+}: {
+  theme: "dark" | "light";
+  setTheme: (t: "dark" | "light") => void;
+  language: "en" | "zh";
+}) => (
+  <div className="flex items-center justify-between px-3 py-2 text-xs text-neutral-300">
+    <div className="flex items-center gap-2.5">
+      {theme === "light" ? (
+        <Sun className="h-3.5 w-3.5 text-neutral-400" />
+      ) : (
+        <Moon className="h-3.5 w-3.5 text-neutral-400" />
+      )}
+      <span>{language === "zh" ? "模式切换" : "Theme"}</span>
+    </div>
+    <div className="flex items-center rounded-full border border-white/10 bg-white/[0.04] p-0.5">
+      <button
+        type="button"
+        onClick={() => setTheme("light")}
+        title={language === "zh" ? "浅色模式" : "Light"}
+        className={`flex h-5 w-7 items-center justify-center rounded-full transition ${
+          theme === "light" ? "bg-white/15 text-white" : "text-neutral-500 hover:text-neutral-300"
+        }`}
+      >
+        <Sun className="h-3 w-3" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setTheme("dark")}
+        title={language === "zh" ? "深色模式" : "Dark"}
+        className={`flex h-5 w-7 items-center justify-center rounded-full transition ${
+          theme === "dark" ? "bg-white/15 text-white" : "text-neutral-500 hover:text-neutral-300"
+        }`}
+      >
+        <Moon className="h-3 w-3" />
+      </button>
+    </div>
+  </div>
 );

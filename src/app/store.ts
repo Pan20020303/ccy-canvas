@@ -27,6 +27,7 @@ import { computeGroupBounds } from './group-routing';
 import { clearReferencePayloadValue, getReferencePayloadValue } from './reference-media';
 
 type Language = 'en' | 'zh';
+type Theme = 'dark' | 'light';
 
 export type HistoryMediaType = 'text' | 'image' | 'video' | 'audio';
 export type HistoryAspectRatio = 'portrait' | 'square' | 'landscape' | 'text';
@@ -147,6 +148,9 @@ type UpstreamReferenceMedia = {
 type AppState = {
   language: Language;
   toggleLanguage: () => void;
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
+  toggleTheme: () => void;
   nodes: Node[];
   edges: Edge[];
   onNodesChange: OnNodesChange;
@@ -594,6 +598,10 @@ async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string>
 export const useStore = create<AppState>()(persist((set, get) => ({
   language: 'zh',
   toggleLanguage: () => set((state) => ({ language: state.language === 'en' ? 'zh' : 'en' })),
+
+  theme: 'dark' as Theme,
+  setTheme: (theme) => set({ theme }),
+  toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
 
   spaces: seedSpaces,
   activeSpaceId: 'space-personal',
@@ -1397,6 +1405,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   },
   partialize: (state) => ({
     language: state.language,
+    theme: state.theme,
     spaces: state.spaces,
     activeSpaceId: state.activeSpaceId,
     activeSpaceType: state.activeSpaceType,
