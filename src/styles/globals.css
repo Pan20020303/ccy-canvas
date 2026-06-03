@@ -34,9 +34,18 @@ html.theme-light body {
 /* ─── Page background (Canvas wrapper, login bg, etc.) ─────────────────── */
 html.theme-light .bg-\[\#0a0a0a\],
 html.theme-light .bg-\[\#0c0c0c\],
-html.theme-light .bg-\[\#101010\]\/90,
-html.theme-light .bg-\[\#101010\] {
+html.theme-light .bg-\[\#060606\],
+html.theme-light .bg-\[\#0d0d0d\] {
   background-color: var(--ccy-bg) !important;
+}
+html.theme-light .bg-\[\#101010\],
+html.theme-light .bg-\[\#101010\]\/90,
+html.theme-light .bg-\[\#101010\]\/95 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+html.theme-light .bg-\[\#1a1a1a\],
+html.theme-light .bg-\[\#181818\] {
+  background-color: #ffffff !important;
 }
 
 /* ─── Translucent overlays (navbar, toolbars, modal scrim) ─────────────── */
@@ -58,14 +67,41 @@ html.theme-light .bg-\[\#1a1d22\]\/90,
 html.theme-light .bg-\[\#1a1d22\]\/95,
 html.theme-light .bg-\[\#1a1d22\]\/96,
 html.theme-light .bg-\[\#1a1d22\]\/98,
-html.theme-light .bg-\[\#111111\]\/95,
 html.theme-light .bg-\[\#111111\],
+html.theme-light .bg-\[\#111111\]\/95,
 html.theme-light .bg-\[\#141414\],
 html.theme-light .bg-\[\#171717\],
 html.theme-light .bg-\[\#13161b\]\/98,
 html.theme-light .bg-\[\#252525\]\/98 {
   background-color: rgba(255, 255, 255, 0.96) !important;
   color: var(--ccy-fg);
+}
+
+/* ─── Admin radial / linear gradient backdrops ─────────────────────────── */
+html.theme-light [class*="bg-[radial-gradient"],
+html.theme-light [class*="bg-[linear-gradient(180deg,rgba(255,255,255,0.025)"] {
+  background: transparent !important;
+}
+/* AdminSidebar dark gradient -> light gradient */
+html.theme-light .bg-\[linear-gradient\(180deg\2c \#121212_0\%\2c \#0c0c0c_100\%\)\] {
+  background: linear-gradient(180deg, #ffffff 0%, #f5f6f8 100%) !important;
+}
+
+/* ─── Tables (admin grids) ─────────────────────────────────────────────── */
+html.theme-light table thead tr {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+html.theme-light table tbody tr.hover\:bg-white\/\[0\.02\]:hover {
+  background-color: rgba(0, 0, 0, 0.025) !important;
+}
+html.theme-light .divide-white\/\[0\.04\] > * + * {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Borders with admin-specific tones */
+html.theme-light .border-white\/\[0\.06\],
+html.theme-light .border-white\/\[0\.04\] {
+  border-color: rgba(0, 0, 0, 0.06) !important;
 }
 
 /* ─── Subtle surfaces (hover, pressed, cards) ──────────────────────────── */
