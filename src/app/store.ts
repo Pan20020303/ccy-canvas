@@ -14,10 +14,10 @@ import {
   applyEdgeChanges,
 } from '@xyflow/react';
 
-import type { AppProviderConfig } from './api/providerConfigs';
+import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
 import type { BackendProject } from './api/projects';
-import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas } from './api/projects';
+import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
   buildCanvasClipboardSelection,
   remapClipboardSelectionForPaste,
@@ -473,6 +473,18 @@ function stripHeavyFromNodes(nodes: Node[]): Node[] {
   return nodes.map((node) => ({ ...node, data: stripHeavyFromNodeData(node.data) as never }));
 }
 
+function stripHeavyFromHistory(history: HistoryItem[]): HistoryItem[] {
+  return history.map((item) => ({
+    ...item,
+    thumbnail: item.thumbnail?.startsWith('data:') ? '' : item.thumbnail,
+    content: item.mediaType === 'text'
+      ? item.content
+      : item.content?.startsWith('data:')
+        ? ''
+        : item.content,
+  }));
+}
+
 function stripHeavyFromProjectStateById(projectStateById: Record<string, ProjectCanvasState>): Record<string, ProjectCanvasState> {
   const out: Record<string, ProjectCanvasState> = {};
   for (const [key, snapshot] of Object.entries(projectStateById)) {
@@ -481,7 +493,7 @@ function stripHeavyFromProjectStateById(projectStateById: Record<string, Project
   return out;
 }
 
-function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<string, ProjectCanvasState> }>(
+function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<string, ProjectCanvasState>; history?: HistoryItem[] }>(
   snapshots: Record<string, T>,
 ): Record<string, T> {
   const out: Record<string, T> = {} as Record<string, T>;
@@ -489,6 +501,7 @@ function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<stri
     out[key] = {
       ...snap,
       projectStateById: snap.projectStateById ? stripHeavyFromProjectStateById(snap.projectStateById) : snap.projectStateById,
+      history: snap.history ? stripHeavyFromHistory(snap.history) : snap.history,
     };
   }
   return out;
@@ -553,6 +566,28 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
   }
 
   return { imageUrls, videoUrls };
+}
+
+async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
+  if (result.type !== 'url' || !result.content.startsWith('data:')) {
+    return result.content;
+  }
+
+  try {
+    const response = await fetch(result.content);
+    const blob = await response.blob();
+    const extension = blob.type.startsWith('image/png')
+      ? 'png'
+      : blob.type.startsWith('image/webp')
+        ? 'webp'
+        : blob.type.startsWith('image/jpeg')
+          ? 'jpg'
+          : 'bin';
+    const uploaded = await uploadFile(blob, `generated-${Date.now()}.${extension}`);
+    return uploaded.url;
+  } catch {
+    return result.content;
+  }
 }
 
 export const useStore = create<AppState>()(persist((set, get) => ({
@@ -1194,6 +1229,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
       }, aborter.signal);
+      const persistedContent = await persistGeneratedMediaUrl(result);
 
       set((snapshot) => ({
         activeRun: null,
@@ -1204,7 +1240,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                 ...node.data,
                 status: 'done',
                 ...(result.type === 'url'
-                  ? { url: result.content, output: result.content }
+                  ? { url: persistedContent, output: persistedContent }
                   : { content: result.content, output: result.content }),
               },
             }
@@ -1218,7 +1254,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         type: serviceType,
         mediaType: serviceType as 'text' | 'image' | 'video' | 'audio',
         timestamp: Date.now(),
-        thumbnail: result.type === 'url' ? result.content : undefined,
+        thumbnail: result.type === 'url' ? persistedContent : undefined,
         content: result.type === 'text' ? result.content : undefined,
         promptExcerpt: payload.prompt.slice(0, 120),
       });
@@ -1322,7 +1358,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     spaceSnapshotsById: stripHeavyFromSpaceSnapshots(state.spaceSnapshotsById),
     nodes: stripHeavyFromNodes(state.nodes),
     edges: state.edges,
-    history: state.history,
+    history: stripHeavyFromHistory(state.history),
     projects: state.projects,
     activeProjectId: state.activeProjectId,
     projectStateById: stripHeavyFromProjectStateById(state.projectStateById),

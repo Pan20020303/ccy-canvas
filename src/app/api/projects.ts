@@ -18,6 +18,12 @@ export type CanvasData = {
   version: number;
 };
 
+export type UploadData = {
+  url: string;
+  filename: string;
+  content_type: string;
+};
+
 // ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
@@ -49,4 +55,22 @@ export function saveCanvas(
     { nodes, edges },
     options,
   );
+}
+
+export async function uploadFile(file: Blob, filename: string): Promise<UploadData> {
+  const form = new FormData();
+  form.append("file", file, filename);
+
+  const response = await fetch("/api/app/upload", {
+    method: "POST",
+    body: form,
+    credentials: "include",
+  });
+
+  const rawBody = await response.text();
+  const body = rawBody.trim() ? JSON.parse(rawBody) as { data?: UploadData; error?: string } : {};
+  if (!response.ok || !body.data) {
+    throw new Error(body.error || `Upload failed (${response.status})`);
+  }
+  return body.data;
 }

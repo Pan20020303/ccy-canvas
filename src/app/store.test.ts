@@ -2,36 +2,36 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type StoreModule = typeof import("./store");
 
-function createStorageMock(): Storage {
-  const values = new Map<string, string>();
+function createStorageMock(values: Map<string, string> = new Map()): Storage {
+  const store = values;
 
   return {
     get length() {
-      return values.size;
+      return store.size;
     },
     clear() {
-      values.clear();
+      store.clear();
     },
     getItem(key) {
-      return values.has(key) ? values.get(key)! : null;
+      return store.has(key) ? store.get(key)! : null;
     },
     key(index) {
-      return Array.from(values.keys())[index] ?? null;
+      return Array.from(store.keys())[index] ?? null;
     },
     removeItem(key) {
-      values.delete(key);
+      store.delete(key);
     },
     setItem(key, value) {
-      values.set(key, value);
+      store.set(key, value);
     },
   };
 }
 
-async function loadStore(): Promise<StoreModule> {
+async function loadStore(storage = createStorageMock()): Promise<StoreModule> {
   vi.resetModules();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
-    value: createStorageMock(),
+    value: storage,
   });
 
   return import("./store");
@@ -415,6 +415,90 @@ describe("workspace control bar state", () => {
 
     const [, init] = fetchMock.mock.calls[0];
     expect(String(init.body)).toContain("\"reference_images\":[\"https://example.com/reference.png\"]");
+  });
+
+  it("uploads generated data urls so image nodes survive refresh", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (input === "/api/app/generate") {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({
+            data: { type: "url", content: "data:image/png;base64,ZmFrZQ==" },
+            request_id: "req-generate-data-url",
+          }),
+        };
+      }
+      if (input === "data:image/png;base64,ZmFrZQ==") {
+        return {
+          ok: true,
+          blob: async () => new Blob(["fake"], { type: "image/png" }),
+        };
+      }
+      if (input === "/api/app/upload") {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            data: { url: "/uploads/2026-06/generated.png", filename: "generated.png", content_type: "image/png" },
+            request_id: "req-upload-generated",
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch input: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useStore.getState().runNode("2", { prompt: "test upload persisted image", model: "gpt-image-2" });
+
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/uploads/2026-06/generated.png");
+    expect(useStore.getState().history[0]?.thumbnail).toBe("/uploads/2026-06/generated.png");
+    expect(fetchMock).toHaveBeenCalledWith("/api/app/upload", expect.objectContaining({ method: "POST", credentials: "include" }));
+  });
+
+  it("rehydrates generated image history after a reload", async () => {
+    const sharedStorage = createStorageMock();
+    const firstModule = await loadStore(sharedStorage);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (input === "/api/app/generate") {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({
+            data: { type: "url", content: "data:image/png;base64,ZmFrZQ==" },
+            request_id: "req-rehydrate-data-url",
+          }),
+        };
+      }
+      if (input === "data:image/png;base64,ZmFrZQ==") {
+        return {
+          ok: true,
+          blob: async () => new Blob(["fake"], { type: "image/png" }),
+        };
+      }
+      if (input === "/api/app/upload") {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            data: { url: "/uploads/2026-06/rehydrated.png", filename: "rehydrated.png", content_type: "image/png" },
+            request_id: "req-upload-rehydrated",
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch input: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await firstModule.useStore.getState().runNode("2", { prompt: "persist across reload", model: "gpt-image-2" });
+
+    const secondModule = await loadStore(sharedStorage);
+    const rehydratedState = secondModule.useStore.getState();
+    const imageNode = rehydratedState.nodes.find((node) => node.id === "2");
+
+    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/uploads/2026-06/rehydrated.png");
+    expect(rehydratedState.history[0]?.mediaType).toBe("image");
+    expect(rehydratedState.history[0]?.thumbnail).toBe("/uploads/2026-06/rehydrated.png");
   });
 
   it("strips inline image mentions when structured reference images are present", async () => {
