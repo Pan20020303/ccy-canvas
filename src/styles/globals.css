@@ -59,6 +59,21 @@ html.theme-light .bg-black\/20 {
   background-color: rgba(0, 0, 0, 0.03) !important;
 }
 
+/* ─── Tooltip pills (icon hover labels) ────────────────────────────────── */
+html.theme-light .bg-black\/60,
+html.theme-light .bg-black\/70,
+html.theme-light .bg-black\/80,
+html.theme-light .bg-black\/85,
+html.theme-light .bg-black\/90 {
+  background-color: rgba(28, 31, 36, 0.92) !important;
+  /* keep white text on these tooltips for contrast */
+}
+html.theme-light .bg-black\/80 .text-white,
+html.theme-light .bg-black\/70 .text-white,
+html.theme-light .bg-black\/60 .text-white {
+  color: #ffffff !important;
+}
+
 /* ─── Panel surfaces (sidebars, popovers, dropdowns, nodes) ────────────── */
 html.theme-light .bg-\[\#15181d\]\/90,
 html.theme-light .bg-\[\#15181d\]\/92,
@@ -85,6 +100,30 @@ html.theme-light [class*="bg-[linear-gradient(180deg,rgba(255,255,255,0.025)"] {
 /* AdminSidebar dark gradient -> light gradient */
 html.theme-light .bg-\[linear-gradient\(180deg\2c \#121212_0\%\2c \#0c0c0c_100\%\)\] {
   background: linear-gradient(180deg, #ffffff 0%, #f5f6f8 100%) !important;
+}
+
+/* AdminOverview stat cards + chart cards specific dark gradients */
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(19\2c 19\2c 19\2c 0\.98\)\2c rgba\(12\2c 12\2c 12\2c 0\.96\)\)\],
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(18\2c 18\2c 18\2c 0\.98\)\2c rgba\(11\2c 11\2c 11\2c 0\.98\)\)\] {
+  background: linear-gradient(180deg, #ffffff, #f4f5f7) !important;
+}
+
+/* ─── Recharts canvas — invert plot colors so they read on white ───────── */
+html.theme-light .recharts-cartesian-grid line {
+  stroke: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .recharts-text {
+  fill: #5a6270 !important;
+}
+html.theme-light .recharts-tooltip-wrapper > div {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .recharts-default-tooltip {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  color: #1c1f24 !important;
 }
 
 /* ─── Tables (admin grids) ─────────────────────────────────────────────── */
