@@ -503,6 +503,7 @@ const PromptPanel = ({
   const runNode = useStore((state) => state.runNode);
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const upstreamIds = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
   const upstreamNodes = useMemo(() => upstreamIds.map((id, idx) => {
     const n = allNodes.find((node) => node.id === id);
@@ -516,14 +517,32 @@ const PromptPanel = ({
     return { id, type, thumb, label, icon };
   }), [upstreamIds, allNodes]);
 
-  const [text, setText] = useState('');
+  const currentNode = allNodes.find((node) => node.id === nodeId);
+  const params = getNodeParams(currentNode?.data);
+  const nodeData = (currentNode?.data ?? {}) as Record<string, unknown>;
+
+  /** Persisted draft prompt — survives node deselect / page refresh / canvas reload. */
+  const [text, setText] = useState<string>(() => String(nodeData.promptDraft ?? ''));
+  const [mentions, setMentions] = useState<{ tag: string; id: string; thumb: string }[]>(
+    () => Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as { tag: string; id: string; thumb: string }[]) : [],
+  );
+
+  // If the user switches focus to a different node and back, we re-init from
+  // the freshly-loaded node data. Compare by content to avoid clobbering an
+  // in-flight edit when the same data round-trips through the store.
+  useEffect(() => {
+    const incoming = String(nodeData.promptDraft ?? '');
+    setText((prev) => (prev === incoming ? prev : incoming));
+    const m = Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as typeof mentions) : [];
+    setMentions((prev) => (JSON.stringify(prev) === JSON.stringify(m) ? prev : m));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId]);
+
   const [mentionOpen, setMentionOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const compactOverlayRef = useRef<HTMLDivElement>(null);
   const expandedOverlayRef = useRef<HTMLDivElement>(null);
-  const currentNode = allNodes.find((node) => node.id === nodeId);
-  const params = getNodeParams(currentNode?.data);
 
   const enabledConfigs = useMemo(
     () => backendModels
@@ -608,7 +627,6 @@ const PromptPanel = ({
     updateNodeGenerationParams,
   ]);
 
-  const [mentions, setMentions] = useState<{ tag: string; id: string; thumb: string }[]>([]);
   const [mentionPos, setMentionPos] = useState<{ left: number; top: number } | null>(null);
 
   /** Measure the pixel position of the @ trigger character inside the textarea.
@@ -639,6 +657,22 @@ const PromptPanel = ({
       top: spanRect.top - mirrorRect.top - textarea.scrollTop + lineHeight,
     };
   }, []);
+
+  /** Persist text + mentions to the node data — debounced so we don't hammer
+   *  the store on every keystroke, and so canvas auto-save batches with it. */
+  useEffect(() => {
+    if (!currentNode) return;
+    const persistedText = String((currentNode.data as Record<string, unknown>).promptDraft ?? '');
+    const persistedMentions = ((currentNode.data as Record<string, unknown>).promptMentions ?? []) as unknown[];
+    // Nothing to persist if state already matches what's in the store.
+    if (text === persistedText && JSON.stringify(mentions) === JSON.stringify(persistedMentions)) return;
+
+    const t = setTimeout(() => {
+      updateNodeData(nodeId, { promptDraft: text, promptMentions: mentions });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, mentions, nodeId]);
 
   const onChange = (value: string) => {
     setText(value);
