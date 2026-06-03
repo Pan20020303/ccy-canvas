@@ -1,4 +1,4 @@
-# Simple static server for dist\ using Python (testing only).
+# SPA-aware static server for dist\ — handles refresh on /app, /admin etc.
 param([int]$Port = 5173)
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +16,5 @@ if (-not $py) {
   exit 1
 }
 
-Set-Location "$root\dist"
-Write-Host "Serving dist\ on 0.0.0.0:$Port (Ctrl+C to stop)"
-& $py.Source -m http.server $Port --bind 0.0.0.0
+# Use our SPA-aware server (falls back to index.html on unknown routes).
+& $py.Source "$root\scripts\spa_server.py" --port $Port --host 0.0.0.0 --dir "$root\dist"

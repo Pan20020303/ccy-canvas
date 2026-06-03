@@ -182,7 +182,7 @@ type AppState = {
   loadBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
   switchBackendProject: (id: string) => Promise<void>;
-  saveCanvasToBackend: () => Promise<void>;
+  saveCanvasToBackend: (options?: { keepalive?: boolean }) => Promise<void>;
   spaceMembers: SpaceMember[];
   invitations: AdminInvitation[];
   groups: Group[];
@@ -894,7 +894,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }
   },
 
-  saveCanvasToBackend: async () => {
+  saveCanvasToBackend: async (options) => {
     const { activeBackendProjectId, nodes, edges } = get();
     if (!activeBackendProjectId) return;
     // Strip transient runtime status before persisting so reloads don't show stale running state.
@@ -906,7 +906,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       return n;
     });
     try {
-      await saveCanvas(activeBackendProjectId, cleanNodes, edges);
+      await saveCanvas(activeBackendProjectId, cleanNodes, edges, options);
     } catch {
       // Silent — save errors should not interrupt the user.
     }

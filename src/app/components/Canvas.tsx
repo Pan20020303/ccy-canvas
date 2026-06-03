@@ -421,16 +421,43 @@ const InnerCanvas = () => {
     return curves;
   }, [bulkRouting, nodes, viewport]);
 
+  /** Mark canvas dirty whenever nodes/edges change; auto-save with 2s debounce. */
+  const dirtyRef = useRef(false);
   useEffect(() => {
     if (!activeBackendProjectId) return;
+    dirtyRef.current = true;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      void saveCanvasToBackend();
+      void saveCanvasToBackend().finally(() => { dirtyRef.current = false; });
     }, 2000);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
   }, [nodes, edges, activeBackendProjectId, saveCanvasToBackend]);
+
+  /** Flush pending save synchronously on tab close / hard refresh, so users
+   *  don't lose the last 0-2 seconds of work that the debounce hasn't yet
+   *  written. visibilitychange + pagehide are more reliable than beforeunload
+   *  on mobile and Chrome's bfcache. */
+  useEffect(() => {
+    if (!activeBackendProjectId) return;
+    const flush = () => {
+      if (!dirtyRef.current) return;
+      if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+      // Fire-and-forget; keepalive=true lets the browser keep the request
+      // in flight even after navigation/tab-close starts.
+      void saveCanvasToBackend({ keepalive: true }).catch(() => {});
+      dirtyRef.current = false;
+    };
+    const onPageHide = () => flush();
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [activeBackendProjectId, saveCanvasToBackend]);
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!snapToGrid) {

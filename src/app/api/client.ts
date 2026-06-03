@@ -142,10 +142,11 @@ export const apiClient = {
       signal,
     });
   },
-  put<T>(input: string, payload?: unknown) {
+  put<T>(input: string, payload?: unknown, options?: { keepalive?: boolean }) {
     return request<T>(input, {
       method: "PUT",
       body: payload === undefined ? undefined : JSON.stringify(payload),
+      ...(options?.keepalive ? { keepalive: true } : {}),
     });
   },
   patch<T>(input: string, payload?: unknown) {

@@ -42,9 +42,11 @@ export function saveCanvas(
   projectId: string,
   nodes: unknown[],
   edges: unknown[],
+  options?: { keepalive?: boolean },
 ): Promise<CanvasData> {
-  return apiClient.put<CanvasData>(`/api/app/projects/${projectId}/canvas`, {
-    nodes,
-    edges,
-  });
+  return apiClient.put<CanvasData>(
+    `/api/app/projects/${projectId}/canvas`,
+    { nodes, edges },
+    options,
+  );
 }
