@@ -1,14 +1,8 @@
 import { useEffect, useState } from 'react';
-import { X, Settings as SettingsIcon, Keyboard, Layout, Mouse, FileCog, KeyRound, Bell } from 'lucide-react';
+import { X, Keyboard } from 'lucide-react';
 import { useStore, DEFAULT_SHORTCUTS } from '../store';
 
 const SECTIONS = [
-  { id: 'general', icon: SettingsIcon, zh: '常规', en: 'General' },
-  { id: 'canvas', icon: Layout, zh: '画布与对齐', en: 'Canvas & alignment' },
-  { id: 'node', icon: Mouse, zh: '节点行为', en: 'Node behaviour' },
-  { id: 'file', icon: FileCog, zh: '文件与保存', en: 'Files & saving' },
-  { id: 'api', icon: KeyRound, zh: 'API 接入', en: 'API access' },
-  { id: 'notify', icon: Bell, zh: '订阅中心', en: 'Notifications' },
   { id: 'shortcuts', icon: Keyboard, zh: '键盘快捷键', en: 'Keyboard shortcuts' },
 ];
 
