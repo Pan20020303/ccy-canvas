@@ -46,12 +46,17 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\install.ps1
 notepad .env              # set PUBLIC_API_BASE
 powershell -ExecutionPolicy Bypass -File scripts\windows\build-web.ps1
 powershell -ExecutionPolicy Bypass -File scripts\windows\start.ps1
+
+# One-shot nginx install (auto-config + firewall + start) — recommended:
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-nginx.ps1
+# Open http://<server-lan-ip>
 ```
 
-For production-grade Windows service (auto-restart, log rotation):
+For production-grade Windows services (auto-restart, log rotation):
 ```powershell
 choco install nssm
-powershell -ExecutionPolicy Bypass -File scripts\windows\install-service-nssm.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-service-nssm.ps1        # backend
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-nginx-service.ps1       # nginx
 ```
 
 ## Project Layout

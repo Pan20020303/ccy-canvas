@@ -379,32 +379,59 @@ nssm remove CCYCanvasAPI confirm    # 卸载
 
 ### W.6 前端 — Nginx for Windows
 
-**A. 用 Nginx for Windows（推荐）**
+> ⚠️ **生产环境必须用 nginx**。Python `serve-web.ps1` 只适合调试单人访问。
+
+**A. 一键安装 nginx（推荐）**
+
+管理员 PowerShell：
 
 ```powershell
-choco install nginx   # 或自行解压官方包到 C:\nginx
+powershell -ExecutionPolicy Bypass -File scripts\windows\install-nginx.ps1
 ```
 
-编辑 `C:\nginx\conf\nginx.conf`，把 `http {}` 段里的 `server {}` 替换为 `scripts\nginx.example.conf`（路径改为绝对 Windows 路径，例如 `root D:/opt/ccy-canvas/dist;`，注意正斜杠）。
+脚本自动完成：
+1. 下载 nginx-for-Windows 1.27.3 zip 包并解压到 `C:\nginx`
+2. 自动生成 `C:\nginx\conf\nginx.conf`：路径指向 `dist\`、`/api/` 反代到 `127.0.0.1:8080`、SPA fallback 已配置、`index.html` 不缓存、视频生成 600 秒超时、上传 60 MB 上限
+3. 自动开 Windows 防火墙（TCP 80，Domain+Private 配置）
+4. 测试配置 + 启动 nginx
 
-启动：
+完成后访问 `http://<服务器局域网IP>` 即可。
+
+**可选参数：**
 
 ```powershell
-cd C:\nginx
-.\nginx.exe                # 启动
-.\nginx.exe -s reload      # 热重载
-.\nginx.exe -s stop        # 停止
+# 自定义安装路径 / 版本 / 端口
+.\scripts\windows\install-nginx.ps1 -InstallDir D:\nginx -NginxVersion 1.27.3 -Port 8000
 ```
 
-也可以用 NSSM 把 nginx 也注册成服务，开机自启。
+**日常管理：**
 
-**B. 不用 Nginx — Python 静态服务（测试用）**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\nginx-start.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\nginx-stop.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\nginx-reload.ps1   # 改了 dist/ 或 conf 后热重载
+```
+
+`nginx-reload.ps1` 会先跑 `nginx -t` 检查配置，过了再 reload，配置错了不会让正在跑的服务挂掉。
+
+**注册成 Windows 服务（开机自启 + 崩溃自动重启）：**
+
+```powershell
+choco install nssm                              # 装 NSSM
+.\scripts\windows\install-nginx-service.ps1     # 注册成名为 CCYCanvasNginx 的服务
+```
+
+注册后可以在「服务管理器 (services.msc)」里直接启停，或者用 `nssm restart CCYCanvasNginx`。
+
+**B. 不用 Nginx — Python SPA 静态服务（仅调试用）**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows\serve-web.ps1
 ```
 
-默认端口 5173。用户访问 `http://<服务器IP>:5173`。**注意**：这种模式下需要 `.env` 里 `PUBLIC_API_BASE=http://<IP>:8080` 显式指向后端。
+默认端口 5173。会调用 `scripts\spa_server.py`，这个服务器已经处理了 SPA 路由 fallback（`/app`、`/admin` 刷新也不会 404）。`.env` 里 `PUBLIC_API_BASE=http://<IP>:8080` 需要显式指向后端。
+
+⚠️ 这种模式是 Python 单进程，不适合多人并发使用。
 
 ### W.7 防火墙
 
