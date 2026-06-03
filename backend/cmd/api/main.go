@@ -12,6 +12,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
+	skillshttp "ccy-canvas/backend/internal/skills/interfaces"
 	workspaceinfra "ccy-canvas/backend/internal/workspace/infrastructure"
 	workspacehttp "ccy-canvas/backend/internal/workspace/interfaces"
 	"ccy-canvas/backend/internal/platform/authn"
@@ -106,6 +107,12 @@ func main() {
 	workspaceRepo := workspaceinfra.NewRepository(queries)
 	workspaceHandler := workspacehttp.NewHandler(workspaceRepo)
 	workspaceHandler.RegisterRoutes(api)
+
+	// Skills + Agents routes (user CRUD + admin CRUD).
+	skillsHandler := skillshttp.NewHandler(queries)
+	skillsHandler.RegisterRoutes(api)
+	skillsAdminHandler := skillshttp.NewAdminHandler(queries)
+	skillsAdminHandler.RegisterRoutes(api)
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {
