@@ -71,22 +71,31 @@ html.theme-light .bg-black\/20 {
 }
 
 /* ─── Tooltip pills (icon hover labels) ────────────────────────────────── */
+/* In light mode flip the dark pill into a white card with dark text, so
+   "空间/项目" hints feel native to the theme instead of being black boxes. */
 html.theme-light .bg-black\/60,
 html.theme-light .bg-black\/70,
 html.theme-light .bg-black\/80,
 html.theme-light .bg-black\/85,
 html.theme-light .bg-black\/90 {
-  background-color: rgba(40, 44, 52, 0.92) !important;
-  border-color: rgba(255, 255, 255, 0.15) !important;
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.22) !important;
 }
-/* Force tooltip text to stay white over the dark pill, overriding the earlier
-   global text-white -> dark rule by adding more specific selectors. */
 html.theme-light .bg-black\/60 *,
 html.theme-light .bg-black\/70 *,
 html.theme-light .bg-black\/80 *,
 html.theme-light .bg-black\/85 *,
 html.theme-light .bg-black\/90 * {
-  color: #ffffff !important;
+  color: #1c1f24 !important;
+}
+
+/* ─── Preview / lightbox modal (PreviewModal in CustomNodes) ───────────── */
+/* bg-black/90 is used by PreviewModal as the full-screen scrim. Keep it
+   subtle so it doesn't feel like a dark overlay slammed on a light app. */
+html.theme-light .fixed.inset-0.bg-black\/90 {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(8px);
 }
 
 /* ─── Panel surfaces (sidebars, popovers, dropdowns, nodes) ────────────── */
