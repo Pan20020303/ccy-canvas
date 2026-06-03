@@ -232,7 +232,25 @@ export function AdminInvitationsPage() {
         </Button>
       }
     >
-      <div className="overflow-hidden rounded-2xl border border-white/[0.08]">
+      <div className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">邀请码总数</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{invitations.length}</p>
+          </div>
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">当前有效</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{invitations.filter((inv) => inv.status === "active").length}</p>
+          </div>
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">已撤销</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{invitations.filter((inv) => inv.status === "revoked").length}</p>
+          </div>
+        </div>
+        <div
+          data-admin-panel
+          className="overflow-hidden rounded-[30px] border border-white/[0.08] bg-[#111111]/95 shadow-[0_30px_80px_-40px_rgba(0,0,0,0.9)]"
+        >
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.06] bg-white/[0.02]">
@@ -284,6 +302,7 @@ export function AdminInvitationsPage() {
             共 {invitations.length} 条
           </div>
         )}
+        </div>
       </div>
 
       <CreateDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onCreated={load} />

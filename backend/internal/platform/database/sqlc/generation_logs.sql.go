@@ -22,6 +22,28 @@ func (q *Queries) CountGenerationLogs(ctx context.Context) (int32, error) {
 	return total, err
 }
 
+const countGenerationLogsWithFilter = `-- name: CountGenerationLogsWithFilter :one
+SELECT count(*)::int AS total
+FROM generation_logs g
+LEFT JOIN users u ON u.id = g.user_id
+WHERE ($1::text = '' OR g.status = $1)
+  AND ($2::text = '' OR COALESCE(u.name, '') ILIKE '%' || $2 || '%' OR COALESCE(u.email, '') ILIKE '%' || $2 || '%')
+  AND ($3::text = '' OR g.model ILIKE '%' || $3 || '%')
+`
+
+type CountGenerationLogsWithFilterParams struct {
+	Column1 string `json:"column_1"`
+	Column2 string `json:"column_2"`
+	Column3 string `json:"column_3"`
+}
+
+func (q *Queries) CountGenerationLogsWithFilter(ctx context.Context, arg CountGenerationLogsWithFilterParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countGenerationLogsWithFilter, arg.Column1, arg.Column2, arg.Column3)
+	var total int32
+	err := row.Scan(&total)
+	return total, err
+}
+
 const countGenerationsToday = `-- name: CountGenerationsToday :one
 SELECT count(*)::int AS total,
        count(*) FILTER (WHERE status = 'success')::int AS success,
@@ -44,22 +66,21 @@ func (q *Queries) CountGenerationsToday(ctx context.Context) (CountGenerationsTo
 }
 
 const insertGenerationLog = `-- name: InsertGenerationLog :one
-INSERT INTO generation_logs (user_id, node_id, service_type, model, prompt, status, result_url, error_msg, duration_ms, cost)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+INSERT INTO generation_logs (user_id, node_id, service_type, model, prompt, status, result_url, error_msg, duration_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING id, user_id, node_id, service_type, model, prompt, status, result_url, error_msg, duration_ms, cost, created_at
 `
 
 type InsertGenerationLogParams struct {
-	UserID      pgtype.UUID    `json:"user_id"`
-	NodeID      string         `json:"node_id"`
-	ServiceType string         `json:"service_type"`
-	Model       string         `json:"model"`
-	Prompt      string         `json:"prompt"`
-	Status      string         `json:"status"`
-	ResultUrl   string         `json:"result_url"`
-	ErrorMsg    string         `json:"error_msg"`
-	DurationMs  int32          `json:"duration_ms"`
-	Cost        pgtype.Numeric `json:"cost"`
+	UserID      pgtype.UUID `json:"user_id"`
+	NodeID      string      `json:"node_id"`
+	ServiceType string      `json:"service_type"`
+	Model       string      `json:"model"`
+	Prompt      string      `json:"prompt"`
+	Status      string      `json:"status"`
+	ResultUrl   string      `json:"result_url"`
+	ErrorMsg    string      `json:"error_msg"`
+	DurationMs  int32       `json:"duration_ms"`
 }
 
 func (q *Queries) InsertGenerationLog(ctx context.Context, arg InsertGenerationLogParams) (GenerationLog, error) {
@@ -73,7 +94,6 @@ func (q *Queries) InsertGenerationLog(ctx context.Context, arg InsertGenerationL
 		arg.ResultUrl,
 		arg.ErrorMsg,
 		arg.DurationMs,
-		arg.Cost,
 	)
 	var i GenerationLog
 	err := row.Scan(
@@ -136,4 +156,111 @@ func (q *Queries) ListGenerationLogs(ctx context.Context, arg ListGenerationLogs
 		return nil, err
 	}
 	return items, nil
+}
+
+const listGenerationLogsWithUser = `-- name: ListGenerationLogsWithUser :many
+SELECT g.id, g.user_id, g.node_id, g.service_type, g.model, g.prompt, g.status, g.result_url, g.error_msg, g.duration_ms, g.cost, g.created_at,
+       COALESCE(u.email, '') AS user_email,
+       COALESCE(u.name, '')  AS user_name
+FROM generation_logs g
+LEFT JOIN users u ON u.id = g.user_id
+WHERE ($1::text = '' OR g.status = $1)
+  AND ($2::text = '' OR COALESCE(u.name, '') ILIKE '%' || $2 || '%' OR COALESCE(u.email, '') ILIKE '%' || $2 || '%')
+  AND ($3::text = '' OR g.model ILIKE '%' || $3 || '%')
+ORDER BY g.created_at DESC
+LIMIT $4 OFFSET $5
+`
+
+type ListGenerationLogsWithUserParams struct {
+	Column1 string `json:"column_1"`
+	Column2 string `json:"column_2"`
+	Column3 string `json:"column_3"`
+	Limit   int32  `json:"limit"`
+	Offset  int32  `json:"offset"`
+}
+
+type ListGenerationLogsWithUserRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	NodeID      string             `json:"node_id"`
+	ServiceType string             `json:"service_type"`
+	Model       string             `json:"model"`
+	Prompt      string             `json:"prompt"`
+	Status      string             `json:"status"`
+	ResultUrl   string             `json:"result_url"`
+	ErrorMsg    string             `json:"error_msg"`
+	DurationMs  int32              `json:"duration_ms"`
+	Cost        pgtype.Numeric     `json:"cost"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UserEmail   string             `json:"user_email"`
+	UserName    string             `json:"user_name"`
+}
+
+func (q *Queries) ListGenerationLogsWithUser(ctx context.Context, arg ListGenerationLogsWithUserParams) ([]ListGenerationLogsWithUserRow, error) {
+	rows, err := q.db.Query(ctx, listGenerationLogsWithUser,
+		arg.Column1,
+		arg.Column2,
+		arg.Column3,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGenerationLogsWithUserRow{}
+	for rows.Next() {
+		var i ListGenerationLogsWithUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.NodeID,
+			&i.ServiceType,
+			&i.Model,
+			&i.Prompt,
+			&i.Status,
+			&i.ResultUrl,
+			&i.ErrorMsg,
+			&i.DurationMs,
+			&i.Cost,
+			&i.CreatedAt,
+			&i.UserEmail,
+			&i.UserName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateGenerationLogResult = `-- name: UpdateGenerationLogResult :exec
+UPDATE generation_logs
+SET status = $2,
+    result_url = $3,
+    error_msg = $4,
+    duration_ms = $5
+WHERE id = $1
+`
+
+type UpdateGenerationLogResultParams struct {
+	ID         pgtype.UUID `json:"id"`
+	Status     string      `json:"status"`
+	ResultUrl  string      `json:"result_url"`
+	ErrorMsg   string      `json:"error_msg"`
+	DurationMs int32       `json:"duration_ms"`
+}
+
+func (q *Queries) UpdateGenerationLogResult(ctx context.Context, arg UpdateGenerationLogResultParams) error {
+	_, err := q.db.Exec(ctx, updateGenerationLogResult,
+		arg.ID,
+		arg.Status,
+		arg.ResultUrl,
+		arg.ErrorMsg,
+		arg.DurationMs,
+	)
+	return err
 }

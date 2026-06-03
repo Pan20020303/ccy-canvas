@@ -53,7 +53,7 @@ func main() {
 	// Model Catalog
 	catalogRepo := infrastructure.NewRepository(queries)
 	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey)
-	catalogHandler := modelhttp.NewHandler(catalogService)
+	catalogHandler := modelhttp.NewHandler(catalogService, queries)
 
 	allowedOrigins := []string{
 		"http://localhost:5173",
@@ -70,6 +70,7 @@ func main() {
 	router.Use(middleware.RealIP)
 	router.Use(httpx.RequestIDMiddleware)
 	router.Use(httpx.CORSMiddleware(allowedOrigins))
+	router.Use(httpx.MaxBodyMiddleware(10 * 1024 * 1024)) // 10 MB cap for non-upload endpoints
 	router.Use(middleware.Logger)
 	router.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		httpx.ApplyCORSHeaders(w, r, allowedOriginSet)
@@ -95,7 +96,7 @@ func main() {
 	api.UseMiddleware(authn.Middleware(api, sessionManager))
 
 	// Admin management routes (users, invitations, stats, logs).
-	adminHandler := identityhttp.NewAdminHandler(queries)
+	adminHandler := identityhttp.NewAdminHandler(queries, passwordService)
 	adminHandler.RegisterRoutes(api)
 
 	// Model catalog routes.

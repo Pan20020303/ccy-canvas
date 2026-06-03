@@ -10,6 +10,7 @@ import (
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
+	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/shared/httpx"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -17,11 +18,12 @@ import (
 
 // AdminHandler provides admin-only huma endpoints for users, invitations, stats, logs.
 type AdminHandler struct {
-	q *sqlc.Queries
+	q        *sqlc.Queries
+	password password.Service
 }
 
-func NewAdminHandler(q *sqlc.Queries) *AdminHandler {
-	return &AdminHandler{q: q}
+func NewAdminHandler(q *sqlc.Queries, passwordSvc password.Service) *AdminHandler {
+	return &AdminHandler{q: q, password: passwordSvc}
 }
 
 var adminSec = []map[string][]string{{httpapi.SecuritySchemeName: {authn.ScopeAdmin}}}
@@ -66,6 +68,16 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		Security:      adminSec,
 		DefaultStatus: http.StatusNoContent,
 	}, h.deleteUser)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "admin-reset-user-password",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/users/{id}/password",
+		Summary:       "Reset a user's password",
+		Tags:          []string{"Admin", "Users"},
+		Security:      adminSec,
+		DefaultStatus: http.StatusOK,
+	}, h.resetUserPassword)
 
 	huma.Register(api, huma.Operation{
 		OperationID:   "admin-adjust-credits",
@@ -264,6 +276,42 @@ func (h *AdminHandler) deleteUser(ctx context.Context, input *deleteUserInput) (
 	return nil, nil
 }
 
+type resetUserPasswordInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		Password string `json:"password" minLength:"6" doc:"New password (min 6 chars)"`
+	}
+}
+
+type resetUserPasswordOutput struct {
+	Body struct {
+		Data      resetUserPasswordData `json:"data"`
+		RequestID string                `json:"request_id"`
+	}
+}
+
+type resetUserPasswordData struct {
+	UserID string `json:"user_id"`
+}
+
+func (h *AdminHandler) resetUserPassword(ctx context.Context, input *resetUserPasswordInput) (*resetUserPasswordOutput, error) {
+	pgID, err := parseUUID(input.ID)
+	if err != nil {
+		return nil, huma.Error400BadRequest("Invalid user ID")
+	}
+	hash, err := h.password.Hash(input.Body.Password)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to hash password")
+	}
+	if err := h.q.UpdateUserPassword(ctx, sqlc.UpdateUserPasswordParams{ID: pgID, PasswordHash: hash}); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to update password")
+	}
+	out := &resetUserPasswordOutput{}
+	out.Body.Data.UserID = input.ID
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
 // ─── Credits ────────────────────────────────────────────────────────────────
 
 type adjustCreditsInput struct {
@@ -277,13 +325,15 @@ type adjustCreditsInput struct {
 
 type creditsOutput struct {
 	Body struct {
-		Data struct {
-			UserID         string `json:"user_id"`
-			DailyQuota     int32  `json:"daily_quota"`
-			CurrentBalance int32  `json:"current_balance"`
-		} `json:"data"`
-		RequestID string `json:"request_id"`
+		Data      creditsData `json:"data"`
+		RequestID string      `json:"request_id"`
 	}
+}
+
+type creditsData struct {
+	UserID         string `json:"user_id"`
+	DailyQuota     int32  `json:"daily_quota"`
+	CurrentBalance int32  `json:"current_balance"`
 }
 
 func (h *AdminHandler) adjustCredits(ctx context.Context, input *adjustCreditsInput) (*creditsOutput, error) {
@@ -359,18 +409,18 @@ func (h *AdminHandler) adjustCredits(ctx context.Context, input *adjustCreditsIn
 // ─── Invitations ────────────────────────────────────────────────────────────
 
 type InvitationItem struct {
-	ID              string     `json:"id"`
-	Role            string     `json:"role"`
-	InitialQuota    int32      `json:"initial_daily_quota"`
-	MaxUses         int32      `json:"max_uses"`
-	UsedCount       int32      `json:"used_count"`
-	ExpiresAt       string     `json:"expires_at"`
-	CreatedBy       string     `json:"created_by"`
-	CreatorName     string     `json:"creator_name"`
-	Note            string     `json:"note"`
-	CreatedAt       string     `json:"created_at"`
-	RevokedAt       *time.Time `json:"revoked_at"`
-	Status          string     `json:"status"` // active / used / expired / revoked
+	ID           string     `json:"id"`
+	Role         string     `json:"role"`
+	InitialQuota int32      `json:"initial_daily_quota"`
+	MaxUses      int32      `json:"max_uses"`
+	UsedCount    int32      `json:"used_count"`
+	ExpiresAt    string     `json:"expires_at"`
+	CreatedBy    string     `json:"created_by"`
+	CreatorName  string     `json:"creator_name"`
+	Note         string     `json:"note"`
+	CreatedAt    string     `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at"`
+	Status       string     `json:"status"` // active / used / expired / revoked
 }
 
 func invitationStatus(row sqlc.ListInvitationsRow) string {
@@ -459,15 +509,15 @@ func (h *AdminHandler) revokeInvitation(ctx context.Context, input *revokeInvita
 // ─── Stats ──────────────────────────────────────────────────────────────────
 
 type StatsData struct {
-	TotalUsers         int32 `json:"total_users"`
-	AdminUsers         int32 `json:"admin_users"`
-	ActiveUsers        int32 `json:"active_users"`
-	TotalProviders     int32 `json:"total_providers"`
-	EnabledProviders   int32 `json:"enabled_providers"`
-	GenerationsToday   int32 `json:"generations_today"`
-	SuccessToday       int32 `json:"success_today"`
-	ErrorsToday        int32 `json:"errors_today"`
-	CreditsConsumed    int32 `json:"credits_consumed_today"`
+	TotalUsers       int32 `json:"total_users"`
+	AdminUsers       int32 `json:"admin_users"`
+	ActiveUsers      int32 `json:"active_users"`
+	TotalProviders   int32 `json:"total_providers"`
+	EnabledProviders int32 `json:"enabled_providers"`
+	GenerationsToday int32 `json:"generations_today"`
+	SuccessToday     int32 `json:"success_today"`
+	ErrorsToday      int32 `json:"errors_today"`
+	CreditsConsumed  int32 `json:"credits_consumed_today"`
 }
 
 type statsOutput struct {
@@ -504,6 +554,9 @@ func (h *AdminHandler) getStats(ctx context.Context, _ *struct{}) (*statsOutput,
 type LogItem struct {
 	ID          string `json:"id"`
 	UserID      string `json:"user_id"`
+	UserEmail   string `json:"user_email"`
+	UserName    string `json:"user_name"`
+	NodeID      string `json:"node_id"`
 	ServiceType string `json:"service_type"`
 	Model       string `json:"model"`
 	Prompt      string `json:"prompt"`
@@ -515,8 +568,11 @@ type LogItem struct {
 }
 
 type listLogsInput struct {
-	Limit  int32 `query:"limit" minimum:"1" maximum:"100" default:"50"`
-	Offset int32 `query:"offset" minimum:"0" default:"0"`
+	Limit  int32  `query:"limit" minimum:"1" maximum:"100" default:"50"`
+	Offset int32  `query:"offset" minimum:"0" default:"0"`
+	Status string `query:"status"`
+	User   string `query:"user"`
+	Model  string `query:"model"`
 }
 
 type listLogsOutput struct {
@@ -528,17 +584,30 @@ type listLogsOutput struct {
 }
 
 func (h *AdminHandler) listLogs(ctx context.Context, input *listLogsInput) (*listLogsOutput, error) {
-	rows, err := h.q.ListGenerationLogs(ctx, sqlc.ListGenerationLogsParams{Limit: input.Limit, Offset: input.Offset})
+	rows, err := h.q.ListGenerationLogsWithUser(ctx, sqlc.ListGenerationLogsWithUserParams{
+		Column1: input.Status,
+		Column2: input.User,
+		Column3: input.Model,
+		Limit:   input.Limit,
+		Offset:  input.Offset,
+	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to list logs")
 	}
-	total, _ := h.q.CountGenerationLogs(ctx)
+	total, _ := h.q.CountGenerationLogsWithFilter(ctx, sqlc.CountGenerationLogsWithFilterParams{
+		Column1: input.Status,
+		Column2: input.User,
+		Column3: input.Model,
+	})
 
 	items := make([]LogItem, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, LogItem{
 			ID:          formatUUID(r.ID.Bytes),
 			UserID:      formatUUID(r.UserID.Bytes),
+			UserEmail:   r.UserEmail,
+			UserName:    r.UserName,
+			NodeID:      r.NodeID,
 			ServiceType: r.ServiceType,
 			Model:       r.Model,
 			Prompt:      r.Prompt,

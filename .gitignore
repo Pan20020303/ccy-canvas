@@ -5,9 +5,22 @@ node_modules/
 
 # build artifacts
 dist/
+bin/
 *.exe
 
-# dev logs
+# dev / live logs
 *-dev.log
+*-live.log
+*-live.err.log
 backend/uploads/
-.env
+uploads/
+
+# runtime
+run/*
+!run/.gitignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -82,6 +82,90 @@ describe("workspace project state", () => {
     expect(state.groups).toHaveLength(1);
   });
 
+  it("creates groups with persisted geometry around selected nodes", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addNode({
+      id: "a",
+      type: "imageNode",
+      position: { x: 100, y: 100 },
+      width: 200,
+      height: 160,
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "b",
+      type: "textNode",
+      position: { x: 360, y: 200 },
+      width: 180,
+      height: 140,
+      data: {},
+    } as never);
+
+    useStore.getState().createGroup(["a", "b"]);
+
+    const group = useStore.getState().groups.at(-1);
+    expect(group).toMatchObject({
+      nodeIds: ["a", "b"],
+      position: { x: 68, y: 32 },
+      width: 504,
+      height: 340,
+    });
+  });
+
+  it("undoes the last canvas mutation with ctrl-z semantics", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addNode({
+      id: "undo-a",
+      type: "textNode",
+      position: { x: 10, y: 20 },
+      data: {},
+    } as never);
+
+    expect(useStore.getState().nodes.some((node) => node.id === "undo-a")).toBe(true);
+
+    useStore.getState().undoCanvas();
+
+    expect(useStore.getState().nodes.some((node) => node.id === "undo-a")).toBe(false);
+  });
+
+  it("copies selected nodes and pastes them with a new offset", async () => {
+    const { useStore } = await loadStore();
+    const initialNodeCount = useStore.getState().nodes.length;
+    const initialEdgeCount = useStore.getState().edges.length;
+
+    useStore.getState().addNode({
+      id: "copy-a",
+      type: "textNode",
+      selected: true,
+      position: { x: 100, y: 120 },
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "copy-b",
+      type: "imageNode",
+      selected: true,
+      position: { x: 180, y: 240 },
+      data: {},
+    } as never);
+    useStore.getState().onConnect({ source: "copy-a", sourceHandle: null, target: "copy-b", targetHandle: null });
+
+    useStore.getState().copySelectedNodes();
+    useStore.getState().pasteCopiedNodes();
+
+    const state = useStore.getState();
+    expect(state.nodes).toHaveLength(initialNodeCount + 4);
+    expect(state.edges).toHaveLength(initialEdgeCount + 2);
+    const pastedNodes = state.nodes.filter((node) => node.id !== "copy-a" && node.id !== "copy-b");
+    expect(pastedNodes.map((node) => node.position)).toEqual(
+      expect.arrayContaining([
+        { x: 148, y: 168 },
+        { x: 228, y: 288 },
+      ]),
+    );
+  });
+
   it("starts in the authenticated user's personal space", async () => {
     const { useStore } = await loadStore();
 
@@ -140,6 +224,90 @@ describe("workspace history state", () => {
     useStore.getState().switchSpace("space-team-alpha");
 
     expect(useStore.getState().history).toEqual([]);
+  });
+
+  it("toggles the history assets modal open state", async () => {
+    const { useStore } = await loadStore();
+
+    expect((useStore.getState() as Record<string, unknown>).isHistoryAssetsOpen).toBe(false);
+
+    useStore.getState().setHistoryAssetsOpen(true);
+    expect((useStore.getState() as Record<string, unknown>).isHistoryAssetsOpen).toBe(true);
+
+    useStore.getState().setHistoryAssetsOpen(false);
+    expect((useStore.getState() as Record<string, unknown>).isHistoryAssetsOpen).toBe(false);
+  });
+
+  it("removes selected history items only from the active space", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addHistory({
+      id: "personal-1",
+      title: "Personal 1",
+      type: "image",
+      timestamp: 1,
+      thumbnail: "x",
+    });
+    useStore.getState().addHistory({
+      id: "personal-2",
+      title: "Personal 2",
+      type: "video",
+      timestamp: 2,
+      thumbnail: "y",
+    });
+    useStore.getState().switchSpace("space-team-alpha");
+    useStore.getState().addHistory({
+      id: "team-1",
+      title: "Team 1",
+      type: "image",
+      timestamp: 3,
+      thumbnail: "z",
+    });
+
+    useStore.getState().switchSpace("space-personal");
+    useStore.getState().removeHistoryItems(["personal-1"]);
+
+    expect(useStore.getState().history.map((item) => item.id)).toEqual(["personal-2"]);
+
+    useStore.getState().switchSpace("space-team-alpha");
+    expect(useStore.getState().history.map((item) => item.id)).toEqual(["team-1"]);
+  });
+
+  it("reuses selected image and video history items as reference nodes", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addHistory({
+      id: "hist-image",
+      title: "Image ref",
+      type: "image",
+      timestamp: 1,
+      thumbnail: "https://example.com/reuse-image.png",
+    });
+    useStore.getState().addHistory({
+      id: "hist-video",
+      title: "Video ref",
+      type: "video",
+      timestamp: 2,
+      thumbnail: "https://example.com/reuse-video.mp4",
+    });
+    useStore.getState().addHistory({
+      id: "hist-audio",
+      title: "Audio ref",
+      type: "audio",
+      timestamp: 3,
+      thumbnail: "https://example.com/reuse-audio.mp3",
+    });
+
+    const beforeCount = useStore.getState().nodes.length;
+    useStore.getState().reuseHistoryItems(["hist-image", "hist-video", "hist-audio"]);
+    const appendedNodes = useStore.getState().nodes.slice(beforeCount);
+
+    expect(appendedNodes).toHaveLength(2);
+    expect(appendedNodes.map((node) => node.type).sort()).toEqual(["referenceImageNode", "referenceVideoNode"]);
+    expect(appendedNodes.map((node) => (node.data as Record<string, unknown>)?.url).sort()).toEqual([
+      "https://example.com/reuse-image.png",
+      "https://example.com/reuse-video.mp4",
+    ]);
   });
 });
 
@@ -303,5 +471,29 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).toContain("\"reference_video\":\"/uploads/2026-01/ref.mp4\"");
     expect(String(init.body)).not.toContain("data:image/png;base64,from-drop");
     expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
+  });
+
+  it("updates arbitrary node ui state through updateNodeData", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addNode({
+      id: "text-mode-node",
+      type: "textNode",
+      position: { x: 0, y: 0 },
+      data: {},
+    } as never);
+
+    useStore.getState().updateNodeData("text-mode-node", {
+      textMode: "reverse_prompt",
+      reversePromptDraft: "draft content",
+      customTitle: "自定义标题",
+    });
+
+    const node = useStore.getState().nodes.find((item) => item.id === "text-mode-node");
+    expect(node?.data).toMatchObject({
+      textMode: "reverse_prompt",
+      reversePromptDraft: "draft content",
+      customTitle: "自定义标题",
+    });
   });
 });

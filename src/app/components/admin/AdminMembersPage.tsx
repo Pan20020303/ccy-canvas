@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, ShieldCheck, User, Ban, Trash2, RefreshCw, Zap, XCircle } from "lucide-react";
+import { Loader2, ShieldCheck, User, Ban, Trash2, RefreshCw, Zap, XCircle, KeyRound, Eye, EyeOff } from "lucide-react";
 
 import type { AdminUser, AdjustCreditsPayload } from "../../api/admin";
-import { listUsers, updateUserRole, updateUserStatus, deleteUser, adjustCredits } from "../../api/admin";
+import { listUsers, updateUserRole, updateUserStatus, deleteUser, adjustCredits, resetUserPassword } from "../../api/admin";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -147,6 +147,108 @@ function CreditsDrawer({ user, open, onClose, onSaved }: {
   );
 }
 
+// ─── Password Dialog ────────────────────────────────────────────────────────
+
+function PasswordDialog({ user, open, onClose }: {
+  user: AdminUser | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [show, setShow] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (open) { setPassword(""); setConfirm(""); setError(""); setDone(false); setShow(false); }
+  }, [open]);
+
+  if (!open || !user) return null;
+
+  const handleSave = async () => {
+    setError("");
+    if (password.length < 6) { setError("密码至少 6 位"); return; }
+    if (password !== confirm) { setError("两次输入不一致"); return; }
+    setSaving(true);
+    try {
+      await resetUserPassword(user.id, password);
+      setDone(true);
+      setTimeout(onClose, 1200);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "重置失败");
+    } finally { setSaving(false); }
+  };
+
+  const genRandom = () => {
+    const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+    let pwd = "";
+    for (let i = 0; i < 12; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
+    setPassword(pwd); setConfirm(pwd); setShow(true);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm">
+      <div className="w-[440px] max-w-[92vw] rounded-2xl border border-white/[0.08] bg-[#141414] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
+          <div>
+            <h3 className="text-sm font-semibold text-white">重置密码</h3>
+            <p className="mt-0.5 text-xs text-neutral-500">{user.name} · {user.email}</p>
+          </div>
+          <button onClick={onClose} className="text-neutral-500 hover:text-white transition">
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+        {done ? (
+          <div className="px-5 py-8 text-center text-sm text-emerald-400">密码已重置成功</div>
+        ) : (
+          <>
+            <div className="space-y-4 px-5 py-5">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-neutral-400">新密码</label>
+                  <button onClick={genRandom} className="text-[11px] text-neutral-500 transition hover:text-neutral-200">生成随机密码</button>
+                </div>
+                <div className="relative">
+                  <Input
+                    type={show ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="至少 6 位"
+                    className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white pr-9"
+                  />
+                  <button onClick={() => setShow((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200">
+                    {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-neutral-400">再次输入</label>
+                <Input
+                  type={show ? "text" : "password"}
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
+                />
+              </div>
+              {error && <p className="text-xs text-red-400">{error}</p>}
+              <p className="text-[10px] text-neutral-600">该用户下次登录需用新密码。请通过安全渠道告知。</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
+              <Button onClick={onClose} variant="outline" className="border-white/10 text-neutral-300 hover:bg-white/5 rounded-full px-5">取消</Button>
+              <Button onClick={handleSave} disabled={saving || !password || !confirm} className="bg-[#ff6a1f] text-white hover:bg-[#ff7b35] rounded-full px-5">
+                {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                确认重置
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export function AdminMembersPage() {
@@ -154,6 +256,7 @@ export function AdminMembersPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [creditUser, setCreditUser] = useState<AdminUser | null>(null);
+  const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -197,7 +300,25 @@ export function AdminMembersPage() {
         </Button>
       }
     >
-      <div className="overflow-hidden rounded-2xl border border-white/[0.08]">
+      <div className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">成员总数</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{users.length}</p>
+          </div>
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">管理员</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{users.filter((u) => u.role === "admin").length}</p>
+          </div>
+          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">当前活跃</p>
+            <p className="mt-2 text-3xl font-semibold text-white">{users.filter((u) => u.status === "active").length}</p>
+          </div>
+        </div>
+        <div
+          data-admin-panel
+          className="overflow-hidden rounded-[30px] border border-white/[0.08] bg-[#111111]/95 shadow-[0_30px_80px_-40px_rgba(0,0,0,0.9)]"
+        >
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.06] bg-white/[0.02]">
@@ -245,6 +366,9 @@ export function AdminMembersPage() {
                     <button onClick={() => handleToggleRole(u)} disabled={busyId === u.id} title="切换角色" className="text-neutral-500 hover:text-[#ff6a1f] disabled:opacity-30 transition">
                       <ShieldCheck className="h-3.5 w-3.5" />
                     </button>
+                    <button onClick={() => setPasswordUser(u)} disabled={busyId === u.id} title="重置密码" className="text-neutral-500 hover:text-cyan-300 disabled:opacity-30 transition">
+                      <KeyRound className="h-3.5 w-3.5" />
+                    </button>
                     <button onClick={() => handleToggleStatus(u)} disabled={busyId === u.id} title={u.status === "active" ? "禁用" : "启用"} className="text-neutral-500 hover:text-amber-400 disabled:opacity-30 transition">
                       {u.status === "active" ? <Ban className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
                     </button>
@@ -262,6 +386,7 @@ export function AdminMembersPage() {
             共 {users.length} 位用户
           </div>
         )}
+        </div>
       </div>
 
       <CreditsDrawer
@@ -269,6 +394,12 @@ export function AdminMembersPage() {
         open={creditUser !== null}
         onClose={() => setCreditUser(null)}
         onSaved={load}
+      />
+
+      <PasswordDialog
+        user={passwordUser}
+        open={passwordUser !== null}
+        onClose={() => setPasswordUser(null)}
       />
     </AdminShell>
   );

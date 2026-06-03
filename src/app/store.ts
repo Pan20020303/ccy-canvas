@@ -18,6 +18,12 @@ import type { AppProviderConfig } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas } from './api/projects';
+import {
+  buildCanvasClipboardSelection,
+  remapClipboardSelectionForPaste,
+  type CanvasClipboardSelection,
+} from './canvas-clipboard';
+import { computeGroupBounds } from './group-routing';
 import { clearReferencePayloadValue, getReferencePayloadValue } from './reference-media';
 
 type Language = 'en' | 'zh';
@@ -50,8 +56,39 @@ export type Project = {
   updatedAt: number;
 };
 
-export type Group = { id: string; nodeIds: string[]; name: string };
+export type Group = {
+  id: string;
+  nodeIds: string[];
+  name: string;
+  position?: { x: number; y: number };
+  width?: number;
+  height?: number;
+};
 type ProjectCanvasState = { nodes: Node[]; edges: Edge[]; groups: Group[] };
+
+export type SavedAssetCategory = 'character' | 'scene' | 'object' | 'style' | 'sound' | 'project' | 'other';
+
+export type SavedAsset = {
+  id: string;
+  name: string;
+  category: SavedAssetCategory;
+  thumbnail: string;
+  url: string;
+  kind: 'image' | 'video' | 'text';
+  text?: string;
+  createdAt: number;
+};
+
+export const ASSET_CATEGORIES: { key: SavedAssetCategory | 'all'; zh: string; en: string }[] = [
+  { key: 'all', zh: '全部', en: 'All' },
+  { key: 'other', zh: '其它', en: 'Other' },
+  { key: 'character', zh: '人物', en: 'Character' },
+  { key: 'scene', zh: '场景', en: 'Scene' },
+  { key: 'object', zh: '物品', en: 'Object' },
+  { key: 'style', zh: '风格', en: 'Style' },
+  { key: 'sound', zh: '音效', en: 'Sound' },
+  { key: 'project', zh: '项目空间', en: 'Project' },
+];
 export type SpaceType = 'personal' | 'team';
 export type SpaceRole = 'owner' | 'editor' | 'viewer';
 export type WorkspaceSpace = {
@@ -123,6 +160,8 @@ type AppState = {
   setProfileOpen: (open: boolean) => void;
   history: HistoryItem[];
   addHistory: (item: HistoryDraft) => void;
+  removeHistoryItems: (ids: string[]) => void;
+  reuseHistoryItems: (ids: string[]) => void;
   spaces: WorkspaceSpace[];
   activeSpaceId: string;
   activeSpaceType: SpaceType;
@@ -148,6 +187,25 @@ type AppState = {
   invitations: AdminInvitation[];
   groups: Group[];
   createGroup: (nodeIds: string[]) => void;
+  removeGroup: (groupId: string) => void;
+  ungroupNodes: (groupId: string) => void;
+  setGroupMembers: (groupId: string, nodeIds: string[]) => void;
+  renameGroup: (groupId: string, name: string) => void;
+  savedAssets: SavedAsset[];
+  saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
+  removeAsset: (id: string) => void;
+  saveAssetDialogNodeId: string | null;
+  openSaveAssetDialog: (nodeId: string) => void;
+  closeSaveAssetDialog: () => void;
+  isAssetLibraryOpen: boolean;
+  setAssetLibraryOpen: (open: boolean) => void;
+  undoStack: ProjectCanvasState[];
+  pushUndoSnapshot: () => void;
+  undoCanvas: () => void;
+  copiedCanvasSelection: CanvasClipboardSelection | null;
+  copySelectedNodes: () => void;
+  pasteCopiedNodes: () => void;
+  updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
   updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
   runNode: (nodeId: string, payload: { prompt: string; model?: string }) => void;
   cancelNode: (nodeId: string) => void;
@@ -157,12 +215,16 @@ type AppState = {
   resetShortcuts: () => void;
   isSettingsOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
+  isHistoryAssetsOpen: boolean;
+  setHistoryAssetsOpen: (open: boolean) => void;
   isTaskQueueCollapsed: boolean;
   setTaskQueueCollapsed: (v: boolean) => void;
   showMiniMap: boolean;
   setShowMiniMap: (value: boolean) => void;
   snapToGrid: boolean;
   setSnapToGrid: (value: boolean) => void;
+  isConnectionDragging: boolean;
+  setConnectionDragging: (value: boolean) => void;
 };
 
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
@@ -204,7 +266,7 @@ const initialNodes: Node[] = [
   },
 ];
 
-const initialEdges: Edge[] = [{ id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#0891b2', strokeWidth: 2 } }];
+const initialEdges: Edge[] = [{ id: 'e1-2', source: '1', target: '2', type: 'flow' }];
 
 const createCanvasSnapshot = (
   nodes: Node[] = [],
@@ -213,8 +275,23 @@ const createCanvasSnapshot = (
 ): ProjectCanvasState => ({
   nodes: nodes.map((node) => ({ ...node, position: { ...node.position }, data: { ...(node.data ?? {}) } })),
   edges: edges.map((edge) => ({ ...edge, style: edge.style ? { ...edge.style } : edge.style })),
-  groups: groups.map((group) => ({ ...group, nodeIds: [...group.nodeIds] })),
+  groups: groups.map((group) => ({
+    ...group,
+    nodeIds: [...group.nodeIds],
+    position: group.position ? { ...group.position } : group.position,
+  })),
 });
+
+const cloneCanvasState = (state: Pick<AppState, 'nodes' | 'edges' | 'groups'>): ProjectCanvasState =>
+  createCanvasSnapshot(state.nodes, state.edges, state.groups);
+
+const pushUndoState = (state: AppState) => [...state.undoStack, cloneCanvasState(state)];
+
+const shouldCaptureNodeChangesForUndo = (changes: NodeChange[]) =>
+  changes.some((change) => change.type !== 'select');
+
+const shouldCaptureEdgeChangesForUndo = (changes: EdgeChange[]) =>
+  changes.some((change) => change.type !== 'select');
 
 const createEmptyCanvasState = (): ProjectCanvasState => createCanvasSnapshot();
 
@@ -312,6 +389,33 @@ const normalizeHistoryItem = (
   };
 };
 
+const createReferenceNodeFromHistoryItem = (
+  item: HistoryItem,
+  index: number,
+): Node | null => {
+  const type = item.mediaType === 'image'
+    ? 'referenceImageNode'
+    : item.mediaType === 'video'
+      ? 'referenceVideoNode'
+      : null;
+  const url = item.thumbnail || item.content;
+
+  if (!type || !url) {
+    return null;
+  }
+
+  return {
+    id: `history-ref-${item.id}-${Date.now()}-${index}`,
+    type,
+    position: { x: 160 + index * 48, y: 160 + index * 48 },
+    data: {
+      url,
+      sourceName: item.title,
+      status: 'done',
+    },
+  };
+};
+
 const createdAt = Date.now();
 
 // seedModelConfigs removed — models are now loaded from the backend via GET /api/app/models.
@@ -349,10 +453,64 @@ function storageKey(name: string): string {
   return storageUserId ? `${name}-${storageUserId}` : name;
 }
 
+/** Strip large inline payloads from a single node's data before persisting.
+ *  Keeps the canvas snapshot small enough to fit in localStorage (5MB).
+ *  Network-hosted URLs are kept; data URLs / base64 are dropped. */
+function stripHeavyFromNodeData(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return data;
+  const out: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+  for (const key of ['url', 'thumbnail', 'poster'] as const) {
+    const value = out[key];
+    if (typeof value === 'string' && value.startsWith('data:')) {
+      out[key] = '';
+    }
+  }
+  return out;
+}
+
+function stripHeavyFromNodes(nodes: Node[]): Node[] {
+  return nodes.map((node) => ({ ...node, data: stripHeavyFromNodeData(node.data) as never }));
+}
+
+function stripHeavyFromProjectStateById(projectStateById: Record<string, ProjectCanvasState>): Record<string, ProjectCanvasState> {
+  const out: Record<string, ProjectCanvasState> = {};
+  for (const [key, snapshot] of Object.entries(projectStateById)) {
+    out[key] = { ...snapshot, nodes: stripHeavyFromNodes(snapshot.nodes) };
+  }
+  return out;
+}
+
+function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<string, ProjectCanvasState> }>(
+  snapshots: Record<string, T>,
+): Record<string, T> {
+  const out: Record<string, T> = {} as Record<string, T>;
+  for (const [key, snap] of Object.entries(snapshots)) {
+    out[key] = {
+      ...snap,
+      projectStateById: snap.projectStateById ? stripHeavyFromProjectStateById(snap.projectStateById) : snap.projectStateById,
+    };
+  }
+  return out;
+}
+
+let storageQuotaWarned = false;
 export const appStorage = {
   getItem: (name: string) => localStorage.getItem(storageKey(name)),
-  setItem: (name: string, value: string) => localStorage.setItem(storageKey(name), value),
-  removeItem: (name: string) => localStorage.removeItem(storageKey(name)),
+  setItem: (name: string, value: string) => {
+    try {
+      localStorage.setItem(storageKey(name), value);
+    } catch (err) {
+      // Quota exceeded or storage disabled — log once, don't crash the app or pollute node.error.
+      const detail = err instanceof Error ? err.message : String(err);
+      if (!storageQuotaWarned) {
+        console.warn('[appStorage] persist skipped:', detail);
+        storageQuotaWarned = true;
+      }
+    }
+  },
+  removeItem: (name: string) => {
+    try { localStorage.removeItem(storageKey(name)); } catch { /* ignore */ }
+  },
 };
 
 export function bindStorageToUser(userId: string) {
@@ -406,18 +564,31 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   spaceSnapshotsById: seedSpaceSnapshotsById,
   nodes: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].nodes,
   edges: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].edges,
+  undoStack: [],
+  copiedCanvasSelection: null,
 
   onNodesChange: (changes: NodeChange[]) => {
     set((state) => {
+      const removedIds = new Set<string>();
       for (const change of changes) {
         if (change.type === 'remove') {
           clearReferencePayloadValue(change.id);
+          removedIds.add(change.id);
         }
       }
       const nodes = applyNodeChanges(changes, state.nodes);
-      const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+      // Sync groups: drop removed members; delete groups that become empty.
+      const groups = removedIds.size === 0
+        ? state.groups
+        : state.groups
+            .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !removedIds.has(id)) }))
+            .filter((group) => group.nodeIds.length > 0);
+      const undoStack = shouldCaptureNodeChangesForUndo(changes) ? pushUndoState(state) : state.undoStack;
+      const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
       return {
         nodes,
+        groups,
+        undoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -427,9 +598,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   onEdgesChange: (changes: EdgeChange[]) => {
     set((state) => {
       const edges = applyEdgeChanges(changes, state.edges);
+      const undoStack = shouldCaptureEdgeChangesForUndo(changes) ? pushUndoState(state) : state.undoStack;
       const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
       return {
         edges,
+        undoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -438,10 +611,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   onConnect: (connection: Connection) => {
     set((state) => {
-      const edges = addEdge({ ...connection, animated: true, style: { stroke: '#0891b2', strokeWidth: 2 } }, state.edges);
+      const decoratedConnection = { ...connection, type: 'flow' };
+      const edges = addEdge(decoratedConnection, state.edges);
+      const undoStack = pushUndoState(state);
       const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
       return {
         edges,
+        undoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -451,9 +627,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   addNode: (node: Node) => {
     set((state) => {
       const nodes = [...state.nodes, node];
+      const undoStack = pushUndoState(state);
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
       return {
         nodes,
+        undoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -470,6 +648,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   isProfileOpen: false,
   setProfileOpen: (open) => set({ isProfileOpen: open }),
+  isHistoryAssetsOpen: false,
+  setHistoryAssetsOpen: (open) => set({ isHistoryAssetsOpen: open }),
 
   history: [],
   addHistory: (item) => set((state) => ({
@@ -478,6 +658,34 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       history: [normalizeHistoryItem(item, state.activeSpaceId, state.activeSpaceType, state.activeProjectId), ...state.history].slice(0, 200),
     }),
   })),
+  removeHistoryItems: (ids) => set((state) => {
+    const idSet = new Set(ids);
+    const history = state.history.filter((item) => !idSet.has(item.id));
+    return {
+      history,
+      ...syncActiveSpaceSnapshot(state, { history }),
+    };
+  }),
+  reuseHistoryItems: (ids) => set((state) => {
+    const selectedById = new Set(ids);
+    const appendedNodes = state.history
+      .filter((item) => selectedById.has(item.id))
+      .map((item, index) => createReferenceNodeFromHistoryItem(item, index))
+      .filter((node): node is Node => Boolean(node));
+
+    if (appendedNodes.length === 0) {
+      return {};
+    }
+
+    const nodes = [...state.nodes, ...appendedNodes];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+
+    return {
+      nodes,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
 
   projects: seedSpaceSnapshotsById['space-personal'].projects,
   activeProjectId: seedSpaceSnapshotsById['space-personal'].activeProjectId,
@@ -499,6 +707,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       nodes: createCanvasSnapshot(nextProjectCanvas.nodes).nodes,
       edges: createCanvasSnapshot([], nextProjectCanvas.edges).edges,
       groups: createCanvasSnapshot([], [], nextProjectCanvas.groups).groups,
+      undoStack: [],
+      copiedCanvasSelection: null,
       spaceSnapshotsById: currentSpaceSnapshot,
     };
   }),
@@ -520,6 +730,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       nodes: [],
       edges: [],
       groups: [],
+      undoStack: [],
+      copiedCanvasSelection: null,
       projectStateById: {
         ...syncActiveProjectState(state).projectStateById,
         [id]: createEmptyCanvasState(),
@@ -545,6 +757,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       nodes: createCanvasSnapshot(nextProjectState.nodes).nodes,
       edges: createCanvasSnapshot([], nextProjectState.edges).edges,
       groups: createCanvasSnapshot([], [], nextProjectState.groups).groups,
+      undoStack: [],
+      copiedCanvasSelection: null,
       projects: state.projects.map((project) => (
         project.id === id ? { ...project, updatedAt: now } : project
       )),
@@ -596,7 +810,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             ...state.projectStateById,
             [first.id]: createCanvasSnapshot(nodes, edges, state.groups),
           };
-          return { nodes, edges, activeProjectId: first.id, projectStateById };
+          return {
+            nodes,
+            edges,
+            activeProjectId: first.id,
+            projectStateById,
+            undoStack: [],
+            copiedCanvasSelection: null,
+          };
         });
       } catch {
         // Canvas not yet saved — keep local state.
@@ -618,6 +839,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         nodes: [],
         edges: [],
         groups: [],
+        undoStack: [],
+        copiedCanvasSelection: null,
         projectStateById: {
           ...syncActiveProjectState(state).projectStateById,
           [project.id]: createEmptyCanvasState(),
@@ -655,6 +878,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         nodes,
         edges,
         groups: [],
+        undoStack: [],
+        copiedCanvasSelection: null,
         activeProjectId: id,
         projectStateById: {
           ...state.projectStateById,
@@ -663,7 +888,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       }));
     } catch {
       // Canvas not yet saved — load empty canvas.
-      set({ nodes: [], edges: [], groups: [], activeProjectId: id });
+      set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
     } finally {
       set({ backendSyncing: false });
     }
@@ -691,8 +916,145 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   invitations: seedInvitations,
 
   groups: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].groups,
+  pushUndoSnapshot: () => set((state) => ({
+    undoStack: pushUndoState(state),
+  })),
+  undoCanvas: () => set((state) => {
+    const previous = state.undoStack.at(-1);
+    if (!previous) return {};
+
+    const undoStack = state.undoStack.slice(0, -1);
+    const projectStateById = syncActiveProjectState(state, previous).projectStateById;
+    return {
+      nodes: previous.nodes,
+      edges: previous.edges,
+      groups: previous.groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  copySelectedNodes: () => set((state) => ({
+    copiedCanvasSelection: buildCanvasClipboardSelection({
+      nodes: state.nodes,
+      edges: state.edges,
+    }),
+  })),
+  pasteCopiedNodes: () => set((state) => {
+    if (!state.copiedCanvasSelection) return {};
+
+    const pasted = remapClipboardSelectionForPaste({
+      selection: state.copiedCanvasSelection,
+      offset: { x: 48, y: 48 },
+    });
+    const undoStack = pushUndoState(state);
+    const nodes = [
+      ...state.nodes.map((node) => ({ ...node, selected: false })),
+      ...pasted.nodes,
+    ];
+    const edges = [...state.edges, ...pasted.edges];
+    const projectStateById = syncActiveProjectState(state, { nodes, edges }).projectStateById;
+
+    return {
+      nodes,
+      edges,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
   createGroup: (nodeIds) => set((state) => {
-    const groups = [...state.groups, { id: `g-${Date.now()}`, nodeIds, name: `Group ${state.groups.length + 1}` }];
+    // Merge semantics: if any selected node already belongs to a group, absorb that
+    // group's full membership into the new group (and drop the old group) instead of nesting.
+    const selectionSet = new Set(nodeIds);
+    const absorbedGroupIds = new Set<string>();
+    state.groups.forEach((group) => {
+      if (group.nodeIds.some((id) => selectionSet.has(id))) {
+        absorbedGroupIds.add(group.id);
+        group.nodeIds.forEach((id) => selectionSet.add(id));
+      }
+    });
+    const mergedNodeIds = Array.from(selectionSet);
+    const memberNodes = state.nodes.filter((node) => selectionSet.has(node.id));
+    const bounds = computeGroupBounds(memberNodes);
+    const undoStack = pushUndoState(state);
+    const remainingGroups = state.groups.filter((group) => !absorbedGroupIds.has(group.id));
+    const groups = [...remainingGroups, {
+      id: `g-${Date.now()}`,
+      nodeIds: mergedNodeIds,
+      name: `分组 ${remainingGroups.length + 1}`,
+      position: { x: bounds.x, y: bounds.y },
+      width: bounds.width,
+      height: bounds.height,
+    }];
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  removeGroup: (groupId) => set((state) => {
+    const undoStack = pushUndoState(state);
+    const target = state.groups.find((group) => group.id === groupId);
+    const groups = state.groups.filter((group) => group.id !== groupId);
+    // Also delete the member nodes and any edges connected to them.
+    const memberIds = new Set(target?.nodeIds ?? []);
+    const nodes = state.nodes.filter((node) => !memberIds.has(node.id));
+    const edges = state.edges.filter((edge) => !memberIds.has(edge.source) && !memberIds.has(edge.target));
+    const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
+    return {
+      nodes,
+      edges,
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  ungroupNodes: (groupId) => set((state) => {
+    const undoStack = pushUndoState(state);
+    const groups = state.groups.filter((group) => group.id !== groupId);
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  savedAssets: [],
+  saveAsset: (asset) => {
+    const created: SavedAsset = {
+      id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+      ...asset,
+    };
+    set((state) => ({ savedAssets: [created, ...state.savedAssets] }));
+    return created;
+  },
+  removeAsset: (id) => set((state) => ({ savedAssets: state.savedAssets.filter((asset) => asset.id !== id) })),
+  saveAssetDialogNodeId: null,
+  openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
+  closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
+  isAssetLibraryOpen: false,
+  setAssetLibraryOpen: (open) => set({ isAssetLibraryOpen: open }),
+  setGroupMembers: (groupId, nodeIds) => set((state) => {
+    const undoStack = pushUndoState(state);
+    const groups = state.groups
+      .map((group) => (group.id === groupId ? { ...group, nodeIds } : group))
+      .filter((group) => group.nodeIds.length > 0);
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  renameGroup: (groupId, name) => set((state) => {
+    const groups = state.groups.map((group) => (group.id === groupId ? { ...group, name } : group));
     const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
     return {
       groups,
@@ -700,7 +1062,29 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+  updateNodeData: (nodeId, patch) => set((state) => {
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((node) => (
+      node.id !== nodeId
+        ? node
+        : {
+            ...node,
+            data: {
+              ...(node.data ?? {}),
+              ...patch,
+            },
+          }
+    ));
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
   updateNodeGenerationParams: (nodeId, patch) => set((state) => {
+    const undoStack = pushUndoState(state);
     const nodes = state.nodes.map((node) => (
       node.id !== nodeId
         ? node
@@ -718,6 +1102,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
     return {
       nodes,
+      undoStack,
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
@@ -739,8 +1124,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     // For video/audio nodes, upstream media goes via reference_images/reference_video fields,
     // so strip @mentions from the prompt instead of inlining URLs.
-    const resolvedPrompt = (serviceType === 'video' || serviceType === 'audio')
+    const strippedForMedia = (serviceType === 'video' || serviceType === 'audio')
       ? payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, '').trim()
+      : null;
+    // For video/audio, references are sent through reference_images/reference_video fields.
+    // If the prompt only contained @mentions and is now empty, fall back to a sane default
+    // so the backend `minLength:1` validator doesn't reject the call.
+    const resolvedPrompt = strippedForMedia !== null
+      ? (strippedForMedia || (serviceType === 'video' ? 'Generate a video from the provided reference media.' : 'Generate audio.'))
       : payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
           const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
           if (!upstreamNode) return `@${ref}`;
@@ -774,6 +1165,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     try {
       const result = await apiGenerate({
+        node_id: nodeId,
         service_type: serviceType,
         model: payload.model ?? '',
         prompt: resolvedPrompt,
@@ -857,6 +1249,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setShowMiniMap: (value) => set({ showMiniMap: value }),
   snapToGrid: false,
   setSnapToGrid: (value) => set({ snapToGrid: value }),
+  isConnectionDragging: false,
+  setConnectionDragging: (value) => set({ isConnectionDragging: value }),
 }), {
   name: 'cineflow-store',
   storage: createJSONStorage(() => appStorage),
@@ -911,16 +1305,22 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     spaces: state.spaces,
     activeSpaceId: state.activeSpaceId,
     activeSpaceType: state.activeSpaceType,
-    spaceSnapshotsById: state.spaceSnapshotsById,
-    nodes: state.nodes,
+    spaceSnapshotsById: stripHeavyFromSpaceSnapshots(state.spaceSnapshotsById),
+    nodes: stripHeavyFromNodes(state.nodes),
     edges: state.edges,
     history: state.history,
     projects: state.projects,
     activeProjectId: state.activeProjectId,
-    projectStateById: state.projectStateById,
+    projectStateById: stripHeavyFromProjectStateById(state.projectStateById),
     spaceMembers: state.spaceMembers,
     invitations: state.invitations,
     groups: state.groups,
+    savedAssets: state.savedAssets.map((asset) => ({
+      ...asset,
+      // Drop heavy inline thumbnails/urls; keep only network-hosted ones.
+      thumbnail: asset.thumbnail.startsWith('data:') ? '' : asset.thumbnail,
+      url: asset.url.startsWith('data:') ? '' : asset.url,
+    })),
     shortcuts: state.shortcuts,
     isTaskQueueCollapsed: state.isTaskQueueCollapsed,
     showMiniMap: state.showMiniMap,

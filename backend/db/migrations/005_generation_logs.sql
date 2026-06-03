@@ -5,7 +5,7 @@ CREATE TABLE generation_logs (
     service_type VARCHAR(32)  NOT NULL,
     model        VARCHAR(128) NOT NULL,
     prompt       TEXT         NOT NULL DEFAULT '',
-    status       VARCHAR(16)  NOT NULL CHECK (status IN ('success', 'error')),
+    status       VARCHAR(16)  NOT NULL CHECK (status IN ('pending', 'success', 'error')),
     result_url   TEXT         NOT NULL DEFAULT '',
     error_msg    TEXT         NOT NULL DEFAULT '',
     duration_ms  INT          NOT NULL DEFAULT 0,

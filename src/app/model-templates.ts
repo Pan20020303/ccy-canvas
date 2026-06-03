@@ -20,6 +20,8 @@ export type ModelTemplate = {
   supportsAutoAspect?: boolean;
   supportsDuration?: boolean;
   durationRange?: DurationRange;
+  /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
+  durationOptions?: number[];
   defaults?: {
     mode?: string;
     resolution?: string;

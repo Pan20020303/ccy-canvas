@@ -463,13 +463,25 @@ export function AdminModelCatalogPage() {
       }
     >
       {/* Toolbar */}
-      <div className="mb-4 flex items-center gap-3">
-        <div className="relative flex-1">
+      <div className="space-y-5">
+        <div
+          data-admin-card
+          className="flex flex-wrap items-center gap-4 rounded-[28px] border border-white/[0.08] bg-[#101010]/90 p-4 shadow-[0_24px_60px_-42px_rgba(0,0,0,0.9)]"
+        >
+          <div className="min-w-[180px] rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-neutral-500">配置总数</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{configs.length}</p>
+          </div>
+          <div className="min-w-[180px] rounded-2xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-neutral-500">在线模型</p>
+            <p className="mt-2 text-2xl font-semibold text-white">{enabledCount}</p>
+          </div>
+          <div className="relative min-w-[280px] flex-1">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索名称、厂商或 Base URL"
-            className="h-9 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] pl-9 pr-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-[#ff6a1f]/40"
+            className="h-11 w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] pl-10 pr-3 text-sm text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-[#ff6a1f]/40"
           />
           <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-600" />
         </div>
@@ -478,14 +490,16 @@ export function AdminModelCatalogPage() {
           size="sm"
           onClick={load}
           disabled={loading}
-          className="border-white/10 text-neutral-300 hover:bg-white/5 gap-1.5"
+          className="h-11 rounded-2xl border-white/10 px-4 text-neutral-300 hover:bg-white/5 gap-1.5"
         >
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
         </Button>
-      </div>
+        </div>
 
-      {/* Table */}
-      <div className="overflow-hidden rounded-2xl border border-white/[0.08]">
+        <div
+          data-admin-panel
+          className="overflow-hidden rounded-[30px] border border-white/[0.08] bg-[#111111]/95 shadow-[0_30px_80px_-40px_rgba(0,0,0,0.9)]"
+        >
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.06] bg-white/[0.02]">
@@ -565,6 +579,7 @@ export function AdminModelCatalogPage() {
             {enabledCount > 0 && <span className="ml-3">· {enabledCount} 个已启用</span>}
           </div>
         )}
+        </div>
       </div>
 
       {/* Drawer */}

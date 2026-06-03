@@ -70,6 +70,9 @@ RETURNING id, email, name, role, status, last_login_at, created_at, updated_at;
 UPDATE users SET status = $2, updated_at = now() WHERE id = $1
 RETURNING id, email, name, role, status, last_login_at, created_at, updated_at;
 
+-- name: UpdateUserPassword :exec
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
 

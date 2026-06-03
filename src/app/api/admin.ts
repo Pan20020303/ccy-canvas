@@ -30,6 +30,10 @@ export function deleteUser(id: string): Promise<void> {
   return apiClient.delete(`/api/admin/users/${id}`);
 }
 
+export function resetUserPassword(id: string, password: string): Promise<{ user_id: string }> {
+  return apiClient.post<{ user_id: string }>(`/api/admin/users/${id}/password`, { password });
+}
+
 export type AdjustCreditsPayload = {
   add_balance?: number;
   set_quota?: number;
@@ -117,10 +121,13 @@ export function getAdminStats(): Promise<AdminStats> {
 export type GenerationLog = {
   id: string;
   user_id: string;
+  user_email: string;
+  user_name: string;
+  node_id: string;
   service_type: string;
   model: string;
   prompt: string;
-  status: "success" | "error";
+  status: "pending" | "success" | "error";
   result_url: string;
   error_msg: string;
   duration_ms: number;
@@ -132,6 +139,27 @@ export type LogsResponse = {
   total: number;
 };
 
-export function listLogs(limit = 50, offset = 0): Promise<GenerationLog[]> {
-  return apiClient.get<GenerationLog[]>(`/api/admin/logs?limit=${limit}&offset=${offset}`);
+export type AdminLogFilters = {
+  status?: "" | "pending" | "success" | "error";
+  user?: string;
+  model?: string;
+};
+
+export function listLogs(limit = 50, offset = 0, filters: AdminLogFilters = {}): Promise<GenerationLog[]> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+
+  if (filters.status) {
+    params.set("status", filters.status);
+  }
+  if (filters.user?.trim()) {
+    params.set("user", filters.user.trim());
+  }
+  if (filters.model?.trim()) {
+    params.set("model", filters.model.trim());
+  }
+
+  return apiClient.get<GenerationLog[]>(`/api/admin/logs?${params.toString()}`);
 }

@@ -86,13 +86,22 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
       });
     }
 
-    // Huma problem+json format: { $schema, title, status, detail }
+    // Huma problem+json format: { $schema, title, status, detail, errors?: [{ message, location, value }] }
     if (body && typeof body === "object" && "detail" in body) {
-      const humaErr = body as { title?: string; detail?: string; status?: number };
+      const humaErr = body as { title?: string; detail?: string; status?: number; errors?: Array<{ message?: string; location?: string }> };
+      // Compose a message that includes per-field validation issues when present.
+      let message = humaErr.detail ?? "Request failed";
+      if (Array.isArray(humaErr.errors) && humaErr.errors.length > 0) {
+        const parts = humaErr.errors
+          .map((e) => [e.location, e.message].filter(Boolean).join(": "))
+          .filter((part) => part.length > 0);
+        if (parts.length > 0) message = `${message} — ${parts.join("; ")}`;
+      }
       throw new ApiClientError({
         code: humaErr.title ?? "ERROR",
-        message: humaErr.detail ?? "Request failed",
+        message,
         status: response.status,
+        details: humaErr.errors,
         rawBody,
       });
     }

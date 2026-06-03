@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -13,18 +13,35 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  ClipboardPaste,
+  Download,
   Expand,
+  FolderHeart,
   Grid3X3,
   Image as ImageIcon,
+  Layers3,
   Map,
   Music,
   Pencil,
+  Play,
+  Plus,
+  Redo2,
+  Scissors,
+  Share2,
+  Sparkles,
+  SquarePen,
+  Trash2,
   Upload,
+  Ungroup as UngroupIcon,
+  Undo2,
   Video,
+  Wrench,
   Group as GroupIcon,
 } from 'lucide-react';
 
-import { useStore } from '../store';
+import clsx from 'clsx';
+import { useStore, type HistoryItem } from '../store';
+import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
   getReferenceNodeTypeFromMimeType,
   readFileAsDataUrl,
@@ -32,16 +49,39 @@ import {
   setReferencePayloadValue,
 } from '../reference-media';
 import { nodeTypes } from './nodes/CustomNodes';
+import { FlowEdge } from './FlowEdge';
+import { SaveAssetDialog } from './SaveAssetDialog';
+
+const edgeTypes = { flow: FlowEdge };
+const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
+import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 
 type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode';
+type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
+type ContextMenuState = {
+  x: number;
+  y: number;
+  flowX: number;
+  flowY: number;
+  fromConnection: boolean;
+  mode: ContextMenuMode;
+  /** Target node id when mode is node-media / node-text. */
+  nodeId?: string;
+};
 
 const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string }[] = [
-  { kind: 'textNode', icon: Pencil, zh: '生成文本', en: 'Generate Text' },
-  { kind: 'imageNode', icon: ImageIcon, zh: '生成图像', en: 'Generate Image' },
-  { kind: 'videoNode', icon: Video, zh: '生成视频', en: 'Generate Video' },
-  { kind: 'audioNode', icon: Music, zh: '生成音频', en: 'Generate Audio' },
+  { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text' },
+  { kind: 'imageNode', icon: ImageIcon, zh: '图片', en: 'Image' },
+  { kind: 'videoNode', icon: Video, zh: '视频', en: 'Video' },
+  { kind: 'audioNode', icon: Music, zh: '音频', en: 'Audio' },
 ];
+
+const FUTURE_NODE_OPTIONS = [
+  { key: 'video-compose', icon: Scissors, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subtitleZh: '', subtitleEn: '' },
+  { key: 'director-desk', icon: Layers3, zh: '导演台', en: 'Director Desk', badge: 'NEW', subtitleZh: '', subtitleEn: '' },
+  { key: 'script', icon: SquarePen, zh: '脚本', en: 'Script', badge: 'Beta', subtitleZh: '创意脚本、生成故事板', subtitleEn: 'Create scripts and storyboards' },
+] as const;
 
 const GRID_SIZE = 24;
 const GUIDE_THRESHOLD = 5;
@@ -59,8 +99,12 @@ function getNodeBounds(node: Node) {
   const x = node.position.x;
   const y = node.position.y;
   return {
-    left: x, right: x + w, top: y, bottom: y + h,
-    cx: x + w / 2, cy: y + h / 2, w, h,
+    left: x,
+    right: x + w,
+    top: y,
+    bottom: y + h,
+    cx: x + w / 2,
+    cy: y + h / 2,
   };
 }
 
@@ -68,7 +112,6 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
   const db = getNodeBounds(dragged);
   const guides: GuideLine[] = [];
 
-  // Track closest distance for X and Y independently.
   let bestDistX = GUIDE_THRESHOLD;
   let bestDistY = GUIDE_THRESHOLD;
   let snapDx = 0;
@@ -104,7 +147,6 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
     }
   }
 
-  // Recompute bounds after snapping to build accurate guide lines.
   const snappedLeft = db.left + snapDx;
   const snappedRight = db.right + snapDx;
   const snappedCx = db.cx + snapDx;
@@ -139,14 +181,33 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
 function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
   const { x, y, zoom } = useViewport();
   if (!guides.length) return null;
+
   return (
     <svg className="pointer-events-none absolute inset-0 z-[5] h-full w-full overflow-visible">
       <g transform={`translate(${x},${y}) scale(${zoom})`}>
-        {guides.map((g, i) =>
-          g.orientation === 'v' ? (
-            <line key={i} x1={g.pos} y1={g.from - 20} x2={g.pos} y2={g.to + 20} stroke="#22d3ee" strokeWidth={1 / zoom} strokeDasharray={`${4 / zoom} ${3 / zoom}`} />
+        {guides.map((guide, index) =>
+          guide.orientation === 'v' ? (
+            <line
+              key={index}
+              x1={guide.pos}
+              y1={guide.from - 20}
+              x2={guide.pos}
+              y2={guide.to + 20}
+              stroke="#22d3ee"
+              strokeWidth={1 / zoom}
+              strokeDasharray={`${4 / zoom} ${3 / zoom}`}
+            />
           ) : (
-            <line key={i} x1={g.from - 20} y1={g.pos} x2={g.to + 20} y2={g.pos} stroke="#22d3ee" strokeWidth={1 / zoom} strokeDasharray={`${4 / zoom} ${3 / zoom}`} />
+            <line
+              key={index}
+              x1={guide.from - 20}
+              y1={guide.pos}
+              x2={guide.to + 20}
+              y2={guide.pos}
+              stroke="#22d3ee"
+              strokeWidth={1 / zoom}
+              strokeDasharray={`${4 / zoom} ${3 / zoom}`}
+            />
           ),
         )}
       </g>
@@ -154,43 +215,101 @@ function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
   );
 }
 
+function isEditableTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  return Boolean(element.closest('input, textarea, [contenteditable="true"]'));
+}
+
 const InnerCanvas = () => {
   const {
     nodes,
     edges,
+    groups,
     onNodesChange,
     onEdgesChange,
-    onConnect,
+    onConnect: connectEdge,
     addNode,
     createGroup,
     showMiniMap,
     setShowMiniMap,
     snapToGrid,
     setSnapToGrid,
+    history,
   } = useStore();
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const language = useStore((state) => state.language);
+  const isConnectionDragging = useStore((state) => state.isConnectionDragging);
+  const setConnectionDragging = useStore((state) => state.setConnectionDragging);
+  const undoCanvas = useStore((state) => state.undoCanvas);
+  const copySelectedNodes = useStore((state) => state.copySelectedNodes);
+  const pasteCopiedNodes = useStore((state) => state.pasteCopiedNodes);
+  const removeGroup = useStore((state) => state.removeGroup);
+  const ungroupNodes = useStore((state) => state.ungroupNodes);
+  const setGroupMembers = useStore((state) => state.setGroupMembers);
+  const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
+  const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
   const { screenToFlowPosition, fitView } = useReactFlow();
+  const viewport = useViewport();
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- cursor state ---
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
-  const [dropMessage, setDropMessage] = useState<string | null>(null);
   const [guides, setGuides] = useState<GuideLine[]>([]);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [bulkRouting, setBulkRouting] = useState<{ startClient: { x: number; y: number }; currentClient: { x: number; y: number } } | null>(null);
+
+  /** Group geometry uses the FIXED bounds saved at creation time —
+   *  the container does not auto-resize when members move. Members can drift in/out
+   *  of the fixed box, and group membership tracks that explicitly. */
+  const liveGroups = useMemo(() => groups.map((group) => ({
+    ...group,
+    _liveBounds: {
+      x: group.position?.x ?? 0,
+      y: group.position?.y ?? 0,
+      width: group.width ?? 0,
+      height: group.height ?? 0,
+    },
+  })), [groups]);
+
+  /** Selection bounding box in flow coordinates — used to position the multi-select toolbar above selection. */
+  const selectionBounds = useMemo(() => {
+    const selectedNodes = nodes.filter((node) => node.selected);
+    if (selectedNodes.length < 2) return null;
+    const bounds = computeGroupBounds(selectedNodes);
+    return bounds;
+  }, [nodes]);
+
+  /** Sanitize orphan groups: drop members whose nodes no longer exist, then drop empty groups.
+   *  Catches stale data persisted from older sessions or paths that bypassed onNodesChange. */
+  useEffect(() => {
+    const nodeIdSet = new Set(nodes.map((node) => node.id));
+    groups.forEach((group) => {
+      const validIds = group.nodeIds.filter((id) => nodeIdSet.has(id));
+      if (validIds.length === 0) {
+        ungroupNodes(group.id);
+      } else if (validIds.length !== group.nodeIds.length) {
+        setGroupMembers(group.id, validIds);
+      }
+    });
+  }, [groups, nodes, setGroupMembers, ungroupNodes]);
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat) setSpaceHeld(true);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'Space' && !event.repeat) setSpaceHeld(true);
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') setSpaceHeld(false);
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === 'Space') setSpaceHeld(false);
     };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
@@ -199,9 +318,109 @@ const InnerCanvas = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Delete / Backspace: remove the actively-selected group (members are kept on canvas).
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !isEditableTarget(event.target) && selectedGroupId) {
+        event.preventDefault();
+        removeGroup(selectedGroupId);
+        setSelectedGroupId(null);
+        return;
+      }
+
+      const modifier = event.ctrlKey || event.metaKey;
+      if (!modifier || isEditableTarget(event.target)) return;
+
+      const key = event.key.toLowerCase();
+      if (key === 'z') {
+        event.preventDefault();
+        undoCanvas();
+        return;
+      }
+      if (key === 'c') {
+        event.preventDefault();
+        copySelectedNodes();
+        return;
+      }
+      if (key === 'v') {
+        event.preventDefault();
+        pasteCopiedNodes();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [copySelectedNodes, pasteCopiedNodes, removeGroup, selectedGroupId, undoCanvas]);
+
   const cursorMode = nodeDragging ? 'canvas-mode-grabbing' : spaceHeld ? 'canvas-mode-grab' : '';
 
-  // Debounced auto-save to backend (2 s after last change).
+  const onConnect = useCallback((connection: Connection) => {
+    connectEdge(connection);
+    setConnectionDragging(false);
+    connectingFrom.current = null;
+  }, [connectEdge, setConnectionDragging]);
+
+  /** Global mouse tracking for bulk-routing (selection +-handle drag). */
+  useEffect(() => {
+    if (!bulkRouting) return;
+    const onMove = (event: MouseEvent) => {
+      setBulkRouting((current) => current ? { ...current, currentClient: { x: event.clientX, y: event.clientY } } : current);
+    };
+    const onUp = (event: MouseEvent) => {
+      const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+      const targetNodeId = target?.closest('.react-flow__node')?.getAttribute('data-id') ?? null;
+      if (targetNodeId && selectedIds.length >= 2 && !selectedIds.includes(targetNodeId)) {
+        const newEdges = buildBulkOutboundEdges({
+          groupId: 'selection',
+          memberNodeIds: selectedIds,
+          targetNodeId,
+          existingEdges: edges,
+        });
+        newEdges.forEach((edge) => connectEdge(edge as never));
+      }
+      setBulkRouting(null);
+      setConnectionDragging(false);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [bulkRouting, selectedIds, edges, connectEdge, setConnectionDragging]);
+
+  /** One curve per selected node, all converging to the cursor.
+   *  Each curve is in canvas-wrapper-local coordinates. */
+  const bulkDragCurves = useMemo(() => {
+    if (!bulkRouting || !wrapperRef.current) return null;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    const target = {
+      x: bulkRouting.currentClient.x - rect.left,
+      y: bulkRouting.currentClient.y - rect.top,
+    };
+    const curves = nodes
+      .filter((node) => node.selected)
+      .map((node) => {
+        const m = (node as { measured?: { width?: number; height?: number } }).measured;
+        const nodeW = m?.width ?? node.width ?? 300;
+        const nodeH = m?.height ?? node.height ?? 200;
+        // Source point: right edge midpoint of node, in flow coords → screen coords.
+        const flowX = node.position.x + nodeW;
+        const flowY = node.position.y + nodeH / 2;
+        const sx = viewport.x + flowX * viewport.zoom;
+        const sy = viewport.y + flowY * viewport.zoom;
+        // Bezier control points biased horizontally for a smooth S-curve.
+        const dx = Math.max(60, Math.abs(target.x - sx) * 0.5);
+        const c1 = { x: sx + dx, y: sy };
+        const c2 = { x: target.x - dx, y: target.y };
+        return {
+          id: node.id,
+          d: `M ${sx} ${sy} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${target.x} ${target.y}`,
+        };
+      });
+    return curves;
+  }, [bulkRouting, nodes, viewport]);
+
   useEffect(() => {
     if (!activeBackendProjectId) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -211,156 +430,193 @@ const InnerCanvas = () => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, edges, activeBackendProjectId]);
+  }, [nodes, edges, activeBackendProjectId, saveCanvasToBackend]);
 
-  const [picker, setPicker] = useState<{ x: number; y: number; flowX: number; flowY: number; fromConnection: boolean } | null>(null);
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    if (!snapToGrid) {
+      onNodesChange(changes);
+      return;
+    }
 
-  const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      if (!snapToGrid) {
-        onNodesChange(changes);
+    const posChange = changes.find((change): change is NodeChange & { type: 'position'; id: string; position: { x: number; y: number }; dragging?: boolean } =>
+      change.type === 'position' && 'position' in change && change.position != null,
+    );
+
+    if (posChange?.dragging) {
+      const draggedNode = nodes.find((node) => node.id === posChange.id);
+      if (draggedNode) {
+        const virtual = { ...draggedNode, position: posChange.position };
+        const { guides: nextGuides, snapDx, snapDy } = computeGuides(virtual, nodes);
+        setGuides(nextGuides);
+
+        const snapped = {
+          x: snapDx === 0 ? snapPosition(posChange.position).x : posChange.position.x + snapDx,
+          y: snapDy === 0 ? snapPosition(posChange.position).y : posChange.position.y + snapDy,
+        };
+
+        onNodesChange(changes.map((change) => (change === posChange ? { ...posChange, position: snapped } : change)));
         return;
       }
+    }
 
-      const posChange = changes.find((c): c is NodeChange & { type: 'position'; id: string; position: { x: number; y: number }; dragging?: boolean } =>
-        c.type === 'position' && 'position' in c && c.position != null,
-      );
+    if (posChange && !posChange.dragging) {
+      setGuides([]);
+    }
 
-      if (posChange?.dragging) {
-        const draggedNode = nodes.find((n) => n.id === posChange.id);
-        if (draggedNode) {
-          const virtual = { ...draggedNode, position: posChange.position };
-          const { guides: newGuides, snapDx, snapDy } = computeGuides(virtual, nodes);
-          setGuides(newGuides);
+    onNodesChange(
+      changes.map((change) => {
+        if (change.type !== 'position' || !('position' in change) || !change.position) return change;
+        return { ...change, position: snapPosition(change.position) };
+      }),
+    );
+  }, [nodes, onNodesChange, snapToGrid]);
 
-          const snapped = {
-            x: posChange.position.x + snapDx,
-            y: posChange.position.y + snapDy,
-          };
-          // If no alignment found on an axis, fall back to grid snap on that axis.
-          if (snapDx === 0) snapped.x = snapPosition(posChange.position).x;
-          if (snapDy === 0) snapped.y = snapPosition(posChange.position).y;
-
-          onNodesChange(changes.map((c) =>
-            c === posChange ? { ...posChange, position: snapped } : c,
-          ));
-          return;
-        }
-      }
-
-      if (posChange && !posChange.dragging) {
-        setGuides([]);
-      }
-
-      onNodesChange(
-        changes.map((change) => {
-          if (change.type !== 'position' || !('position' in change) || !change.position) return change;
-          return { ...change, position: snapPosition(change.position) };
-        }),
-      );
-    },
-    [nodes, onNodesChange, snapToGrid],
-  );
-
-  const onPaneContextMenu = useCallback((event: any) => {
-    event.preventDefault();
+  const openContextMenu = useCallback((event: { clientX: number; clientY: number }, mode: ContextMenuMode, fromConnection: boolean) => {
     if (!wrapperRef.current) return;
     const rect = wrapperRef.current.getBoundingClientRect();
     const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    connectingFrom.current = null;
-    setPicker({
+    setContextMenu({
       x: event.clientX - rect.left,
       y: event.clientY - rect.top,
       flowX: flowPos.x,
       flowY: flowPos.y,
+      fromConnection,
+      mode,
+    });
+  }, [screenToFlowPosition]);
+
+  const onPaneContextMenu = useCallback((event: any) => {
+    event.preventDefault();
+    connectingFrom.current = null;
+    openContextMenu(event, 'root', false);
+  }, [openContextMenu]);
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: { id: string; type?: string }) => {
+    event.preventDefault();
+    const isText = node.type === 'textNode';
+    const mode: ContextMenuMode = isText ? 'node-text' : 'node-media';
+    if (!wrapperRef.current) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    setContextMenu({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      flowX: flow.x,
+      flowY: flow.y,
       fromConnection: false,
+      mode,
+      nodeId: node.id,
     });
   }, [screenToFlowPosition]);
 
   const onConnectStart = useCallback((_: any, params: any) => {
     connectingFrom.current = { nodeId: params.nodeId, handleId: params.handleId };
-  }, []);
+    setConnectionDragging(true);
+  }, [setConnectionDragging]);
 
   const onConnectEnd = useCallback((event: any) => {
     const targetIsPane = (event.target as HTMLElement)?.classList?.contains('react-flow__pane');
+    setConnectionDragging(false);
     if (!targetIsPane || !connectingFrom.current || !wrapperRef.current) return;
-    const rect = wrapperRef.current.getBoundingClientRect();
     const clientX = event.clientX ?? event.changedTouches?.[0]?.clientX;
     const clientY = event.clientY ?? event.changedTouches?.[0]?.clientY;
-    const flowPos = screenToFlowPosition({ x: clientX, y: clientY });
-    setPicker({
-      x: clientX - rect.left,
-      y: clientY - rect.top,
-      flowX: flowPos.x,
-      flowY: flowPos.y,
-      fromConnection: true,
-    });
-  }, [screenToFlowPosition]);
+    openContextMenu({ clientX, clientY }, 'add-node', true);
+  }, [openContextMenu, setConnectionDragging]);
 
-  const onPickerSelect = (kind: NodeKind) => {
-    if (!picker) return;
+  const onCanvasDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (
+      target.closest(
+        '.react-flow__node, .react-flow__edge, .react-flow__controls, .react-flow__minimap, [data-no-canvas-menu="true"]',
+      )
+    ) {
+      return;
+    }
+    if (!target.closest('.react-flow__pane')) return;
+    connectingFrom.current = null;
+    openContextMenu(event, 'add-node', false);
+  }, [openContextMenu]);
+
+
+  const onPickerSelect = useCallback((kind: NodeKind) => {
+    if (!contextMenu) return;
     const id = `node-${Date.now()}`;
     addNode({
       id,
       type: kind,
-      position: snapToGrid ? snapPosition({ x: picker.flowX, y: picker.flowY }) : { x: picker.flowX, y: picker.flowY },
+      position: snapToGrid ? snapPosition({ x: contextMenu.flowX, y: contextMenu.flowY }) : { x: contextMenu.flowX, y: contextMenu.flowY },
       data: {},
     });
-    if (picker.fromConnection && connectingFrom.current) {
-      const conn: Connection = {
+
+    if (contextMenu.fromConnection && connectingFrom.current) {
+      const connection: Connection = {
         source: connectingFrom.current.nodeId,
         sourceHandle: connectingFrom.current.handleId ?? null,
         target: id,
         targetHandle: null,
       };
-      onConnect(conn);
+      onConnect(connection);
     }
-    setPicker(null);
+
+    setContextMenu(null);
     connectingFrom.current = null;
-  };
+  }, [addNode, contextMenu, onConnect, snapToGrid]);
 
-  // Drag & drop files from desktop → create image/video nodes.
-  const onDragOver = useCallback((event: React.DragEvent) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-  }, []);
-
-  const onDrop = useCallback(async (event: React.DragEvent) => {
-    event.preventDefault();
-    setDropMessage(null);
-    const files = Array.from(event.dataTransfer.files);
-    if (!files.length || !wrapperRef.current) return;
-
-    const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+  const uploadFilesAtPosition = useCallback(async (files: File[], flowPos: { x: number; y: number }) => {
     let offsetY = 0;
 
     for (const file of files) {
       const nodeType = getReferenceNodeTypeFromMimeType(file?.type);
       if (!nodeType) continue;
 
-      // Upload to backend, get a stable URL.
       const form = new FormData();
       form.append('file', file);
+
       try {
         const referenceValuePromise = readFileAsDataUrl(file);
         const resp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
         if (!resp.ok) {
           const bodyText = await resp.text();
-          setDropMessage(`Upload failed (${resp.status}): ${bodyText || file.name}`);
+          addNode({
+            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            type: nodeType,
+            position: snapToGrid
+              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+              : { x: flowPos.x, y: flowPos.y + offsetY },
+            data: {
+              status: 'error',
+              sourceName: file.name,
+              error: `Upload failed (${resp.status}): ${bodyText || file.name}`,
+            },
+          });
+          offsetY += 320;
           continue;
         }
+
         const json = await resp.json();
         const rawUrl = json?.data?.url as string;
         if (!rawUrl) {
-          setDropMessage(`Upload response missing file url: ${file.name}`);
+          addNode({
+            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            type: nodeType,
+            position: snapToGrid
+              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+              : { x: flowPos.x, y: flowPos.y + offsetY },
+            data: {
+              status: 'error',
+              sourceName: file.name,
+              error: `Upload response missing file url: ${file.name}`,
+            },
+          });
+          offsetY += 320;
           continue;
         }
+
         const url = resolveBackendAssetUrl(rawUrl, import.meta.env.VITE_API_BASE_URL ?? '');
         if (!url) continue;
 
         const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const pos = snapToGrid
+        const position = snapToGrid
           ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
           : { x: flowPos.x, y: flowPos.y + offsetY };
         const referenceValue = await referenceValuePromise;
@@ -368,39 +624,194 @@ const InnerCanvas = () => {
         addNode({
           id,
           type: nodeType,
-          position: pos,
+          position,
           data: { url, status: 'done', sourceName: file.name },
         });
+
         if (referenceValue) {
           setReferencePayloadValue(id, referenceValue);
         }
+
         offsetY += 320;
       } catch (error) {
-        setDropMessage(error instanceof Error ? error.message : `Upload failed: ${file.name}`);
+        addNode({
+          id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: nodeType,
+          position: snapToGrid
+            ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+            : { x: flowPos.x, y: flowPos.y + offsetY },
+          data: {
+            status: 'error',
+            sourceName: file.name,
+            error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
+          },
+        });
+        offsetY += 320;
       }
     }
-  }, [addNode, screenToFlowPosition, snapToGrid]);
+  }, [addNode, snapToGrid]);
+
+  const openUploadDialog = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleMenuUpload = useCallback(() => {
+    openUploadDialog();
+    setContextMenu(null);
+  }, [openUploadDialog]);
+
+  const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+    const targetPosition = contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : { x: 240, y: 180 };
+    await uploadFilesAtPosition(files, targetPosition);
+    event.target.value = '';
+  }, [contextMenu, uploadFilesAtPosition]);
+
+  const insertHistoryImages = useCallback((selectedItems: HistoryItem[]) => {
+    if (!selectedItems.length) return;
+    const basePosition = contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : { x: 240, y: 180 };
+
+    selectedItems.forEach((item, index) => {
+      const url = item.thumbnail || item.content;
+      if (!url) return;
+      addNode({
+        id: `node-history-image-${Date.now()}-${index}`,
+        type: 'referenceImageNode',
+        position: snapToGrid
+          ? snapPosition({ x: basePosition.x + index * 44, y: basePosition.y + index * 44 })
+          : { x: basePosition.x + index * 44, y: basePosition.y + index * 44 },
+        data: { url, status: 'done', sourceName: item.title },
+      });
+    });
+  }, [addNode, contextMenu, snapToGrid]);
+
+  /** Force every edge through the unified FlowEdge renderer. */
+  const normalizedEdges = useMemo(
+    () => edges.map((edge) => ({ ...edge, type: 'flow', animated: false, style: undefined })),
+    [edges],
+  );
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const onDrop = useCallback(async (event: React.DragEvent) => {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files);
+    if (!files.length || !wrapperRef.current) return;
+    const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    await uploadFilesAtPosition(files, flowPos);
+  }, [screenToFlowPosition, uploadFilesAtPosition]);
 
   return (
     <div
       ref={wrapperRef}
       className={`relative h-screen w-full bg-[#0a0a0a] ${cursorMode}`}
       onContextMenu={(event) => event.preventDefault()}
+      onDoubleClick={onCanvasDoubleClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*,video/*"
+        className="hidden"
+        onChange={handleFileInputChange}
+      />
+
+      {/* Group BACKGROUND layer — rendered before ReactFlow so nodes render above the gray shell. */}
+      <div className="pointer-events-none absolute inset-0 z-0">
+        {liveGroups.map((group) => {
+          const b = group._liveBounds;
+          const left = viewport.x + b.x * viewport.zoom;
+          const top = viewport.y + b.y * viewport.zoom;
+          const width = b.width * viewport.zoom;
+          const height = b.height * viewport.zoom;
+          const selected = selectedGroupId === group.id;
+          return (
+            <div
+              key={`shell-${group.id}`}
+              className={clsx(
+                'pointer-events-auto absolute rounded-[26px] border bg-white/[0.025] backdrop-blur-[2px] transition-colors',
+                selected ? 'border-cyan-400/40 bg-cyan-400/[0.04]' : 'border-white/8',
+              )}
+              style={{ left, top, width, height }}
+              onMouseDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                event.stopPropagation();
+                setSelectedGroupId(group.id);
+              }}
+            >
+              <GroupTitle
+                groupId={group.id}
+                name={group.name}
+                count={group.nodeIds.length}
+                zoom={viewport.zoom}
+                onSelect={() => setSelectedGroupId(group.id)}
+              />
+            </div>
+          );
+        })}
+      </div>
+
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={normalizedEdges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}
+        onNodeContextMenu={onNodeContextMenu}
+        onPaneClick={() => setSelectedGroupId(null)}
         onNodeDragStart={() => setNodeDragging(true)}
-        onNodeDragStop={() => { setNodeDragging(false); setGuides([]); }}
+        onNodeDragStop={(_event, _node, draggedNodes) => {
+          setNodeDragging(false);
+          setGuides([]);
+          // Re-evaluate group membership against each group's FIXED bounds:
+          // - dropped inside → ensure it's a member
+          // - dropped outside → remove from member list
+          const movedIds = new Set(draggedNodes.map((n) => n.id));
+          const isInsideGroup = (node: { position: { x: number; y: number }; width?: number; height?: number; measured?: { width?: number; height?: number } }, group: { position?: { x: number; y: number }; width?: number; height?: number }) => {
+            const gx = group.position?.x ?? 0;
+            const gy = group.position?.y ?? 0;
+            const gw = group.width ?? 0;
+            const gh = group.height ?? 0;
+            if (gw === 0 || gh === 0) return false;
+            const nodeW = node.measured?.width ?? node.width ?? 300;
+            const nodeH = node.measured?.height ?? node.height ?? 200;
+            const cx = node.position.x + nodeW / 2;
+            const cy = node.position.y + nodeH / 2;
+            return cx >= gx && cx <= gx + gw && cy >= gy && cy <= gy + gh;
+          };
+          groups.forEach((group) => {
+            const memberSet = new Set(group.nodeIds);
+            let changed = false;
+            const nextMembers = new Set(memberSet);
+            // Outflow: existing members that were moved and are now outside.
+            for (const memberId of memberSet) {
+              if (!movedIds.has(memberId)) continue;
+              const node = nodes.find((n) => n.id === memberId);
+              if (!node) continue;
+              if (!isInsideGroup(node, group)) { nextMembers.delete(memberId); changed = true; }
+            }
+            // Inflow: non-member nodes that were moved and landed inside.
+            for (const moved of draggedNodes) {
+              if (memberSet.has(moved.id)) continue;
+              const node = nodes.find((n) => n.id === moved.id) ?? moved;
+              if (isInsideGroup(node as never, group)) { nextMembers.add(moved.id); changed = true; }
+            }
+            if (changed) setGroupMembers(group.id, Array.from(nextMembers));
+          });
+        }}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        defaultEdgeOptions={defaultEdgeOptions}
         fitView
         className="touch-none"
         minZoom={0.1}
@@ -430,69 +841,287 @@ const InnerCanvas = () => {
               backgroundColor: 'rgba(12,14,17,0.88)',
               border: '1px solid rgba(255,255,255,0.1)',
               borderRadius: 18,
-              marginLeft: 0,
-              marginBottom: 0,
             }}
           />
         ) : null}
         {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
 
-      {selectedIds.length >= 2 && !picker ? (
-        <div className="absolute left-1/2 top-20 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
-          <button className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5">
-            <Upload className="h-3.5 w-3.5 text-neutral-400" />
-            {dict.create_asset}
-            <span className="ml-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] tracking-wider text-rose-300">BETA</span>
-          </button>
-          <div className="h-4 w-px bg-white/10" />
-          <button
-            onClick={() => createGroup(selectedIds)}
-            className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
+      {/* Group toolbar — appears above the selected group. */}
+      {selectedGroupId ? (() => {
+        const sel = liveGroups.find((g) => g.id === selectedGroupId);
+        if (!sel) return null;
+        const b = sel._liveBounds;
+        const left = viewport.x + (b.x + b.width / 2) * viewport.zoom;
+        const top = viewport.y + b.y * viewport.zoom - 12;
+        const itemClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40';
+        return (
+          <div
+            className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
+            style={{ left, top }}
           >
-            <GroupIcon className="h-3.5 w-3.5 text-neutral-400" />
-            {dict.group}
+            <button disabled className={itemClass}>
+              <Play className="h-3.5 w-3.5 text-neutral-400" />
+              {language === 'zh' ? '整组执行' : 'Run Group'}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button disabled className={itemClass}>
+              <Wrench className="h-3.5 w-3.5 text-neutral-400" />
+              {language === 'zh' ? '添加到工具箱' : 'Add to Toolbox'}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button disabled className={itemClass}>
+              <Share2 className="h-3.5 w-3.5 text-neutral-400" />
+              {language === 'zh' ? '转分镜组' : 'Convert to Storyboard'}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button
+              onClick={() => { ungroupNodes(selectedGroupId); setSelectedGroupId(null); }}
+              className={itemClass}
+            >
+              <UngroupIcon className="h-3.5 w-3.5 text-neutral-400" />
+              {language === 'zh' ? '解组' : 'Ungroup'}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button disabled className={itemClass}>
+              <Download className="h-3.5 w-3.5 text-neutral-400" />
+              {language === 'zh' ? '批量下载' : 'Batch Download'}
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            <button
+              onClick={() => { removeGroup(selectedGroupId); setSelectedGroupId(null); }}
+              className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-rose-300 transition hover:bg-rose-500/10"
+              title={language === 'zh' ? '删除整组（含节点）' : 'Delete group with nodes'}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        );
+      })() : null}
+
+      {selectedIds.length >= 2 && !contextMenu && selectionBounds ? (() => {
+        // If the entire selection corresponds exactly to one existing group, show "Ungroup" instead.
+        const selectionSet = new Set(selectedIds);
+        const matchingGroup = groups.find((group) => (
+          group.nodeIds.length === selectionSet.size && group.nodeIds.every((id) => selectionSet.has(id))
+        ));
+        const rightX = viewport.x + (selectionBounds.x + selectionBounds.width) * viewport.zoom;
+        const centerY = viewport.y + (selectionBounds.y + selectionBounds.height / 2) * viewport.zoom;
+        return (
+          <>
+          {/* Selection bulk-routing + handle on the right edge */}
+          <button
+            type="button"
+            className="absolute z-30 flex h-7 w-7 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 text-neutral-300 shadow-lg backdrop-blur-md transition hover:border-cyan-300/40 hover:text-cyan-200"
+            style={{ left: rightX, top: centerY }}
+            onMouseDown={(event) => {
+              event.stopPropagation();
+              setConnectionDragging(true);
+              setBulkRouting({
+                startClient: { x: event.clientX, y: event.clientY },
+                currentClient: { x: event.clientX, y: event.clientY },
+              });
+            }}
+            title={language === 'zh' ? '从所有选中节点拉线' : 'Connect all selected to a target'}
+          >
+            <Plus className="h-4 w-4" />
           </button>
-        </div>
+          <div
+            className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
+            style={{
+              left: viewport.x + (selectionBounds.x + selectionBounds.width / 2) * viewport.zoom,
+              top: viewport.y + selectionBounds.y * viewport.zoom - 12,
+            }}
+          >
+            <button className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5">
+              <Upload className="h-3.5 w-3.5 text-neutral-400" />
+              {dict.create_asset}
+              <span className="ml-1 rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] tracking-wider text-rose-300">BETA</span>
+            </button>
+            <div className="h-4 w-px bg-white/10" />
+            {matchingGroup ? (
+              <button
+                onClick={() => { ungroupNodes(matchingGroup.id); }}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
+              >
+                <UngroupIcon className="h-3.5 w-3.5 text-neutral-400" />
+                {language === 'zh' ? '解组' : 'Ungroup'}
+              </button>
+            ) : (
+              <button
+                onClick={() => createGroup(selectedIds)}
+                className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
+              >
+                <GroupIcon className="h-3.5 w-3.5 text-neutral-400" />
+                {dict.group}
+              </button>
+            )}
+          </div>
+          </>
+        );
+      })() : null}
+
+      {/* Bulk-routing converging curves with animated flow */}
+      {bulkDragCurves && bulkDragCurves.length > 0 ? (
+        <svg className="pointer-events-none absolute inset-0 z-30 h-full w-full overflow-visible">
+          {bulkDragCurves.map((curve) => (
+            <g key={curve.id}>
+              {/* Soft outer glow */}
+              <path d={curve.d} fill="none" stroke="#22d3ee" strokeOpacity={0.18} strokeWidth={6} strokeLinecap="round" />
+              {/* Solid base stroke */}
+              <path d={curve.d} fill="none" stroke="#22d3ee" strokeOpacity={0.85} strokeWidth={2} strokeLinecap="round" />
+              {/* Animated dashed overlay — gives a flowing pulse along the curve */}
+              <path d={curve.d} fill="none" stroke="#a5f3fc" strokeWidth={2} strokeLinecap="round" strokeDasharray="10 14">
+                <animate attributeName="stroke-dashoffset" from="0" to="-24" dur="0.6s" repeatCount="indefinite" />
+              </path>
+            </g>
+          ))}
+        </svg>
       ) : null}
 
-      {picker ? (
+      {contextMenu ? (
         <>
-          <div className="absolute inset-0 z-30" onClick={() => setPicker(null)} />
+          <div className="absolute inset-0 z-30" onClick={() => setContextMenu(null)} />
           <div
-            className="absolute z-40 w-[220px] rounded-2xl border border-white/10 bg-[#15181d]/95 p-2 shadow-2xl backdrop-blur-xl"
-            style={{ left: picker.x, top: picker.y }}
+            className={clsx(
+              'absolute z-40 rounded-[14px] border border-white/10 bg-[#252525]/98 shadow-2xl backdrop-blur-xl',
+              contextMenu.mode === 'node-media' || contextMenu.mode === 'node-text'
+                ? 'w-[220px] p-1.5'
+                : 'w-[280px] p-2 rounded-[22px]',
+            )}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
           >
-            <div className="px-3 py-2 text-sm text-neutral-200">
-              {picker.fromConnection
-                ? (language === 'zh' ? '引用该节点生成' : 'Generate from this node')
-                : (language === 'zh' ? '在此处创建节点' : 'Create node here')}
-            </div>
-            <div className="flex flex-col">
-              {PICKER_OPTIONS.map((option) => {
-                const Icon = option.icon;
-                return (
-                  <button
+            {contextMenu.mode === 'node-media' || contextMenu.mode === 'node-text' ? (
+              <div className="flex flex-col">
+                {contextMenu.mode === 'node-media' ? (
+                  <NodeMenuItem labelZh="Seedance2.0合规校验" labelEn="Seedance2.0 Check" hint="?" disabled />
+                ) : null}
+                <NodeMenuItem
+                  labelZh="保存到我的素材"
+                  labelEn="Save to My Assets"
+                  disabled={contextMenu.mode === 'node-text'}
+                  onClick={() => {
+                    if (contextMenu.nodeId) openSaveAssetDialog(contextMenu.nodeId);
+                    setContextMenu(null);
+                  }}
+                />
+                {contextMenu.mode === 'node-media' ? (
+                  <NodeMenuItem labelZh="进入全景预览" labelEn="Panorama Preview" hint="?" disabled />
+                ) : null}
+                <NodeMenuItem labelZh="创建主体" labelEn="Create Subject" disabled />
+                {contextMenu.mode === 'node-media' ? (
+                  <NodeMenuItem labelZh="优化工作流布局" labelEn="Optimize Layout" disabled />
+                ) : null}
+                <div className="my-1 h-px bg-white/8" />
+                <NodeMenuItem
+                  labelZh="复制节点"
+                  labelEn="Copy Node"
+                  hint="?"
+                  shortcut="⌘C"
+                  onClick={() => { copySelectedNodes(); setContextMenu(null); }}
+                />
+                {contextMenu.mode === 'node-media' ? (
+                  <NodeMenuItem labelZh="复制图片" labelEn="Copy Image" disabled />
+                ) : null}
+                <NodeMenuItem labelZh="创建副本" labelEn="Duplicate" hint="?" disabled />
+                <NodeMenuItem
+                  labelZh="粘贴"
+                  labelEn="Paste"
+                  shortcut="⌘V"
+                  onClick={() => { pasteCopiedNodes(); setContextMenu(null); }}
+                />
+                <NodeMenuItem
+                  labelZh="删除"
+                  labelEn="Delete"
+                  shortcut="⌘⌫"
+                  onClick={() => {
+                    if (contextMenu.nodeId) {
+                      handleNodesChange([{ type: 'remove', id: contextMenu.nodeId }] as never);
+                    }
+                    setContextMenu(null);
+                  }}
+                />
+                <div className="my-1 h-px bg-white/8" />
+                <NodeMenuItem labelZh="复制到剪贴板" labelEn="Copy to Clipboard" disabled />
+              </div>
+            ) : contextMenu.mode === 'root' ? (
+              <div className="flex flex-col">
+                <ContextMenuButton icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
+                <ContextMenuButton
+                  icon={FolderHeart}
+                  labelZh="打开素材库"
+                  labelEn="Open Asset Library"
+                  onClick={() => { setAssetLibraryOpen(true); setContextMenu(null); }}
+                />
+                <ContextMenuButton
+                  icon={Sparkles}
+                  labelZh="添加节点"
+                  labelEn="Add Node"
+                  onClick={() => setContextMenu((current) => (current ? { ...current, mode: 'add-node' } : current))}
+                />
+                <div className="my-2 h-px bg-white/8" />
+                <ContextMenuButton icon={Undo2} labelZh="撤销" labelEn="Undo" shortcut="⌘Z" disabled />
+                <ContextMenuButton icon={Redo2} labelZh="重做" labelEn="Redo" shortcut="⇧⌘Z" disabled />
+                <div className="my-2 h-px bg-white/8" />
+                <ContextMenuButton icon={ClipboardPaste} labelZh="粘贴" labelEn="Paste" shortcut="⌘V" disabled />
+              </div>
+            ) : (
+              <div className="flex flex-col">
+                <div className="px-3 py-2 text-sm font-medium text-neutral-100">
+                  {language === 'zh' ? '添加节点' : 'Add Node'}
+                </div>
+                {PICKER_OPTIONS.map((option) => (
+                  <ContextMenuButton
                     key={option.kind}
+                    icon={option.icon}
+                    labelZh={option.zh}
+                    labelEn={option.en}
                     onClick={() => onPickerSelect(option.kind)}
-                    className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-neutral-200 transition hover:bg-white/5"
-                  >
-                    <Icon className="h-4 w-4 text-neutral-400" />
-                    <span className="text-sm">{language === 'zh' ? option.zh : option.en}</span>
-                  </button>
-                );
-              })}
-            </div>
+                  />
+                ))}
+                {FUTURE_NODE_OPTIONS.map((option) => (
+                  <ContextMenuButton
+                    key={option.key}
+                    icon={option.icon}
+                    labelZh={option.zh}
+                    labelEn={option.en}
+                    subtitleZh={option.subtitleZh}
+                    subtitleEn={option.subtitleEn}
+                    badge={option.badge}
+                    disabled
+                  />
+                ))}
+                <div className="px-3 pt-3 text-xs text-neutral-500">
+                  {language === 'zh' ? '添加资源' : 'Add Resource'}
+                </div>
+                <ContextMenuButton icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
+                <ContextMenuButton
+                  icon={ImageIcon}
+                  labelZh="从生成历史选择"
+                  labelEn="Choose from History"
+                  onClick={() => {
+                    setHistoryImagePickerOpen(true);
+                    setContextMenu(null);
+                  }}
+                />
+              </div>
+            )}
           </div>
         </>
       ) : null}
 
+      <HistoryImagePickerModal
+        isOpen={isHistoryImagePickerOpen}
+        historyItems={history}
+        onClose={() => setHistoryImagePickerOpen(false)}
+        onConfirm={(selectedItems) => {
+          insertHistoryImages(selectedItems);
+          setHistoryImagePickerOpen(false);
+          setContextMenu(null);
+        }}
+      />
+
       <div className="absolute bottom-6 left-6 z-40 flex flex-col gap-3">
-        {dropMessage ? (
-          <div className="max-w-[320px] rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-xs text-rose-200 shadow-2xl backdrop-blur-xl">
-            {dropMessage}
-          </div>
-        ) : null}
         <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/45 px-3 py-2 shadow-2xl backdrop-blur-xl">
           <ControlButton
             active={showMiniMap}
@@ -517,9 +1146,92 @@ const InnerCanvas = () => {
           </ControlButton>
         </div>
       </div>
+
+      <SaveAssetDialog />
     </div>
   );
 };
+
+function GroupTitle({ groupId, name, count, zoom, onSelect }: { groupId: string; name: string; count: number; zoom: number; onSelect: () => void }) {
+  const language = useStore((state) => state.language);
+  const renameGroup = useStore((state) => state.renameGroup);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  useEffect(() => { setDraft(name); }, [name]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== name) renameGroup(groupId, next);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onMouseDown={(event) => event.stopPropagation()}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') commit();
+          if (event.key === 'Escape') { setDraft(name); setEditing(false); }
+        }}
+        className="pointer-events-auto absolute left-0 top-0 -translate-y-[110%] rounded bg-[#1a1d22] px-1 text-neutral-100 outline-none ring-1 ring-cyan-300/40"
+        style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => { event.stopPropagation(); onSelect(); }}
+      onDoubleClick={(event) => { event.stopPropagation(); setEditing(true); }}
+      className="pointer-events-auto absolute left-0 top-0 -translate-y-[110%] whitespace-nowrap rounded text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+      style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
+      title={language === 'zh' ? '双击重命名' : 'Double-click to rename'}
+    >
+      {name} · {count}{language === 'zh' ? ' 个节点' : ' nodes'}
+    </button>
+  );
+}
+
+function NodeMenuItem({
+  labelZh,
+  labelEn,
+  hint,
+  shortcut,
+  disabled,
+  onClick,
+}: {
+  labelZh: string;
+  labelEn: string;
+  hint?: string;
+  shortcut?: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const language = useStore((state) => state.language);
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={clsx(
+        'flex items-center justify-between rounded-md px-3 py-2 text-left text-sm transition',
+        disabled ? 'cursor-not-allowed text-neutral-500' : 'text-neutral-200 hover:bg-white/5',
+      )}
+    >
+      <span className="flex items-center gap-1.5">
+        {language === 'zh' ? labelZh : labelEn}
+        {hint ? <span className="text-[10px] text-neutral-500">{hint}</span> : null}
+      </span>
+      {shortcut ? <span className="text-xs text-neutral-500">{shortcut}</span> : null}
+    </button>
+  );
+}
 
 function ControlButton({
   active,
@@ -545,6 +1257,57 @@ function ControlButton({
       ].join(' ')}
     >
       {children}
+    </button>
+  );
+}
+
+function ContextMenuButton({
+  icon: Icon,
+  labelZh,
+  labelEn,
+  subtitleZh,
+  subtitleEn,
+  badge,
+  shortcut,
+  disabled,
+  onClick,
+}: {
+  icon: any;
+  labelZh: string;
+  labelEn: string;
+  subtitleZh?: string;
+  subtitleEn?: string;
+  badge?: string;
+  shortcut?: string;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
+  const language = useStore((state) => state.language);
+  const label = language === 'zh' ? labelZh : labelEn;
+  const subtitle = language === 'zh' ? subtitleZh : subtitleEn;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`flex items-center justify-between rounded-2xl px-3 py-3 text-left transition ${
+        disabled ? 'cursor-not-allowed opacity-45' : 'hover:bg-white/5'
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${disabled ? 'bg-white/6 text-neutral-500' : 'bg-white/8 text-neutral-200'}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div>
+          <div className="flex items-center gap-2 text-sm text-neutral-100">
+            <span>{label}</span>
+            {badge ? <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] text-neutral-300">{badge}</span> : null}
+          </div>
+          {subtitle ? <div className="mt-1 text-xs text-neutral-500">{subtitle}</div> : null}
+        </div>
+      </div>
+      {shortcut ? <div className="text-xs text-neutral-500">{shortcut}</div> : null}
     </button>
   );
 }

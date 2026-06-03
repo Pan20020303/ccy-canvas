@@ -10,9 +10,12 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/authn"
+	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/shared/apperror"
 	"ccy-canvas/backend/internal/shared/httpx"
@@ -21,11 +24,16 @@ import (
 // Handler wires model catalog operations to the huma API.
 type Handler struct {
 	svc *application.Service
+	q   *sqlc.Queries
+	// generateLimiter bounds concurrent generation requests so we don't blow past
+	// upstream provider rate limits or saturate goroutines / DB connections.
+	// Default cap (8) is conservative; tune in NewHandler if needed.
+	generateLimiter chan struct{}
 }
 
 // NewHandler creates a new model catalog Handler.
-func NewHandler(svc *application.Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc *application.Service, q *sqlc.Queries) *Handler {
+	return &Handler{svc: svc, q: q, generateLimiter: make(chan struct{}, 8)}
 }
 
 // --- response types ---
@@ -762,13 +770,14 @@ type listAppProviderConfigsOutput struct {
 
 type generateInput struct {
 	Body struct {
-		ServiceType string `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
-		Model       string `json:"model" minLength:"1" doc:"Model name"`
-		Prompt      string `json:"prompt" minLength:"1" doc:"User prompt"`
-		Size        string `json:"size,omitempty" doc:"Image ratio (e.g. 1:1, 16:9, auto)"`
-		Resolution  string `json:"resolution,omitempty" doc:"Output resolution (image: 1k/2k/4k, video: 480p/720p)"`
-		Duration    int    `json:"duration,omitempty" doc:"Video duration in seconds"`
-		AspectRatio string `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
+		NodeId          string   `json:"node_id" doc:"Canvas node id (for log correlation)"`
+		ServiceType     string   `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
+		Model           string   `json:"model" minLength:"1" doc:"Model name"`
+		Prompt          string   `json:"prompt" minLength:"1" doc:"User prompt"`
+		Size            string   `json:"size,omitempty" doc:"Image ratio (e.g. 1:1, 16:9, auto)"`
+		Resolution      string   `json:"resolution,omitempty" doc:"Output resolution (image: 1k/2k/4k, video: 480p/720p)"`
+		Duration        int      `json:"duration,omitempty" doc:"Video duration in seconds"`
+		AspectRatio     string   `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
 		ReferenceImages []string `json:"reference_images,omitempty" doc:"Reference image URLs"`
 		ReferenceVideo  string   `json:"reference_video,omitempty" doc:"Single reference video URL"`
 		ReferenceVideos []string `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
@@ -784,19 +793,74 @@ type generateOutput struct {
 }
 
 func (h *Handler) generate(ctx context.Context, input *generateInput) (*generateOutput, error) {
+	// Concurrency cap: wait for a slot in the limiter; abort if client cancels.
+	select {
+	case h.generateLimiter <- struct{}{}:
+		defer func() { <-h.generateLimiter }()
+	case <-ctx.Done():
+		return nil, huma.Error408RequestTimeout("Request canceled while waiting for a generation slot")
+	}
+
+	// Resolve current user; logging is best-effort and never fails the request.
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+
+	// Best-effort: write a 'pending' log row before invoking the provider.
+	startedAt := time.Now()
+	var logID pgtype.UUID
+	if h.q != nil {
+		if logRow, lerr := h.q.InsertGenerationLog(ctx, sqlc.InsertGenerationLogParams{
+			UserID:      userID,
+			NodeID:      input.Body.NodeId,
+			ServiceType: input.Body.ServiceType,
+			Model:       input.Body.Model,
+			Prompt:      input.Body.Prompt,
+			Status:      "pending",
+			ResultUrl:   "",
+			ErrorMsg:    "",
+			DurationMs:  0,
+		}); lerr == nil {
+			logID = logRow.ID
+		}
+	}
+
 	result, err := h.svc.Generate(ctx, application.GenerateRequest{
-		ServiceType: input.Body.ServiceType,
-		Model:       input.Body.Model,
-		Prompt:      input.Body.Prompt,
-		Size:        input.Body.Size,
-		Resolution:  input.Body.Resolution,
-		Duration:    input.Body.Duration,
-		AspectRatio: input.Body.AspectRatio,
+		ServiceType:     input.Body.ServiceType,
+		Model:           input.Body.Model,
+		Prompt:          input.Body.Prompt,
+		Size:            input.Body.Size,
+		Resolution:      input.Body.Resolution,
+		Duration:        input.Body.Duration,
+		AspectRatio:     input.Body.AspectRatio,
 		ReferenceImages: input.Body.ReferenceImages,
 		ReferenceVideo:  input.Body.ReferenceVideo,
 		ReferenceVideos: input.Body.ReferenceVideos,
 		ReferenceMode:   input.Body.ReferenceMode,
 	})
+	durationMs := int32(time.Since(startedAt).Milliseconds())
+
+	// Best-effort: update the pending row with the final result/error.
+	if h.q != nil && logID.Valid {
+		status := "success"
+		errMsg := ""
+		resultURL := ""
+		if err != nil {
+			status = "error"
+			errMsg = err.Error()
+		} else if result != nil {
+			resultURL = result.Content
+		}
+		_ = h.q.UpdateGenerationLogResult(ctx, sqlc.UpdateGenerationLogResultParams{
+			ID:         logID,
+			Status:     status,
+			ResultUrl:  resultURL,
+			ErrorMsg:   errMsg,
+			DurationMs: durationMs,
+		})
+	}
+
 	if err != nil {
 		return nil, toHTTPError(err)
 	}

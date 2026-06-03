@@ -3,6 +3,7 @@ import { X, BarChart3, User as UserIcon, History } from "lucide-react";
 import { useAuth } from "../auth/AuthProvider";
 import { t } from "../i18n";
 import { useStore } from "../store";
+import { HistoryAssetsModal } from "./HistoryAssetsModal";
 
 const ModalOverlay = ({
   isOpen,
@@ -40,6 +41,8 @@ export const Modals = () => {
 
   return (
     <>
+      <HistoryAssetsModal />
+
       <ModalOverlay isOpen={isProfileOpen} onClose={() => setProfileOpen(false)}>
         <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-6 py-4">
           <div className="flex items-center space-x-2 text-neutral-200">

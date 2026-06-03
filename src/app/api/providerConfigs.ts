@@ -124,6 +124,7 @@ export function listAppProviderConfigs(): Promise<AppProviderConfig[]> {
 // ---------------------------------------------------------------------------
 
 export type GeneratePayload = {
+  node_id?: string;
   service_type: string;
   model: string;
   prompt: string;

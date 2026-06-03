@@ -9,31 +9,29 @@ import {
   Layers,
   Mountain,
   Music,
-  Music2,
   Package,
   Pencil,
   Plus,
-  Search,
   Settings as SettingsIcon,
   Upload,
   User as UserIcon,
   Users,
   Video,
 } from 'lucide-react';
-import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry';
 
 import { t } from '../i18n';
-import { useStore } from '../store';
+import { useStore, ASSET_CATEGORIES, type SavedAssetCategory, type SavedAsset } from '../store';
 
 type PanelKey = 'add' | 'projects' | 'assets' | 'files' | null;
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode';
 
-const NODE_OPTIONS = [
+const NODE_OPTIONS: Array<{ kind: NodeKind; icon: typeof Pencil; zh: string; en: string }> = [
   { kind: 'textNode', icon: Pencil, zh: '生成文本', en: 'Generate Text' },
   { kind: 'imageNode', icon: ImageIcon, zh: '生成图像', en: 'Generate Image' },
   { kind: 'videoNode', icon: Video, zh: '生成视频', en: 'Generate Video' },
   { kind: 'audioNode', icon: Music, zh: '生成音频', en: 'Generate Audio' },
   { kind: 'panoramaNode', icon: Globe, zh: '生成 360°', en: 'Generate 360°' },
-] as const;
+];
 
 const ASSET_TABS = [
   { key: 'people', icon: UserIcon, zh: '人物', en: 'People' },
@@ -41,24 +39,7 @@ const ASSET_TABS = [
   { key: 'objects', icon: Box, zh: '物品', en: 'Objects' },
 ] as const;
 
-const FILE_TABS = [
-  { key: 'history', zh: '历史生成', en: 'History' },
-  { key: 'output', zh: '输出文件夹', en: 'Output' },
-] as const;
-
-const FILE_FILTERS = [
-  { key: 'search', icon: Search, zh: '全部', en: 'All' },
-  { key: 'image', icon: ImageIcon, zh: '图像', en: 'Image' },
-  { key: 'video', icon: Film, zh: '视频', en: 'Video' },
-  { key: 'audio', icon: Music2, zh: '音频', en: 'Audio' },
-] as const;
-
-const previewClassByAspectRatio = {
-  portrait: 'aspect-[3/4]',
-  square: 'aspect-square',
-  landscape: 'aspect-[4/3]',
-  text: 'min-h-[120px]',
-} as const;
+type AssetCategoryTab = SavedAssetCategory | 'all';
 
 const formatShortDate = (timestamp: number, language: 'zh' | 'en') => (
   new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-US', {
@@ -67,19 +48,9 @@ const formatShortDate = (timestamp: number, language: 'zh' | 'en') => (
   }).format(timestamp)
 );
 
-const formatShortTime = (timestamp: number, language: 'zh' | 'en') => (
-  new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(timestamp)
-);
-
 export const Toolbar = () => {
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
-  const history = useStore((state) => state.history);
   const spaces = useStore((state) => state.spaces);
   const activeSpaceId = useStore((state) => state.activeSpaceId);
   const switchSpace = useStore((state) => state.switchSpace);
@@ -91,21 +62,41 @@ export const Toolbar = () => {
   const switchBackendProject = useStore((state) => state.switchBackendProject);
   const createProject = useStore((state) => state.createProject);
   const createBackendProject = useStore((state) => state.createBackendProject);
-  // Use backend projects if loaded, otherwise fall back to local.
+  const setSettingsOpen = useStore((state) => state.setSettingsOpen);
+  const setHistoryAssetsOpen = useStore((state) => state.setHistoryAssetsOpen);
+  const savedAssets = useStore((state) => state.savedAssets);
+  const removeAsset = useStore((state) => state.removeAsset);
+  const isAssetLibraryOpen = useStore((state) => state.isAssetLibraryOpen);
+  const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
+  const dict = t[language];
+
   const projects = backendProjects.length > 0
-    ? backendProjects.map((p) => ({ id: p.id, name: p.name, createdAt: new Date(p.created_at).getTime(), updatedAt: new Date(p.updated_at).getTime() }))
+    ? backendProjects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        createdAt: new Date(project.created_at).getTime(),
+        updatedAt: new Date(project.updated_at).getTime(),
+      }))
     : localProjects;
   const effectiveActiveProjectId = activeBackendProjectId ?? activeProjectId;
-  const setSettingsOpen = useStore((state) => state.setSettingsOpen);
-  const dict = t[language];
 
   const [open, setOpen] = useState<PanelKey>(null);
   const [assetTab, setAssetTab] = useState<typeof ASSET_TABS[number]['key']>('people');
-  const [fileTab, setFileTab] = useState<typeof FILE_TABS[number]['key']>('history');
-  const [fileFilter, setFileFilter] = useState<typeof FILE_FILTERS[number]['key']>('search');
+  const [assetCategoryTab, setAssetCategoryTab] = useState<AssetCategoryTab>('all');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // Programmatic open/close from the asset library store flag.
+  useEffect(() => {
+    if (isAssetLibraryOpen && open !== 'assets') setOpen('assets');
+    if (!isAssetLibraryOpen && open === 'assets') setOpen(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAssetLibraryOpen]);
+  useEffect(() => {
+    if (open !== 'assets' && isAssetLibraryOpen) setAssetLibraryOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
@@ -118,7 +109,7 @@ export const Toolbar = () => {
     return () => window.removeEventListener('mousedown', onClick);
   }, []);
 
-  const handleAddNode = (kind: string) => {
+  const handleAddNode = (kind: NodeKind) => {
     addNode({
       id: `${kind}-${Date.now()}`,
       type: kind,
@@ -131,7 +122,7 @@ export const Toolbar = () => {
   const submitProject = () => {
     const name = newProjectName.trim();
     if (backendProjects.length > 0) {
-      void createBackendProject(name || '新画布');
+      void createBackendProject(name || '新项目');
     } else {
       createProject(name || undefined);
     }
@@ -141,15 +132,7 @@ export const Toolbar = () => {
 
   const toggle = (key: PanelKey) => setOpen((current) => (current === key ? null : key));
 
-  const filteredHistory = history.filter((item) => {
-    if (fileFilter === 'search') {
-      return true;
-    }
-
-    return item.mediaType === fileFilter;
-  });
-
-  const SideBtn = ({ k, icon: Icon, label }: { k: PanelKey; icon: any; label: string }) => (
+  const SideBtn = ({ k, icon: Icon, label }: { k: PanelKey; icon: typeof Layers; label: string }) => (
     <button
       onClick={() => toggle(k)}
       className={`group relative flex items-center justify-center rounded-xl p-3 transition-all ${
@@ -351,35 +334,86 @@ export const Toolbar = () => {
           {open === 'assets' ? (
             <>
               <div className="mb-3 flex items-center justify-between px-1">
-                <PanelTitle compact>{language === 'zh' ? '资源库' : 'Assets'}</PanelTitle>
+                <div className="flex items-center gap-2">
+                  <PanelTitle compact>{language === 'zh' ? '我的素材' : 'My Assets'}</PanelTitle>
+                  <span className="text-[11px] text-neutral-500">{language === 'zh' ? '我的主体库' : 'Subject Library'}</span>
+                </div>
                 <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] tracking-wider text-rose-300">BETA</span>
               </div>
-              <div className="mb-2 rounded-xl border border-cyan-500/10 bg-cyan-500/[0.05] px-3 py-2 text-[11px] text-neutral-400">
-                {spaces.find((space) => space.id === activeSpaceId)?.type === 'team'
-                  ? (language === 'zh' ? '当前正在查看团队共享资源。' : 'You are viewing team-shared assets.')
-                  : (language === 'zh' ? '当前正在查看个人资源。' : 'You are viewing personal assets.')}
+              <div className="prompt-editor-scroll mb-3 flex items-center gap-1 overflow-x-auto pb-1">
+                {ASSET_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat.key}
+                    onClick={() => setAssetCategoryTab(cat.key)}
+                    className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] transition ${
+                      cat.key === assetCategoryTab
+                        ? 'bg-white/10 text-neutral-100'
+                        : 'text-neutral-400 hover:bg-white/5'
+                    }`}
+                  >
+                    {language === 'zh' ? cat.zh : cat.en}
+                  </button>
+                ))}
               </div>
-              <div className="mb-3 flex gap-1 rounded-lg bg-black/30 p-1">
-                {ASSET_TABS.map((tab) => {
-                  const Icon = tab.icon;
-
+              {(() => {
+                const filtered = assetCategoryTab === 'all' ? savedAssets : savedAssets.filter((asset) => asset.category === assetCategoryTab);
+                if (filtered.length === 0) {
                   return (
-                    <button
-                      key={tab.key}
-                      onClick={() => setAssetTab(tab.key)}
-                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition ${
-                        assetTab === tab.key ? 'bg-white/10 text-cyan-300' : 'text-neutral-400 hover:text-neutral-200'
-                      }`}
-                    >
-                      <Icon className="h-3.5 w-3.5" />
-                      {language === 'zh' ? tab.zh : tab.en}
-                    </button>
+                    <div className="py-10 text-center text-xs text-neutral-600">
+                      {language === 'zh' ? '暂无素材' : 'No assets yet'}
+                    </div>
                   );
-                })}
-              </div>
-              <div className="py-6 text-center text-xs text-neutral-600">
-                {language === 'zh' ? '资源库会在下一阶段接入个人与团队共享视图。' : 'Asset library will connect personal and team views in the next phase.'}
-              </div>
+                }
+                return (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {filtered.map((asset: SavedAsset) => (
+                      <div key={asset.id} className="group relative overflow-hidden rounded-xl border border-white/8 bg-white/[0.02] transition hover:border-white/15">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const id = `asset-use-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+                            const position = { x: 240 + Math.random() * 60, y: 180 + Math.random() * 60 };
+                            if (asset.kind === 'image') {
+                              addNode({ id, type: 'referenceImageNode', position, data: { url: asset.url, sourceName: asset.name } } as never);
+                            } else if (asset.kind === 'video') {
+                              addNode({ id, type: 'referenceVideoNode', position, data: { url: asset.url, sourceName: asset.name } } as never);
+                            } else {
+                              addNode({ id, type: 'textNode', position, data: { content: asset.text ?? '', customTitle: asset.name, textMode: 'editor' } } as never);
+                            }
+                            setOpen(null);
+                          }}
+                          className="block w-full text-left"
+                        >
+                          <div className="aspect-square overflow-hidden bg-black/40">
+                            {asset.kind === 'image' && asset.thumbnail ? (
+                              <img src={asset.thumbnail} alt="" className="h-full w-full object-cover" />
+                            ) : asset.kind === 'video' && asset.url ? (
+                              <video src={asset.url} className="h-full w-full object-cover" muted />
+                            ) : asset.kind === 'text' ? (
+                              <div className="flex h-full items-center justify-center p-2 text-center text-[10px] text-neutral-400">
+                                <span className="line-clamp-4">{asset.text || asset.name}</span>
+                              </div>
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-neutral-500">
+                                <ImageIcon className="h-5 w-5" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="truncate px-2 py-1.5 text-[11px] text-neutral-200">{asset.name}</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => { event.stopPropagation(); removeAsset(asset.id); }}
+                          className="absolute right-1.5 top-1.5 hidden h-5 w-5 items-center justify-center rounded-md bg-black/60 text-rose-300 transition hover:bg-rose-500/20 group-hover:flex"
+                          title={language === 'zh' ? '删除' : 'Delete'}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </>
           ) : null}
 
@@ -391,98 +425,29 @@ export const Toolbar = () => {
                   ? (language === 'zh' ? '你正在查看团队空间的共享历史生成。' : 'You are viewing shared team history.')
                   : (language === 'zh' ? '你正在查看个人空间的历史生成。' : 'You are viewing personal history.')}
               </div>
-              <div className="mb-3 flex gap-1 rounded-lg bg-black/30 p-1">
-                {FILE_TABS.map((tab) => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setFileTab(tab.key)}
-                    className={`flex-1 rounded-md py-1.5 text-xs transition ${
-                      fileTab === tab.key ? 'bg-white/10 text-cyan-300' : 'text-neutral-400 hover:text-neutral-200'
-                    }`}
-                  >
-                    {language === 'zh' ? tab.zh : tab.en}
-                  </button>
-                ))}
-              </div>
-              <div className="mb-3 flex gap-1">
-                {FILE_FILTERS.map((filter) => {
-                  const Icon = filter.icon;
+              <div className="space-y-3">
+                <button
+                  onClick={() => {
+                    setHistoryAssetsOpen(true);
+                    setOpen(null);
+                  }}
+                  className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-left transition hover:border-cyan-400/30 hover:bg-white/[0.05]"
+                >
+                  <div>
+                    <div className="text-sm text-neutral-100">{language === 'zh' ? '历史生成' : 'History Assets'}</div>
+                    <div className="mt-1 text-xs text-neutral-500">
+                      {language === 'zh'
+                        ? '在独立弹窗中浏览、筛选和批量操作历史资产'
+                        : 'Browse and batch manage history assets in a dedicated modal'}
+                    </div>
+                  </div>
+                  <Film className="h-4 w-4 text-neutral-500" />
+                </button>
 
-                  return (
-                    <button
-                      key={filter.key}
-                      onClick={() => setFileFilter(filter.key)}
-                      className={`flex flex-1 items-center justify-center rounded-md py-1.5 text-xs transition ${
-                        fileFilter === filter.key
-                          ? 'bg-cyan-500/15 text-cyan-300'
-                          : 'text-neutral-500 hover:bg-white/5 hover:text-neutral-300'
-                      }`}
-                      title={language === 'zh' ? filter.zh : filter.en}
-                    >
-                      <Icon className="h-3.5 w-3.5" />
-                    </button>
-                  );
-                })}
-              </div>
-
-              {fileTab !== 'history' ? (
-                <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center text-xs text-neutral-600">
+                <div className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-xs text-neutral-600">
                   {language === 'zh' ? '输出文件夹将在下一阶段接入。' : 'Output folders will be connected in the next phase.'}
                 </div>
-              ) : filteredHistory.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-white/10 px-4 py-10 text-center">
-                  <div className="text-sm text-neutral-400">
-                    {language === 'zh' ? '这个空间还没有可浏览的历史生成内容' : 'No generated history to browse in this space yet'}
-                  </div>
-                  <div className="mt-2 text-xs text-neutral-600">
-                    {language === 'zh'
-                      ? '先在当前空间里运行文本、图像、视频或音频节点，结果会显示在这里。'
-                      : 'Run text, image, video, or audio nodes in this space and the results will appear here.'}
-                  </div>
-                </div>
-              ) : (
-                <ResponsiveMasonry columnsCountBreakPoints={{ 0: 1, 240: 2 }}>
-                  <Masonry gutter="10px">
-                    {filteredHistory.map((item) => {
-                      const previewClass = previewClassByAspectRatio[item.aspectRatio] ?? previewClassByAspectRatio.landscape;
-                      const typeLabel = FILE_FILTERS.find((filter) => filter.key === item.mediaType)?.[language] ?? item.mediaType;
-
-                      return (
-                        <div
-                          key={item.id}
-                          className="overflow-hidden rounded-2xl border border-white/8 bg-[#11151a] shadow-[0_12px_32px_rgba(0,0,0,0.28)] transition hover:border-cyan-500/30"
-                        >
-                          {item.thumbnail ? (
-                            <div className={`${previewClass} overflow-hidden bg-black/30`}>
-                              <img src={item.thumbnail} alt={item.title} className="h-full w-full object-cover" />
-                            </div>
-                          ) : (
-                            <div className={`${previewClass} flex items-start bg-gradient-to-br from-cyan-500/10 via-[#15181d] to-[#0d1014] p-3`}>
-                              <p className="line-clamp-6 text-[11px] leading-5 text-neutral-300">
-                                {item.content || item.promptExcerpt || item.title}
-                              </p>
-                            </div>
-                          )}
-                          <div className="p-3">
-                            <div className="line-clamp-2 text-xs font-medium text-neutral-100">{item.title}</div>
-                            {item.promptExcerpt ? (
-                              <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-neutral-500">
-                                {item.promptExcerpt}
-                              </div>
-                            ) : null}
-                            <div className="mt-3 flex items-center justify-between gap-3 text-[10px] text-neutral-500">
-                              <span className="rounded-full border border-white/8 bg-white/[0.03] px-2 py-1 uppercase tracking-[0.18em]">
-                                {typeLabel}
-                              </span>
-                              <span>{formatShortTime(item.timestamp, language)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </Masonry>
-                </ResponsiveMasonry>
-              )}
+              </div>
             </>
           ) : null}
         </div>
