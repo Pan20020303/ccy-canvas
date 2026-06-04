@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { gsap } from 'gsap';
 import {
   Box,
   Check,
@@ -86,6 +87,7 @@ export const Toolbar = () => {
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Programmatic open/close from the asset library store flag.
   useEffect(() => {
@@ -108,6 +110,44 @@ export const Toolbar = () => {
     window.addEventListener('mousedown', onClick);
     return () => window.removeEventListener('mousedown', onClick);
   }, []);
+
+  useEffect(() => {
+    const root = rootRef.current;
+
+    if (!root) {
+      return;
+    }
+
+    const mm = gsap.matchMedia();
+    const ctx = gsap.context(() => {
+      mm.add("(prefers-reduced-motion: no-preference)", () => {
+        gsap.from(root.children, {
+          autoAlpha: 0,
+          x: -14,
+          duration: 0.36,
+          ease: "power2.out",
+          stagger: 0.06,
+        });
+      });
+    }, root);
+
+    return () => {
+      ctx.revert();
+      mm.revert();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!open || !panelRef.current) {
+      return;
+    }
+
+    gsap.fromTo(
+      panelRef.current,
+      { autoAlpha: 0, x: -12 },
+      { autoAlpha: 1, x: 0, duration: 0.24, ease: "power2.out" },
+    );
+  }, [open]);
 
   const handleAddNode = (kind: NodeKind) => {
     addNode({
@@ -181,7 +221,7 @@ export const Toolbar = () => {
       </div>
 
       {open ? (
-        <div className="max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
+        <div ref={panelRef} className="max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
           {open === 'add' ? (
             <>
               <PanelTitle>{language === 'zh' ? '画布自由生成' : 'Free Generation'}</PanelTitle>

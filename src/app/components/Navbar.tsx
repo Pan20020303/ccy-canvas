@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
+import { gsap } from "gsap";
 
 import { useAuth } from "../auth/AuthProvider";
 import { t } from "../i18n";
@@ -16,6 +17,8 @@ export const Navbar = () => {
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Sync the chosen theme to <html data-theme=...> so CSS rules in globals.css
   // can react. Default 'dark' matches the existing palette.
@@ -26,8 +29,46 @@ export const Navbar = () => {
     else root.classList.remove("theme-light");
   }, [theme]);
 
+  useEffect(() => {
+    const root = rootRef.current;
+
+    if (!root) {
+      return;
+    }
+
+    const mm = gsap.matchMedia();
+    const ctx = gsap.context(() => {
+      mm.add("(prefers-reduced-motion: no-preference)", () => {
+        gsap.from(root, {
+          autoAlpha: 0,
+          y: -12,
+          duration: 0.34,
+          ease: "power2.out",
+        });
+      });
+    }, root);
+
+    return () => {
+      ctx.revert();
+      mm.revert();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen || !menuRef.current) {
+      return;
+    }
+
+    const menu = menuRef.current;
+    gsap.fromTo(
+      menu,
+      { autoAlpha: 0, y: -8, scale: 0.98 },
+      { autoAlpha: 1, y: 0, scale: 1, duration: 0.22, ease: "power2.out" },
+    );
+  }, [menuOpen]);
+
   return (
-    <div className="absolute left-0 right-0 top-0 z-50 flex h-14 items-center justify-between border-b border-white/10 bg-black/40 px-6 backdrop-blur-md">
+    <div ref={rootRef} className="absolute left-0 right-0 top-0 z-50 flex h-14 items-center justify-between border-b border-white/10 bg-black/40 px-6 backdrop-blur-md">
       <div className="flex items-center space-x-2">
         <img src={logoUrl} alt="CCY Canvas" className="h-7 w-7 rounded object-contain" />
         <span className="font-semibold tracking-wide text-neutral-200">CCY Canvas</span>
@@ -36,7 +77,7 @@ export const Navbar = () => {
       <div className="flex items-center space-x-2">
         <button
           onClick={toggleLanguage}
-          className="flex items-center space-x-1.5 rounded-md px-3 py-1.5 text-xs text-neutral-300 transition-colors hover:bg-white/5"
+          className="flex items-center space-x-1.5 rounded-md px-3 py-1.5 text-xs text-neutral-300 transition-colors transition-transform duration-200 hover:-translate-y-0.5 hover:bg-white/5"
         >
           <Languages className="h-3.5 w-3.5" />
           <span>{language === "en" ? "EN" : "\u4e2d\u6587"}</span>
@@ -56,13 +97,13 @@ export const Navbar = () => {
         {!user ? (
           <button
             onClick={() => navigate("/login")}
-            className="rounded-md bg-cyan-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-cyan-500"
+            className="rounded-md bg-cyan-600 px-4 py-1.5 text-xs font-medium text-white transition-colors transition-transform duration-200 hover:-translate-y-0.5 hover:bg-cyan-500"
           >
             {dict.login}
           </button>
         ) : (
           <div className="relative">
-            <button onClick={() => setMenuOpen((open) => !open)} className="flex items-center">
+            <button onClick={() => setMenuOpen((open) => !open)} className="flex items-center transition-transform duration-200 hover:-translate-y-0.5">
               {user.avatar ? (
                 <img src={user.avatar} alt={user.name} className="h-8 w-8 rounded-full border border-white/15" />
               ) : (
@@ -75,7 +116,7 @@ export const Navbar = () => {
             {menuOpen ? (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
+                <div ref={menuRef} className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
                   <div className="border-b border-white/5 px-3 py-2">
                     <div className="text-sm text-neutral-200">{user.name}</div>
                     <div className="text-[11px] text-neutral-500">{user.email}</div>
