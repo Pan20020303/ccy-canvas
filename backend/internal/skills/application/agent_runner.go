@@ -37,6 +37,7 @@ type RunInput struct {
 	SystemPrompt string
 	Model        string
 	UserMessage  string
+	History      []ChatMessage
 	Tools        []Tool
 	Strategy     string // "reactive" (default) or "scripted"
 }
@@ -72,8 +73,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: in.UserMessage},
 	}
+	messages = append(messages, sanitizeConversationHistory(in.History)...)
+	messages = append(messages, ChatMessage{Role: "user", Content: in.UserMessage})
 	toolDefs := ToOpenAIDefs(in.Tools)
 
 	for step := 0; step < max; step++ {
@@ -151,6 +153,27 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 
 	emit(EventError, map[string]string{"message": "Max steps exceeded"})
 	return stats, errors.New("max steps exceeded")
+}
+
+func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {
+	if len(history) == 0 {
+		return nil
+	}
+
+	sanitized := make([]ChatMessage, 0, len(history))
+	for _, message := range history {
+		if message.Role != "user" && message.Role != "assistant" {
+			continue
+		}
+		if message.Content == "" {
+			continue
+		}
+		sanitized = append(sanitized, ChatMessage{
+			Role:    message.Role,
+			Content: message.Content,
+		})
+	}
+	return sanitized
 }
 
 // emitStreamedReply chunks the final reply into ~25-char fragments and emits

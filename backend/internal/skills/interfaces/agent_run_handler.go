@@ -53,6 +53,13 @@ type agentRunRequest struct {
 	// Current canvas snapshot for the agent to reason about.
 	Nodes []skillsapp.CanvasNode `json:"nodes"`
 	Edges []skillsapp.CanvasEdge `json:"edges"`
+	// Recent conversation context for the selected agent.
+	History []agentRunHistoryTurn `json:"history"`
+}
+
+type agentRunHistoryTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +123,14 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
 	}
-	tools = append(tools, skillsapp.BuildSkillTools(r.Context(), rt.q, rt.executor, agent.SkillIDs)...)
+	boundSkills := skillsapp.LoadBoundSkills(r.Context(), rt.q, agent.SkillIDs)
+	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
+	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
+	if invokedSkill != "" {
+		emitter.Emit("thought", map[string]string{
+			"content": "Resolved slash skill " + invokedSkill + " before starting the agent loop.",
+		})
+	}
 
 	// 6) Persist a pending agent_runs row before kicking the loop.
 	runRow, _ := rt.q.InsertAgentRun(r.Context(), sqlc.InsertAgentRunParams{
@@ -131,7 +145,8 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
 		SystemPrompt: agent.SystemPrompt,
 		Model:        agent.Model,
-		UserMessage:  req.Message,
+		UserMessage:  resolvedMessage,
+		History:      toRunHistory(req.History),
 		Tools:        tools,
 		Strategy:     agent.Strategy,
 	}, emitter.Emit)
@@ -153,4 +168,19 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		ErrorMsg:   errMsg,
 		DurationMs: durationMs,
 	})
+}
+
+func toRunHistory(history []agentRunHistoryTurn) []skillsapp.ChatMessage {
+	if len(history) == 0 {
+		return nil
+	}
+
+	messages := make([]skillsapp.ChatMessage, 0, len(history))
+	for _, turn := range history {
+		messages = append(messages, skillsapp.ChatMessage{
+			Role:    turn.Role,
+			Content: turn.Content,
+		})
+	}
+	return messages
 }

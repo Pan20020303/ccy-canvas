@@ -11,6 +11,7 @@
  */
 
 import type { Edge, Node } from "@xyflow/react";
+import type { AgentConversationTurn } from "../components/agent-conversation";
 
 export type AgentSSEEventType =
   | "thought" | "tool_call" | "tool_result"
@@ -41,7 +42,7 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
  */
 export async function runAgent(
   agentId: string,
-  body: { message: string; nodes: unknown[]; edges: unknown[] },
+  body: { message: string; nodes: unknown[]; edges: unknown[]; history?: AgentConversationTurn[] },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {
   const controller = new AbortController();

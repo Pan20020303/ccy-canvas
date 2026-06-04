@@ -156,3 +156,17 @@ export type AgentRun = {
 export function adminListAgentRuns(limit = 100, offset = 0): Promise<AgentRun[]> {
   return apiClient.get<AgentRun[]>(`/api/admin/agent-runs?limit=${limit}&offset=${offset}`);
 }
+
+export type AgentConversationHistoryItem = {
+  user_input: string;
+  final_reply: string;
+  created_at: string;
+};
+
+export function listAgentConversationHistory(agentId: string, limit = 12): Promise<AgentConversationHistoryItem[]> {
+  return apiClient.get<AgentConversationHistoryItem[]>(`/api/app/agents/${agentId}/conversation?limit=${limit}`);
+}
+
+export function clearAgentConversationHistory(agentId: string): Promise<void> {
+  return apiClient.delete(`/api/app/agents/${agentId}/conversation`);
+}
