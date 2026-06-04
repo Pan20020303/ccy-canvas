@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Loader2, MessageSquare, Send, Sparkles, Square, Wrench, X } from "lucide-react";
+import { Bot, Loader2, Send, Sparkles, Square, Wrench, X } from "lucide-react";
 
 import type { Edge, Node } from "@xyflow/react";
 

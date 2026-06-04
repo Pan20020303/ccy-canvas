@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	skillsapp "ccy-canvas/backend/internal/skills/application"
@@ -515,24 +516,29 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 		return nil, err
 	}
 
-	rows, err := h.q.ListUserAgentRuns(ctx, sqlc.ListUserAgentRunsParams{
+	conversation, err := h.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
 		UserID:  uid,
 		AgentID: agent.ID,
-		Limit:   input.Limit,
+	})
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			out := &listAgentConversationOutput{}
+			out.Body.RequestID = httpx.RequestIDFrom(ctx)
+			return out, nil
+		}
+		return nil, huma.Error500InternalServerError("Failed to load conversation history")
+	}
+
+	messages, err := h.q.ListAgentConversationMessages(ctx, sqlc.ListAgentConversationMessagesParams{
+		ConversationID: conversation.ID,
+		Limit:          input.Limit * 2,
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to list conversation history")
 	}
 
 	out := &listAgentConversationOutput{}
-	for index := len(rows) - 1; index >= 0; index-- {
-		run := rows[index]
-		out.Body.Data = append(out.Body.Data, AgentConversationItem{
-			UserInput:  run.UserInput,
-			FinalReply: run.FinalReply,
-			CreatedAt:  formatTime(run.CreatedAt),
-		})
-	}
+	out.Body.Data = append(out.Body.Data, toConversationItems(messages)...)
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
@@ -543,7 +549,7 @@ func (h *Handler) clearAgentConversationHistory(ctx context.Context, input *dele
 		return nil, err
 	}
 
-	if err := h.q.DeleteUserAgentRuns(ctx, sqlc.DeleteUserAgentRunsParams{
+	if err := h.q.DeleteAgentConversationByUserAndAgent(ctx, sqlc.DeleteAgentConversationByUserAndAgentParams{
 		UserID:  uid,
 		AgentID: agent.ID,
 	}); err != nil {
@@ -676,20 +682,24 @@ func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.A
 	return agent, uid, nil
 }
 
-type conversationTurn struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-func toConversationTurns(items []AgentConversationItem) []conversationTurn {
-	turns := make([]conversationTurn, 0, len(items)*2)
-	for _, item := range items {
-		if item.UserInput != "" {
-			turns = append(turns, conversationTurn{Role: "user", Content: item.UserInput})
+func toConversationItems(messages []sqlc.AgentConversationMessage) []AgentConversationItem {
+	items := make([]AgentConversationItem, 0, (len(messages)+1)/2)
+	for index := 0; index < len(messages); index += 2 {
+		item := AgentConversationItem{}
+		item.CreatedAt = formatTime(messages[index].CreatedAt)
+		if messages[index].Role == "user" {
+			item.UserInput = messages[index].Content
+		} else if messages[index].Role == "assistant" {
+			item.FinalReply = messages[index].Content
 		}
-		if item.FinalReply != "" {
-			turns = append(turns, conversationTurn{Role: "assistant", Content: item.FinalReply})
+		if index+1 < len(messages) {
+			if messages[index+1].Role == "assistant" {
+				item.FinalReply = messages[index+1].Content
+			} else if messages[index+1].Role == "user" && item.UserInput == "" {
+				item.UserInput = messages[index+1].Content
+			}
 		}
+		items = append(items, item)
 	}
-	return turns
+	return items
 }

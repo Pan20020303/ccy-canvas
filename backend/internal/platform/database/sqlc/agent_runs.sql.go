@@ -12,6 +12,7 @@ type AgentRun struct {
 	ID         pgtype.UUID        `json:"id"`
 	UserID     pgtype.UUID        `json:"user_id"`
 	AgentID    pgtype.UUID        `json:"agent_id"`
+	ConversationID pgtype.UUID    `json:"conversation_id"`
 	UserInput  string             `json:"user_input"`
 	FinalReply string             `json:"final_reply"`
 	ToolCalls  int32              `json:"tool_calls"`
@@ -23,21 +24,22 @@ type AgentRun struct {
 }
 
 type InsertAgentRunParams struct {
-	UserID    pgtype.UUID `json:"user_id"`
-	AgentID   pgtype.UUID `json:"agent_id"`
-	UserInput string      `json:"user_input"`
+	UserID         pgtype.UUID `json:"user_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
+	ConversationID pgtype.UUID `json:"conversation_id"`
+	UserInput      string      `json:"user_input"`
 }
 
 const insertAgentRun = `-- name: InsertAgentRun :one
-INSERT INTO agent_runs (user_id, agent_id, user_input, status)
-VALUES ($1, $2, $3, 'pending')
-RETURNING id, user_id, agent_id, user_input, final_reply, tool_calls, steps, status, error_msg, duration_ms, created_at
+INSERT INTO agent_runs (user_id, agent_id, conversation_id, user_input, status)
+VALUES ($1, $2, $3, $4, 'pending')
+RETURNING id, user_id, agent_id, conversation_id, user_input, final_reply, tool_calls, steps, status, error_msg, duration_ms, created_at
 `
 
 func (q *Queries) InsertAgentRun(ctx context.Context, arg InsertAgentRunParams) (AgentRun, error) {
-	row := q.db.QueryRow(ctx, insertAgentRun, arg.UserID, arg.AgentID, arg.UserInput)
+	row := q.db.QueryRow(ctx, insertAgentRun, arg.UserID, arg.AgentID, arg.ConversationID, arg.UserInput)
 	var i AgentRun
-	err := row.Scan(&i.ID, &i.UserID, &i.AgentID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt)
+	err := row.Scan(&i.ID, &i.UserID, &i.AgentID, &i.ConversationID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt)
 	return i, err
 }
 
@@ -73,7 +75,7 @@ type ListAgentRunsRow struct {
 }
 
 const listAgentRuns = `-- name: ListAgentRuns :many
-SELECT r.id, r.user_id, r.agent_id, r.user_input, r.final_reply, r.tool_calls, r.steps, r.status, r.error_msg, r.duration_ms, r.created_at,
+SELECT r.id, r.user_id, r.agent_id, r.conversation_id, r.user_input, r.final_reply, r.tool_calls, r.steps, r.status, r.error_msg, r.duration_ms, r.created_at,
        COALESCE(a.name, '') AS agent_name,
        COALESCE(u.name, '') AS user_name,
        COALESCE(u.email, '') AS user_email
@@ -93,7 +95,7 @@ func (q *Queries) ListAgentRuns(ctx context.Context, arg ListAgentRunsParams) ([
 	items := []ListAgentRunsRow{}
 	for rows.Next() {
 		var i ListAgentRunsRow
-		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt, &i.AgentName, &i.UserName, &i.UserEmail); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.ConversationID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt, &i.AgentName, &i.UserName, &i.UserEmail); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -108,7 +110,7 @@ type ListUserAgentRunsParams struct {
 }
 
 const listUserAgentRuns = `-- name: ListUserAgentRuns :many
-SELECT id, user_id, agent_id, user_input, final_reply, tool_calls, steps, status, error_msg, duration_ms, created_at
+SELECT id, user_id, agent_id, conversation_id, user_input, final_reply, tool_calls, steps, status, error_msg, duration_ms, created_at
 FROM agent_runs
 WHERE user_id = $1
   AND agent_id = $2
@@ -127,7 +129,7 @@ func (q *Queries) ListUserAgentRuns(ctx context.Context, arg ListUserAgentRunsPa
 	items := []AgentRun{}
 	for rows.Next() {
 		var i AgentRun
-		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.ConversationID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

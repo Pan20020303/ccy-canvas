@@ -1,37 +1,47 @@
 package interfaces
 
-import "testing"
+import (
+	"testing"
 
-func TestToConversationTurns(t *testing.T) {
-	items := []AgentConversationItem{
+	"ccy-canvas/backend/internal/platform/database/sqlc"
+)
+
+func TestToConversationItems(t *testing.T) {
+	messages := []sqlc.AgentConversationMessage{
 		{
-			UserInput:  "Draft a launch headline.",
-			FinalReply: "Launch brighter with our summer collection.",
+			Role:    "user",
+			Content: "Draft a launch headline.",
 		},
 		{
-			UserInput:  "Make it warmer.",
-			FinalReply: "Here is a warmer launch headline.",
+			Role:    "assistant",
+			Content: "Launch brighter with our summer collection.",
+		},
+		{
+			Role:    "user",
+			Content: "Make it warmer.",
+		},
+		{
+			Role:    "assistant",
+			Content: "Here is a warmer launch headline.",
 		},
 	}
 
-	turns := toConversationTurns(items)
-	if len(turns) != 4 {
-		t.Fatalf("expected 4 turns, got %d", len(turns))
+	items := toConversationItems(messages)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
 	}
 
 	expected := []struct {
-		role    string
-		content string
+		userInput  string
+		finalReply string
 	}{
-		{role: "user", content: "Draft a launch headline."},
-		{role: "assistant", content: "Launch brighter with our summer collection."},
-		{role: "user", content: "Make it warmer."},
-		{role: "assistant", content: "Here is a warmer launch headline."},
+		{userInput: "Draft a launch headline.", finalReply: "Launch brighter with our summer collection."},
+		{userInput: "Make it warmer.", finalReply: "Here is a warmer launch headline."},
 	}
 
-	for index, turn := range turns {
-		if turn.Role != expected[index].role || turn.Content != expected[index].content {
-			t.Fatalf("turn %d mismatch: got %#v want role=%q content=%q", index, turn, expected[index].role, expected[index].content)
+	for index, item := range items {
+		if item.UserInput != expected[index].userInput || item.FinalReply != expected[index].finalReply {
+			t.Fatalf("item %d mismatch: got %#v want user=%q reply=%q", index, item, expected[index].userInput, expected[index].finalReply)
 		}
 	}
 }

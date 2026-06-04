@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
@@ -123,6 +124,19 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
 	}
+	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent)
+	if err != nil {
+		httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load conversation"})
+		return
+	}
+	historyMessages, err := rt.q.ListAgentConversationMessages(r.Context(), sqlc.ListAgentConversationMessagesParams{
+		ConversationID: conversation.ID,
+		Limit:          24,
+	})
+	if err != nil {
+		httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load conversation messages"})
+		return
+	}
 	boundSkills := skillsapp.LoadBoundSkills(r.Context(), rt.q, agent.SkillIDs)
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
@@ -134,7 +148,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 
 	// 6) Persist a pending agent_runs row before kicking the loop.
 	runRow, _ := rt.q.InsertAgentRun(r.Context(), sqlc.InsertAgentRunParams{
-		UserID: userID, AgentID: agent.ID, UserInput: req.Message,
+		UserID: userID, AgentID: agent.ID, ConversationID: conversation.ID, UserInput: req.Message,
 	})
 
 	runner := skillsapp.Runner{LLM: rt.llm, BaseURL: baseURL, APIKey: apiKey}
@@ -146,7 +160,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		SystemPrompt: agent.SystemPrompt,
 		Model:        agent.Model,
 		UserMessage:  resolvedMessage,
-		History:      toRunHistory(req.History),
+		History:      toRunHistoryFromMessages(historyMessages),
 		Tools:        tools,
 		Strategy:     agent.Strategy,
 	}, emitter.Emit)
@@ -168,19 +182,53 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		ErrorMsg:   errMsg,
 		DurationMs: durationMs,
 	})
+	if runErr == nil && req.Message != "" && stats.FinalReply != "" {
+		_, _ = rt.q.InsertAgentConversationMessage(r.Context(), sqlc.InsertAgentConversationMessageParams{
+			ConversationID: conversation.ID,
+			Role:           "user",
+			Content:        req.Message,
+		})
+		_, _ = rt.q.InsertAgentConversationMessage(r.Context(), sqlc.InsertAgentConversationMessageParams{
+			ConversationID: conversation.ID,
+			Role:           "assistant",
+			Content:        stats.FinalReply,
+		})
+		_, _ = rt.q.TouchAgentConversation(r.Context(), sqlc.TouchAgentConversationParams{
+			ID:    conversation.ID,
+			Title: conversation.Title,
+		})
+	}
 }
 
-func toRunHistory(history []agentRunHistoryTurn) []skillsapp.ChatMessage {
-	if len(history) == 0 {
+func toRunHistoryFromMessages(messages []sqlc.AgentConversationMessage) []skillsapp.ChatMessage {
+	if len(messages) == 0 {
 		return nil
 	}
 
-	messages := make([]skillsapp.ChatMessage, 0, len(history))
-	for _, turn := range history {
-		messages = append(messages, skillsapp.ChatMessage{
-			Role:    turn.Role,
-			Content: turn.Content,
+	history := make([]skillsapp.ChatMessage, 0, len(messages))
+	for _, message := range messages {
+		history = append(history, skillsapp.ChatMessage{
+			Role:    message.Role,
+			Content: message.Content,
 		})
 	}
-	return messages
+	return history
+}
+
+func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent) (sqlc.AgentConversation, error) {
+	conversation, err := rt.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
+		UserID:  userID,
+		AgentID: agent.ID,
+	})
+	if err == nil {
+		return conversation, nil
+	}
+	if err != pgx.ErrNoRows {
+		return sqlc.AgentConversation{}, err
+	}
+	return rt.q.InsertAgentConversation(ctx, sqlc.InsertAgentConversationParams{
+		UserID:  userID,
+		AgentID: agent.ID,
+		Title:   agent.Name,
+	})
 }
