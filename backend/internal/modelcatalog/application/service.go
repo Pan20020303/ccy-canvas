@@ -659,7 +659,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, baseURL, apiKey s
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: imageGenerationTimeout()}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -768,6 +768,13 @@ func roundToMultiple(value, step float64) float64 {
 	return math.Round(value/step) * step
 }
 
+func imageGenerationTimeout() time.Duration {
+	// Some image relays hold the request open for several minutes before
+	// sending response headers. Match the frontend's 10-minute abort window
+	// so we do not fail early in the backend.
+	return 10 * time.Minute
+}
+
 func normalizeVolcengineImageQuality(quality string) string {
 	switch strings.ToLower(strings.TrimSpace(quality)) {
 	case "high", "medium", "low":
@@ -799,7 +806,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey str
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: imageGenerationTimeout()}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -908,7 +915,7 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := &http.Client{Timeout: imageGenerationTimeout()}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
