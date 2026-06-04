@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+import { gsap } from "gsap";
 import { X, BarChart3, User as UserIcon, History } from "lucide-react";
 
 import { useAuth } from "../auth/AuthProvider";
@@ -14,12 +16,61 @@ const ModalOverlay = ({
   onClose: () => void;
   children: React.ReactNode;
 }) => {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen || !overlayRef.current || !panelRef.current) {
+      return;
+    }
+
+    const mm = gsap.matchMedia();
+    let ctx: gsap.Context | null = null;
+
+    mm.add(
+      {
+        reduceMotion: "(prefers-reduced-motion: reduce)",
+        noPreference: "(prefers-reduced-motion: no-preference)",
+      },
+      ({ conditions }) => {
+        if (conditions?.reduceMotion) {
+          gsap.set([overlayRef.current, panelRef.current], {
+            clearProps: "all",
+            autoAlpha: 1,
+            y: 0,
+            scale: 1,
+          });
+          return;
+        }
+
+        ctx = gsap.context(() => {
+          gsap.fromTo(
+            overlayRef.current,
+            { autoAlpha: 0 },
+            { autoAlpha: 1, duration: 0.18, ease: "power2.out" },
+          );
+
+          gsap.fromTo(
+            panelRef.current,
+            { autoAlpha: 0, y: 18, scale: 0.985 },
+            { autoAlpha: 1, y: 0, scale: 1, duration: 0.26, ease: "power3.out" },
+          );
+        });
+      },
+    );
+
+    return () => {
+      ctx?.revert();
+      mm.revert();
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+    <div ref={overlayRef} className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#0c0e11] shadow-2xl">
+      <div ref={panelRef} className="relative z-10 w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#0c0e11] shadow-2xl">
         {children}
       </div>
     </div>
