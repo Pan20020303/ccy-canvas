@@ -100,3 +100,53 @@ func (q *Queries) ListAgentRuns(ctx context.Context, arg ListAgentRunsParams) ([
 	}
 	return items, rows.Err()
 }
+
+type ListUserAgentRunsParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	Limit   int32       `json:"limit"`
+}
+
+const listUserAgentRuns = `-- name: ListUserAgentRuns :many
+SELECT id, user_id, agent_id, user_input, final_reply, tool_calls, steps, status, error_msg, duration_ms, created_at
+FROM agent_runs
+WHERE user_id = $1
+  AND agent_id = $2
+  AND status = 'success'
+  AND final_reply <> ''
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+func (q *Queries) ListUserAgentRuns(ctx context.Context, arg ListUserAgentRunsParams) ([]AgentRun, error) {
+	rows, err := q.db.Query(ctx, listUserAgentRuns, arg.UserID, arg.AgentID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRun{}
+	for rows.Next() {
+		var i AgentRun
+		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
+type DeleteUserAgentRunsParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+const deleteUserAgentRuns = `-- name: DeleteUserAgentRuns :exec
+DELETE FROM agent_runs
+WHERE user_id = $1
+  AND agent_id = $2
+`
+
+func (q *Queries) DeleteUserAgentRuns(ctx context.Context, arg DeleteUserAgentRunsParams) error {
+	_, err := q.db.Exec(ctx, deleteUserAgentRuns, arg.UserID, arg.AgentID)
+	return err
+}

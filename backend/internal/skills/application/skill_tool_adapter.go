@@ -72,8 +72,8 @@ func sanitizeToolName(raw string) string {
 
 // BuildSkillTools loads the agent's bound skills from the DB and wraps each as
 // a Tool. Disabled skills are silently skipped.
-func BuildSkillTools(ctx context.Context, q *sqlc.Queries, executor *Executor, skillIDs []pgtype.UUID) []Tool {
-	tools := make([]Tool, 0, len(skillIDs))
+func LoadBoundSkills(ctx context.Context, q *sqlc.Queries, skillIDs []pgtype.UUID) []sqlc.Skill {
+	rows := make([]sqlc.Skill, 0, len(skillIDs))
 	for _, id := range skillIDs {
 		if !id.Valid {
 			continue
@@ -82,7 +82,19 @@ func BuildSkillTools(ctx context.Context, q *sqlc.Queries, executor *Executor, s
 		if err != nil || !skill.Enabled {
 			continue
 		}
+		rows = append(rows, skill)
+	}
+	return rows
+}
+
+func BuildSkillToolsFromRows(executor *Executor, skills []sqlc.Skill) []Tool {
+	tools := make([]Tool, 0, len(skills))
+	for _, skill := range skills {
 		tools = append(tools, NewSkillTool(skill, executor))
 	}
 	return tools
+}
+
+func BuildSkillTools(ctx context.Context, q *sqlc.Queries, executor *Executor, skillIDs []pgtype.UUID) []Tool {
+	return BuildSkillToolsFromRows(executor, LoadBoundSkills(ctx, q, skillIDs))
 }

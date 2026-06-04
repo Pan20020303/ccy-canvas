@@ -1,19 +1,30 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Bot, X, Send, Loader2, Wrench, MessageSquare, Sparkles, Square } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Loader2, MessageSquare, Send, Sparkles, Square, Wrench, X } from "lucide-react";
 
 import type { Edge, Node } from "@xyflow/react";
 
 import { runAgent, type AgentSSEEvent } from "../api/agent-run";
-import { listAgents, type Agent } from "../api/skills";
+import {
+  clearAgentConversationHistory as clearPersistedConversationHistory,
+  listAgentConversationHistory,
+  listAgents,
+  listSkills,
+  type Agent,
+  type Skill,
+} from "../api/skills";
 import { useStore } from "../store";
+import {
+  clearAgentConversationHistory,
+  conversationTurnsFromHistoryItems,
+  getAgentConversationHistory,
+  recordAgentConversationTurn,
+  type AgentConversationStore,
+} from "./agent-conversation";
+import { buildAgentRunMessage, getBoundSlashSkills } from "./agent-skill-commands";
+import { getSkillCommandName } from "./settings/skill-agent-presenters";
 
-/**
- * Floating Agent Run panel — anchored bottom-right of the canvas.
- *
- * Lets the user pick an agent and type a goal; streams the agent's
- * thinking / tool calls / final message inline, and applies canvas_patch
- * events directly to the React Flow store so the canvas updates live.
- */
+const HISTORY_LIMIT = 12;
+
 export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const language = useStore((s) => s.language);
   const zh = language === "zh";
@@ -25,28 +36,64 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const runNode = useStore((s) => s.runNode);
 
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [events, setEvents] = useState<AgentSSEEvent[]>([]);
   const [running, setRunning] = useState(false);
+  const [activeSkillName, setActiveSkillName] = useState<string | null>(null);
+  const [conversationStore, setConversationStore] = useState<AgentConversationStore>({});
+  const [loadedHistoryIds, setLoadedHistoryIds] = useState<Record<string, true>>({});
   const abortRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
-    void listAgents().then((rows) => {
-      setAgents(rows);
-      if (rows.length > 0 && !selectedId) setSelectedId(rows[0].id);
-    }).catch(() => {});
+    if (!open) {
+      return;
+    }
+    void Promise.all([listAgents(), listSkills()])
+      .then(([agentRows, skillRows]) => {
+        setAgents(agentRows);
+        setSkills(skillRows);
+        if (agentRows.length > 0 && !selectedId) {
+          setSelectedId(agentRows[0].id);
+        }
+      })
+      .catch(() => {});
   }, [open, selectedId]);
 
-  // Auto-scroll to the latest event.
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [events]);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [events, selectedId, conversationStore]);
+
+  useEffect(() => {
+    if (!selectedId || loadedHistoryIds[selectedId]) {
+      return;
+    }
+    void listAgentConversationHistory(selectedId, HISTORY_LIMIT)
+      .then((items) => {
+        setConversationStore((prev) => ({
+          ...prev,
+          [selectedId]: conversationTurnsFromHistoryItems(items),
+        }));
+        setLoadedHistoryIds((prev) => ({ ...prev, [selectedId]: true }));
+      })
+      .catch(() => {});
+  }, [loadedHistoryIds, selectedId]);
+
+  const selectedAgent = agents.find((agent) => agent.id === selectedId) ?? null;
+  const boundSkills = selectedAgent ? getBoundSlashSkills(selectedAgent, skills) : [];
+  const conversationHistory = useMemo(
+    () => getAgentConversationHistory(conversationStore, selectedId),
+    [conversationStore, selectedId],
+  );
 
   const applyPatch = useCallback((event: AgentSSEEvent) => {
-    if (event.type !== "canvas_patch") return;
+    if (event.type !== "canvas_patch") {
+      return;
+    }
     const patch = event.data;
     switch (patch.op) {
       case "add_node": {
@@ -54,10 +101,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
       case "add_edge": {
-        const e = patch.edge as Edge;
+        const edge = patch.edge as Edge;
         onConnect({
-          source: e.source, target: e.target,
-          sourceHandle: e.sourceHandle ?? null, targetHandle: e.targetHandle ?? null,
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle ?? null,
+          targetHandle: edge.targetHandle ?? null,
         });
         break;
       }
@@ -66,8 +115,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
       case "run_node": {
-        // Pull current prompt draft for the node and submit.
-        const node = useStore.getState().nodes.find((n) => n.id === patch.node_id);
+        const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
         const data = (node?.data ?? {}) as Record<string, string>;
         const prompt = data.promptDraft ?? data.content ?? "";
         if (prompt.trim()) {
@@ -76,17 +124,26 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
     }
-  }, [addNode, onConnect, updateNodeData, runNode]);
+  }, [addNode, onConnect, runNode, updateNodeData]);
 
   const start = async () => {
-    if (!selectedId || !message.trim() || running) return;
+    if (!selectedId || !message.trim() || running || !selectedAgent) {
+      return;
+    }
+
+    const rawMessage = message.trim();
+    const outbound = buildAgentRunMessage(selectedAgent, skills, message);
+    setActiveSkillName(outbound.invokedSkillName);
     setEvents([]);
     setRunning(true);
     abortRef.current = await runAgent(
       selectedId,
-      { message: message.trim(), nodes: nodes as unknown[], edges: edges as unknown[] },
+      { message: outbound.message, nodes: nodes as unknown[], edges: edges as unknown[], history: conversationHistory },
       (event) => {
         setEvents((prev) => [...prev, event]);
+        if (event.type === "message") {
+          setConversationStore((prev) => recordAgentConversationTurn(prev, selectedId, rawMessage, event.data.content, HISTORY_LIMIT));
+        }
         applyPatch(event);
         if (event.type === "done" || event.type === "error") {
           setRunning(false);
@@ -102,7 +159,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setRunning(false);
   };
 
-  if (!open) return null;
+  const clearHistory = async () => {
+    if (!selectedId) {
+      return;
+    }
+    setConversationStore((prev) => clearAgentConversationHistory(prev, selectedId));
+    setLoadedHistoryIds((prev) => ({ ...prev, [selectedId]: true }));
+    try {
+      await clearPersistedConversationHistory(selectedId);
+    } catch {
+      // Keep the local state cleared even if the network request fails.
+    }
+  };
+
+  if (!open) {
+    return null;
+  }
 
   return (
     <div className="absolute bottom-6 right-6 z-40 flex h-[560px] w-[420px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#15181d]/95 shadow-2xl backdrop-blur-xl">
@@ -119,36 +191,102 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       <div className="border-b border-white/8 px-4 py-2">
         <select
           value={selectedId ?? ""}
-          onChange={(e) => setSelectedId(e.target.value)}
+          onChange={(event) => setSelectedId(event.target.value)}
           disabled={running}
           className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-neutral-200 outline-none disabled:opacity-50"
         >
           {agents.length === 0 ? <option value="">{zh ? "暂无可用智能体" : "No agents available"}</option> : null}
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>{agent.name}</option>
           ))}
         </select>
-      </div>
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
-        {events.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-center text-xs text-neutral-500">
-            {zh ? "告诉智能体你想做什么，它会调用工具操控画布。" : "Tell the agent what to do — it can manipulate the canvas via tools."}
+        {boundSkills.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {boundSkills.map((skill) => (
+              <span key={skill.id} className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-200">
+                {getSkillCommandName(skill)}
+              </span>
+            ))}
           </div>
         ) : null}
-        {events.map((ev, idx) => <EventRow key={idx} event={ev} zh={zh} />)}
-        {running ? <div className="flex items-center gap-2 text-xs text-cyan-300"><Loader2 className="h-3 w-3 animate-spin" /> {zh ? "思考中…" : "Thinking…"}</div> : null}
+        {conversationHistory.length > 0 ? (
+          <div className="mt-2 flex items-center justify-between gap-3 text-[10px] text-neutral-500">
+            <span>{zh ? `已保留 ${Math.floor(conversationHistory.length / 2)} 轮上下文` : `Keeping ${Math.floor(conversationHistory.length / 2)} prior turns in context`}</span>
+            <button
+              type="button"
+              onClick={() => void clearHistory()}
+              className="text-neutral-400 transition hover:text-white"
+            >
+              {zh ? "清空上下文" : "Clear context"}
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-3">
+        {activeSkillName ? (
+          <div className="rounded-md border border-cyan-400/20 bg-cyan-500/10 px-3 py-2 text-[11px] text-cyan-100">
+            {zh ? `本次已触发技能 ${activeSkillName}` : `Triggered skill ${activeSkillName} for this run`}
+          </div>
+        ) : null}
+
+        {conversationHistory.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">
+              {zh ? "上下文记录" : "Context history"}
+            </div>
+            {conversationHistory.map((turn, index) => (
+              <ConversationBubble key={`${turn.role}-${index}`} role={turn.role} content={turn.content} zh={zh} compact />
+            ))}
+          </div>
+        ) : null}
+
+        {events.length === 0 && conversationHistory.length === 0 ? (
+          <div className="flex h-full items-center justify-center text-center text-xs text-neutral-500">
+            {zh ? "告诉智能体你想做什么；若已绑定技能，也可以直接输入 /技能名 开始。" : "Tell the agent what to do; if skills are bound, you can also start with a slash command."}
+          </div>
+        ) : null}
+
+        {events.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">
+              {zh ? "当前运行" : "Current run"}
+            </div>
+            {events.map((event, index) => <EventRow key={index} event={event} zh={zh} />)}
+          </div>
+        ) : null}
+
+        {running ? (
+          <div className="flex items-center gap-2 text-xs text-cyan-300">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            {zh ? "思考中..." : "Thinking..."}
+          </div>
+        ) : null}
       </div>
 
       <div className="border-t border-white/8 p-3">
+        <div className="mb-2 text-[10px] text-neutral-500">
+          {boundSkills.length > 0
+            ? zh
+              ? "示例：/rewrite 把这段产品文案改得更有温度"
+              : "Example: /rewrite Make this product copy feel warmer"
+            : zh
+              ? "这个智能体当前没有绑定 slash 技能"
+              : "This agent currently has no bound slash skills"}
+        </div>
         <div className="flex items-end gap-2">
           <textarea
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void start(); } }}
-            placeholder={zh ? "例：为右边的产品图生成 3 个不同角度的视频" : "e.g. Generate 3 video variants for the product image on the right"}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void start();
+              }
+            }}
+            placeholder={zh ? "例如：/rewrite 把这段产品文案改得更有温度" : "For example: /rewrite Make this product copy feel warmer"}
             rows={2}
-            className="flex-1 rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none focus:border-cyan-400/40 resize-none"
+            className="flex-1 resize-none rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none focus:border-cyan-400/40"
             disabled={running}
           />
           {running ? (
@@ -170,20 +308,33 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
+function ConversationBubble({
+  role,
+  content,
+  zh,
+  compact = false,
+}: {
+  role: "user" | "assistant";
+  content: string;
+  zh: boolean;
+  compact?: boolean;
+}) {
+  const isUser = role === "user";
+  return (
+    <div className={`rounded-lg border p-2.5 ${isUser ? "border-white/10 bg-white/[0.04]" : "border-cyan-400/15 bg-cyan-500/[0.06]"}`}>
+      <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+        {isUser ? (zh ? "用户" : "user") : (zh ? "智能体" : "agent")}
+      </div>
+      <div className={`whitespace-pre-wrap text-neutral-200 ${compact ? "text-[11px]" : "text-xs"}`}>{content}</div>
+    </div>
+  );
+}
+
 function EventRow({ event, zh }: { event: AgentSSEEvent; zh: boolean }) {
   if (event.type === "message") {
-    return (
-      <div className="rounded-lg border border-white/8 bg-white/[0.03] p-2.5">
-        <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-neutral-500">
-          <MessageSquare className="h-3 w-3" /> {zh ? "回复" : "reply"}
-        </div>
-        <div className="mt-1 whitespace-pre-wrap text-xs text-neutral-200">{event.data.content}</div>
-      </div>
-    );
+    return <ConversationBubble role="assistant" content={event.data.content} zh={zh} />;
   }
   if (event.type === "message_delta") {
-    // Final reply is rendered as a full "message" event after deltas finish;
-    // deltas are stored individually so we don't double-render them here.
     return <span className="text-xs text-neutral-300">{event.data.delta}</span>;
   }
   if (event.type === "thought") {
@@ -207,13 +358,13 @@ function EventRow({ event, zh }: { event: AgentSSEEvent; zh: boolean }) {
   if (event.type === "tool_result") {
     return (
       <div className={`pl-3 text-[10px] ${event.data.ok ? "text-neutral-500" : "text-rose-300"}`}>
-        ↳ {event.data.ok ? (event.data.result ?? "ok") : (event.data.error ?? "error")}
+        -&gt; {event.data.ok ? (event.data.result ?? "ok") : (event.data.error ?? "error")}
       </div>
     );
   }
   if (event.type === "canvas_patch") {
     const op = (event.data as { op: string }).op;
-    return <div className="pl-3 text-[10px] text-emerald-300/80">✓ canvas: {op}</div>;
+    return <div className="pl-3 text-[10px] text-emerald-300/80">ok canvas: {op}</div>;
   }
   if (event.type === "error") {
     return (

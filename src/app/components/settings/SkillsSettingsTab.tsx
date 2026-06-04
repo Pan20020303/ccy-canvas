@@ -1,24 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, Lock, Plus, Trash2, Pencil, Play, RefreshCw } from "lucide-react";
+import { BookTemplate, Loader2, Lock, Pencil, Play, Plus, RefreshCw, Slash, Trash2 } from "lucide-react";
 
 import {
-  listSkills,
   createSkill,
-  updateSkill,
   deleteSkill,
   invokeSkill,
+  listSkills,
+  updateSkill,
   type Skill,
   type SkillUpsert,
 } from "../../api/skills";
 import { useStore } from "../../store";
+import {
+  buildPromptSkillSpec,
+  getSkillCommandName,
+  getSkillTemplateBody,
+  isPromptTemplateSkill,
+} from "./skill-agent-presenters";
 
-/**
- * Settings panel: My Skills.
- *
- * Layout: master/detail.
- *   Left  — list of visible skills (globals locked, personals editable).
- *   Right — viewer/editor/runner for the currently-selected skill.
- */
+type PromptSkillEditorState = {
+  name: string;
+  description: string;
+  category: string;
+  commandName: string;
+  content: string;
+  systemPrompt: string;
+  modelHint: string;
+  enabled: boolean;
+};
+
+const EMPTY_PROMPT_TEMPLATE = {
+  zh: "请基于当前上下文完成这项技能。\n\n输入内容：\n{{input}}",
+  en: "Use the current conversation context to complete this skill.\n\nUser input:\n{{input}}",
+};
+
 export function SkillsSettingsTab() {
   const language = useStore((s) => s.language);
   const zh = language === "zh";
@@ -26,20 +41,31 @@ export function SkillsSettingsTab() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editing, setEditing] = useState<SkillUpsert | null>(null);
+  const [editing, setEditing] = useState<PromptSkillEditorState | null>(null);
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setSkills(await listSkills()); } catch { /* */ }
+    try {
+      setSkills(await listSkills());
+    } catch {
+      // Keep the current view stable if the fetch fails.
+    }
     setLoading(false);
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const selected = useMemo(
     () => skills.find((s) => s.id === selectedId) ?? null,
     [skills, selectedId],
+  );
+
+  const visibleSkills = useMemo(
+    () => skills.filter((skill) => skill.kind === "prompt"),
+    [skills],
   );
 
   const startCreate = () => {
@@ -48,109 +74,163 @@ export function SkillsSettingsTab() {
     setEditing({
       name: zh ? "新技能" : "New skill",
       description: "",
-      category: "other",
-      icon: "",
-      kind: "http",
-      spec: { url: "", method: "POST", headers: {}, body_template: "{}", response_path: "" },
-      input_schema: {},
-      output_schema: {},
+      category: "workflow",
+      commandName: "new-skill",
+      content: zh ? EMPTY_PROMPT_TEMPLATE.zh : EMPTY_PROMPT_TEMPLATE.en,
+      systemPrompt: "",
+      modelHint: "",
       enabled: true,
     });
   };
 
-  const startEdit = (s: Skill) => {
-    if (s.scope === "global") return; // can't edit globals
+  const startEdit = (skill: Skill) => {
+    if (skill.scope === "global") {
+      return;
+    }
+
+    const spec = skill.spec as Record<string, unknown>;
     setCreating(false);
-    setSelectedId(s.id);
+    setSelectedId(skill.id);
     setEditing({
-      name: s.name,
-      description: s.description,
-      category: s.category,
-      icon: s.icon,
-      kind: s.kind,
-      spec: s.spec,
-      input_schema: s.input_schema,
-      output_schema: s.output_schema,
-      enabled: s.enabled,
+      name: skill.name,
+      description: skill.description,
+      category: skill.category,
+      commandName: getSkillCommandName(skill).replace(/^\/+/, ""),
+      content: getSkillTemplateBody(skill),
+      systemPrompt: typeof spec.system_prompt === "string" ? spec.system_prompt : "",
+      modelHint: typeof spec.model_hint === "string" ? spec.model_hint : "",
+      enabled: skill.enabled,
     });
   };
 
   const save = async () => {
-    if (!editing) return;
+    if (!editing) {
+      return;
+    }
+
+    const payload: SkillUpsert = {
+      name: editing.name.trim(),
+      description: editing.description,
+      category: editing.category,
+      icon: "",
+      kind: "prompt",
+      spec: buildPromptSkillSpec({
+        commandName: editing.commandName,
+        content: editing.content,
+        systemPrompt: editing.systemPrompt,
+        modelHint: editing.modelHint,
+      }),
+      input_schema: {
+        type: "object",
+        properties: {
+          input: { type: "string" },
+        },
+      },
+      output_schema: {},
+      enabled: editing.enabled,
+    };
+
     if (creating) {
-      const created = await createSkill(editing);
+      const created = await createSkill(payload);
       await load();
       setSelectedId(created.id);
     } else if (selectedId) {
-      await updateSkill(selectedId, editing);
+      await updateSkill(selectedId, payload);
       await load();
     }
+
     setEditing(null);
     setCreating(false);
   };
 
-  const remove = async (s: Skill) => {
-    if (s.scope === "global") return;
-    if (!confirm(zh ? `确定删除技能「${s.name}」？` : `Delete skill "${s.name}"?`)) return;
-    await deleteSkill(s.id);
-    if (selectedId === s.id) setSelectedId(null);
+  const remove = async (skill: Skill) => {
+    if (skill.scope === "global") {
+      return;
+    }
+    if (!confirm(zh ? `确定删除技能「${skill.name}」？` : `Delete skill "${skill.name}"?`)) {
+      return;
+    }
+    await deleteSkill(skill.id);
+    if (selectedId === skill.id) {
+      setSelectedId(null);
+    }
     await load();
   };
 
   return (
     <div className="flex h-full min-h-[420px] gap-3">
-      {/* Left list */}
-      <div className="flex w-[260px] flex-col rounded-xl border border-white/10">
+      <div className="flex w-[280px] flex-col rounded-xl border border-white/10">
         <div className="flex items-center justify-between border-b border-white/8 px-3 py-2">
-          <span className="text-[11px] uppercase tracking-wider text-neutral-400">
-            {zh ? "技能列表" : "Skills"}
-          </span>
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-neutral-400">
+              {zh ? "技能模板" : "Skill templates"}
+            </div>
+            <div className="mt-1 text-[10px] text-neutral-500">
+              {zh ? "用 /技能名 调用可复用提示词" : "Reusable prompts invoked with /command"}
+            </div>
+          </div>
           <div className="flex items-center gap-1">
             <button onClick={load} title={zh ? "刷新" : "Refresh"} className="rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200">
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </button>
-            <button onClick={startCreate} title={zh ? "新建" : "New"} className="rounded p-1 text-cyan-300 hover:bg-cyan-500/10">
+            <button onClick={startCreate} title={zh ? "新建技能" : "New skill"} className="rounded p-1 text-cyan-300 hover:bg-cyan-500/10">
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {skills.length === 0 && !loading ? (
-            <div className="px-3 py-8 text-center text-xs text-neutral-500">
-              {zh ? "暂无技能" : "No skills"}
+          {visibleSkills.length === 0 && !loading ? (
+            <div className="px-4 py-8 text-center text-xs text-neutral-500">
+              {zh ? "暂无技能模板。点击右上角 + 新建一个 slash 技能。" : "No skill templates yet. Click + to create a slash skill."}
             </div>
           ) : null}
-          {skills.map((s) => (
+          {visibleSkills.map((skill) => (
             <button
-              key={s.id}
-              onClick={() => { setSelectedId(s.id); setEditing(null); setCreating(false); }}
-              className={`flex w-full items-center gap-2 border-b border-white/5 px-3 py-2 text-left transition ${
-                selectedId === s.id ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
+              key={skill.id}
+              onClick={() => {
+                setSelectedId(skill.id);
+                setEditing(null);
+                setCreating(false);
+              }}
+              className={`w-full border-b border-white/5 px-3 py-2.5 text-left transition ${
+                selectedId === skill.id ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
               }`}
             >
-              <span className="flex-1 truncate text-xs text-neutral-200">{s.name}</span>
-              {s.scope === "global" ? <Lock className="h-3 w-3 text-neutral-500" /> : null}
-              <span className="rounded bg-white/[0.06] px-1 py-0.5 text-[9px] text-neutral-400">{s.kind}</span>
+              <div className="flex items-start gap-2">
+                <BookTemplate className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-neutral-500" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-xs text-neutral-200">{skill.name}</span>
+                    {skill.scope === "global" ? <Lock className="h-3 w-3 text-neutral-500" /> : null}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500">
+                    <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300">{getSkillCommandName(skill)}</span>
+                    <span>{skill.category || (zh ? "未分类" : "Uncategorized")}</span>
+                  </div>
+                </div>
+              </div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Right detail */}
       <div className="flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
         {editing ? (
           <SkillEditor
             value={editing}
             onChange={setEditing}
             onSave={save}
-            onCancel={() => { setEditing(null); setCreating(false); }}
+            onCancel={() => {
+              setEditing(null);
+              setCreating(false);
+            }}
             zh={zh}
           />
         ) : selected ? (
           <SkillDetail skill={selected} onEdit={() => startEdit(selected)} onDelete={() => remove(selected)} zh={zh} />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-neutral-500">
-            {zh ? "选择左侧技能查看，或点击右上 ＋ 新建" : "Select a skill on the left, or click ＋ to create."}
+            {zh ? "选择左侧技能模板查看，或点击右上角 + 新建。" : "Select a skill template on the left, or click + to create one."}
           </div>
         )}
       </div>
@@ -158,28 +238,32 @@ export function SkillsSettingsTab() {
   );
 }
 
-/** Read-only view + Run-with-inputs panel. */
 function SkillDetail({
-  skill, onEdit, onDelete, zh,
+  skill,
+  onEdit,
+  onDelete,
+  zh,
 }: {
   skill: Skill;
   onEdit: () => void;
   onDelete: () => void;
   zh: boolean;
 }) {
-  const [inputs, setInputs] = useState("{}");
+  const [inputs, setInputs] = useState('{"input":"Rewrite this paragraph in a warmer tone."}');
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<string>("");
+  const [result, setResult] = useState("");
+  const commandName = getSkillCommandName(skill);
+  const templateBody = getSkillTemplateBody(skill);
 
   const run = async () => {
     setRunning(true);
     setResult("");
     try {
       const parsed = JSON.parse(inputs || "{}");
-      const r = await invokeSkill(skill.id, parsed);
-      setResult(`✅ ${r.duration_ms}ms\n\n${r.content}`);
-    } catch (e: unknown) {
-      setResult(`❌ ${(e as Error).message}`);
+      const response = await invokeSkill(skill.id, parsed);
+      setResult(`OK ${response.duration_ms}ms\n\n${response.content}`);
+    } catch (error: unknown) {
+      setResult(`ERR ${(error as Error).message}`);
     } finally {
       setRunning(false);
     }
@@ -187,56 +271,74 @@ function SkillDetail({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h3 className="text-base font-medium text-neutral-100">{skill.name}</h3>
-            <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-400">{skill.kind}</span>
+            <span className="inline-flex items-center gap-1 rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] text-cyan-300">
+              <Slash className="h-2.5 w-2.5" />
+              {commandName}
+            </span>
             {skill.scope === "global" ? (
               <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-300">
                 <Lock className="h-2.5 w-2.5" />
-                {zh ? "管理员配置 · 仅可使用" : "Admin-managed · use only"}
+                {zh ? "管理员提供" : "Admin-provided"}
               </span>
             ) : (
-              <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] text-cyan-300">
-                {zh ? "我的" : "Mine"}
+              <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-400">
+                {zh ? "我的模板" : "My template"}
               </span>
             )}
           </div>
-          {skill.description ? (
-            <p className="mt-1 text-xs leading-5 text-neutral-400">{skill.description}</p>
-          ) : null}
+          {skill.description ? <p className="mt-1 text-xs leading-5 text-neutral-400">{skill.description}</p> : null}
         </div>
-        <div className="flex items-center gap-1">
-          {skill.scope !== "global" ? (
-            <>
-              <button onClick={onEdit} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-cyan-300">
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-              <button onClick={onDelete} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-rose-300">
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </>
-          ) : null}
+        {skill.scope !== "global" ? (
+          <div className="flex items-center gap-1">
+            <button onClick={onEdit} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-cyan-300">
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={onDelete} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-rose-300">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="rounded-md border border-white/8 bg-white/[0.02] p-3">
+          <div className="mb-2 text-[11px] uppercase tracking-wider text-neutral-400">
+            {zh ? "模板内容（Markdown / Prompt）" : "Template content (Markdown / Prompt)"}
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-[11px] leading-6 text-neutral-200">
+            {templateBody || (zh ? "暂无模板内容" : "No template content")}
+          </pre>
+        </div>
+
+        <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
+          <MetaItem label={zh ? "调用方式" : "Invoke as"} value={commandName} />
+          <MetaItem label={zh ? "分类" : "Category"} value={skill.category || (zh ? "未分类" : "Uncategorized")} />
+          <MetaItem
+            label={zh ? "技能类型" : "Skill type"}
+            value={isPromptTemplateSkill(skill) ? (zh ? "提示词模板" : "Prompt template") : skill.kind}
+          />
+          <div className="rounded border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2 text-[11px] leading-5 text-cyan-100">
+            {zh
+              ? "这个技能会作为可复用模板供用户或智能体通过 /命令 调用。"
+              : "This skill is exposed as a reusable template that users or agents can invoke via slash command."}
+          </div>
         </div>
       </div>
 
-      <details className="rounded-md border border-white/8 bg-white/[0.02] p-3 text-[11px] text-neutral-400">
-        <summary className="cursor-pointer text-neutral-300">{zh ? "规格 (spec)" : "Spec"}</summary>
-        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-[10px] text-neutral-500">{JSON.stringify(skill.spec, null, 2)}</pre>
-      </details>
-
       <div className="rounded-md border border-cyan-400/15 bg-cyan-500/[0.04] p-3">
         <div className="mb-2 text-[11px] uppercase tracking-wider text-cyan-200">
-          {zh ? "试运行" : "Test run"}
+          {zh ? "试运行（兼容现有执行器）" : "Test run (compatible with current executor)"}
         </div>
         <textarea
           value={inputs}
-          onChange={(e) => setInputs(e.target.value)}
+          onChange={(event) => setInputs(event.target.value)}
           rows={5}
           spellCheck={false}
           className="w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-neutral-200 outline-none focus:border-cyan-400/40"
-          placeholder='{"text":"hello"}'
         />
         <div className="mt-2 flex items-center justify-end gap-2">
           <button
@@ -245,7 +347,7 @@ function SkillDetail({
             className="flex items-center gap-1 rounded-md bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-200 transition hover:bg-cyan-500/25 disabled:opacity-50"
           >
             {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-            {zh ? "运行" : "Run"}
+            {zh ? "用当前模板运行" : "Run template"}
           </button>
         </div>
         {result ? (
@@ -256,110 +358,124 @@ function SkillDetail({
   );
 }
 
-/** Form for create / edit. Kept compact — power-users will edit the raw JSON. */
 function SkillEditor({
-  value, onChange, onSave, onCancel, zh,
+  value,
+  onChange,
+  onSave,
+  onCancel,
+  zh,
 }: {
-  value: SkillUpsert;
-  onChange: (v: SkillUpsert) => void;
+  value: PromptSkillEditorState;
+  onChange: (value: PromptSkillEditorState) => void;
   onSave: () => void | Promise<void>;
   onCancel: () => void;
   zh: boolean;
 }) {
-  const [specText, setSpecText] = useState(JSON.stringify(value.spec, null, 2));
-  const [specErr, setSpecErr] = useState<string>("");
-
-  const commitSpec = () => {
-    try {
-      const parsed = JSON.parse(specText || "{}");
-      onChange({ ...value, spec: parsed });
-      setSpecErr("");
-    } catch (e) {
-      setSpecErr((e as Error).message);
-    }
-  };
-
   return (
-    <div className="space-y-3">
-      <Row label={zh ? "名称" : "Name"}>
+    <div className="space-y-4">
+      <div className="rounded-md border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2 text-[11px] leading-5 text-cyan-100">
+        {zh
+          ? "技能是可复用的提示词模板。用户或智能体可以通过 /命令 调用它。"
+          : "Skills are reusable prompt templates. Users or agents can invoke them with a slash command."}
+      </div>
+
+      <Row label={zh ? "技能名称" : "Skill name"}>
         <input
           value={value.name}
-          onChange={(e) => onChange({ ...value, name: e.target.value })}
+          onChange={(event) => onChange({ ...value, name: event.target.value })}
           className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
         />
       </Row>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Row label={zh ? "Slash 命令" : "Slash command"}>
+          <div className="flex items-center rounded border border-white/10 bg-black/30 px-2">
+            <span className="text-xs text-neutral-500">/</span>
+            <input
+              value={value.commandName}
+              onChange={(event) => onChange({ ...value, commandName: event.target.value.replace(/^\/+/, "") })}
+              className="w-full bg-transparent p-2 text-xs text-neutral-100 outline-none"
+            />
+          </div>
+        </Row>
+        <Row label={zh ? "分类" : "Category"}>
+          <input
+            value={value.category}
+            onChange={(event) => onChange({ ...value, category: event.target.value })}
+            className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
+          />
+        </Row>
+      </div>
+
       <Row label={zh ? "描述" : "Description"}>
         <textarea
-          value={value.description ?? ""}
-          onChange={(e) => onChange({ ...value, description: e.target.value })}
+          value={value.description}
+          onChange={(event) => onChange({ ...value, description: event.target.value })}
           rows={2}
           className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
         />
       </Row>
-      <div className="grid grid-cols-3 gap-3">
-        <Row label={zh ? "分类" : "Category"}>
+
+      <Row label={zh ? "模板内容（Markdown / Prompt）" : "Template content (Markdown / Prompt)"}>
+        <textarea
+          value={value.content}
+          onChange={(event) => onChange({ ...value, content: event.target.value })}
+          rows={10}
+          spellCheck={false}
+          className="w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-neutral-200 outline-none"
+        />
+        <p className="mt-1 text-[10px] text-neutral-500">
+          {zh ? "建议在内容中使用当前上下文，必要时可写 {{input}} 占位。" : "Use conversation context directly; add {{input}} when you want an explicit placeholder."}
+        </p>
+      </Row>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Row label={zh ? "系统提示（可选）" : "System prompt (optional)"}>
+          <textarea
+            value={value.systemPrompt}
+            onChange={(event) => onChange({ ...value, systemPrompt: event.target.value })}
+            rows={4}
+            className="w-full rounded border border-white/10 bg-black/30 p-2 font-mono text-[11px] text-neutral-200 outline-none"
+          />
+        </Row>
+        <Row label={zh ? "模型提示（可选）" : "Model hint (optional)"}>
           <input
-            value={value.category ?? ""}
-            onChange={(e) => onChange({ ...value, category: e.target.value })}
+            value={value.modelHint}
+            onChange={(event) => onChange({ ...value, modelHint: event.target.value })}
+            placeholder={zh ? "例如：gpt-4.1-mini" : "For example: gpt-4.1-mini"}
             className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
           />
         </Row>
-        <Row label={zh ? "类型" : "Kind"}>
-          <select
-            value={value.kind}
-            onChange={(e) => onChange({ ...value, kind: e.target.value as SkillUpsert["kind"] })}
-            className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
-          >
-            <option value="http">http</option>
-            <option value="prompt">prompt</option>
-          </select>
-        </Row>
-        <Row label={zh ? "启用" : "Enabled"}>
-          <label className="flex items-center gap-2 text-xs text-neutral-200">
-            <input
-              type="checkbox"
-              checked={value.enabled}
-              onChange={(e) => onChange({ ...value, enabled: e.target.checked })}
-            />
-            {zh ? "开启" : "On"}
-          </label>
-        </Row>
       </div>
-      <Row label={zh ? "规格 (JSON)" : "Spec JSON"}>
-        <textarea
-          value={specText}
-          onChange={(e) => setSpecText(e.target.value)}
-          onBlur={commitSpec}
-          rows={10}
-          spellCheck={false}
-          className={`w-full rounded border bg-black/30 p-2 font-mono text-[11px] text-neutral-200 outline-none ${
-            specErr ? "border-rose-400/40" : "border-white/10"
-          }`}
-        />
-        {specErr ? <p className="mt-1 text-[10px] text-rose-300">{specErr}</p> : (
-          <p className="mt-1 text-[10px] text-neutral-500">
-            {value.kind === "http"
-              ? zh
-                ? "字段：url, method, headers, body_template, response_path, timeout_ms"
-                : "fields: url, method, headers, body_template, response_path, timeout_ms"
-              : zh
-                ? "字段：system_prompt, user_template, model_hint"
-                : "fields: system_prompt, user_template, model_hint"}
-          </p>
-        )}
+
+      <Row label={zh ? "启用" : "Enabled"}>
+        <label className="flex items-center gap-2 text-xs text-neutral-200">
+          <input
+            type="checkbox"
+            checked={value.enabled}
+            onChange={(event) => onChange({ ...value, enabled: event.target.checked })}
+          />
+          {zh ? "允许用户和智能体调用" : "Allow users and agents to invoke this skill"}
+        </label>
       </Row>
+
       <div className="flex items-center justify-end gap-2 pt-2">
         <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-200">
           {zh ? "取消" : "Cancel"}
         </button>
-        <button
-          onClick={() => { commitSpec(); void onSave(); }}
-          disabled={!!specErr}
-          className="rounded bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/30 disabled:opacity-50"
-        >
-          {zh ? "保存" : "Save"}
+        <button onClick={() => void onSave()} className="rounded bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/30">
+          {zh ? "保存技能" : "Save skill"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function MetaItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</div>
+      <div className="mt-1 text-xs text-neutral-200">{value}</div>
     </div>
   );
 }

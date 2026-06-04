@@ -105,6 +105,21 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSec,
 		DefaultStatus: http.StatusNoContent,
 	}, h.deletePersonalAgent)
+	huma.Register(api, huma.Operation{
+		OperationID: "list-agent-conversation-history",
+		Method:      http.MethodGet,
+		Path:        "/api/app/agents/{id}/conversation",
+		Tags:        []string{"App", "Agents"},
+		Security:    userSec,
+	}, h.listAgentConversationHistory)
+	huma.Register(api, huma.Operation{
+		OperationID:   "clear-agent-conversation-history",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/agents/{id}/conversation",
+		Tags:          []string{"App", "Agents"},
+		Security:      userSec,
+		DefaultStatus: http.StatusNoContent,
+	}, h.clearAgentConversationHistory)
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -165,6 +180,24 @@ type AgentUpsertBody struct {
 	CanvasTools  bool     `json:"canvas_tools"`
 	Strategy     string   `json:"strategy,omitempty" enum:"reactive,scripted"`
 	Enabled      bool     `json:"enabled"`
+}
+
+type AgentConversationItem struct {
+	UserInput  string `json:"user_input"`
+	FinalReply string `json:"final_reply"`
+	CreatedAt  string `json:"created_at"`
+}
+
+type listAgentConversationInput struct {
+	ID    string `path:"id"`
+	Limit int32  `query:"limit" minimum:"1" maximum:"50" default:"12"`
+}
+
+type listAgentConversationOutput struct {
+	Body struct {
+		Data      []AgentConversationItem `json:"data"`
+		RequestID string                  `json:"request_id"`
+	} 
 }
 
 // ─── Skill handlers ──────────────────────────────────────────────────────────
@@ -476,6 +509,49 @@ func (h *Handler) deletePersonalAgent(ctx context.Context, input *deleteAgentInp
 	return nil, nil
 }
 
+func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listAgentConversationInput) (*listAgentConversationOutput, error) {
+	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := h.q.ListUserAgentRuns(ctx, sqlc.ListUserAgentRunsParams{
+		UserID:  uid,
+		AgentID: agent.ID,
+		Limit:   input.Limit,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list conversation history")
+	}
+
+	out := &listAgentConversationOutput{}
+	for index := len(rows) - 1; index >= 0; index-- {
+		run := rows[index]
+		out.Body.Data = append(out.Body.Data, AgentConversationItem{
+			UserInput:  run.UserInput,
+			FinalReply: run.FinalReply,
+			CreatedAt:  formatTime(run.CreatedAt),
+		})
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) clearAgentConversationHistory(ctx context.Context, input *deleteAgentInput) (*struct{}, error) {
+	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := h.q.DeleteUserAgentRuns(ctx, sqlc.DeleteUserAgentRunsParams{
+		UserID:  uid,
+		AgentID: agent.ID,
+	}); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to clear conversation history")
+	}
+	return nil, nil
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 func wrapSkill(ctx context.Context, row sqlc.Skill) *skillOutput {
@@ -580,4 +656,40 @@ func jsonOrEmpty(raw json.RawMessage) []byte {
 		return []byte("{}")
 	}
 	return []byte(raw)
+}
+
+func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.Agent, pgtype.UUID, error) {
+	pgID, err := parseUUID(agentID)
+	if err != nil {
+		return sqlc.Agent{}, pgtype.UUID{}, err
+	}
+	agent, err := h.q.GetAgent(ctx, pgID)
+	if err != nil {
+		return sqlc.Agent{}, pgtype.UUID{}, huma.Error404NotFound("Agent not found")
+	}
+	uid := mustUserID(ctx)
+	if agent.Scope == "personal" {
+		if !agent.OwnerID.Valid || formatUUID(agent.OwnerID) != formatUUID(uid) {
+			return sqlc.Agent{}, pgtype.UUID{}, huma.Error403Forbidden("Not allowed to access this agent")
+		}
+	}
+	return agent, uid, nil
+}
+
+type conversationTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func toConversationTurns(items []AgentConversationItem) []conversationTurn {
+	turns := make([]conversationTurn, 0, len(items)*2)
+	for _, item := range items {
+		if item.UserInput != "" {
+			turns = append(turns, conversationTurn{Role: "user", Content: item.UserInput})
+		}
+		if item.FinalReply != "" {
+			turns = append(turns, conversationTurn{Role: "assistant", Content: item.FinalReply})
+		}
+	}
+	return turns
 }
