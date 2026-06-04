@@ -96,4 +96,11 @@ describe("model templates", () => {
     expect(template?.qualityOptions).toEqual(["Auto", "High", "Medium", "Low"]);
     expect(template?.supportsResolution).not.toBe(true);
   });
+
+  it("exposes quality controls for volcengine seedream image models", () => {
+    const template = getModelTemplate("doubao-seedream-5-0-260128");
+    expect(template?.supportsQuality).toBe(true);
+    expect(template?.qualityOptions).toEqual(["Auto", "High", "Medium", "Low"]);
+    expect(template?.supportsAspectRatio).toBe(true);
+  });
 });

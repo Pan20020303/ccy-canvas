@@ -116,6 +116,11 @@ func main() {
 	skillsAdminHandler := skillshttp.NewAdminHandler(queries)
 	skillsAdminHandler.RegisterRoutes(api)
 
+	// Agent SSE run endpoint sits on chi directly (huma envelopes JSON,
+	// which would break Server-Sent Events).
+	agentRunRouter := skillshttp.NewAgentRunRouter(queries, catalogService, sessionManager)
+	agentRunRouter.RegisterChi(router)
+
 	log.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {
 		log.Fatal(err)

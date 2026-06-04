@@ -20,10 +20,13 @@ import (
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -346,6 +349,34 @@ func (s *Service) DisableModel(ctx context.Context, id string) (*domain.ModelDef
 
 // ─── ProviderConfig (multi-vendor) ──────────────────────────────────────────
 
+// ResolveModelEndpoint looks up which enabled provider serves the given model
+// and returns its base URL + decrypted API key. Used by the agent runner so it
+// can talk to the same upstream as the rest of the app.
+func (s *Service) ResolveModelEndpoint(ctx context.Context, model string) (baseURL, apiKey string, err error) {
+	configs, err := s.repo.ListProviderConfigs(ctx)
+	if err != nil {
+		return "", "", apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
+	}
+	for _, c := range configs {
+		if c.Status != "enabled" {
+			continue
+		}
+		for _, m := range c.ModelList {
+			if m == model {
+				if c.EncryptedAPIKey == "" {
+					return "", "", apperror.New(apperror.CodeInvalidInput, "Provider has no API key configured")
+				}
+				key, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
+				if derr != nil {
+					return "", "", apperror.Wrap(apperror.CodeInternal, "Failed to decrypt API key", derr)
+				}
+				return c.BaseURL, key, nil
+			}
+		}
+	}
+	return "", "", apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
+}
+
 // ListProviderConfigs returns all provider configs for admin.
 func (s *Service) ListProviderConfigs(ctx context.Context) ([]domain.ProviderConfig, error) {
 	configs, err := s.repo.ListProviderConfigs(ctx)
@@ -507,17 +538,73 @@ func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 	// Dispatch by service type.
 	switch matched.ServiceType {
 	case "image":
-		return s.generateImage(ctx, baseURL, apiKey, req)
+		return s.generateImage(ctx, matched, baseURL, apiKey, req)
 	case "text":
 		return s.generateText(ctx, baseURL, apiKey, req)
 	case "video":
-		return s.generateVideo(ctx, baseURL, apiKey, req)
+		return s.generateVideo(ctx, matched, baseURL, apiKey, req)
 	default:
 		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", matched.ServiceType))
 	}
 }
 
-func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+// isVolcengine returns true when a provider config targets Volcengine ark
+// (火山引擎). Matches by Vendor field first, then by BaseURL host fallback.
+func isVolcengine(pc *domain.ProviderConfig) bool {
+	if pc == nil {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(pc.Vendor))
+	if v == "volcengine" {
+		return true
+	}
+	return strings.Contains(pc.BaseURL, "volces.com")
+}
+
+func isSeedance20Model(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(m, "seedance-2-0")
+}
+
+func isArkVideoContract(pc *domain.ProviderConfig) bool {
+	if pc == nil {
+		return false
+	}
+	submit := strings.ToLower(strings.TrimSpace(pc.SubmitEndpoint))
+	query := strings.ToLower(strings.TrimSpace(pc.QueryEndpoint))
+	return strings.Contains(submit, "/contents/generations/tasks") ||
+		strings.Contains(query, "/contents/generations/tasks/")
+}
+
+func resolveProviderURL(baseURL, endpoint string) string {
+	base := strings.TrimSpace(baseURL)
+	path := strings.TrimSpace(endpoint)
+	if path == "" {
+		return strings.TrimRight(base, "/")
+	}
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimRight(base, "/") + path
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if basePath != "" && (path == basePath || strings.HasPrefix(path, basePath+"/")) {
+		parsed.Path = path
+		return strings.TrimRight(parsed.String(), "/")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	if isVolcengine(pc) {
+		return s.generateImageVolcengine(ctx, baseURL, apiKey, req)
+	}
 	// Image-to-image (ref + prompt) requires the multipart /images/edits endpoint —
 	// the standard /images/generations is text-only and silently ignores reference
 	// fields, which previously produced visually unrelated outputs.
@@ -525,6 +612,169 @@ func (s *Service) generateImage(ctx context.Context, baseURL, apiKey string, req
 		return s.generateImageEdit(ctx, baseURL, apiKey, req)
 	}
 	return s.generateImageTextOnly(ctx, baseURL, apiKey, req)
+}
+
+// generateImageVolcengine talks to Volcengine ark's /images/generations.
+// The endpoint URL matches OpenAI but the accepted payload fields are
+// different — passing OpenAI-only fields like `quality` / `background` /
+// `output_format` makes ark close the connection (manifests as EOF in Go).
+// Reference images go in an `image` field (string or []string), not via a
+// separate multipart `/images/edits` endpoint.
+func (s *Service) generateImageVolcengine(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	size := mapAspectRatioToVolcengineSize(req.Model, req.Size, req.Quality)
+
+	body := map[string]interface{}{
+		"model":                       req.Model,
+		"prompt":                      req.Prompt,
+		"size":                        size,
+		"stream":                      false,
+		"output_format":               "png",
+		"response_format":             "url",
+		"watermark":                   false,
+		"sequential_image_generation": "disabled",
+	}
+
+	// Resolve reference images to URLs (preferred by ark) or base64 data URIs.
+	if len(req.ReferenceImages) > 0 {
+		refs := make([]string, 0, len(req.ReferenceImages))
+		for i, raw := range req.ReferenceImages {
+			du, err := localPathToDataURL(raw)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
+			}
+			refs = append(refs, du)
+		}
+		if len(refs) == 1 {
+			body["image"] = refs[0]
+		} else {
+			body["image"] = refs
+		}
+	}
+
+	bodyJSON, _ := json.Marshal(body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/generations", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+	return parseImageGenerationResponse(respBody)
+}
+
+// mapAspectRatioToVolcengineSize converts our ratio-oriented UI values into a
+// Volcengine Seedream-compatible size. Seedream image endpoints accept
+// WIDTHxHEIGHT or model-specific buckets like 2k/3k/4k, but not plain ratios.
+func mapAspectRatioToVolcengineSize(modelName, size, quality string) string {
+	s := strings.ToLower(strings.TrimSpace(size))
+	switch s {
+	case "1k", "2k", "3k", "4k":
+		return s
+	}
+	if strings.Contains(s, "x") {
+		return s
+	}
+
+	if s == "" || s == "auto" || s == "adaptive" {
+		return defaultVolcengineImageSize(modelName, quality)
+	}
+
+	if strings.Contains(s, ":") {
+		return buildVolcengineImageSizeFromRatio(s, quality)
+	}
+	return defaultVolcengineImageSize(modelName, quality)
+}
+
+func defaultVolcengineImageSize(modelName, quality string) string {
+	model := strings.ToLower(strings.TrimSpace(modelName))
+	switch {
+	case strings.Contains(model, "seedream-5"),
+		strings.Contains(model, "seedream-4-5"),
+		strings.Contains(model, "seedream-4-0"):
+		switch normalizeVolcengineImageQuality(quality) {
+		case "high":
+			return "4k"
+		case "medium":
+			return "3k"
+		case "low":
+			return "2k"
+		default:
+			return "2k"
+		}
+	case strings.Contains(model, "seedream-3"):
+		return "1024x1024"
+	default:
+		return "2k"
+	}
+}
+
+func buildVolcengineImageSizeFromRatio(ratio, quality string) string {
+	parts := strings.Split(strings.TrimSpace(ratio), ":")
+	if len(parts) != 2 {
+		return "2048x2048"
+	}
+	left, errLeft := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	right, errRight := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if errLeft != nil || errRight != nil || left <= 0 || right <= 0 {
+		return "2048x2048"
+	}
+
+	base := 2048.0
+	switch normalizeVolcengineImageQuality(quality) {
+	case "high":
+		base = 4096
+	case "medium":
+		base = 3072
+	case "low":
+		base = 2048
+	}
+
+	width := base
+	height := base
+	if left >= right {
+		height = roundToMultiple(base*(right/left), 64)
+	} else {
+		width = roundToMultiple(base*(left/right), 64)
+	}
+
+	if width < 512 {
+		width = 512
+	}
+	if height < 512 {
+		height = 512
+	}
+
+	return fmt.Sprintf("%dx%d", int(width), int(height))
+}
+
+func roundToMultiple(value, step float64) float64 {
+	if step <= 0 {
+		return value
+	}
+	return math.Round(value/step) * step
+}
+
+func normalizeVolcengineImageQuality(quality string) string {
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case "high", "medium", "low":
+		return strings.ToLower(strings.TrimSpace(quality))
+	default:
+		return "auto"
+	}
 }
 
 func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
@@ -994,7 +1244,14 @@ func localPathToDataURL(rawURL string) (string, error) {
 	return "data:image/jpeg;base64," + encoded, nil
 }
 
-func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	// Volcengine ark uses a different async-task contract (path + payload + status
+	// vocabulary) than the sora-style /videos endpoint. Route only providers that
+	// actually use the Ark task contract, not every custom provider with explicit
+	// submit/query paths.
+	if isVolcengine(pc) || isArkVideoContract(pc) {
+		return s.generateVideoArk(ctx, pc, baseURL, apiKey, req)
+	}
 	aspectRatio := req.AspectRatio
 	if aspectRatio == "" {
 		aspectRatio = req.Size
@@ -1009,6 +1266,16 @@ func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req
 	duration := req.Duration
 	if duration <= 0 {
 		duration = 5
+	}
+	submitPath := "/videos"
+	queryPath := "/videos/{taskId}"
+	if pc != nil {
+		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
+			submitPath = p
+		}
+		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
+			queryPath = p
+		}
 	}
 
 	body := map[string]interface{}{
@@ -1042,7 +1309,7 @@ func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/videos", strings.NewReader(string(bodyJSON)))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
 	}
@@ -1082,13 +1349,211 @@ func (s *Service) generateVideo(ctx context.Context, baseURL, apiKey string, req
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
 	}
 
-	return s.pollVideoTask(ctx, baseURL, apiKey, taskID)
+	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
 }
 
-// pollVideoTask polls GET /v1/videos/{taskId} until completed or failed.
-func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, taskID string) (*GenerateResult, error) {
+// generateVideoArk talks to Volcengine ark's async video API
+// (POST /contents/generations/tasks → poll /contents/generations/tasks/{id}).
+// The submit/query endpoints come from ProviderConfig so other custom vendors
+// that mimic this shape can reuse the path. The request payload differs from
+// sora-style /videos: prompt and references go into a `content` array of
+// {type:"text"|"image_url", ...} items, and completion is signalled by
+// status=="succeeded" with the URL at content.video_url.
+func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	submitPath := "/contents/generations/tasks"
+	queryPath := "/contents/generations/tasks/{taskId}"
+	if pc != nil {
+		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
+			submitPath = p
+		}
+		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
+			queryPath = p
+		}
+	}
+	if !strings.HasPrefix(submitPath, "/") {
+		submitPath = "/" + submitPath
+	}
+	if !strings.HasPrefix(queryPath, "/") {
+		queryPath = "/" + queryPath
+	}
+
+	ratio := strings.TrimSpace(req.AspectRatio)
+	if ratio == "" {
+		ratio = strings.TrimSpace(req.Size)
+	}
+	if ratio == "" || strings.EqualFold(ratio, "auto") {
+		ratio = "adaptive"
+	}
+	duration := req.Duration
+	if duration <= 0 {
+		duration = 5
+	}
+
+	if len(req.ReferenceImages) > 2 && !isSeedance20Model(req.Model) {
+		return nil, apperror.New(
+			apperror.CodeInvalidInput,
+			"当前 Seedance 模型最多支持 2 张参考图；1~9 张多图参考仅支持 Seedance 2.0 系列。",
+		)
+	}
+
+	content := make([]map[string]interface{}, 0, 1+len(req.ReferenceImages))
+	if strings.TrimSpace(req.Prompt) != "" {
+		content = append(content, map[string]interface{}{
+			"type": "text",
+			"text": req.Prompt,
+		})
+	}
+	for i, raw := range req.ReferenceImages {
+		du, err := localPathToDataURL(raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
+		}
+		item := map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]interface{}{"url": du},
+		}
+		if len(req.ReferenceImages) == 2 {
+			if i == 0 {
+				item["role"] = "first_frame"
+			}
+			if i == 1 {
+				item["role"] = "last_frame"
+			}
+		} else if req.ReferenceMode == "start_frame" && i == 0 {
+			item["role"] = "first_frame"
+		}
+		content = append(content, item)
+	}
+
+	body := map[string]interface{}{
+		"model":     req.Model,
+		"content":   content,
+		"ratio":     ratio,
+		"duration":  duration,
+		"watermark": false,
+	}
+	if req.Resolution != "" {
+		body["resolution"] = req.Resolution
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	submitURL := baseURL + submitPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build submit request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
 	client := &http.Client{Timeout: 30 * time.Second}
-	pollURL := baseURL + "/videos/" + taskID
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, parseProviderErrorBytes(resp.StatusCode, respBody)
+	}
+
+	var submitResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &submitResp); err != nil {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse submit response: %s", string(respBody[:min(len(respBody), 300)])))
+	}
+	taskID, _ := submitResp["id"].(string)
+	if taskID == "" {
+		if id, ok := submitResp["task_id"].(string); ok {
+			taskID = id
+		}
+	}
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+
+	return s.pollVideoArkTask(ctx, baseURL, queryPath, apiKey, taskID)
+}
+
+// pollVideoArkTask polls a Volcengine-style async task until status=="succeeded"
+// or "failed". The status vocabulary is queued / running / succeeded / failed
+// (note: succeeded, not completed). The completed URL lives at content.video_url.
+func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiKey, taskID string) (*GenerateResult, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	pollURL := baseURL + strings.ReplaceAll(queryPath, "{taskId}", taskID)
+
+	select {
+	case <-ctx.Done():
+		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+	case <-time.After(8 * time.Second):
+	}
+
+	// Up to ~8 minutes total: 1080p seedance can take 3-5 minutes.
+	for i := 0; i < 80; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+			case <-time.After(6 * time.Second):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var taskResp map[string]interface{}
+		if json.Unmarshal(body, &taskResp) != nil {
+			continue
+		}
+
+		status := strings.ToLower(fmt.Sprintf("%v", taskResp["status"]))
+		switch status {
+		case "failed", "error", "cancelled", "canceled":
+			msg := ""
+			if e, ok := taskResp["error"].(map[string]interface{}); ok {
+				if m, ok := e["message"].(string); ok {
+					msg = m
+				}
+				if c, ok := e["code"].(string); ok && c != "" {
+					msg = c + ": " + msg
+				}
+			}
+			if msg == "" {
+				msg = string(body[:min(len(body), 500)])
+			}
+			return nil, apperror.New(apperror.CodeInternal, "Video generation failed: "+msg)
+		case "succeeded", "success", "completed":
+			if c, ok := taskResp["content"].(map[string]interface{}); ok {
+				if u, ok := c["video_url"].(string); ok && u != "" {
+					return &GenerateResult{Type: "url", Content: u}, nil
+				}
+			}
+			if u := findStringField(taskResp, "video_url", 5); u != "" {
+				return &GenerateResult{Type: "url", Content: u}, nil
+			}
+			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task succeeded but no video_url found. Raw: %s", string(body[:min(len(body), 800)])))
+		}
+		// queued / running / unknown — keep polling.
+	}
+	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+}
+
+// pollVideoTask polls the provider's task endpoint until completed or failed.
+func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath, taskID string) (*GenerateResult, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	if strings.TrimSpace(queryPath) == "" {
+		queryPath = "/videos/{taskId}"
+	}
+	pollURL := resolveProviderURL(baseURL, strings.ReplaceAll(queryPath, "{taskId}", taskID))
 
 	// Wait 8 seconds before first poll.
 	select {

@@ -13,6 +13,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  Bot as BotIcon,
   ClipboardPaste,
   Download,
   Expand,
@@ -51,6 +52,7 @@ import {
 import { nodeTypes } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
+import { AgentRunPanel } from './AgentRunPanel';
 
 const edgeTypes = { flow: FlowEdge };
 const defaultEdgeOptions = { type: 'flow' as const };
@@ -269,6 +271,7 @@ const InnerCanvas = () => {
 
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
@@ -1230,6 +1233,17 @@ const InnerCanvas = () => {
       </div>
 
       <SaveAssetDialog />
+
+      {/* Agent run panel + toggle FAB (bottom-right) */}
+      <button
+        onClick={() => setAgentPanelOpen((v) => !v)}
+        className="absolute bottom-6 right-6 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/15 text-cyan-200 shadow-2xl backdrop-blur-xl transition hover:bg-cyan-500/25"
+        title={language === 'zh' ? '智能体' : 'Agent'}
+        style={{ display: agentPanelOpen ? 'none' : undefined }}
+      >
+        <BotIcon className="h-5 w-5" />
+      </button>
+      <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
     </div>
   );
 };

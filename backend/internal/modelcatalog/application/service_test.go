@@ -373,6 +373,175 @@ func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
 	}
 }
 
+func TestGenerateImageVolcengineMapsAspectRatioToSupportedSize(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("path = %q, want /images/generations", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["size"] != "4096x2304" {
+			t.Fatalf("size = %v, want 4096x2304", body["size"])
+		}
+		if _, ok := body["quality"]; ok {
+			t.Fatalf("quality should not be sent to Volcengine image endpoint")
+		}
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/seedream.png"}]}`))
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-volc",
+			ServiceType:     "image",
+			Vendor:          "Volcengine",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"doubao-seedream-5-0-260128"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "doubao-seedream-5-0-260128",
+		Prompt:      "draw a premium product hero shot",
+		Size:        "16:9",
+		Quality:     "high",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/seedream.png" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func TestMapAspectRatioToVolcengineSizeDefaultsByModel(t *testing.T) {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "auto"); got != "2k" {
+		t.Fatalf("seedream 5 auto size = %q, want 2k", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "high"); got != "4k" {
+		t.Fatalf("seedream 5 auto high size = %q, want 4k", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-3-0-t2i-250415", "auto", "auto"); got != "1024x1024" {
+		t.Fatalf("seedream 3 auto size = %q, want 1024x1024", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "9:16", "medium"); got != "1728x3072" {
+		t.Fatalf("seedream 5 9:16 medium size = %q, want 1728x3072", got)
+	}
+}
+
+func TestGenerateVideoCustomSoraProviderKeepsPromptShape(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/videos":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if body["prompt"] != "animate the idol dance scene" {
+				t.Fatalf("prompt = %v, want animate the idol dance scene", body["prompt"])
+			}
+			if _, ok := body["content"]; ok {
+				t.Fatalf("content should not be sent to sora-style providers")
+			}
+			_, _ = w.Write([]byte(`{"id":"video-task-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/videos/video-task-1":
+			_, _ = w.Write([]byte(`{"status":"completed","video_url":"https://example.com/final.mp4"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-niuma",
+			ServiceType:     "video",
+			Vendor:          "Niuma",
+			Status:          "enabled",
+			BaseURL:         server.URL + "/v1",
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"sora-v3-fast"},
+			SubmitEndpoint:  "/v1/videos",
+			QueryEndpoint:   "/v1/videos/{taskId}",
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "video",
+		Model:       "sora-v3-fast",
+		Prompt:      "animate the idol dance scene",
+		Size:        "9:16",
+		Resolution:  "720p",
+		Duration:    15,
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/final.mp4" {
+		t.Fatalf("result.Content = %q, want https://example.com/final.mp4", result.Content)
+	}
+}
+
+func TestGenerateVideoArkRejectsTooManyReferenceImagesForSeedance15(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-seedance",
+			ServiceType:     "video",
+			Vendor:          "Volcengine",
+			Status:          "enabled",
+			BaseURL:         "https://ark.cn-beijing.volces.com/api/v3",
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"doubao-seedance-1-5-pro-251215"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	_, err = service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "video",
+		Model:       "doubao-seedance-1-5-pro-251215",
+		Prompt:      "make a cinematic character sequence",
+		Size:        "9:16",
+		Resolution:  "1080p",
+		Duration:    12,
+		ReferenceImages: []string{
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0i0AAAAASUVORK5CYII=",
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0i0AAAAASUVORK5CYII=",
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0i0AAAAASUVORK5CYII=",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "最多支持 2 张参考图") {
+		t.Fatalf("err = %v, want friendly too-many-reference-images message", err)
+	}
+}
+
 func multipartNewReader(body io.Reader, boundary string) *multipart.Reader {
 	data, err := io.ReadAll(body)
 	if err != nil {
