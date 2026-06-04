@@ -181,6 +181,11 @@ function EventRow({ event, zh }: { event: AgentSSEEvent; zh: boolean }) {
       </div>
     );
   }
+  if (event.type === "message_delta") {
+    // Final reply is rendered as a full "message" event after deltas finish;
+    // deltas are stored individually so we don't double-render them here.
+    return <span className="text-xs text-neutral-300">{event.data.delta}</span>;
+  }
   if (event.type === "thought") {
     return (
       <div className="text-xs text-neutral-400">

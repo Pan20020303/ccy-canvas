@@ -133,3 +133,26 @@ export function adminUpdateAgent(id: string, payload: AgentUpsert): Promise<Agen
 export function adminDeleteAgent(id: string): Promise<void> {
   return apiClient.delete(`/api/admin/agents/${id}`);
 }
+
+// ─── Agent run audit log (admin-only) ───────────────────────────────────────
+
+export type AgentRun = {
+  id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  agent_id: string;
+  agent_name: string;
+  user_input: string;
+  final_reply: string;
+  tool_calls: number;
+  steps: number;
+  status: "pending" | "success" | "error" | "cancelled";
+  error_msg: string;
+  duration_ms: number;
+  created_at: string;
+};
+
+export function adminListAgentRuns(limit = 100, offset = 0): Promise<AgentRun[]> {
+  return apiClient.get<AgentRun[]>(`/api/admin/agent-runs?limit=${limit}&offset=${offset}`);
+}

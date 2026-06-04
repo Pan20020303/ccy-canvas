@@ -118,7 +118,7 @@ func main() {
 
 	// Agent SSE run endpoint sits on chi directly (huma envelopes JSON,
 	// which would break Server-Sent Events).
-	agentRunRouter := skillshttp.NewAgentRunRouter(queries, catalogService, sessionManager)
+	agentRunRouter := skillshttp.NewAgentRunRouter(queries, skillsExecutor, catalogService, sessionManager)
 	agentRunRouter.RegisterChi(router)
 
 	log.Printf("listening on %s", cfg.HTTPAddr)

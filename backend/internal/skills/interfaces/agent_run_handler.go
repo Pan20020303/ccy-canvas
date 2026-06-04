@@ -9,10 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
+	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/session"
 	skillsapp "ccy-canvas/backend/internal/skills/application"
@@ -24,14 +27,16 @@ import (
 type AgentRunRouter struct {
 	q          *sqlc.Queries
 	llm        *skillsapp.LLMClient
+	executor   *skillsapp.Executor
 	catalogSvc *modelapp.Service
 	sessions   session.Manager
 }
 
-func NewAgentRunRouter(q *sqlc.Queries, catalog *modelapp.Service, sessions session.Manager) *AgentRunRouter {
+func NewAgentRunRouter(q *sqlc.Queries, executor *skillsapp.Executor, catalog *modelapp.Service, sessions session.Manager) *AgentRunRouter {
 	return &AgentRunRouter{
 		q:          q,
 		llm:        skillsapp.NewLLMClient(),
+		executor:   executor,
 		catalogSvc: catalog,
 		sessions:   sessions,
 	}
@@ -57,10 +62,14 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 		return
 	}
-	if _, err := rt.sessions.Parse(cookie.Value); err != nil {
+	claims, err := rt.sessions.Parse(cookie.Value)
+	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 		return
 	}
+	var userID pgtype.UUID
+	_ = userID.Scan(claims.UserID)
+	_ = authn.ScopeAdmin // keep authn referenced
 
 	// 2) Resolve agent.
 	agentIDStr := chi.URLParam(r, "id")
@@ -107,26 +116,41 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
 	}
-	// TODO: append skill-bound tools here once Skill -> Tool adapter is wired.
+	tools = append(tools, skillsapp.BuildSkillTools(r.Context(), rt.q, rt.executor, agent.SkillIDs)...)
 
-	// 6) Run the loop.
-	runner := skillsapp.Runner{
-		LLM:     rt.llm,
-		BaseURL: baseURL,
-		APIKey:  apiKey,
-	}
+	// 6) Persist a pending agent_runs row before kicking the loop.
+	runRow, _ := rt.q.InsertAgentRun(r.Context(), sqlc.InsertAgentRunParams{
+		UserID: userID, AgentID: agent.ID, UserInput: req.Message,
+	})
 
-	// Pass through cancellation if the client disconnects.
+	runner := skillsapp.Runner{LLM: rt.llm, BaseURL: baseURL, APIKey: apiKey}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	go func() {
-		<-ctx.Done()
-	}()
 
-	_ = runner.Run(ctx, skillsapp.RunInput{
+	startedAt := time.Now()
+	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
 		SystemPrompt: agent.SystemPrompt,
 		Model:        agent.Model,
 		UserMessage:  req.Message,
 		Tools:        tools,
+		Strategy:     agent.Strategy,
 	}, emitter.Emit)
+	durationMs := int32(time.Since(startedAt).Milliseconds())
+
+	// 7) Update agent_runs row with the final outcome (best-effort).
+	status := "success"
+	errMsg := ""
+	if runErr != nil {
+		status = "error"
+		errMsg = runErr.Error()
+	}
+	_ = rt.q.UpdateAgentRunResult(r.Context(), sqlc.UpdateAgentRunResultParams{
+		ID:         runRow.ID,
+		FinalReply: stats.FinalReply,
+		ToolCalls:  int32(stats.ToolCalls),
+		Steps:      int32(stats.Steps),
+		Status:     status,
+		ErrorMsg:   errMsg,
+		DurationMs: durationMs,
+	})
 }

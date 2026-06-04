@@ -18,12 +18,18 @@ import (
 //       messages += {role:"tool", tool_call_id, content: result}
 //
 // Mirrors the OpenAI Agents SDK without the multi-agent / handoff machinery.
+//
+// Strategy:
+//   "reactive" — the default tool-calling loop above (LLM decides each step).
+//   "scripted" — same loop but prefaces with a one-shot "make a plan first"
+//                turn that's emitted as a `thought` event, giving the user a
+//                preview of intent before any tool runs.
 type Runner struct {
 	LLM       *LLMClient
-	BaseURL   string // OpenAI-style endpoint, e.g. https://api.openai.com/v1
+	BaseURL   string
 	APIKey    string
-	MaxSteps  int    // safety cap; default 12
-	ModelHint string // fallback if agent doesn't specify one
+	MaxSteps  int
+	ModelHint string
 }
 
 // RunInput carries everything Run needs that isn't on the Runner itself.
@@ -32,10 +38,20 @@ type RunInput struct {
 	Model        string
 	UserMessage  string
 	Tools        []Tool
+	Strategy     string // "reactive" (default) or "scripted"
+}
+
+// RunStats summarizes what happened during the run. Used by the handler to
+// write an agent_runs audit row.
+type RunStats struct {
+	Steps      int
+	ToolCalls  int
+	FinalReply string
 }
 
 // Run executes the agent loop, streaming events via emit.
-func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) error {
+func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (RunStats, error) {
+	stats := RunStats{}
 	max := r.MaxSteps
 	if max == 0 {
 		max = 12
@@ -46,11 +62,16 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) e
 		model = r.ModelHint
 	}
 	if model == "" {
-		return errors.New("no model specified for agent")
+		return stats, errors.New("no model specified for agent")
+	}
+
+	systemPrompt := in.SystemPrompt
+	if in.Strategy == "scripted" {
+		systemPrompt += "\n\nBefore taking any action, briefly describe your plan in 2-3 sentences. Then execute it with tool calls."
 	}
 
 	messages := []ChatMessage{
-		{Role: "system", Content: in.SystemPrompt},
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: in.UserMessage},
 	}
 	toolDefs := ToOpenAIDefs(in.Tools)
@@ -58,39 +79,39 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) e
 	for step := 0; step < max; step++ {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return stats, ctx.Err()
 		default:
 		}
+		stats.Steps = step + 1
 
 		resp, err := r.LLM.Chat(ctx, r.BaseURL, r.APIKey, model, messages, toolDefs)
 		if err != nil {
 			emit(EventError, map[string]string{"message": err.Error()})
-			return err
+			return stats, err
 		}
 
-		// If the model wrote any text alongside its tool calls, surface it as
-		// a "thought" — useful for the UI even on tool-call turns.
 		if resp.Content != "" && len(resp.ToolCalls) > 0 {
 			emit(EventThought, map[string]string{"content": resp.Content})
 		}
 
-		// No more tool calls -> finish.
 		if len(resp.ToolCalls) == 0 {
-			emit(EventMessage, map[string]string{"content": resp.Content})
+			// Stream the final reply token-by-token (simulated chunking for
+			// the case where the upstream doesn't natively stream — gives the
+			// UI a nice typing animation).
+			emitStreamedReply(resp.Content, emit)
+			stats.FinalReply = resp.Content
 			emit(EventDone, map[string]int{"steps": step + 1})
-			return nil
+			return stats, nil
 		}
 
-		// Record the assistant turn with its tool_calls so the API contract
-		// is satisfied on the next turn.
 		messages = append(messages, ChatMessage{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: resp.ToolCalls,
 		})
 
-		// Execute each tool, emit events, append tool results to messages.
 		for _, tc := range resp.ToolCalls {
+			stats.ToolCalls++
 			emit(EventToolCall, map[string]any{
 				"id":        tc.ID,
 				"name":      tc.Function.Name,
@@ -99,7 +120,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) e
 
 			tool := findTool(in.Tools, tc.Function.Name)
 			var (
-				result string
+				result  string
 				toolErr error
 			)
 			if tool == nil {
@@ -129,5 +150,25 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) e
 	}
 
 	emit(EventError, map[string]string{"message": "Max steps exceeded"})
-	return errors.New("max steps exceeded")
+	return stats, errors.New("max steps exceeded")
+}
+
+// emitStreamedReply chunks the final reply into ~25-char fragments and emits
+// `message_delta` events, then a final `message` with the full text. The UI
+// can render the deltas live and then snap to the full message for cleanup.
+func emitStreamedReply(content string, emit func(string, any)) {
+	if content == "" {
+		emit(EventMessage, map[string]string{"content": ""})
+		return
+	}
+	const chunkSize = 24
+	runes := []rune(content)
+	for i := 0; i < len(runes); i += chunkSize {
+		end := i + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		emit("message_delta", map[string]string{"delta": string(runes[i:end])})
+	}
+	emit(EventMessage, map[string]string{"content": content})
 }

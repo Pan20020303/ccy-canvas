@@ -87,6 +87,64 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		Security:      adminSec,
 		DefaultStatus: http.StatusNoContent,
 	}, h.deleteAnyAgent)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-agent-runs",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/agent-runs",
+		Summary:     "List agent run history",
+		Tags:        []string{"Admin", "Agents"},
+		Security:    adminSec,
+	}, h.listAgentRuns)
+}
+
+// ─── Agent runs ──────────────────────────────────────────────────────────────
+
+type listAgentRunsInput struct {
+	Limit  int32 `query:"limit" minimum:"1" maximum:"200" default:"100"`
+	Offset int32 `query:"offset" minimum:"0" default:"0"`
+}
+
+type AgentRunItem struct {
+	ID         string `json:"id"`
+	UserID     string `json:"user_id"`
+	UserName   string `json:"user_name"`
+	UserEmail  string `json:"user_email"`
+	AgentID    string `json:"agent_id"`
+	AgentName  string `json:"agent_name"`
+	UserInput  string `json:"user_input"`
+	FinalReply string `json:"final_reply"`
+	ToolCalls  int32  `json:"tool_calls"`
+	Steps      int32  `json:"steps"`
+	Status     string `json:"status"`
+	ErrorMsg   string `json:"error_msg"`
+	DurationMs int32  `json:"duration_ms"`
+	CreatedAt  string `json:"created_at"`
+}
+
+type listAgentRunsOutput struct {
+	Body struct {
+		Data      []AgentRunItem `json:"data"`
+		RequestID string         `json:"request_id"`
+	}
+}
+
+func (h *AdminHandler) listAgentRuns(ctx context.Context, input *listAgentRunsInput) (*listAgentRunsOutput, error) {
+	rows, err := h.q.ListAgentRuns(ctx, sqlc.ListAgentRunsParams{Limit: input.Limit, Offset: input.Offset})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list agent runs")
+	}
+	out := &listAgentRunsOutput{}
+	for _, r := range rows {
+		out.Body.Data = append(out.Body.Data, AgentRunItem{
+			ID: formatUUID(r.ID), UserID: formatUUID(r.UserID), UserName: r.UserName, UserEmail: r.UserEmail,
+			AgentID: formatUUID(r.AgentID), AgentName: r.AgentName, UserInput: r.UserInput, FinalReply: r.FinalReply,
+			ToolCalls: r.ToolCalls, Steps: r.Steps, Status: r.Status, ErrorMsg: r.ErrorMsg, DurationMs: r.DurationMs,
+			CreatedAt: formatTime(r.CreatedAt),
+		})
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
 }
 
 func (h *AdminHandler) listAllSkills(ctx context.Context, _ *struct{}) (*listSkillsOutput, error) {

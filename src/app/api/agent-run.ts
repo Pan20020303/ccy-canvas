@@ -14,16 +14,17 @@ import type { Edge, Node } from "@xyflow/react";
 
 export type AgentSSEEventType =
   | "thought" | "tool_call" | "tool_result"
-  | "message" | "canvas_patch" | "error" | "done";
+  | "message" | "message_delta" | "canvas_patch" | "error" | "done";
 
 export type AgentSSEEvent =
-  | { type: "thought";      data: { content: string } }
-  | { type: "tool_call";    data: { id: string; name: string; arguments: string } }
-  | { type: "tool_result";  data: { id: string; name: string; ok: boolean; result?: string; error?: string } }
-  | { type: "message";      data: { content: string } }
-  | { type: "canvas_patch"; data: CanvasPatch }
-  | { type: "error";        data: { message: string } }
-  | { type: "done";         data: { steps: number } };
+  | { type: "thought";       data: { content: string } }
+  | { type: "tool_call";     data: { id: string; name: string; arguments: string } }
+  | { type: "tool_result";   data: { id: string; name: string; ok: boolean; result?: string; error?: string } }
+  | { type: "message_delta"; data: { delta: string } }
+  | { type: "message";       data: { content: string } }
+  | { type: "canvas_patch";  data: CanvasPatch }
+  | { type: "error";         data: { message: string } }
+  | { type: "done";          data: { steps: number } };
 
 export type CanvasPatch =
   | { op: "add_node";        node: Node }

@@ -238,15 +238,175 @@ func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, 
 	return `{"ok":true,"note":"Submitted to browser for generation"}`, nil
 }
 
+// ─── Additional canvas tools ─────────────────────────────────────────────────
+
+type deleteNodeTool struct{ state *CanvasState }
+
+func (t *deleteNodeTool) Name() string        { return "delete_node" }
+func (t *deleteNodeTool) Description() string { return "Remove a node and all edges connected to it." }
+func (t *deleteNodeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
+}
+func (t *deleteNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct{ NodeID string `json:"node_id"` }
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	t.state.mu.Lock()
+	keptNodes := t.state.Nodes[:0]
+	for _, n := range t.state.Nodes {
+		if n.ID != p.NodeID {
+			keptNodes = append(keptNodes, n)
+		}
+	}
+	t.state.Nodes = keptNodes
+	keptEdges := t.state.Edges[:0]
+	for _, e := range t.state.Edges {
+		if e.Source != p.NodeID && e.Target != p.NodeID {
+			keptEdges = append(keptEdges, e)
+		}
+	}
+	t.state.Edges = keptEdges
+	t.state.mu.Unlock()
+	t.state.emit(EventCanvasPatch, map[string]any{"op": "delete_node", "node_id": p.NodeID})
+	return `{"ok":true}`, nil
+}
+
+type moveNodeTool struct{ state *CanvasState }
+
+func (t *moveNodeTool) Name() string        { return "move_node" }
+func (t *moveNodeTool) Description() string { return "Move a node to a new position on the canvas." }
+func (t *moveNodeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["node_id","position"]}`)
+}
+func (t *moveNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		NodeID   string `json:"node_id"`
+		Position XY     `json:"position"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	t.state.mu.Lock()
+	found := false
+	for i := range t.state.Nodes {
+		if t.state.Nodes[i].ID == p.NodeID {
+			t.state.Nodes[i].Position = p.Position
+			found = true
+			break
+		}
+	}
+	t.state.mu.Unlock()
+	if !found {
+		return "", fmt.Errorf("node not found: %s", p.NodeID)
+	}
+	t.state.emit(EventCanvasPatch, map[string]any{"op": "move_node", "node_id": p.NodeID, "position": p.Position})
+	return `{"ok":true}`, nil
+}
+
+type readNodeTool struct{ state *CanvasState }
+
+func (t *readNodeTool) Name() string        { return "read_node" }
+func (t *readNodeTool) Description() string { return "Read the full data of a node: type, position, url, content, prompt, etc." }
+func (t *readNodeTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
+}
+func (t *readNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct{ NodeID string `json:"node_id"` }
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	for _, n := range t.state.Nodes {
+		if n.ID == p.NodeID {
+			out, _ := json.Marshal(n)
+			return string(out), nil
+		}
+	}
+	return "", fmt.Errorf("node not found: %s", p.NodeID)
+}
+
+type findNodesTool struct{ state *CanvasState }
+
+func (t *findNodesTool) Name() string        { return "find_nodes" }
+func (t *findNodesTool) Description() string { return "Find nodes matching a type and/or a substring in their name/content." }
+func (t *findNodesTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"},"name_contains":{"type":"string"}},"additionalProperties":false}`)
+}
+func (t *findNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Type         string `json:"type"`
+		NameContains string `json:"name_contains"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	needle := strings.ToLower(p.NameContains)
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	type brief struct {
+		ID, Type, Name string
+	}
+	out := []brief{}
+	for _, n := range t.state.Nodes {
+		if p.Type != "" && n.Type != p.Type {
+			continue
+		}
+		name := ""
+		if v, ok := n.Data["sourceName"].(string); ok {
+			name = v
+		} else if v, ok := n.Data["customTitle"].(string); ok {
+			name = v
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(name), needle) {
+			if v, _ := n.Data["content"].(string); !strings.Contains(strings.ToLower(v), needle) {
+				continue
+			}
+		}
+		out = append(out, brief{n.ID, n.Type, name})
+	}
+	raw, _ := json.Marshal(out)
+	return string(raw), nil
+}
+
+type createGroupTool struct{ state *CanvasState }
+
+func (t *createGroupTool) Name() string        { return "create_group" }
+func (t *createGroupTool) Description() string { return "Group a set of nodes under a named container." }
+func (t *createGroupTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"}},"name":{"type":"string"}},"required":["node_ids"]}`)
+}
+func (t *createGroupTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		NodeIDs []string `json:"node_ids"`
+		Name    string   `json:"name"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if len(p.NodeIDs) < 2 {
+		return "", fmt.Errorf("create_group needs at least 2 nodes")
+	}
+	t.state.emit(EventCanvasPatch, map[string]any{
+		"op": "create_group", "node_ids": p.NodeIDs, "name": p.Name,
+	})
+	return `{"ok":true}`, nil
+}
+
 // BuildCanvasTools returns the canonical list of canvas-CLI tools.
-// Skills bound to an agent become additional tools via BuildSkillTools.
 func BuildCanvasTools(state *CanvasState) []Tool {
 	return []Tool{
 		&listNodesTool{state},
+		&findNodesTool{state},
+		&readNodeTool{state},
 		&createNodeTool{state},
 		&connectNodesTool{state},
 		&setPromptTool{state},
 		&runNodeTool{state},
+		&moveNodeTool{state},
+		&deleteNodeTool{state},
+		&createGroupTool{state},
 	}
 }
 

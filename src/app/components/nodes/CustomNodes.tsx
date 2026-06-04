@@ -2295,6 +2295,8 @@ const ModeTextNode = ({ id, data, selected }: any) => {
   );
 };
 
+import { AgentNode } from './AgentNode';
+
 export const nodeTypes = {
   textNode: ModeTextNode,
   imageNode: RenamableImageNode,
@@ -2303,5 +2305,6 @@ export const nodeTypes = {
   panoramaNode: RenamablePanoramaNode,
   referenceImageNode: ReferenceImageNode,
   referenceVideoNode: ReferenceVideoNode,
+  agentNode: AgentNode,
 };
 
