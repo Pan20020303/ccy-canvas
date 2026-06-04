@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { ArrowUpRight, Eye, EyeOff, Github, Lock, Mail, ShieldCheck } from "lucide-react";
+import { gsap } from "gsap";
 
 import { toUserMessage } from "../api/errors";
 import { useAuth } from "../auth/AuthProvider";
@@ -11,6 +12,7 @@ export const LoginPage = () => {
   const navigate = useNavigate();
   const language = useStore((state) => state.language);
   const { login } = useAuth();
+  const rootRef = useRef<HTMLFormElement>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -18,6 +20,60 @@ export const LoginPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zh = language === "zh";
+
+  useEffect(() => {
+    const root = rootRef.current;
+
+    if (!root) {
+      return;
+    }
+
+    const mm = gsap.matchMedia();
+    const cleanup: Array<() => void> = [];
+    const ctx = gsap.context(() => {
+      mm.add(
+        {
+          reduceMotion: "(prefers-reduced-motion: reduce)",
+          noPreference: "(prefers-reduced-motion: no-preference)",
+        },
+        ({ conditions }) => {
+          if (conditions?.reduceMotion) {
+            return;
+          }
+
+          const bindLift = (selector: string, y: number) => {
+            root.querySelectorAll<HTMLElement>(selector).forEach((node) => {
+              const enter = () => gsap.to(node, { y: -y, duration: 0.22, ease: "power2.out" });
+              const leave = () => gsap.to(node, { y: 0, scale: 1, duration: 0.18, ease: "power2.out" });
+              const down = () => gsap.to(node, { y: -1, scale: 0.992, duration: 0.12, ease: "power2.out" });
+              const up = () => gsap.to(node, { y: -y, scale: 1, duration: 0.16, ease: "power2.out" });
+
+              node.addEventListener("pointerenter", enter);
+              node.addEventListener("pointerleave", leave);
+              node.addEventListener("pointerdown", down);
+              node.addEventListener("pointerup", up);
+
+              cleanup.push(() => {
+                node.removeEventListener("pointerenter", enter);
+                node.removeEventListener("pointerleave", leave);
+                node.removeEventListener("pointerdown", down);
+                node.removeEventListener("pointerup", up);
+              });
+            });
+          };
+
+          bindLift("[data-auth-cta]", 3);
+          bindLift("[data-auth-social]", 2);
+        },
+      );
+    }, root);
+
+    return () => {
+      cleanup.forEach((fn) => fn());
+      ctx.revert();
+      mm.revert();
+    };
+  }, []);
 
   const copy = useMemo(
     () =>
@@ -81,7 +137,7 @@ export const LoginPage = () => {
 
   return (
     <AuthLayout title={copy.brand} subtitle={copy.tagline}>
-      <form onSubmit={submit}>
+      <form ref={rootRef} onSubmit={submit}>
         <div className="space-y-4">
           <AuthField
             type="email"
@@ -130,6 +186,7 @@ export const LoginPage = () => {
 
         <button
           type="submit"
+          data-auth-cta
           disabled={submitting}
           className="group relative mt-7 flex h-[74px] w-full items-center justify-center overflow-hidden rounded-[16px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[18px] font-semibold tracking-[0.08em] text-white shadow-[0_18px_48px_rgba(255,92,31,0.28)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
         >
@@ -145,7 +202,7 @@ export const LoginPage = () => {
           <div className="h-px flex-1 bg-white/14" />
         </div>
 
-        <div className="mt-7 grid grid-cols-3 gap-3 sm:gap-4">
+        <div className="mt-7 grid grid-cols-3 gap-3 sm:gap-4" data-auth-socials>
           <SocialButton label={copy.google}>
             <GoogleIcon />
           </SocialButton>
@@ -178,6 +235,7 @@ function SocialButton({
   return (
     <button
       type="button"
+      data-auth-social
       className="flex h-[86px] items-center justify-center gap-3 rounded-[14px] border border-white/14 bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(11,14,20,0.92))] px-4 text-[17px] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/24 hover:bg-white/[0.04]"
     >
       {children}

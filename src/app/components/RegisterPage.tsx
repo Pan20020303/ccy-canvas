@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { ArrowUpRight, BadgeCheck, KeyRound, Lock, Mail, UserRound } from "lucide-react";
+import { gsap } from "gsap";
 
 import { toUserMessage } from "../api/errors";
 import { useAuth } from "../auth/AuthProvider";
@@ -11,6 +12,7 @@ export function RegisterPage() {
   const language = useStore((state) => state.language);
   const { registerByInvite } = useAuth();
   const navigate = useNavigate();
+  const rootRef = useRef<HTMLFormElement>(null);
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -20,6 +22,59 @@ export function RegisterPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zh = language === "zh";
+
+  useEffect(() => {
+    const root = rootRef.current;
+
+    if (!root) {
+      return;
+    }
+
+    const mm = gsap.matchMedia();
+    const cleanup: Array<() => void> = [];
+    const ctx = gsap.context(() => {
+      mm.add(
+        {
+          reduceMotion: "(prefers-reduced-motion: reduce)",
+          noPreference: "(prefers-reduced-motion: no-preference)",
+        },
+        ({ conditions }) => {
+          if (conditions?.reduceMotion) {
+            return;
+          }
+
+          const bindLift = (selector: string, y: number) => {
+            root.querySelectorAll<HTMLElement>(selector).forEach((node) => {
+              const enter = () => gsap.to(node, { y: -y, duration: 0.22, ease: "power2.out" });
+              const leave = () => gsap.to(node, { y: 0, scale: 1, duration: 0.18, ease: "power2.out" });
+              const down = () => gsap.to(node, { y: -1, scale: 0.992, duration: 0.12, ease: "power2.out" });
+              const up = () => gsap.to(node, { y: -y, scale: 1, duration: 0.16, ease: "power2.out" });
+
+              node.addEventListener("pointerenter", enter);
+              node.addEventListener("pointerleave", leave);
+              node.addEventListener("pointerdown", down);
+              node.addEventListener("pointerup", up);
+
+              cleanup.push(() => {
+                node.removeEventListener("pointerenter", enter);
+                node.removeEventListener("pointerleave", leave);
+                node.removeEventListener("pointerdown", down);
+                node.removeEventListener("pointerup", up);
+              });
+            });
+          };
+
+          bindLift("[data-auth-cta]", 3);
+        },
+      );
+    }, root);
+
+    return () => {
+      cleanup.forEach((fn) => fn());
+      ctx.revert();
+      mm.revert();
+    };
+  }, []);
 
   const copy = useMemo(
     () =>
@@ -75,7 +130,7 @@ export function RegisterPage() {
 
   return (
     <AuthLayout title={copy.brand} subtitle={copy.tagline}>
-      <form onSubmit={onSubmit}>
+      <form ref={rootRef} onSubmit={onSubmit}>
         <div className="space-y-4">
           <AuthField
             type="text"
@@ -113,7 +168,7 @@ export function RegisterPage() {
 
         {error ? <p className="mt-4 text-sm text-[#ff8b61]">{error}</p> : null}
 
-        <div className="mt-6 rounded-[16px] border border-white/10 bg-white/[0.03] p-4 text-[14px] text-white/48">
+        <div data-auth-note className="mt-6 rounded-[16px] border border-white/10 bg-white/[0.03] p-4 text-[14px] text-white/48">
           <div className="flex items-center gap-3 text-white/72">
             <BadgeCheck className="h-5 w-5 text-[#ff6c28]" />
             <span>{zh ? "管理员发放的邀请码会自动绑定初始额度。" : "Admin-issued invite codes bootstrap your initial quota automatically."}</span>
@@ -122,6 +177,7 @@ export function RegisterPage() {
 
         <button
           type="submit"
+          data-auth-cta
           disabled={submitting}
           className="group relative mt-7 flex h-[74px] w-full items-center justify-center overflow-hidden rounded-[16px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[18px] font-semibold tracking-[0.08em] text-white shadow-[0_18px_48px_rgba(255,92,31,0.28)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
         >
