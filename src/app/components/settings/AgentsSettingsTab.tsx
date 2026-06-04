@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, Lock, MessageSquareText, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Lock, Pencil, Plus, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 
+import { toUserMessage } from "../../api/errors";
 import {
   createAgent,
   deleteAgent,
@@ -12,6 +13,7 @@ import {
   type Skill,
 } from "../../api/skills";
 import { useStore } from "../../store";
+import { applyAgentSettingsLoadResults, canSaveAgentEditor } from "./agent-settings-state";
 import {
   getAgentAvailableModels,
   getAgentExperienceHints,
@@ -22,7 +24,6 @@ import {
 type AgentEditorState = {
   name: string;
   description: string;
-  persona: string;
   systemPrompt: string;
   model: string;
   skillIds: string[];
@@ -38,9 +39,21 @@ export function AgentsSettingsTab() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<AgentEditorState | null>(null);
   const [creating, setCreating] = useState(false);
+  const agentsRef = useRef<Agent[]>([]);
+  const skillsRef = useRef<Skill[]>([]);
+
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  useEffect(() => {
+    skillsRef.current = skills;
+  }, [skills]);
 
   const availableSkills = useMemo(
     () => skills.filter((skill) => isPromptTemplateSkill(skill)),
@@ -54,15 +67,29 @@ export function AgentsSettingsTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
-      const [agentsResult, skillsResult] = await Promise.all([listAgents(), listSkills()]);
-      setAgents(agentsResult);
-      setSkills(skillsResult);
-    } catch {
-      // Keep the current UI stable on fetch failures.
+      const [agentsResult, skillsResult] = await Promise.allSettled([listAgents(), listSkills()]);
+      const next = applyAgentSettingsLoadResults(
+        agentsRef.current,
+        skillsRef.current,
+        agentsResult,
+        skillsResult,
+      );
+      setAgents(next.agents);
+      setSkills(next.skills);
+
+      if (agentsResult.status === "rejected" || skillsResult.status === "rejected") {
+        setError(
+          zh
+            ? "智能体或技能列表刷新失败，已保留当前内容。"
+            : "Failed to refresh agents or skills. Keeping the current data.",
+        );
+      }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, []);
+  }, [zh]);
 
   useEffect(() => {
     void load();
@@ -74,13 +101,15 @@ export function AgentsSettingsTab() {
   );
 
   const startCreate = () => {
+    setError(null);
     setCreating(true);
     setSelectedId(null);
     setEditing({
       name: zh ? "新智能体" : "New agent",
       description: "",
-      persona: zh ? "你是一位高效、可靠的智能体，善于基于上下文完成任务。" : "You are a reliable, context-aware agent who helps move work forward.",
-      systemPrompt: zh ? "优先使用当前会话上下文、绑定技能与管理员预配模型完成任务。" : "Use current conversation context, bound skills, and admin-configured models to complete the task.",
+      systemPrompt: zh
+        ? "优先使用当前会话上下文、绑定技能与管理员预配模型完成任务。"
+        : "Use current conversation context, bound skills, and admin-configured models to complete the task.",
       model: availableModels[0] ?? "gpt-4.1-mini",
       skillIds: [],
       canvasTools: true,
@@ -92,12 +121,12 @@ export function AgentsSettingsTab() {
     if (agent.scope === "global") {
       return;
     }
+    setError(null);
     setCreating(false);
     setSelectedId(agent.id);
     setEditing({
       name: agent.name,
       description: agent.description,
-      persona: agent.description || "",
       systemPrompt: agent.system_prompt,
       model: agent.model,
       skillIds: agent.skill_ids,
@@ -110,35 +139,48 @@ export function AgentsSettingsTab() {
     if (!editing) {
       return;
     }
+    if (!canSaveAgentEditor(editing)) {
+      setError(zh ? "请先填写智能体名称、模型和系统提示词。" : "Please fill in the agent name, model, and system prompt.");
+      return;
+    }
 
     const payload: AgentUpsert = {
       name: editing.name.trim(),
-      description: editing.description,
+      description: editing.description.trim(),
       avatar: "",
-      system_prompt: editing.systemPrompt,
-      model: editing.model,
+      system_prompt: editing.systemPrompt.trim(),
+      model: editing.model.trim(),
       skill_ids: editing.skillIds,
       canvas_tools: editing.canvasTools,
       strategy: "reactive",
       enabled: editing.enabled,
     };
 
-    if (creating) {
-      await createAgent(payload);
-    } else if (selectedId) {
-      await updateAgent(selectedId, payload);
-    }
+    setSaving(true);
+    setError(null);
+    try {
+      if (creating) {
+        const created = await createAgent(payload);
+        setSelectedId(created.id);
+      } else if (selectedId) {
+        await updateAgent(selectedId, payload);
+      }
 
-    await load();
-    setEditing(null);
-    setCreating(false);
+      await load();
+      setEditing(null);
+      setCreating(false);
+    } catch (saveError) {
+      setError(toUserMessage(saveError, zh ? "zh" : "en"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const remove = async (agent: Agent) => {
     if (agent.scope === "global") {
       return;
     }
-    if (!confirm(zh ? `确定删除智能体「${agent.name}」？` : `Delete agent "${agent.name}"?`)) {
+    if (!confirm(zh ? `确定删除智能体“${agent.name}”？` : `Delete agent "${agent.name}"?`)) {
       return;
     }
     await deleteAgent(agent.id);
@@ -161,7 +203,10 @@ export function AgentsSettingsTab() {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={load} className="rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200">
+            <button
+              onClick={() => void load()}
+              className="rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200"
+            >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </button>
             <button onClick={startCreate} className="rounded p-1 text-cyan-300 hover:bg-cyan-500/10">
@@ -182,6 +227,7 @@ export function AgentsSettingsTab() {
                 setSelectedId(agent.id);
                 setEditing(null);
                 setCreating(false);
+                setError(null);
               }}
               className={`w-full border-b border-white/5 px-3 py-2.5 text-left transition ${
                 selectedId === agent.id ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
@@ -196,7 +242,7 @@ export function AgentsSettingsTab() {
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500">
                     <span>{agent.model}</span>
-                    <span>•</span>
+                    <span>·</span>
                     <span>{agent.skill_ids.length} {zh ? "个技能" : "skills"}</span>
                   </div>
                 </div>
@@ -207,6 +253,11 @@ export function AgentsSettingsTab() {
       </div>
 
       <div className="flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
+        {error ? (
+          <div className="mb-3 rounded-md border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+            {error}
+          </div>
+        ) : null}
         {editing ? (
           <AgentEditor
             value={editing}
@@ -215,13 +266,21 @@ export function AgentsSettingsTab() {
             onCancel={() => {
               setEditing(null);
               setCreating(false);
+              setError(null);
             }}
             allSkills={availableSkills}
             allModels={availableModels}
             zh={zh}
+            saving={saving}
           />
         ) : selected ? (
-          <AgentDetail agent={selected} onEdit={() => startEdit(selected)} onDelete={() => remove(selected)} allSkills={availableSkills} zh={zh} />
+          <AgentDetail
+            agent={selected}
+            onEdit={() => startEdit(selected)}
+            onDelete={() => void remove(selected)}
+            allSkills={availableSkills}
+            zh={zh}
+          />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-neutral-500">
             {zh ? "选择左侧智能体查看，或点击右上角 + 新建。" : "Select an agent on the left, or click + to create one."}
@@ -271,8 +330,12 @@ function AgentDetail({
         </div>
         {agent.scope !== "global" ? (
           <div className="flex gap-1">
-            <button onClick={onEdit} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-cyan-300"><Pencil className="h-3.5 w-3.5" /></button>
-            <button onClick={onDelete} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-rose-300"><Trash2 className="h-3.5 w-3.5" /></button>
+            <button onClick={onEdit} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-cyan-300">
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={onDelete} className="rounded p-1.5 text-neutral-400 hover:bg-white/5 hover:text-rose-300">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         ) : null}
       </div>
@@ -288,27 +351,44 @@ function AgentDetail({
       <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
         <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
           <MetaItem label={zh ? "默认模型" : "Default model"} value={agent.model} />
-          <MetaItem label={zh ? "上下文" : "Context"} value={zh ? "保留当前会话上下文" : "Keeps current conversation context"} />
+          <MetaItem
+            label={zh ? "上下文" : "Context"}
+            value={zh ? "保留当前会话上下文" : "Keeps current conversation context"}
+          />
           <MetaItem label={zh ? "技能数量" : "Skill count"} value={`${skillNames.length}`} />
-          <MetaItem label={zh ? "画布能力" : "Canvas access"} value={agent.canvas_tools ? (zh ? "已开启" : "Enabled") : (zh ? "已关闭" : "Disabled")} />
+          <MetaItem
+            label={zh ? "画布能力" : "Canvas access"}
+            value={agent.canvas_tools ? (zh ? "已开启" : "Enabled") : (zh ? "已关闭" : "Disabled")}
+          />
         </div>
 
         <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
           <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">{zh ? "系统提示 / 人设" : "System prompt / persona"}</div>
-            <pre className="rounded border border-white/10 bg-black/30 p-3 text-[11px] whitespace-pre-wrap text-neutral-300">{agent.system_prompt}</pre>
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+              {zh ? "系统提示词 / 人设" : "System prompt / persona"}
+            </div>
+            <pre className="rounded border border-white/10 bg-black/30 p-3 text-[11px] whitespace-pre-wrap text-neutral-300">
+              {agent.system_prompt}
+            </pre>
           </div>
 
           <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">{zh ? "可调用技能" : "Available skills"}</div>
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
+              {zh ? "可调用技能" : "Available skills"}
+            </div>
             {skillNames.length === 0 ? (
               <div className="rounded border border-dashed border-white/10 px-3 py-3 text-xs text-neutral-500">
-                {zh ? "暂未绑定技能。这个智能体仍可用当前模型与上下文对话。" : "No skills bound yet. The agent can still talk using its current model and conversation context."}
+                {zh
+                  ? "暂未绑定技能模板。这个智能体仍可使用当前模型和会话上下文进行对话。"
+                  : "No skills bound yet. The agent can still talk using its current model and conversation context."}
               </div>
             ) : (
               <div className="flex flex-wrap gap-2">
                 {skillNames.map((skill) => (
-                  <span key={skill.id} className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-1 text-[11px] text-cyan-200">
+                  <span
+                    key={skill.id}
+                    className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-1 text-[11px] text-cyan-200"
+                  >
                     <Sparkles className="h-3 w-3" />
                     {getSkillCommandName(skill)}
                   </span>
@@ -336,6 +416,7 @@ function AgentEditor({
   allSkills,
   allModels,
   zh,
+  saving,
 }: {
   value: AgentEditorState;
   onChange: (value: AgentEditorState) => void;
@@ -344,6 +425,7 @@ function AgentEditor({
   allSkills: Skill[];
   allModels: string[];
   zh: boolean;
+  saving: boolean;
 }) {
   const toggleSkill = (id: string) => {
     const set = new Set(value.skillIds);
@@ -374,7 +456,7 @@ function AgentEditor({
       <Row label={zh ? "描述 / 人设摘要" : "Description / persona summary"}>
         <textarea
           value={value.description}
-          onChange={(event) => onChange({ ...value, description: event.target.value, persona: event.target.value })}
+          onChange={(event) => onChange({ ...value, description: event.target.value })}
           rows={2}
           className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
         />
@@ -388,7 +470,9 @@ function AgentEditor({
             className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
           >
             {allModels.map((model) => (
-              <option key={model} value={model}>{model}</option>
+              <option key={model} value={model}>
+                {model}
+              </option>
             ))}
           </select>
         </Row>
@@ -399,7 +483,7 @@ function AgentEditor({
         </Row>
       </div>
 
-      <Row label={zh ? "系统提示 / 角色设定" : "System prompt / role setup"}>
+      <Row label={zh ? "系统提示词 / 角色设定" : "System prompt / role setup"}>
         <textarea
           value={value.systemPrompt}
           onChange={(event) => onChange({ ...value, systemPrompt: event.target.value })}
@@ -411,11 +495,16 @@ function AgentEditor({
       <Row label={zh ? "可调用技能" : "Available skills"}>
         <div className="max-h-48 overflow-y-auto rounded border border-white/10 bg-black/20 p-2">
           {allSkills.length === 0 ? (
-            <p className="text-[11px] text-neutral-500">{zh ? "暂无可绑定技能模板" : "No prompt-template skills available"}</p>
+            <p className="text-[11px] text-neutral-500">
+              {zh ? "暂无可绑定的技能模板" : "No prompt-template skills available"}
+            </p>
           ) : allSkills.map((skill) => {
             const checked = value.skillIds.includes(skill.id);
             return (
-              <label key={skill.id} className="flex cursor-pointer items-start gap-2 rounded px-2 py-2 text-xs text-neutral-200 hover:bg-white/[0.03]">
+              <label
+                key={skill.id}
+                className="flex cursor-pointer items-start gap-2 rounded px-2 py-2 text-xs text-neutral-200 hover:bg-white/[0.03]"
+              >
                 <input type="checkbox" checked={checked} onChange={() => toggleSkill(skill.id)} className="mt-0.5" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -458,8 +547,12 @@ function AgentEditor({
         <button onClick={onCancel} className="rounded px-3 py-1.5 text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-200">
           {zh ? "取消" : "Cancel"}
         </button>
-        <button onClick={() => void onSave()} className="rounded bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-500/30">
-          {zh ? "保存智能体" : "Save agent"}
+        <button
+          onClick={() => void onSave()}
+          disabled={saving || !canSaveAgentEditor(value)}
+          className="rounded bg-cyan-500/20 px-3 py-1.5 text-xs text-cyan-200 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saving ? (zh ? "保存中..." : "Saving...") : (zh ? "保存智能体" : "Save agent")}
         </button>
       </div>
     </div>
