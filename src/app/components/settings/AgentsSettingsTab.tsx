@@ -214,7 +214,7 @@ export function AgentsSettingsTab() {
             </button>
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="prompt-editor-scroll flex-1 overflow-y-auto">
           {agents.length === 0 && !loading ? (
             <div className="px-4 py-8 text-center text-xs text-neutral-500">
               {zh ? "暂无智能体。点击右上角 + 新建一个可对话角色。" : "No agents yet. Click + to create a conversation-ready role."}
@@ -252,7 +252,7 @@ export function AgentsSettingsTab() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
+      <div className="prompt-editor-scroll flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
         {error ? (
           <div className="mb-3 rounded-md border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
             {error}
@@ -340,70 +340,67 @@ function AgentDetail({
         ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
+      {/* Hints — wrap horizontally, never force a fixed column count so the
+          panel stays usable at any width. */}
+      <div className="flex flex-wrap gap-2">
         {hints.map((hint) => (
-          <div key={hint} className="rounded-md border border-white/8 bg-white/[0.02] px-3 py-3 text-xs text-neutral-200">
+          <span key={hint} className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-neutral-300">
             {hint}
-          </div>
+          </span>
         ))}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
-        <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
-          <MetaItem label={zh ? "默认模型" : "Default model"} value={agent.model} />
-          <MetaItem
-            label={zh ? "上下文" : "Context"}
-            value={zh ? "保留当前会话上下文" : "Keeps current conversation context"}
-          />
-          <MetaItem label={zh ? "技能数量" : "Skill count"} value={`${skillNames.length}`} />
-          <MetaItem
-            label={zh ? "画布能力" : "Canvas access"}
-            value={agent.canvas_tools ? (zh ? "已开启" : "Enabled") : (zh ? "已关闭" : "Disabled")}
-          />
+      {/* Stats — small inline meta row, no rigid sidebar. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5 text-xs">
+        <MetaInline label={zh ? "模型" : "Model"} value={agent.model} />
+        <MetaInline label={zh ? "技能数" : "Skills"} value={`${skillNames.length}`} />
+        <MetaInline label={zh ? "画布" : "Canvas"} value={agent.canvas_tools ? (zh ? "已开启" : "On") : (zh ? "关闭" : "Off")} />
+      </div>
+
+      {/* Persona — full width, prose-friendly so text wraps normally. */}
+      <div className="rounded-md border border-white/8 bg-white/[0.02] p-3">
+        <div className="mb-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
+          {zh ? "系统提示词 / 人设" : "System prompt / persona"}
         </div>
-
-        <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
-              {zh ? "系统提示词 / 人设" : "System prompt / persona"}
-            </div>
-            <pre className="rounded border border-white/10 bg-black/30 p-3 text-[11px] whitespace-pre-wrap text-neutral-300">
-              {agent.system_prompt}
-            </pre>
-          </div>
-
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-neutral-500">
-              {zh ? "可调用技能" : "Available skills"}
-            </div>
-            {skillNames.length === 0 ? (
-              <div className="rounded border border-dashed border-white/10 px-3 py-3 text-xs text-neutral-500">
-                {zh
-                  ? "暂未绑定技能模板。这个智能体仍可使用当前模型和会话上下文进行对话。"
-                  : "No skills bound yet. The agent can still talk using its current model and conversation context."}
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {skillNames.map((skill) => (
-                  <span
-                    key={skill.id}
-                    className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-1 text-[11px] text-cyan-200"
-                  >
-                    <Sparkles className="h-3 w-3" />
-                    {getSkillCommandName(skill)}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
+        <div className="whitespace-pre-wrap break-words rounded border border-white/10 bg-black/30 p-3 text-xs leading-6 text-neutral-300">
+          {agent.system_prompt}
         </div>
       </div>
 
-      <div className="rounded border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2 text-[11px] text-cyan-100">
-        {zh
-          ? "这个智能体会使用管理员预配模型，并在当前会话里保留上下文。用户可通过 /技能名 调用已绑定技能。"
-          : "This agent uses an admin-configured model, keeps current conversation context, and can invoke bound skills via slash commands."}
+      {/* Bound skills — full width chip row. */}
+      <div className="rounded-md border border-white/8 bg-white/[0.02] p-3">
+        <div className="mb-1.5 text-[10px] uppercase tracking-wider text-neutral-500">
+          {zh ? "可调用技能" : "Available skills"}
+        </div>
+        {skillNames.length === 0 ? (
+          <div className="text-[11px] text-neutral-500">
+            {zh
+              ? "暂未绑定技能模板。用户仍可通过 /命令 唤出任何已安装的技能。"
+              : "No skills bound. Users can still invoke any installed skill via slash command."}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {skillNames.map((skill) => (
+              <span
+                key={skill.id}
+                className="inline-flex items-center gap-1 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-200"
+              >
+                <Sparkles className="h-3 w-3" />
+                {getSkillCommandName(skill)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function MetaInline({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</span>
+      <span className="text-xs font-medium text-neutral-200">{value}</span>
     </div>
   );
 }
@@ -493,7 +490,7 @@ function AgentEditor({
       </Row>
 
       <Row label={zh ? "可调用技能" : "Available skills"}>
-        <div className="max-h-48 overflow-y-auto rounded border border-white/10 bg-black/20 p-2">
+        <div className="prompt-editor-scroll max-h-48 overflow-y-auto rounded border border-white/10 bg-black/20 p-2">
           {allSkills.length === 0 ? (
             <p className="text-[11px] text-neutral-500">
               {zh ? "暂无可绑定的技能模板" : "No prompt-template skills available"}

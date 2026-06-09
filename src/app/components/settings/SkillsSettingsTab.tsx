@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { BookTemplate, Loader2, Lock, Pencil, Play, Plus, RefreshCw, Slash, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link as LinkIcon, Loader2, Lock, Pencil, Play, Plus, RefreshCw, Slash, Trash2, Upload } from "lucide-react";
+
+import { fetchSkillMarkdown, parseSkillMarkdown } from "./skill-import";
 
 import {
   createSkill,
@@ -43,6 +45,7 @@ export function SkillsSettingsTab() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState<PromptSkillEditorState | null>(null);
   const [creating, setCreating] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,6 +70,40 @@ export function SkillsSettingsTab() {
     () => skills.filter((skill) => skill.kind === "prompt"),
     [skills],
   );
+
+  // Import a Markdown skill file (Claude SKILL.md / plain prompt template).
+  // Creates the skill server-side, then selects it for review.
+  const importFromFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const fallbackName = file.name.replace(/\.(md|markdown|txt)$/i, "");
+      const payload = parseSkillMarkdown(text, fallbackName);
+      const created = await createSkill(payload);
+      await load();
+      setSelectedId(created.id);
+      setEditing(null);
+      setCreating(false);
+    } catch (err) {
+      alert((zh ? "导入失败：" : "Import failed: ") + (err as Error).message);
+    }
+  };
+
+  const importFromURL = async () => {
+    const url = window.prompt(zh ? "输入 .md 文件 URL（建议 raw GitHub / gist）" : "Enter URL of a .md skill file (raw GitHub / gist recommended)");
+    if (!url) return;
+    try {
+      const text = await fetchSkillMarkdown(url.trim());
+      const fallback = url.split("/").pop()?.replace(/\.(md|markdown)$/i, "") || "imported-skill";
+      const payload = parseSkillMarkdown(text, fallback);
+      const created = await createSkill(payload);
+      await load();
+      setSelectedId(created.id);
+      setEditing(null);
+      setCreating(false);
+    } catch (err) {
+      alert((zh ? "URL 拉取失败（可能是 CORS）：" : "URL fetch failed (likely CORS): ") + (err as Error).message);
+    }
+  };
 
   const startCreate = () => {
     setCreating(true);
@@ -173,12 +210,29 @@ export function SkillsSettingsTab() {
             <button onClick={load} title={zh ? "刷新" : "Refresh"} className="rounded p-1 text-neutral-500 hover:bg-white/5 hover:text-neutral-200">
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </button>
+            <button onClick={() => fileInputRef.current?.click()} title={zh ? "从本地 .md 导入" : "Import .md file"} className="rounded p-1 text-neutral-400 hover:bg-white/5 hover:text-cyan-200">
+              <Upload className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={() => void importFromURL()} title={zh ? "从 URL 导入" : "Import from URL"} className="rounded p-1 text-neutral-400 hover:bg-white/5 hover:text-cyan-200">
+              <LinkIcon className="h-3.5 w-3.5" />
+            </button>
             <button onClick={startCreate} title={zh ? "新建技能" : "New skill"} className="rounded p-1 text-cyan-300 hover:bg-cyan-500/10">
               <Plus className="h-3.5 w-3.5" />
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".md,.markdown,text/markdown,text/plain"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void importFromFile(file);
+              }}
+            />
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="prompt-editor-scroll flex-1 overflow-y-auto">
           {visibleSkills.length === 0 && !loading ? (
             <div className="px-4 py-8 text-center text-xs text-neutral-500">
               {zh ? "暂无技能模板。点击右上角 + 新建一个 slash 技能。" : "No skill templates yet. Click + to create a slash skill."}
@@ -192,29 +246,28 @@ export function SkillsSettingsTab() {
                 setEditing(null);
                 setCreating(false);
               }}
-              className={`w-full border-b border-white/5 px-3 py-2.5 text-left transition ${
-                selectedId === skill.id ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
+              className={`w-full border-b border-white/5 px-3 py-3 text-left transition ${
+                selectedId === skill.id ? "bg-cyan-500/10" : "hover:bg-white/[0.03]"
               }`}
             >
-              <div className="flex items-start gap-2">
-                <BookTemplate className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-neutral-500" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-xs text-neutral-200">{skill.name}</span>
-                    {skill.scope === "global" ? <Lock className="h-3 w-3 text-neutral-500" /> : null}
-                  </div>
-                  <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500">
-                    <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-cyan-300">{getSkillCommandName(skill)}</span>
-                    <span>{skill.category || (zh ? "未分类" : "Uncategorized")}</span>
-                  </div>
-                </div>
+              <div className="flex items-center gap-2">
+                <span className={`truncate rounded-md px-2 py-0.5 font-mono text-[11px] ${
+                  selectedId === skill.id ? "bg-cyan-500/30 text-cyan-100" : "bg-cyan-500/10 text-cyan-300"
+                }`}>
+                  {getSkillCommandName(skill)}
+                </span>
+                {skill.scope === "global" ? <Lock className="h-3 w-3 shrink-0 text-amber-300/70" /> : null}
               </div>
+              <div className="mt-1.5 truncate text-[11px] text-neutral-300">{skill.name}</div>
+              {skill.description ? (
+                <div className="mt-0.5 truncate text-[10px] text-neutral-500">{skill.description}</div>
+              ) : null}
             </button>
           ))}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
+      <div className="prompt-editor-scroll flex-1 overflow-y-auto rounded-xl border border-white/10 px-5 py-4">
         {editing ? (
           <SkillEditor
             value={editing}
@@ -304,31 +357,31 @@ function SkillDetail({
         ) : null}
       </div>
 
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="rounded-md border border-white/8 bg-white/[0.02] p-3">
-          <div className="mb-2 text-[11px] uppercase tracking-wider text-neutral-400">
-            {zh ? "模板内容（Markdown / Prompt）" : "Template content (Markdown / Prompt)"}
-          </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-[11px] leading-6 text-neutral-200">
-            {templateBody || (zh ? "暂无模板内容" : "No template content")}
-          </pre>
-        </div>
-
-        <div className="space-y-3 rounded-md border border-white/8 bg-white/[0.02] p-3">
-          <MetaItem label={zh ? "调用方式" : "Invoke as"} value={commandName} />
-          <MetaItem label={zh ? "分类" : "Category"} value={skill.category || (zh ? "未分类" : "Uncategorized")} />
-          <MetaItem
-            label={zh ? "技能类型" : "Skill type"}
-            value={isPromptTemplateSkill(skill) ? (zh ? "提示词模板" : "Prompt template") : skill.kind}
-          />
-          <div className="rounded border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2 text-[11px] leading-5 text-cyan-100">
-            {zh
-              ? "这个技能会作为可复用模板供用户或智能体通过 /命令 调用。"
-              : "This skill is exposed as a reusable template that users or agents can invoke via slash command."}
-          </div>
-        </div>
+      {/* Inline meta row — same idea as AgentDetail, no rigid 2-column grid
+          that breaks under the modal's narrow width. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5 text-xs">
+        <MetaInlineSkill label={zh ? "调用方式" : "Invoke as"} value={commandName} />
+        <MetaInlineSkill label={zh ? "分类" : "Category"} value={skill.category || (zh ? "未分类" : "Uncategorized")} />
+        <MetaInlineSkill
+          label={zh ? "类型" : "Type"}
+          value={isPromptTemplateSkill(skill) ? (zh ? "提示词模板" : "Prompt template") : skill.kind}
+        />
       </div>
 
+      <div className="rounded-md border border-white/8 bg-white/[0.02] p-3">
+        <div className="mb-2 text-[11px] uppercase tracking-wider text-neutral-400">
+          {zh ? "模板内容（Markdown / Prompt）" : "Template content (Markdown / Prompt)"}
+        </div>
+        <pre className="prompt-editor-scroll max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-black/30 p-3 text-[11px] leading-6 text-neutral-200">
+          {templateBody || (zh ? "暂无模板内容" : "No template content")}
+        </pre>
+      </div>
+
+      <div className="rounded border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2 text-[11px] leading-5 text-cyan-100">
+        {zh
+          ? "这个技能会作为可复用模板供用户或智能体通过 /命令 调用。"
+          : "This skill is exposed as a reusable template that users or agents can invoke via slash command."}
+      </div>
       <div className="rounded-md border border-cyan-400/15 bg-cyan-500/[0.04] p-3">
         <div className="mb-2 text-[11px] uppercase tracking-wider text-cyan-200">
           {zh ? "试运行（兼容现有执行器）" : "Test run (compatible with current executor)"}
@@ -351,7 +404,7 @@ function SkillDetail({
           </button>
         </div>
         {result ? (
-          <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2 font-mono text-[11px] text-neutral-200">{result}</pre>
+          <pre className="prompt-editor-scroll mt-2 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2 font-mono text-[11px] text-neutral-200">{result}</pre>
         ) : null}
       </div>
     </div>
@@ -467,6 +520,15 @@ function SkillEditor({
           {zh ? "保存技能" : "Save skill"}
         </button>
       </div>
+    </div>
+  );
+}
+
+function MetaInlineSkill({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-[10px] uppercase tracking-wider text-neutral-500">{label}</span>
+      <span className="text-xs font-medium text-neutral-200">{value}</span>
     </div>
   );
 }
