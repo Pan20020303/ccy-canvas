@@ -38,6 +38,21 @@ func TestImageGenerationTimeoutIsSixHundredSeconds(t *testing.T) {
 	}
 }
 
+func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
+	client := newProviderHTTPClient(imageGenerationTimeout())
+	if client.Timeout != 600*time.Second {
+		t.Fatalf("client.Timeout = %s, want %s", client.Timeout, 600*time.Second)
+	}
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client.Transport type = %T, want *http.Transport", client.Transport)
+	}
+	if transport.TLSHandshakeTimeout != providerTLSHandshakeTimeout {
+		t.Fatalf("transport.TLSHandshakeTimeout = %s, want %s", transport.TLSHandshakeTimeout, providerTLSHandshakeTimeout)
+	}
+}
+
 func TestVideoGenerationTimeoutIsNineHundredSeconds(t *testing.T) {
 	if got := videoGenerationTimeout(); got != 900*time.Second {
 		t.Fatalf("videoGenerationTimeout() = %s, want %s", got, 900*time.Second)
@@ -420,6 +435,53 @@ func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
 	}
 	if result.Content != "data:image/png;base64,ZmFrZQ==" {
 		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func TestGenerateImageUsesConfiguredSubmitAndQueryEndpoints(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/custom/image/tasks":
+			_, _ = w.Write([]byte(`{"task_id":"image-task-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/custom/image/tasks/image-task-1":
+			_, _ = w.Write([]byte(`{"status":"completed","data":{"url":"https://example.com/generated.png"}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-image-custom",
+			ServiceType:     "image",
+			Vendor:          "Custom",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+			SubmitEndpoint:  "/custom/image/tasks",
+			QueryEndpoint:   "/custom/image/tasks/{taskId}",
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "gpt-image-2",
+		Prompt:      "render a stylized poster",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/generated.png" {
+		t.Fatalf("result.Content = %q, want https://example.com/generated.png", result.Content)
 	}
 }
 

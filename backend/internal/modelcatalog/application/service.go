@@ -22,6 +22,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,7 @@ import (
 const (
 	imageGenerationTimeoutSeconds = 600
 	videoGenerationTimeoutSeconds = 900
+	providerTLSHandshakeTimeout   = 30 * time.Second
 )
 
 // Repository is the persistence port for the model catalog.
@@ -651,15 +653,15 @@ func resolveProviderURL(baseURL, endpoint string) string {
 
 func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	if isVolcengine(pc) {
-		return s.generateImageVolcengine(ctx, baseURL, apiKey, req)
+		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
 	// Image-to-image (ref + prompt) requires the multipart /images/edits endpoint —
 	// the standard /images/generations is text-only and silently ignores reference
 	// fields, which previously produced visually unrelated outputs.
 	if len(req.ReferenceImages) > 0 {
-		return s.generateImageEdit(ctx, baseURL, apiKey, req)
+		return s.generateImageEdit(ctx, pc, baseURL, apiKey, req)
 	}
-	return s.generateImageTextOnly(ctx, baseURL, apiKey, req)
+	return s.generateImageTextOnly(ctx, pc, baseURL, apiKey, req)
 }
 
 // generateImageVolcengine talks to Volcengine ark's /images/generations.
@@ -668,8 +670,14 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 // `output_format` makes ark close the connection (manifests as EOF in Go).
 // Reference images go in an `image` field (string or []string), not via a
 // separate multipart `/images/edits` endpoint.
-func (s *Service) generateImageVolcengine(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	size := mapAspectRatioToVolcengineSize(req.Model, req.Size, req.Quality)
+	submitPath := "/images/generations"
+	if pc != nil {
+		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
+			submitPath = p
+		}
+	}
 
 	body := map[string]interface{}{
 		"model":                       req.Model,
@@ -700,14 +708,14 @@ func (s *Service) generateImageVolcengine(ctx context.Context, baseURL, apiKey s
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/generations", bytes.NewReader(bodyJSON))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: imageGenerationTimeout()}
+	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -823,6 +831,19 @@ func imageGenerationTimeout() time.Duration {
 	return time.Duration(imageGenerationTimeoutSeconds) * time.Second
 }
 
+func newProviderHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.TLSHandshakeTimeout = providerTLSHandshakeTimeout
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
 func videoGenerationTimeout() time.Duration {
 	return time.Duration(videoGenerationTimeoutSeconds) * time.Second
 }
@@ -854,9 +875,19 @@ func normalizeVolcengineImageQuality(quality string) string {
 	}
 }
 
-func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	size := mapAspectRatioToOpenAIImageSize(req.Size)
 	quality := normalizeOpenAIImageQuality(req.Quality)
+	submitPath := "/images/generations"
+	queryPath := ""
+	if pc != nil {
+		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
+			submitPath = p
+		}
+		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
+			queryPath = p
+		}
+	}
 
 	body := map[string]interface{}{
 		"model":         req.Model,
@@ -869,14 +900,14 @@ func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey str
 	}
 	bodyJSON, _ := json.Marshal(body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/generations", strings.NewReader(string(bodyJSON)))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), strings.NewReader(string(bodyJSON)))
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: imageGenerationTimeout()}
+	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -895,7 +926,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey str
 
 	// Parse response — supports both sync (standard OpenAI) and async (task-based) formats.
 	if taskID := extractImageTaskID(respBody); taskID != "" {
-		return s.pollImageTask(ctx, baseURL, apiKey, taskID)
+		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID)
 	}
 
 	return parseImageGenerationResponse(respBody)
@@ -904,7 +935,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, baseURL, apiKey str
 // generateImageEdit calls /v1/images/edits with multipart/form-data so reference
 // images actually influence the result. Used whenever the request has at least
 // one reference image.
-func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	// Decode and re-encode each reference image as JPEG, downscaled if needed,
 	// using the same pipeline as the text-only flow so we send a sane payload.
 	type refImage struct {
@@ -912,6 +943,16 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 		bytes []byte
 	}
 	refs := make([]refImage, 0, len(req.ReferenceImages))
+	submitPath := "/images/edits"
+	queryPath := ""
+	if pc != nil {
+		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
+			submitPath = p
+		}
+		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
+			queryPath = p
+		}
+	}
 	for i, raw := range req.ReferenceImages {
 		dataURL, err := localPathToDataURL(raw)
 		if err != nil {
@@ -966,14 +1007,14 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 	_ = mw.WriteField("output_format", "png")
 	_ = mw.Close()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/images/edits", &body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), &body)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build edit request", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
 
-	client := &http.Client{Timeout: imageGenerationTimeout()}
+	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -987,6 +1028,10 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 	respBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+
+	if taskID := extractImageTaskID(respBody); taskID != "" {
+		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID)
 	}
 
 	// Reuse the same flexible response parser as the text-only path.
@@ -1061,16 +1106,20 @@ func extractImageTaskID(respBody []byte) string {
 }
 
 // pollImageTask polls an async image generation task until it completes or times out.
-func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, taskID string) (*GenerateResult, error) {
+func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath, taskID string) (*GenerateResult, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// Try multiple URL patterns used by various providers.
 	// apimart.ai uses GET /v1/tasks/{task_id}
-	pollURLs := []string{
-		baseURL + "/tasks/" + taskID,
-		baseURL + "/images/generations/" + taskID,
-		baseURL + "/async/tasks/" + taskID,
+	pollURLs := make([]string, 0, 4)
+	if strings.TrimSpace(queryPath) != "" {
+		pollURLs = append(pollURLs, resolveProviderURL(baseURL, strings.ReplaceAll(queryPath, "{taskId}", taskID)))
 	}
+	pollURLs = append(pollURLs,
+		baseURL+"/tasks/"+taskID,
+		baseURL+"/images/generations/"+taskID,
+		baseURL+"/async/tasks/"+taskID,
+	)
 
 	// Wait 10s before first poll per apimart docs, then every 5s.
 	select {

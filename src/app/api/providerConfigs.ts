@@ -69,6 +69,10 @@ export type VendorTemplate = {
   queryEndpoint?: string;
 };
 
+export function supportsCustomSubmitQueryEndpoints(serviceType: ServiceType): boolean {
+  return serviceType === "image" || serviceType === "video";
+}
+
 export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
   text: [
     // 国际

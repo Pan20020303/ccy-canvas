@@ -22,7 +22,9 @@ import {
   deleteProviderConfig,
   toggleProviderConfigStatus,
   VENDOR_TEMPLATES,
+  supportsCustomSubmitQueryEndpoints,
 } from "../../api/providerConfigs";
+import { normalizeModelList } from "../../model-config";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -137,10 +139,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
     }
     setSaving(true);
     setError("");
-    const modelList = modelListText
-      .split(/[\n,]/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const modelList = normalizeModelList(modelListText);
     const payload: ProviderConfigPayload = {
       service_type: serviceType,
       vendor: vendor || "自定义",
@@ -148,10 +147,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       api_spec: apiSpec,
       base_url: baseUrl.trim(),
       api_key: apiKey || undefined,
-      submit_endpoint: submitEndpoint,
-      query_endpoint: queryEndpoint,
+      submit_endpoint: submitEndpoint.trim(),
+      query_endpoint: queryEndpoint.trim(),
       model_list: modelList,
-      default_model: defaultModel,
+      default_model: defaultModel || modelList[0] || "",
       priority,
       is_default: isDefault,
     };
@@ -172,7 +171,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
 
   if (!open) return null;
 
-  const showVideoFields = serviceType === "video";
+  const showSubmitQueryFields = supportsCustomSubmitQueryEndpoints(serviceType);
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -270,7 +269,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
           </Field>
 
           {/* Video endpoints */}
-          {showVideoFields && (
+          {showSubmitQueryFields && (
             <>
               <Field label="提交端点" hint="自定义视频厂商必填，如 /v1/videos/generations">
                 <Input
@@ -310,7 +309,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
                 className="w-full rounded-lg border border-white/[0.08] bg-[#1a1a1a] px-3 py-2 text-sm text-white"
               >
                 <option value="">请先填写上方模型列表</option>
-                {modelListText.split(/[\n,]/).map((s) => s.trim()).filter(Boolean).map((m) => (
+                {normalizeModelList(modelListText).map((m) => (
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
