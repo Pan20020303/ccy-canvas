@@ -24,7 +24,7 @@ import {
   type CanvasClipboardSelection,
 } from './canvas-clipboard';
 import { computeGroupBounds } from './group-routing';
-import { clearReferencePayloadValue, getReferencePayloadValue } from './reference-media';
+import { clearReferencePayloadValue, getReferencePayloadValue, isTransientBrowserMediaUrl } from './reference-media';
 
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
@@ -197,6 +197,22 @@ type AppState = {
   setGroupMembers: (groupId: string, nodeIds: string[]) => void;
   renameGroup: (groupId: string, name: string) => void;
   moveGroup: (groupId: string, delta: { x: number; y: number }, options?: { captureUndo?: boolean }) => void;
+  // Multi-node layout actions (operate on currently `selected: true` nodes).
+  // No-op when fewer than 2 nodes are selected. Alignment snaps every
+  // selected node to a shared edge; distribute spreads them evenly.
+  alignSelectedNodes: (mode: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => void;
+  distributeSelectedNodes: (axis: 'horizontal' | 'vertical') => void;
+  // Lock toggles `data.locked` and ReactFlow's `draggable` per node so a
+  // locked node can't be dragged/deleted accidentally. Pass an empty list
+  // to toggle all currently selected nodes.
+  toggleNodeLock: (nodeIds?: string[]) => void;
+  // Z-order: array tail renders on top in ReactFlow. We swap positions so
+  // "bring forward" moves toward the end, "send backward" moves toward the
+  // start, and bring-to-front / send-to-back jump the node entirely.
+  bringNodeForward: (nodeId: string) => void;
+  sendNodeBackward: (nodeId: string) => void;
+  bringNodeToFront: (nodeId: string) => void;
+  sendNodeToBack: (nodeId: string) => void;
   savedAssets: SavedAsset[];
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
@@ -452,6 +468,7 @@ const seedInvitations: AdminInvitation[] = [
 ];
 
 const runAborters: Record<string, AbortController> = {};
+const generationTimeoutMs = 900 * 1000;
 
 let storageUserId = '';
 
@@ -467,7 +484,7 @@ function stripHeavyFromNodeData(data: unknown): unknown {
   const out: Record<string, unknown> = { ...(data as Record<string, unknown>) };
   for (const key of ['url', 'thumbnail', 'poster'] as const) {
     const value = out[key];
-    if (typeof value === 'string' && value.startsWith('data:')) {
+    if (typeof value === 'string' && isTransientBrowserMediaUrl(value)) {
       out[key] = '';
     }
   }
@@ -481,10 +498,10 @@ function stripHeavyFromNodes(nodes: Node[]): Node[] {
 function stripHeavyFromHistory(history: HistoryItem[]): HistoryItem[] {
   return history.map((item) => ({
     ...item,
-    thumbnail: item.thumbnail?.startsWith('data:') ? '' : item.thumbnail,
+    thumbnail: isTransientBrowserMediaUrl(item.thumbnail) ? '' : item.thumbnail,
     content: item.mediaType === 'text'
       ? item.content
-      : item.content?.startsWith('data:')
+      : isTransientBrowserMediaUrl(item.content)
         ? ''
         : item.content,
   }));
@@ -510,6 +527,33 @@ function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<stri
     };
   }
   return out;
+}
+
+function sanitizePersistedAppState<T extends {
+  nodes?: Node[];
+  history?: HistoryItem[];
+  projectStateById?: Record<string, ProjectCanvasState>;
+  spaceSnapshotsById?: Record<string, SpaceSnapshot>;
+  savedAssets?: SavedAsset[];
+}>(persistedState: T): T {
+  return {
+    ...persistedState,
+    nodes: Array.isArray(persistedState.nodes) ? stripHeavyFromNodes(persistedState.nodes) : persistedState.nodes,
+    history: Array.isArray(persistedState.history) ? stripHeavyFromHistory(persistedState.history) : persistedState.history,
+    projectStateById: persistedState.projectStateById
+      ? stripHeavyFromProjectStateById(persistedState.projectStateById)
+      : persistedState.projectStateById,
+    spaceSnapshotsById: persistedState.spaceSnapshotsById
+      ? stripHeavyFromSpaceSnapshots(persistedState.spaceSnapshotsById)
+      : persistedState.spaceSnapshotsById,
+    savedAssets: Array.isArray(persistedState.savedAssets)
+      ? persistedState.savedAssets.map((asset) => ({
+          ...asset,
+          thumbnail: isTransientBrowserMediaUrl(asset.thumbnail) ? '' : asset.thumbnail,
+          url: isTransientBrowserMediaUrl(asset.url) ? '' : asset.url,
+        }))
+      : persistedState.savedAssets,
+  };
 }
 
 let storageQuotaWarned = false;
@@ -574,12 +618,29 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
 }
 
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
-  if (result.type !== 'url' || !result.content.startsWith('data:')) {
+  if (result.type !== 'url') {
     return result.content;
   }
 
+  const isPersistableRemoteAsset = result.content.startsWith('data:') || /^https?:\/\//.test(result.content);
+  if (!isPersistableRemoteAsset) {
+    return result.content;
+  }
+
+  // For remote http(s) URLs, route through the backend proxy. A direct
+  // browser fetch often fails on third-party provider hosts due to CORS /
+  // referer / mixed-content rules, which would leave the node with an
+  // unrenderable remote URL. The proxy strips those constraints and gives
+  // us a same-origin blob we can re-upload as a stable /uploads/ asset.
+  const isRemoteHttp = /^https?:\/\//.test(result.content);
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const fetchURL = isRemoteHttp
+    ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(result.content)}`
+    : result.content;
+
   try {
-    const response = await fetch(result.content);
+    const response = await fetch(fetchURL, { credentials: isRemoteHttp ? 'include' : 'same-origin' });
+    if (!response.ok) throw new Error(`fetch failed: ${response.status}`);
     const blob = await response.blob();
     const extension = blob.type.startsWith('image/png')
       ? 'png'
@@ -587,7 +648,9 @@ async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string>
         ? 'webp'
         : blob.type.startsWith('image/jpeg')
           ? 'jpg'
-          : 'bin';
+          : blob.type.startsWith('video/mp4')
+            ? 'mp4'
+            : 'bin';
     const uploaded = await uploadFile(blob, `generated-${Date.now()}.${extension}`);
     return uploaded.url;
   } catch {
@@ -1008,6 +1071,166 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+  alignSelectedNodes: (mode) => set((state) => {
+    const selected = state.nodes.filter((n) => n.selected);
+    if (selected.length < 2) return {};
+
+    // Use measured size when available (post-mount) so we align actual edges,
+    // not just origins. Fall back to 300×200 for nodes that haven't measured.
+    const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
+    const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
+
+    const lefts = selected.map((n) => n.position.x);
+    const rights = selected.map((n) => n.position.x + nodeWidth(n));
+    const tops = selected.map((n) => n.position.y);
+    const bottoms = selected.map((n) => n.position.y + nodeHeight(n));
+    const minLeft = Math.min(...lefts);
+    const maxRight = Math.max(...rights);
+    const minTop = Math.min(...tops);
+    const maxBottom = Math.max(...bottoms);
+    const centerH = (minLeft + maxRight) / 2;
+    const centerV = (minTop + maxBottom) / 2;
+
+    const targetIds = new Set(selected.map((n) => n.id));
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((n) => {
+      if (!targetIds.has(n.id)) return n;
+      const w = nodeWidth(n);
+      const h = nodeHeight(n);
+      const next = { ...n.position };
+      switch (mode) {
+        case 'left':     next.x = minLeft; break;
+        case 'right':    next.x = maxRight - w; break;
+        case 'center-h': next.x = centerH - w / 2; break;
+        case 'top':      next.y = minTop; break;
+        case 'bottom':   next.y = maxBottom - h; break;
+        case 'center-v': next.y = centerV - h / 2; break;
+      }
+      return { ...n, position: next };
+    });
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
+  distributeSelectedNodes: (axis) => set((state) => {
+    const selected = state.nodes.filter((n) => n.selected);
+    if (selected.length < 3) return {};
+    const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
+    const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
+
+    // Sort by the relevant axis, then keep first + last anchored and spread
+    // the rest evenly so the GAPS between adjacent nodes are equal.
+    const sorted = [...selected].sort((a, b) =>
+      axis === 'horizontal' ? a.position.x - b.position.x : a.position.y - b.position.y
+    );
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    let totalSize = 0;
+    for (const n of sorted) totalSize += axis === 'horizontal' ? nodeWidth(n) : nodeHeight(n);
+    const span = axis === 'horizontal'
+      ? (last.position.x + nodeWidth(last)) - first.position.x
+      : (last.position.y + nodeHeight(last)) - first.position.y;
+    const gap = (span - totalSize) / (sorted.length - 1);
+
+    let cursor = axis === 'horizontal' ? first.position.x : first.position.y;
+    const idToNewPos = new Map<string, number>();
+    for (const n of sorted) {
+      idToNewPos.set(n.id, cursor);
+      cursor += (axis === 'horizontal' ? nodeWidth(n) : nodeHeight(n)) + gap;
+    }
+
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((n) => {
+      const newCoord = idToNewPos.get(n.id);
+      if (newCoord == null) return n;
+      return {
+        ...n,
+        position: axis === 'horizontal'
+          ? { ...n.position, x: newCoord }
+          : { ...n.position, y: newCoord },
+      };
+    });
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
+  toggleNodeLock: (nodeIds) => set((state) => {
+    const targetIds = nodeIds && nodeIds.length > 0
+      ? new Set(nodeIds)
+      : new Set(state.nodes.filter((n) => n.selected).map((n) => n.id));
+    if (targetIds.size === 0) return {};
+
+    // Determine the next state: if ALL targets are currently locked, unlock
+    // them all; otherwise lock them all. (Mixed selections converge to
+    // "locked" so a stray drag doesn't ever happen.)
+    const allLocked = state.nodes
+      .filter((n) => targetIds.has(n.id))
+      .every((n) => (n as any).data?.locked === true);
+    const nextLocked = !allLocked;
+
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((n) => {
+      if (!targetIds.has(n.id)) return n;
+      return {
+        ...n,
+        draggable: !nextLocked,
+        // selectable + connectable stay enabled so the user can still see
+        // the lock visually and click it to unlock from the header.
+        data: { ...(n.data ?? {}), locked: nextLocked },
+      };
+    });
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
+  bringNodeForward: (nodeId) => set((state) => {
+    const idx = state.nodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0 || idx === state.nodes.length - 1) return {};
+    const nodes = state.nodes.slice();
+    [nodes[idx], nodes[idx + 1]] = [nodes[idx + 1], nodes[idx]];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+  }),
+  sendNodeBackward: (nodeId) => set((state) => {
+    const idx = state.nodes.findIndex((n) => n.id === nodeId);
+    if (idx <= 0) return {};
+    const nodes = state.nodes.slice();
+    [nodes[idx], nodes[idx - 1]] = [nodes[idx - 1], nodes[idx]];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+  }),
+  bringNodeToFront: (nodeId) => set((state) => {
+    const idx = state.nodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0 || idx === state.nodes.length - 1) return {};
+    const node = state.nodes[idx];
+    const nodes = [...state.nodes.slice(0, idx), ...state.nodes.slice(idx + 1), node];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+  }),
+  sendNodeToBack: (nodeId) => set((state) => {
+    const idx = state.nodes.findIndex((n) => n.id === nodeId);
+    if (idx <= 0) return {};
+    const node = state.nodes[idx];
+    const nodes = [node, ...state.nodes.slice(0, idx), ...state.nodes.slice(idx + 1)];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+  }),
+
   createGroup: (nodeIds) => set((state) => {
     // Merge semantics: if any selected node already belongs to a group, absorb that
     // group's full membership into the new group (and drop the old group) instead of nesting.
@@ -1262,7 +1485,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     const aborter = new AbortController();
     runAborters[nodeId] = aborter;
-    const timeout = setTimeout(() => aborter.abort(), 10 * 60 * 1000);
+    const timeout = setTimeout(() => aborter.abort(), generationTimeoutMs);
 
     try {
       const result = await apiGenerate({
@@ -1357,7 +1580,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 }), {
   name: 'cineflow-store',
   storage: createJSONStorage(() => appStorage),
-  version: 4,
+  version: 5,
   migrate: (persistedState: any, version) => {
     if (!persistedState) {
       return persistedState;
@@ -1375,7 +1598,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         : [{ id: 'p-default', name: 'Untitled', createdAt: Date.now(), updatedAt: Date.now() }];
       const activeProjectId = persistedState.activeProjectId ?? fallbackProjects[0].id;
 
-      return {
+      return sanitizePersistedAppState({
         ...persistedState,
         spaces: persistedState.spaces ?? seedSpaces,
         activeSpaceId: persistedState.activeSpaceId ?? 'space-personal',
@@ -1398,10 +1621,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         history: Array.isArray(persistedState.history) ? persistedState.history : [],
         spaceMembers: persistedState.spaceMembers ?? seedSpaceMembers,
         invitations: persistedState.invitations ?? seedInvitations,
-      };
+      });
     }
 
-    return persistedState;
+    if (version < 5) {
+      return sanitizePersistedAppState(persistedState);
+    }
+
+    return sanitizePersistedAppState(persistedState);
   },
   partialize: (state) => ({
     language: state.language,
@@ -1422,8 +1649,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     savedAssets: state.savedAssets.map((asset) => ({
       ...asset,
       // Drop heavy inline thumbnails/urls; keep only network-hosted ones.
-      thumbnail: asset.thumbnail.startsWith('data:') ? '' : asset.thumbnail,
-      url: asset.url.startsWith('data:') ? '' : asset.url,
+      thumbnail: isTransientBrowserMediaUrl(asset.thumbnail) ? '' : asset.thumbnail,
+      url: isTransientBrowserMediaUrl(asset.url) ? '' : asset.url,
     })),
     shortcuts: state.shortcuts,
     isTaskQueueCollapsed: state.isTaskQueueCollapsed,

@@ -14,6 +14,7 @@ import {
   Pencil,
   Plus,
   Settings as SettingsIcon,
+  StickyNote,
   Upload,
   User as UserIcon,
   Users,
@@ -24,7 +25,7 @@ import { t } from '../i18n';
 import { useStore, ASSET_CATEGORIES, type SavedAssetCategory, type SavedAsset } from '../store';
 
 type PanelKey = 'add' | 'projects' | 'assets' | 'files' | null;
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode';
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode';
 
 const NODE_OPTIONS: Array<{ kind: NodeKind; icon: typeof Pencil; zh: string; en: string }> = [
   { kind: 'textNode', icon: Pencil, zh: '生成文本', en: 'Generate Text' },
@@ -32,6 +33,7 @@ const NODE_OPTIONS: Array<{ kind: NodeKind; icon: typeof Pencil; zh: string; en:
   { kind: 'videoNode', icon: Video, zh: '生成视频', en: 'Generate Video' },
   { kind: 'audioNode', icon: Music, zh: '生成音频', en: 'Generate Audio' },
   { kind: 'panoramaNode', icon: Globe, zh: '生成 360°', en: 'Generate 360°' },
+  { kind: 'stickyNoteNode', icon: StickyNote, zh: '便签', en: 'Sticky note' },
 ];
 
 const ASSET_TABS = [
@@ -150,11 +152,16 @@ export const Toolbar = () => {
   }, [open]);
 
   const handleAddNode = (kind: NodeKind) => {
+    // Sticky notes get a sensible default text + color so they don't render
+    // empty and look broken. Everything else just spawns with empty data.
+    const data = kind === 'stickyNoteNode'
+      ? { text: '', color: 'yellow' as const }
+      : {};
     addNode({
       id: `${kind}-${Date.now()}`,
       type: kind,
       position: { x: Math.random() * 200 + 200, y: Math.random() * 200 + 150 },
-      data: {},
+      data,
     } as never);
     setOpen(null);
   };

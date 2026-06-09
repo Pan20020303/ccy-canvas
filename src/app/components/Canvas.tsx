@@ -38,6 +38,15 @@ import {
   Video,
   Wrench,
   Group as GroupIcon,
+  Lock as LockIcon,
+  AlignStartHorizontal,
+  AlignCenterHorizontal,
+  AlignEndHorizontal,
+  AlignStartVertical,
+  AlignCenterVertical,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignVerticalDistributeCenter,
 } from 'lucide-react';
 
 import clsx from 'clsx';
@@ -251,6 +260,13 @@ const InnerCanvas = () => {
   const ungroupNodes = useStore((state) => state.ungroupNodes);
   const setGroupMembers = useStore((state) => state.setGroupMembers);
   const moveGroup = useStore((state) => state.moveGroup);
+  const alignSelectedNodes = useStore((state) => state.alignSelectedNodes);
+  const distributeSelectedNodes = useStore((state) => state.distributeSelectedNodes);
+  const toggleNodeLock = useStore((state) => state.toggleNodeLock);
+  const bringNodeForward = useStore((state) => state.bringNodeForward);
+  const sendNodeBackward = useStore((state) => state.sendNodeBackward);
+  const bringNodeToFront = useStore((state) => state.bringNodeToFront);
+  const sendNodeToBack = useStore((state) => state.sendNodeToBack);
   const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
@@ -262,6 +278,10 @@ const InnerCanvas = () => {
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportRef = useRef(viewport);
+  // Stable ref to the latest nodes array so window-level keyboard handlers
+  // (which can't depend on `nodes` without re-attaching every change) can
+  // still look up the currently-selected node.
+  const nodesRef = useRef<typeof nodes>([]);
   const groupDragRef = useRef<{
     groupId: string;
     lastClientX: number;
@@ -271,6 +291,10 @@ const InnerCanvas = () => {
 
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
+  // Mirrors `groupDragRef.current != null` as state so React re-renders the
+  // surrounding UI (we use it to hide the multi-select toolbar/bounds while
+  // the group is being moved).
+  const [groupDragging, setGroupDragging] = useState(false);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -282,9 +306,16 @@ const InnerCanvas = () => {
     viewportRef.current = viewport;
   }, [viewport]);
 
-  /** Group geometry uses the FIXED bounds saved at creation time —
-   *  the container does not auto-resize when members move. Members can drift in/out
-   *  of the fixed box, and group membership tracks that explicitly. */
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  /** Group geometry is FIXED — set at creation, never auto-resized as members
+   *  move around. The shell is the spatial container, not a live wrapper.
+   *  - Members can drift inside freely (the box stays put)
+   *  - Drag a member outside the box → it leaves the group on dragstop
+   *  - Drag the group background → moveGroup translates the box + every member
+   *  - Drop an outside node inside the box → it joins on dragstop */
   const liveGroups = useMemo(() => groups.map((group) => ({
     ...group,
     _liveBounds: {
@@ -361,11 +392,28 @@ const InnerCanvas = () => {
         event.preventDefault();
         pasteCopiedNodes();
       }
+      // Ctrl+L → lock / unlock currently selected nodes.
+      if (key === 'l') {
+        event.preventDefault();
+        toggleNodeLock();
+      }
+      // Ctrl+] / Ctrl+[ → bring forward / send backward (front / back when
+      // also holding Shift). Operates on the lone selected node.
+      if (event.key === ']' || event.key === '[') {
+        const selectedNode = nodesRef.current.find((n) => n.selected);
+        if (!selectedNode) return;
+        event.preventDefault();
+        if (event.key === ']') {
+          event.shiftKey ? bringNodeToFront(selectedNode.id) : bringNodeForward(selectedNode.id);
+        } else {
+          event.shiftKey ? sendNodeToBack(selectedNode.id) : sendNodeBackward(selectedNode.id);
+        }
+      }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [copySelectedNodes, pasteCopiedNodes, removeGroup, selectedGroupId, undoCanvas]);
+  }, [bringNodeForward, bringNodeToFront, copySelectedNodes, pasteCopiedNodes, removeGroup, selectedGroupId, sendNodeBackward, sendNodeToBack, toggleNodeLock, undoCanvas]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -393,6 +441,7 @@ const InnerCanvas = () => {
 
     const handlePointerUp = () => {
       groupDragRef.current = null;
+      setGroupDragging(false);
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -402,6 +451,125 @@ const InnerCanvas = () => {
       window.removeEventListener('pointerup', handlePointerUp);
     };
   }, [moveGroup]);
+
+  /** Intercept pointer/mouse downs on the ReactFlow pane: if the click falls
+   *  inside any group's stored rectangle, hijack the gesture so ReactFlow
+   *  can't start a marquee selection or pan, and arm groupDragRef so the
+   *  existing window-level pointermove handler can translate the group.
+   *
+   *  Both `pointerdown` AND `mousedown` are intercepted because ReactFlow's
+   *  selectionOnDrag listens to mousedown (legacy DnD pattern); blocking
+   *  only pointerdown leaves the marquee path open. */
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    // Returns the group whose bounds contain `clientX/Y`, or null. Encapsulates
+    // the viewport-to-flow coordinate transform so both handlers stay aligned.
+    const hitTestGroup = (clientX: number, clientY: number) => {
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const v = viewportRef.current;
+      const flowX = (clientX - wrapperRect.left - v.x) / (v.zoom || 1);
+      const flowY = (clientY - wrapperRect.top - v.y) / (v.zoom || 1);
+      return groups.find((g) => {
+        const gx = g.position?.x ?? 0;
+        const gy = g.position?.y ?? 0;
+        const gw = g.width ?? 0;
+        const gh = g.height ?? 0;
+        if (gw === 0 || gh === 0) return false;
+        return flowX >= gx && flowX <= gx + gw && flowY >= gy && flowY <= gy + gh;
+      }) ?? null;
+    };
+
+    const isPaneTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      // Treat as pane whenever the click landed on an empty ReactFlow surface
+      // — pane, background dots, viewport, or renderer wrappers — and was
+      // NOT on a node or edge (we let those keep their default behavior).
+      if (el.closest('.react-flow__node')) return false;
+      if (el.closest('.react-flow__edge')) return false;
+      const cls = el.classList;
+      if (
+        cls.contains('react-flow__pane')
+        || cls.contains('react-flow__background')
+        || cls.contains('react-flow__viewport')
+        || cls.contains('react-flow__renderer')
+        || cls.contains('react-flow__container')
+      ) return true;
+      // Also accept SVG children of the background dots.
+      return el.closest('.react-flow__background') !== null;
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !isPaneTarget(event.target)) return;
+      const hit = hitTestGroup(event.clientX, event.clientY);
+      if (!hit) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      setSelectedGroupId(hit.id);
+      // Drop any lingering multi-selection from a prior marquee so the
+      // floating toolbar and selection rectangle don't visually leak into
+      // the group-drag gesture. Reads from the store directly so we don't
+      // need to put `nodes` in this effect's dependency array (which would
+      // force a re-subscribe on every node mutation).
+      const currentNodes = useStore.getState().nodes;
+      const deselects = currentNodes
+        .filter((n) => n.selected)
+        .map((n) => ({ id: n.id, type: 'select' as const, selected: false }));
+      if (deselects.length > 0) onNodesChange(deselects);
+      groupDragRef.current = {
+        groupId: hit.id,
+        lastClientX: event.clientX,
+        lastClientY: event.clientY,
+        didCaptureUndo: false,
+      };
+      setGroupDragging(true);
+    };
+
+    const handleMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || !isPaneTarget(event.target)) return;
+      if (!hitTestGroup(event.clientX, event.clientY)) return;
+      // Pointerdown already armed the drag ref; this just stops ReactFlow's
+      // parallel mousedown-based marquee from firing.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+
+    // Attach at WINDOW level in capture phase so we fire before ReactFlow's
+    // own listeners regardless of whether they're on document, window, or
+    // some descendant. Without this, ReactFlow's marquee handler — which
+    // appears to register higher up — wins the race and starts a selection
+    // box before our stopImmediatePropagation can take effect.
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('mousedown', handleMouseDown, true);
+
+    // Block ReactFlow's wheel-to-zoom whenever the cursor is over a
+    // scrollable text surface (node prompts, agent chat, agent composer,
+    // generic prompt-editor scrollers). React's onWheel/stopPropagation
+    // is not enough because ReactFlow registers a NATIVE non-passive wheel
+    // listener on the pane — we have to interrupt it before that fires.
+    const handleWheel = (event: WheelEvent) => {
+      const el = event.target as HTMLElement | null;
+      if (!el) return;
+      // Anything inside a textarea, input, contentEditable, or our shared
+      // `.prompt-editor-scroll` class counts as "user-scrollable text".
+      const inText = el.closest('textarea, input, [contenteditable="true"], .prompt-editor-scroll, .rich-text-editor');
+      if (!inText) return;
+      // Stop propagation so ReactFlow never sees the wheel — the browser
+      // still applies its own scroll to the textarea/div.
+      event.stopPropagation();
+    };
+    window.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('mousedown', handleMouseDown, true);
+      window.removeEventListener('wheel', handleWheel, true);
+    };
+  }, [groups, onNodesChange]);
 
   const cursorMode = nodeDragging ? 'canvas-mode-grabbing' : spaceHeld ? 'canvas-mode-grab' : '';
 
@@ -770,6 +938,72 @@ const InnerCanvas = () => {
     [edges],
   );
 
+  /** Export a group's bounding box as a PNG. Uses html-to-image to snapshot
+   *  the ReactFlow viewport (which contains all nodes + edges), then crops
+   *  the result down to the group's flow-coordinate bounds. */
+  const exportGroupAsImage = useCallback(async (groupId: string) => {
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const viewportEl = wrapperRef.current?.querySelector('.react-flow__viewport') as HTMLElement | null;
+    if (!viewportEl) return;
+
+    try {
+      const { toPng } = await import('html-to-image');
+      const v = viewportRef.current;
+      const gx = group.position?.x ?? 0;
+      const gy = group.position?.y ?? 0;
+      const gw = group.width ?? 0;
+      const gh = group.height ?? 0;
+      if (gw === 0 || gh === 0) return;
+
+      // Render the full viewport at 2x for crisp output, then crop to the
+      // group rectangle in screen coords post-render via a canvas.
+      const dataUrl = await toPng(viewportEl, {
+        pixelRatio: 2,
+        cacheBust: true,
+        backgroundColor: '#0a0a0a',
+        // Skip lock badges / ReactFlow controls so the export is clean.
+        filter: (node) => {
+          const cls = (node as HTMLElement).className;
+          if (typeof cls !== 'string') return true;
+          return !cls.includes('react-flow__controls') && !cls.includes('react-flow__minimap');
+        },
+      });
+
+      // Crop on a temporary canvas. viewportEl uses CSS transform for
+      // pan/zoom; the captured PNG already bakes the zoom in, but coordinate
+      // calculation has to account for it.
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
+      const zoom = v.zoom || 1;
+      const sx = gx * zoom * 2; // 2x pixelRatio
+      const sy = gy * zoom * 2;
+      const sw = gw * zoom * 2;
+      const sh = gh * zoom * 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${group.name || 'group'}-${Date.now()}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5_000);
+    } catch (err) {
+      console.error('export group failed', err);
+      alert((err as Error)?.message || 'Export failed');
+    }
+  }, [groups]);
+
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
@@ -829,6 +1063,7 @@ const InnerCanvas = () => {
                   lastClientY: event.clientY,
                   didCaptureUndo: false,
                 };
+                setGroupDragging(true);
               }}
             >
               <GroupTitle
@@ -837,6 +1072,20 @@ const InnerCanvas = () => {
                 count={group.nodeIds.length}
                 zoom={viewport.zoom}
                 onSelect={() => setSelectedGroupId(group.id)}
+                onStartDrag={(event) => {
+                  // Title bar doubles as a drag handle so the user can move
+                  // the group from a fixed area even when nodes fill the
+                  // interior. Wires through to the same groupDragRef the
+                  // shell uses.
+                  setSelectedGroupId(group.id);
+                  groupDragRef.current = {
+                    groupId: group.id,
+                    lastClientX: event.clientX,
+                    lastClientY: event.clientY,
+                    didCaptureUndo: false,
+                  };
+                  setGroupDragging(true);
+                }}
               />
             </div>
           );
@@ -858,11 +1107,18 @@ const InnerCanvas = () => {
         onNodeDragStop={(_event, _node, draggedNodes) => {
           setNodeDragging(false);
           setGuides([]);
-          // Re-evaluate group membership against each group's FIXED bounds:
-          // - dropped inside → ensure it's a member
-          // - dropped outside → remove from member list
+          // Membership is re-evaluated against each group's FIXED stored
+          // rectangle (the gray shell the user can see):
+          //   - dragged member ends up INSIDE  → stays in
+          //   - dragged member ends up OUTSIDE → leaves on this drop
+          //   - dragged non-member ends up INSIDE → joins this drop
+          // The group rectangle itself does NOT resize. To make the box
+          // bigger or smaller, the user reframes it (move group / recreate).
           const movedIds = new Set(draggedNodes.map((n) => n.id));
-          const isInsideGroup = (node: { position: { x: number; y: number }; width?: number; height?: number; measured?: { width?: number; height?: number } }, group: { position?: { x: number; y: number }; width?: number; height?: number }) => {
+          const isInsideGroup = (
+            node: { position: { x: number; y: number }; width?: number; height?: number; measured?: { width?: number; height?: number } },
+            group: { position?: { x: number; y: number }; width?: number; height?: number },
+          ) => {
             const gx = group.position?.x ?? 0;
             const gy = group.position?.y ?? 0;
             const gw = group.width ?? 0;
@@ -878,14 +1134,14 @@ const InnerCanvas = () => {
             const memberSet = new Set(group.nodeIds);
             let changed = false;
             const nextMembers = new Set(memberSet);
-            // Outflow: existing members that were moved and are now outside.
+            // OUTFLOW
             for (const memberId of memberSet) {
               if (!movedIds.has(memberId)) continue;
               const node = nodes.find((n) => n.id === memberId);
               if (!node) continue;
               if (!isInsideGroup(node, group)) { nextMembers.delete(memberId); changed = true; }
             }
-            // Inflow: non-member nodes that were moved and landed inside.
+            // INFLOW
             for (const moved of draggedNodes) {
               if (memberSet.has(moved.id)) continue;
               const node = nodes.find((n) => n.id === moved.id) ?? moved;
@@ -932,6 +1188,31 @@ const InnerCanvas = () => {
         {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
 
+      {/* Lock indicators — one small Lock icon overlaid on every node whose
+          `data.locked === true`. Lives at Canvas level so we don't have to
+          thread a `locked` prop through every node type. */}
+      <div className="pointer-events-none absolute inset-0 z-30">
+        {nodes.filter((n) => (n.data as { locked?: boolean } | undefined)?.locked).map((n) => {
+          const w = (n as { measured?: { width?: number } }).measured?.width ?? n.width ?? 300;
+          const left = viewport.x + (n.position.x + w - 22) * viewport.zoom;
+          const top  = viewport.y + (n.position.y - 6) * viewport.zoom;
+          return (
+            <div
+              key={`lock-${n.id}`}
+              className="pointer-events-auto absolute flex h-5 w-5 items-center justify-center rounded-full bg-amber-400/90 text-amber-950 shadow-md ring-1 ring-amber-300"
+              style={{ left, top, transform: 'translate(0, 0)' }}
+              title="已锁定 · 点击解锁（Ctrl+L）"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleNodeLock([n.id]);
+              }}
+            >
+              <LockIcon className="h-3 w-3" />
+            </div>
+          );
+        })}
+      </div>
+
       {/* Group toolbar — appears above the selected group. */}
       {selectedGroupId ? (() => {
         const sel = liveGroups.find((g) => g.id === selectedGroupId);
@@ -968,9 +1249,13 @@ const InnerCanvas = () => {
               {language === 'zh' ? '解组' : 'Ungroup'}
             </button>
             <div className="h-4 w-px bg-white/10" />
-            <button disabled className={itemClass}>
+            <button
+              onClick={() => exportGroupAsImage(selectedGroupId)}
+              className={itemClass}
+              title={language === 'zh' ? '导出该组范围为 PNG' : 'Export group bounds as PNG'}
+            >
               <Download className="h-3.5 w-3.5 text-neutral-400" />
-              {language === 'zh' ? '批量下载' : 'Batch Download'}
+              {language === 'zh' ? '导出 PNG' : 'Export PNG'}
             </button>
             <div className="h-4 w-px bg-white/10" />
             <button
@@ -984,7 +1269,7 @@ const InnerCanvas = () => {
         );
       })() : null}
 
-      {selectedIds.length >= 2 && !contextMenu && selectionBounds ? (() => {
+      {selectedIds.length >= 2 && !contextMenu && !groupDragging && selectionBounds ? (() => {
         // If the entire selection corresponds exactly to one existing group, show "Ungroup" instead.
         const selectionSet = new Set(selectedIds);
         const matchingGroup = groups.find((group) => (
@@ -1041,6 +1326,16 @@ const InnerCanvas = () => {
                 {dict.group}
               </button>
             )}
+
+            {/* Alignment & distribution shortcuts. Distribute only useful for
+                3+ selected nodes; alignment works at 2+. */}
+            <div className="h-4 w-px bg-white/10" />
+            <AlignmentToolbarButtons
+              count={selectedIds.length}
+              onAlign={(mode) => alignSelectedNodes(mode)}
+              onDistribute={(axis) => distributeSelectedNodes(axis)}
+              zh={language === 'zh'}
+            />
           </div>
           </>
         );
@@ -1125,6 +1420,35 @@ const InnerCanvas = () => {
                     }
                     setContextMenu(null);
                   }}
+                />
+                <div className="my-1 h-px bg-white/8" />
+                {/* Lock / unlock toggle — Ctrl+L global shortcut also works. */}
+                <NodeMenuItem
+                  labelZh={(contextMenu.nodeId && (nodes.find((n) => n.id === contextMenu.nodeId)?.data as { locked?: boolean } | undefined)?.locked) ? '解锁' : '锁定'}
+                  labelEn={(contextMenu.nodeId && (nodes.find((n) => n.id === contextMenu.nodeId)?.data as { locked?: boolean } | undefined)?.locked) ? 'Unlock' : 'Lock'}
+                  shortcut="⌘L"
+                  onClick={() => {
+                    if (contextMenu.nodeId) toggleNodeLock([contextMenu.nodeId]);
+                    setContextMenu(null);
+                  }}
+                />
+                <div className="my-1 h-px bg-white/8" />
+                {/* Z-order — array tail renders on top in ReactFlow. */}
+                <NodeMenuItem
+                  labelZh="置于顶层" labelEn="Bring to Front" shortcut="]"
+                  onClick={() => { if (contextMenu.nodeId) bringNodeToFront(contextMenu.nodeId); setContextMenu(null); }}
+                />
+                <NodeMenuItem
+                  labelZh="上移一层" labelEn="Bring Forward"
+                  onClick={() => { if (contextMenu.nodeId) bringNodeForward(contextMenu.nodeId); setContextMenu(null); }}
+                />
+                <NodeMenuItem
+                  labelZh="下移一层" labelEn="Send Backward"
+                  onClick={() => { if (contextMenu.nodeId) sendNodeBackward(contextMenu.nodeId); setContextMenu(null); }}
+                />
+                <NodeMenuItem
+                  labelZh="置于底层" labelEn="Send to Back" shortcut="["
+                  onClick={() => { if (contextMenu.nodeId) sendNodeToBack(contextMenu.nodeId); setContextMenu(null); }}
                 />
                 <div className="my-1 h-px bg-white/8" />
                 <NodeMenuItem labelZh="复制到剪贴板" labelEn="Copy to Clipboard" disabled />
@@ -1248,7 +1572,21 @@ const InnerCanvas = () => {
   );
 };
 
-function GroupTitle({ groupId, name, count, zoom, onSelect }: { groupId: string; name: string; count: number; zoom: number; onSelect: () => void }) {
+function GroupTitle({
+  groupId,
+  name,
+  count,
+  zoom,
+  onSelect,
+  onStartDrag,
+}: {
+  groupId: string;
+  name: string;
+  count: number;
+  zoom: number;
+  onSelect: () => void;
+  onStartDrag: (event: React.PointerEvent) => void;
+}) {
   const language = useStore((state) => state.language);
   const renameGroup = useStore((state) => state.renameGroup);
   const [editing, setEditing] = useState(false);
@@ -1269,6 +1607,7 @@ function GroupTitle({ groupId, name, count, zoom, onSelect }: { groupId: string;
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === 'Enter') commit();
@@ -1281,16 +1620,27 @@ function GroupTitle({ groupId, name, count, zoom, onSelect }: { groupId: string;
   }
 
   return (
-    <button
-      type="button"
-      onMouseDown={(event) => { event.stopPropagation(); onSelect(); }}
+    <div
+      role="button"
+      // Title bar is the canonical drag handle for the group. Mirrors the
+      // shell's pointerdown wiring exactly so it behaves identically.
+      onPointerDown={(event) => {
+        // Only stopPropagation — NO preventDefault, otherwise the browser
+        // suppresses the synthetic dblclick that powers rename. The window
+        // pointermove handler only calls moveGroup when there's actual
+        // pixel movement, so a quick click without movement still registers
+        // cleanly as a click → dblclick path.
+        event.stopPropagation();
+        onStartDrag(event);
+      }}
       onDoubleClick={(event) => { event.stopPropagation(); setEditing(true); }}
-      className="pointer-events-auto absolute left-0 top-0 -translate-y-[110%] whitespace-nowrap rounded text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+      className="pointer-events-auto absolute left-0 top-0 z-20 -translate-y-[110%] flex cursor-grab select-none items-center gap-1 whitespace-nowrap rounded text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200 active:cursor-grabbing"
       style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
-      title={language === 'zh' ? '双击重命名' : 'Double-click to rename'}
+      title={language === 'zh' ? '拖动移动整组 · 双击重命名' : 'Drag to move group · double-click to rename'}
     >
-      {name} · {count}{language === 'zh' ? ' 个节点' : ' nodes'}
-    </button>
+      <span aria-hidden className="opacity-50">⋮⋮</span>
+      <span>{name} · {count}{language === 'zh' ? ' 个节点' : ' nodes'}</span>
+    </div>
   );
 }
 
@@ -1405,6 +1755,52 @@ function ContextMenuButton({
       </div>
       {shortcut ? <div className="text-xs text-neutral-500">{shortcut}</div> : null}
     </button>
+  );
+}
+
+/** Inline alignment cluster shown inside the multi-select toolbar. The
+ *  6 alignment buttons map to a shared edge / center; the 2 distribute
+ *  buttons (only enabled with 3+ nodes) spread the selection evenly. */
+function AlignmentToolbarButtons({
+  count,
+  onAlign,
+  onDistribute,
+  zh,
+}: {
+  count: number;
+  onAlign: (mode: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => void;
+  onDistribute: (axis: 'horizontal' | 'vertical') => void;
+  zh: boolean;
+}) {
+  const distributeEnabled = count >= 3;
+  const btn = 'flex h-7 w-7 items-center justify-center rounded text-neutral-300 transition hover:bg-white/8 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-neutral-300';
+  return (
+    <div className="flex items-center gap-0.5">
+      <button onClick={() => onAlign('left')}     className={btn} title={zh ? '左对齐' : 'Align left'}>             <AlignStartVertical className="h-3.5 w-3.5" /></button>
+      <button onClick={() => onAlign('center-h')} className={btn} title={zh ? '水平居中' : 'Align center (H)'}>    <AlignCenterVertical className="h-3.5 w-3.5" /></button>
+      <button onClick={() => onAlign('right')}    className={btn} title={zh ? '右对齐' : 'Align right'}>            <AlignEndVertical className="h-3.5 w-3.5" /></button>
+      <div className="mx-1 h-4 w-px bg-white/10" />
+      <button onClick={() => onAlign('top')}      className={btn} title={zh ? '顶端对齐' : 'Align top'}>           <AlignStartHorizontal className="h-3.5 w-3.5" /></button>
+      <button onClick={() => onAlign('center-v')} className={btn} title={zh ? '垂直居中' : 'Align middle (V)'}>    <AlignCenterHorizontal className="h-3.5 w-3.5" /></button>
+      <button onClick={() => onAlign('bottom')}   className={btn} title={zh ? '底端对齐' : 'Align bottom'}>         <AlignEndHorizontal className="h-3.5 w-3.5" /></button>
+      <div className="mx-1 h-4 w-px bg-white/10" />
+      <button
+        onClick={() => onDistribute('horizontal')}
+        disabled={!distributeEnabled}
+        className={btn}
+        title={zh ? '水平等距分布（需选 3+）' : 'Distribute horizontally (3+ needed)'}
+      >
+        <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => onDistribute('vertical')}
+        disabled={!distributeEnabled}
+        className={btn}
+        title={zh ? '垂直等距分布（需选 3+）' : 'Distribute vertically (3+ needed)'}
+      >
+        <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }
 

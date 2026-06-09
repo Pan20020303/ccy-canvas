@@ -489,6 +489,58 @@ describe("workspace control bar state", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/app/upload", expect.objectContaining({ method: "POST", credentials: "include" }));
   });
 
+  it("downloads remote generated image urls into uploads before persisting", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (input === "/api/app/generate") {
+        return {
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({
+            data: { type: "url", content: "https://example.com/generated-remote.png" },
+            request_id: "req-generate-remote-url",
+          }),
+        };
+      }
+      // Remote URLs are now fetched through the backend proxy to avoid
+      // CORS / referer / mixed-content failures on third-party hosts.
+      if (
+        typeof input === "string"
+        && input.startsWith("/api/app/proxy-media?url=")
+        && input.includes(encodeURIComponent("https://example.com/generated-remote.png"))
+      ) {
+        return {
+          ok: true,
+          blob: async () => new Blob(["remote"], { type: "image/png" }),
+        };
+      }
+      if (input === "/api/app/upload") {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({
+            data: { url: "/uploads/2026-06/generated-remote.png", filename: "generated-remote.png", content_type: "image/png" },
+            request_id: "req-upload-remote-generated",
+          }),
+        };
+      }
+      throw new Error(`Unexpected fetch input: ${String(input)}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useStore.getState().runNode("2", { prompt: "persist remote image", model: "gpt-image-2" });
+
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/uploads/2026-06/generated-remote.png");
+    expect(useStore.getState().history[0]?.thumbnail).toBe("/uploads/2026-06/generated-remote.png");
+    // Should hit the backend proxy with the encoded remote URL, NOT the
+    // remote URL directly.
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`/api/app/proxy-media?url=${encodeURIComponent("https://example.com/generated-remote.png")}`),
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/app/upload", expect.objectContaining({ method: "POST", credentials: "include" }));
+  });
+
   it("rehydrates generated image history after a reload", async () => {
     const sharedStorage = createStorageMock();
     const firstModule = await loadStore(sharedStorage);
@@ -531,6 +583,32 @@ describe("workspace control bar state", () => {
     expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/uploads/2026-06/rehydrated.png");
     expect(rehydratedState.history[0]?.mediaType).toBe("image");
     expect(rehydratedState.history[0]?.thumbnail).toBe("/uploads/2026-06/rehydrated.png");
+  });
+
+  it("drops transient blob urls from persisted nodes and history on reload", async () => {
+    const sharedStorage = createStorageMock();
+    const firstModule = await loadStore(sharedStorage);
+
+    firstModule.useStore.getState().addNode({
+      id: "blob-ref-image",
+      type: "referenceImageNode",
+      position: { x: 24, y: 24 },
+      data: { url: "blob:http://localhost:5173/temp-image" },
+    } as never);
+    firstModule.useStore.getState().addHistory({
+      id: "blob-history-image",
+      title: "Transient image",
+      type: "image",
+      timestamp: 1,
+      thumbnail: "blob:http://localhost:5173/temp-history",
+    });
+
+    const secondModule = await loadStore(sharedStorage);
+    const rehydratedState = secondModule.useStore.getState();
+    const blobNode = rehydratedState.nodes.find((node) => node.id === "blob-ref-image");
+
+    expect((blobNode?.data as Record<string, unknown>)?.url).toBe("");
+    expect(rehydratedState.history.find((item) => item.id === "blob-history-image")?.thumbnail).toBe("");
   });
 
   it("strips inline image mentions when structured reference images are present", async () => {

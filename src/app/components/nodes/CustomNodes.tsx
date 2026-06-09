@@ -1,9 +1,11 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import gsap from 'gsap';
 import { Handle, Position } from '@xyflow/react';
 import {
   Type,
   Image as ImageIcon,
+  ImageOff,
   Video,
   Music,
   Globe,
@@ -428,14 +430,41 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
   return parts.map((part, i) => {
     const mention = mentions.find((m) => m.tag === part);
     if (mention) {
+      // CRITICAL: the chip span occupies the EXACT same character width as
+      // the underlying tag in the textarea. Earlier we put an inline
+      // thumbnail + padding inside the chip — the extra ~20px shifted
+      // every subsequent character, making the visible caret drift away
+      // from the true text position by the end of a line.
+      //
+      // Trick to keep the thumbnail: position it ABSOLUTELY above the
+      // chip, only on hover. It floats over neighboring chars while
+      // hovered (which is brief and intentional), and disappears
+      // immediately — text layout is never disturbed.
       return (
-        <span key={i} className="inline-flex items-center gap-1 rounded bg-white/[0.08] px-1 py-0.5 align-middle text-[12px] text-cyan-300">
+        <span
+          key={i}
+          className="group relative rounded-sm text-cyan-300"
+          style={{
+            backgroundColor: 'rgba(34, 211, 238, 0.10)',
+            boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.15)',
+          }}
+          title={mention.tag}
+        >
+          {part}
           {mention.thumb ? (
-            <img src={mention.thumb} alt="" className="inline-block h-4 w-4 rounded-sm object-cover" />
-          ) : (
-            <span className="inline-block h-4 w-4 rounded-sm bg-white/10 text-center text-[10px] leading-4">🖼</span>
-          )}
-          <span>{part.slice(2, -1)}</span>
+            <span
+              aria-hidden
+              className="pointer-events-none invisible absolute left-1/2 top-0 z-50 -translate-x-1/2 -translate-y-[110%] rounded-lg border border-white/15 bg-[#1a1d22]/95 p-1 shadow-2xl backdrop-blur-md group-hover:visible"
+            >
+              <img
+                src={mention.thumb}
+                alt=""
+                className="block h-20 w-20 rounded-md object-cover"
+                draggable={false}
+              />
+              <span className="mt-1 block text-center text-[10px] text-neutral-400">{part}</span>
+            </span>
+          ) : null}
         </span>
       );
     }
@@ -669,12 +698,17 @@ const PromptPanel = ({
     return vendorOptions[0] ?? '';
   }, [enabledConfigs, params.model, params.vendor, vendorOptions]);
 
+  // Show models from EVERY enabled provider for this service type, not
+  // just the active vendor. The vendor selector has been removed in favor
+  // of model-only selection; vendor is resolved implicitly from the picked
+  // model. Duplicates across vendors are deduped — the first vendor that
+  // declares the model owns the default route, but the backend can fall
+  // back to other vendors on failure.
   const availableModels = useMemo(
     () => enabledConfigs
-      .filter((config) => config.vendor === activeVendor)
       .flatMap((config) => config.modelList)
       .filter((value, index, values) => values.indexOf(value) === index),
-    [activeVendor, enabledConfigs],
+    [enabledConfigs],
   );
 
   const modelIsDisabled = Boolean(params.model) && !enabledConfigs.some((config) => config.modelList.includes(params.model));
@@ -811,28 +845,17 @@ const PromptPanel = ({
     return result;
   };
 
-  const handleVendorChange = (nextVendor: string) => {
-    const nextModels = enabledConfigs
-      .filter((config) => config.vendor === nextVendor)
-      .flatMap((config) => config.modelList)
-      .filter((value, index, values) => values.indexOf(value) === index);
-    const nextModel = nextModels[0];
-    const nextTemplate = getModelTemplate(nextModel);
-    updateNodeGenerationParams(nodeId, {
-      vendor: nextVendor,
-      model: nextModel,
-      mode: nextTemplate?.defaults?.mode ?? nextTemplate?.modeOptions?.[0],
-      resolution: nextTemplate?.defaults?.resolution ?? nextTemplate?.resolutionOptions?.[0],
-      quality: nextTemplate?.defaults?.quality ?? nextTemplate?.qualityOptions?.[0],
-      aspectRatio: nextTemplate?.supportsAutoAspect ? 'auto' : nextTemplate?.defaults?.aspectRatio ?? nextTemplate?.aspectRatioOptions?.[0],
-      durationSeconds: nextTemplate?.durationRange?.defaultValue,
-    });
-  };
-
   const handleModelChange = (nextModel: string) => {
     const nextTemplate = getModelTemplate(nextModel);
+    // Resolve vendor from whichever provider owns the picked model. The
+    // template's hardcoded vendor wins (e.g. "doubao-*" → "doubao") so
+    // backend routing stays deterministic, but if a user-imported model
+    // doesn't match any template we fall back to the first provider that
+    // declares it.
+    const owningConfig = enabledConfigs.find((config) => config.modelList.includes(nextModel));
+    const resolvedVendor = nextTemplate?.vendor ?? owningConfig?.vendor ?? activeVendor;
     updateNodeGenerationParams(nodeId, {
-      vendor: nextTemplate?.vendor ?? activeVendor,
+      vendor: resolvedVendor,
       model: nextModel,
       mode: nextTemplate?.defaults?.mode ?? nextTemplate?.modeOptions?.[0],
       resolution: nextTemplate?.defaults?.resolution ?? nextTemplate?.resolutionOptions?.[0],
@@ -851,6 +874,58 @@ const PromptPanel = ({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
+      return;
+    }
+
+    // Treat each @mention as an atomic unit for editing — backspace /
+    // delete / arrow keys jump across the whole tag instead of one
+    // character at a time. The raw text stays in sync (we replace whole
+    // tags), so the overlay never gets a half-broken token.
+    const textarea = event.currentTarget;
+    const { selectionStart, selectionEnd, value } = textarea;
+    if (selectionStart !== selectionEnd) return; // skip when there's a range selection
+
+    // Find a mention tag that ends at the caret (for Backspace) or starts
+    // at the caret (for Delete / right-arrow / left-arrow over).
+    const findTagEndingAt = (pos: number) => mentions.find((m) => {
+      const idx = value.lastIndexOf(m.tag, pos - 1);
+      return idx >= 0 && idx + m.tag.length === pos;
+    });
+    const findTagStartingAt = (pos: number) => mentions.find((m) => value.startsWith(m.tag, pos));
+
+    if (event.key === 'Backspace') {
+      const tag = findTagEndingAt(selectionStart);
+      if (tag) {
+        event.preventDefault();
+        const next = value.slice(0, selectionStart - tag.tag.length) + value.slice(selectionStart);
+        onChange(next);
+        // Reset caret after the next render.
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(selectionStart - tag.tag.length, selectionStart - tag.tag.length);
+        });
+      }
+    } else if (event.key === 'Delete') {
+      const tag = findTagStartingAt(selectionStart);
+      if (tag) {
+        event.preventDefault();
+        const next = value.slice(0, selectionStart) + value.slice(selectionStart + tag.tag.length);
+        onChange(next);
+        requestAnimationFrame(() => {
+          textarea.setSelectionRange(selectionStart, selectionStart);
+        });
+      }
+    } else if (event.key === 'ArrowLeft' && !event.shiftKey) {
+      const tag = findTagEndingAt(selectionStart);
+      if (tag) {
+        event.preventDefault();
+        textarea.setSelectionRange(selectionStart - tag.tag.length, selectionStart - tag.tag.length);
+      }
+    } else if (event.key === 'ArrowRight' && !event.shiftKey) {
+      const tag = findTagStartingAt(selectionStart);
+      if (tag) {
+        event.preventDefault();
+        textarea.setSelectionRange(selectionStart + tag.tag.length, selectionStart + tag.tag.length);
+      }
     }
   };
 
@@ -860,19 +935,49 @@ const PromptPanel = ({
     overlay.scrollLeft = textarea.scrollLeft;
   };
 
+  // Preview strip above the textarea: each upstream node gets a thumbnail
+  // + its `@tag` label, so the user can map "this image" → "this mention"
+  // without needing the chip in the textarea to embed the picture (which
+  // would break caret alignment).
   const previewStrip = upstreamNodes.length ? (
-    <div className="mb-3 flex items-center gap-2 overflow-x-auto">
-      {upstreamNodes.map((up) => (
-        <div key={up.id} className="shrink-0">
-          {up.thumb ? (
-            <img src={up.thumb} alt="" className="h-10 w-10 rounded-lg object-cover" />
-          ) : (
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400">
-              {up.icon}
-            </div>
-          )}
-        </div>
-      ))}
+    <div className="prompt-editor-scroll mb-3 flex items-center gap-2 overflow-x-auto pb-1">
+      {upstreamNodes.map((up) => {
+        const tag = `@${up.id.slice(-4)}`;
+        const matched = mentions.find((m) => m.id === up.id);
+        const isUsed = Boolean(matched);
+        return (
+          <div
+            key={up.id}
+            className={clsx(
+              "shrink-0 flex flex-col items-center gap-1 transition",
+              isUsed ? "opacity-100" : "opacity-60 hover:opacity-100",
+            )}
+            title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
+          >
+            {up.thumb ? (
+              <img
+                src={up.thumb}
+                alt=""
+                className={clsx(
+                  "h-10 w-10 rounded-lg object-cover transition",
+                  isUsed ? "ring-2 ring-cyan-400/50" : "",
+                )}
+                draggable={false}
+              />
+            ) : (
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400">
+                {up.icon}
+              </div>
+            )}
+            <span className={clsx(
+              "text-[10px] font-mono tabular-nums",
+              isUsed ? "text-cyan-300" : "text-neutral-500",
+            )}>
+              {matched?.tag ?? tag}
+            </span>
+          </div>
+        );
+      })}
     </div>
   ) : null;
 
@@ -907,6 +1012,11 @@ const PromptPanel = ({
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={onKeyDown}
           onScroll={(event) => syncOverlayScroll(event.currentTarget, overlayRef.current)}
+          // Keep wheel inside the textarea — without this, ReactFlow grabs
+          // the wheel event and zooms the canvas instead of scrolling the
+          // prompt. stopPropagation is enough; the browser still applies
+          // its default scroll to the textarea.
+          onWheel={(event) => event.stopPropagation()}
           className={clsx(
             'prompt-editor-scroll relative w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
             expandedMode ? 'flex-1' : 'h-[160px]',
@@ -943,9 +1053,6 @@ const PromptPanel = ({
   const bottomControls = (
     <div className="mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
-        {vendorOptions.length ? (
-          <Dropdown value={activeVendor} options={vendorOptions} onChange={handleVendorChange} />
-        ) : null}
         <Dropdown
           label={<ModelBrandIcon model={modelIsDisabled && params.model ? params.model : activeModel} size={14} />}
           value={modelIsDisabled && params.model ? `${params.model}（已停用）` : activeModel}
@@ -1064,6 +1171,34 @@ const BaseNode = ({
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
+
+  // Pulse the shell when a long-running generation completes — bridges the
+  // gap between "loader spinning" and "the output is just sitting there",
+  // so the user notices the new content. Fires only on the true→false edge.
+  const shellRef = useRef<HTMLDivElement>(null);
+  const prevLoading = useRef(loading);
+  useEffect(() => {
+    if (prevLoading.current && !loading && shellRef.current) {
+      const tl = gsap.timeline();
+      tl.fromTo(
+        shellRef.current,
+        { boxShadow: '0 0 0 0 rgba(34,211,238,0.0)', scale: 1 },
+        {
+          boxShadow: '0 0 24px 4px rgba(34,211,238,0.35)',
+          scale: 1.012,
+          duration: 0.22,
+          ease: 'power2.out',
+        },
+      ).to(shellRef.current, {
+        boxShadow: '0 0 0 0 rgba(34,211,238,0.0)',
+        scale: 1,
+        duration: 0.55,
+        ease: 'power2.inOut',
+      });
+    }
+    prevLoading.current = loading;
+  }, [loading]);
+
   return (
     <div className="group w-[300px]">
       {selected && !multiSelectActive && topFloatingPanel ? (
@@ -1081,6 +1216,7 @@ const BaseNode = ({
 
       <div className="relative">
         <div
+          ref={shellRef}
           className={clsx(
             'relative overflow-hidden rounded-[22px] border bg-[linear-gradient(180deg,rgba(29,34,42,0.82),rgba(15,18,24,0.74))] text-neutral-100 transition-all duration-200 backdrop-blur-2xl supports-[backdrop-filter]:bg-[linear-gradient(180deg,rgba(29,34,42,0.62),rgba(15,18,24,0.56))] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-16 before:bg-gradient-to-b after:pointer-events-none after:absolute after:inset-[1px] after:rounded-[20px] after:border after:border-white/[0.03]',
             toneStyles.shell,
@@ -1518,6 +1654,7 @@ const VideoHoverControls = ({
 export const VideoNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const nodes = useStore((state) => state.nodes);
   const [preview, setPreview] = useState(false);
@@ -1616,7 +1753,32 @@ export const VideoNode = ({ id, data, selected }: any) => {
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
-            <video ref={videoRef} src={data.url} draggable={false} className="absolute inset-0 h-full w-full object-cover select-none" muted loop preload="auto" />
+            <video
+              ref={videoRef}
+              src={data.url}
+              draggable={false}
+              className="absolute inset-0 h-full w-full object-cover select-none"
+              autoPlay
+              muted
+              loop
+              playsInline
+              // `auto` (not `metadata`) buffers enough to paint the first
+              // frame even when autoplay is blocked. Without this the node
+              // renders black until you double-click into the preview modal.
+              preload="auto"
+              onLoadedMetadata={(event) => {
+                const video = event.currentTarget;
+                const { videoWidth, videoHeight } = video;
+                if (videoWidth && videoHeight && (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight)) {
+                  updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
+                }
+                // Force first-frame paint when autoplay is blocked: nudge
+                // the playhead a hair past zero so the browser must draw
+                // exactly one frame.
+                try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
+                video.play().catch(() => {});
+              }}
+            />
           ) : data.poster ? (
             <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
@@ -1629,7 +1791,8 @@ export const VideoNode = ({ id, data, selected }: any) => {
   );
 };
 
-export const ReferenceImageNode = ({ id, data, selected }: any) => {
+export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const [preview, setPreview] = useState(false);
   const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
@@ -1655,10 +1818,9 @@ export const ReferenceImageNode = ({ id, data, selected }: any) => {
         onDoubleClick={() => data.url && setPreview(true)}
       >
         {data.url ? (
-          <img
+          <ResilientImage
             src={data.url}
             alt={displayName}
-            draggable={false}
             className="h-full w-full object-cover select-none"
             onLoad={(event) => {
               const { naturalWidth, naturalHeight } = event.currentTarget;
@@ -1682,7 +1844,8 @@ export const ReferenceImageNode = ({ id, data, selected }: any) => {
   );
 };
 
-export const ReferenceVideoNode = ({ id, data, selected }: any) => {
+export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const [preview, setPreview] = useState(false);
   const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
@@ -1712,9 +1875,14 @@ export const ReferenceVideoNode = ({ id, data, selected }: any) => {
             src={data.url}
             draggable={false}
             className="absolute inset-0 h-full w-full object-cover select-none"
+            autoPlay
+            loop
             muted
+            playsInline
+            preload="auto"
             onLoadedMetadata={(event) => {
-              const { videoWidth, videoHeight } = event.currentTarget;
+              const video = event.currentTarget;
+              const { videoWidth, videoHeight } = video;
               if (
                 videoWidth &&
                 videoHeight &&
@@ -1722,6 +1890,8 @@ export const ReferenceVideoNode = ({ id, data, selected }: any) => {
               ) {
                 updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
               }
+              try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
+              video.play().catch(() => {});
             }}
           />
         ) : (
@@ -1790,7 +1960,8 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
   );
 };
 
-const RenamableTextNode = ({ id, data, selected }: any) => {
+const RenamableTextNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const title = data.customTitle || (language === 'zh' ? '生成文本' : 'Generate Text');
   return (
@@ -1811,7 +1982,98 @@ const RenamableTextNode = ({ id, data, selected }: any) => {
   );
 };
 
-const RenamableImageNode = ({ id, data, selected }: any) => {
+/**
+ * Loads `<img>` and surfaces failures with a retry affordance. Image
+ * generation often returns a third-party URL that gets blocked by CORS,
+ * mixed-content rules, or just expires before the user comes back — a
+ * silent blank rectangle is a much worse UX than a clickable "retry" pill.
+ *
+ * - onLoad bubbles up so consumers can record naturalWidth/Height
+ * - onError catches network/decode failures and shows a fallback
+ * - Clicking the fallback re-tries with a cache-busting query
+ */
+function ResilientImage({
+  src,
+  alt = "",
+  className,
+  onLoad,
+  zh = true,
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+  onLoad?: (event: React.SyntheticEvent<HTMLImageElement>) => void;
+  zh?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  const [useProxy, setUseProxy] = useState(false);
+  const [bust, setBust] = useState(0);
+
+  // First load: try the URL directly. If that fails and it's a remote URL,
+  // automatically retry via the backend's /api/app/proxy-media endpoint —
+  // sidesteps CORS, referrer policy, and mixed-content blocks in one shot.
+  const isRemote = /^https?:\/\//.test(src);
+  const proxiedSrc = isRemote
+    ? `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "")}/api/app/proxy-media?url=${encodeURIComponent(src)}`
+    : src;
+  const baseSrc = useProxy ? proxiedSrc : src;
+  const finalSrc = bust > 0 ? `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}_r=${bust}` : baseSrc;
+
+  useEffect(() => {
+    setFailed(false);
+    setUseProxy(false);
+    setBust(0);
+  }, [src]);
+
+  const handleError = () => {
+    // First failure on a remote URL → fall back to backend proxy silently.
+    // Only surface the retry UI if the proxy ALSO fails.
+    if (isRemote && !useProxy) {
+      setUseProxy(true);
+      return;
+    }
+    setFailed(true);
+  };
+
+  if (failed) {
+    return (
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setFailed(false);
+          setBust((n) => n + 1);
+        }}
+        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[20px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
+        title={src}
+      >
+        <ImageOff className="h-5 w-5" />
+        <span>{zh ? "图片加载失败 · 点击重试" : "Image failed · click to retry"}</span>
+      </button>
+    );
+  }
+  return (
+    <img
+      src={finalSrc}
+      alt={alt}
+      draggable={false}
+      className={className}
+      // Many third-party image hosts (Chinese provider relays, Cloudflare-
+      // protected R2 buckets, etc.) reject requests where the Referer
+      // header points at a different origin. `no-referrer` strips the
+      // header entirely — fixes the silent-blank-image case for direct
+      // loads (we also have the backend proxy fallback above).
+      referrerPolicy="no-referrer"
+      onLoad={onLoad}
+      onError={handleError}
+    />
+  );
+}
+
+const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
+  // Defensive: agent-created nodes (or other producers) may omit `data`.
+  // Without this fallback, React crashes the entire workspace on render.
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
@@ -1856,7 +2118,12 @@ const RenamableImageNode = ({ id, data, selected }: any) => {
           className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
           onDoubleClick={() => setPreview(true)}
         >
-          <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" onLoad={handleImageLoad} />
+          <ResilientImage
+            src={data.url}
+            className="h-full w-full object-cover select-none"
+            onLoad={handleImageLoad}
+            zh={language === 'zh'}
+          />
         </div>
       ) : (
         <div className={clsx('flex items-center justify-center rounded-[20px] border text-orange-100/45', NODE_TONE_STYLES.image.surface, aspectClass)}>
@@ -1868,10 +2135,12 @@ const RenamableImageNode = ({ id, data, selected }: any) => {
   );
 };
 
-const RenamableVideoNode = ({ id, data, selected }: any) => {
+const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const nodes = useStore((state) => state.nodes);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1959,7 +2228,32 @@ const RenamableVideoNode = ({ id, data, selected }: any) => {
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
-            <video ref={videoRef} src={data.url} draggable={false} className="absolute inset-0 h-full w-full object-cover select-none" muted loop preload="auto" />
+            <video
+              ref={videoRef}
+              src={data.url}
+              draggable={false}
+              className="absolute inset-0 h-full w-full object-cover select-none"
+              autoPlay
+              muted
+              loop
+              playsInline
+              // `auto` (not `metadata`) buffers enough to paint the first
+              // frame even when autoplay is blocked. Without this the node
+              // renders black until you double-click into the preview modal.
+              preload="auto"
+              onLoadedMetadata={(event) => {
+                const video = event.currentTarget;
+                const { videoWidth, videoHeight } = video;
+                if (videoWidth && videoHeight && (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight)) {
+                  updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
+                }
+                // Force first-frame paint when autoplay is blocked: nudge
+                // the playhead a hair past zero so the browser must draw
+                // exactly one frame.
+                try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
+                video.play().catch(() => {});
+              }}
+            />
           ) : data.poster ? (
             <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
@@ -1972,7 +2266,8 @@ const RenamableVideoNode = ({ id, data, selected }: any) => {
   );
 };
 
-const RenamableAudioNode = ({ id, data, selected }: any) => {
+const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const title = data.customTitle || (language === 'zh' ? '生成音频' : 'Generate Audio');
   return (
@@ -2006,7 +2301,8 @@ const RenamableAudioNode = ({ id, data, selected }: any) => {
   );
 };
 
-const RenamablePanoramaNode = ({ id, data, selected }: any) => {
+const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-[2/1]');
   const title = data.customTitle || (language === 'zh' ? '生成全景' : '360 Environment');
@@ -2029,7 +2325,8 @@ const RenamablePanoramaNode = ({ id, data, selected }: any) => {
   );
 };
 
-const ModeTextNode = ({ id, data, selected }: any) => {
+const ModeTextNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const nodes = useStore((state) => state.nodes);
   const edges = useStore((state) => state.edges);
@@ -2296,6 +2593,7 @@ const ModeTextNode = ({ id, data, selected }: any) => {
 };
 
 import { AgentNode } from './AgentNode';
+import { StickyNoteNode } from './StickyNoteNode';
 
 export const nodeTypes = {
   textNode: ModeTextNode,
@@ -2306,5 +2604,6 @@ export const nodeTypes = {
   referenceImageNode: ReferenceImageNode,
   referenceVideoNode: ReferenceVideoNode,
   agentNode: AgentNode,
+  stickyNoteNode: StickyNoteNode,
 };
 
