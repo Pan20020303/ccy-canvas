@@ -42,7 +42,9 @@ type CanvasNode struct {
 	ID       string         `json:"id"`
 	Type     string         `json:"type"`
 	Position XY             `json:"position"`
-	Data     map[string]any `json:"data,omitempty"`
+	// Always serialize `data` (no omitempty) so the React Flow node always
+	// has a `.data` object to read — node renderers blow up on undefined.
+	Data map[string]any `json:"data"`
 }
 
 type CanvasEdge struct {
@@ -140,6 +142,24 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 	}
 	if p.Data == nil {
 		p.Data = map[string]any{}
+	}
+	// Seed sensible defaults so the React renderer doesn't trip over a
+	// completely empty data bag. The agent is welcome to overwrite them.
+	if _, ok := p.Data["customTitle"]; !ok {
+		switch p.Type {
+		case "imageNode":
+			p.Data["customTitle"] = "生成图像"
+		case "videoNode":
+			p.Data["customTitle"] = "生成视频"
+		case "textNode":
+			p.Data["customTitle"] = "文本"
+		case "audioNode":
+			p.Data["customTitle"] = "音频"
+		case "referenceImageNode":
+			p.Data["customTitle"] = "参考图像"
+		case "referenceVideoNode":
+			p.Data["customTitle"] = "参考视频"
+		}
 	}
 	t.state.mu.Lock()
 	node := CanvasNode{ID: t.state.nextID("ag"), Type: p.Type, Position: p.Position, Data: p.Data}

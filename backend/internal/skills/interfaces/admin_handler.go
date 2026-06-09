@@ -135,6 +135,7 @@ func (h *AdminHandler) listAgentRuns(ctx context.Context, input *listAgentRunsIn
 		return nil, huma.Error500InternalServerError("Failed to list agent runs")
 	}
 	out := &listAgentRunsOutput{}
+	out.Body.Data = make([]AgentRunItem, 0, len(rows))
 	for _, r := range rows {
 		out.Body.Data = append(out.Body.Data, AgentRunItem{
 			ID: formatUUID(r.ID), UserID: formatUUID(r.UserID), UserName: r.UserName, UserEmail: r.UserEmail,
@@ -153,6 +154,7 @@ func (h *AdminHandler) listAllSkills(ctx context.Context, _ *struct{}) (*listSki
 		return nil, huma.Error500InternalServerError("Failed to list skills")
 	}
 	out := &listSkillsOutput{}
+	out.Body.Data = make([]SkillItem, 0, len(rows))
 	for _, r := range rows {
 		out.Body.Data = append(out.Body.Data, toSkillItem(r))
 	}
@@ -225,6 +227,7 @@ func (h *AdminHandler) listAllAgents(ctx context.Context, _ *struct{}) (*listAge
 		return nil, huma.Error500InternalServerError("Failed to list agents")
 	}
 	out := &listAgentsOutput{}
+	out.Body.Data = make([]AgentItem, 0, len(rows))
 	for _, r := range rows {
 		out.Body.Data = append(out.Body.Data, toAgentItem(r))
 	}
