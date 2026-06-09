@@ -76,6 +76,7 @@ export const HistoryAssetsModal = () => {
   const counts = useMemo(() => countHistoryByMediaType(history), [history]);
   const groups = useMemo(() => groupHistoryByDate(filteredHistory), [filteredHistory]);
   const previewSequence = useMemo(() => getHistoryPreviewSequence(filteredHistory), [filteredHistory]);
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
   const selectedItems = useMemo(
     () => filteredHistory.filter((item) => selectedIds.includes(item.id)),
     [filteredHistory, selectedIds],
@@ -114,7 +115,7 @@ export const HistoryAssetsModal = () => {
   const handleDownload = () => {
     if (!actions.canDownload) return;
     for (const item of selectedItems) {
-      const url = getHistoryItemAssetUrl(item);
+      const url = getHistoryItemAssetUrl(item, apiBaseUrl);
       if (!url) continue;
       triggerDownload(url, item.title || item.id);
     }
@@ -128,7 +129,7 @@ export const HistoryAssetsModal = () => {
     setOpen(false);
   };
 
-  const previewUrl = previewItem ? getHistoryItemAssetUrl(previewItem) : "";
+  const previewUrl = previewItem ? getHistoryItemAssetUrl(previewItem, apiBaseUrl) : "";
   const movePreview = (direction: "previous" | "next") => {
     if (!previewCursor) return;
     const target = direction === "previous" ? previewCursor.previousItem : previewCursor.nextItem;
@@ -290,8 +291,8 @@ export const HistoryAssetsModal = () => {
                     >
                       {group.items.map((item) => {
                         const selected = selectedIds.includes(item.id);
-                        const assetUrl = getHistoryItemAssetUrl(item);
-                        const previewable = canPreviewHistoryItem(item);
+                        const assetUrl = getHistoryItemAssetUrl(item, apiBaseUrl);
+                        const previewable = canPreviewHistoryItem(item, apiBaseUrl);
 
                         return (
                           <article

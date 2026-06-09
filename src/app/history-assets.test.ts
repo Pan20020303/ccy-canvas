@@ -110,6 +110,19 @@ describe("history assets helpers", () => {
     expect(getHistoryItemAssetUrl(sampleHistory[1])).toBe("https://example.com/video-1.mp4");
   });
 
+  it("resolves backend-relative upload urls for previews", () => {
+    const uploadHistory: HistoryItem = {
+      ...sampleHistory[0],
+      id: "image-upload",
+      thumbnail: "/uploads/2026-06/example.png",
+    };
+
+    expect(getHistoryItemAssetUrl(uploadHistory, "http://127.0.0.1:8080")).toBe(
+      "http://127.0.0.1:8080/uploads/2026-06/example.png",
+    );
+    expect(canPreviewHistoryItem(uploadHistory, "http://127.0.0.1:8080")).toBe(true);
+  });
+
   it("marks image, video, and audio history items as previewable when they have a backing url", () => {
     expect(canPreviewHistoryItem(sampleHistory[0])).toBe(true);
     expect(canPreviewHistoryItem(sampleHistory[1])).toBe(true);

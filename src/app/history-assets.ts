@@ -1,3 +1,4 @@
+import { resolveBackendAssetUrl } from "./reference-media";
 import type { HistoryItem, HistoryMediaType } from "./store";
 
 export type HistoryAssetsTab = Extract<HistoryMediaType, "image" | "video" | "audio">;
@@ -69,12 +70,12 @@ export function computeBatchActionAvailability(selectedItems: HistoryItem[]) {
   };
 }
 
-export function getHistoryItemAssetUrl(item: HistoryItem): string {
-  return item.thumbnail || item.content || "";
+export function getHistoryItemAssetUrl(item: HistoryItem, apiBaseUrl?: string | null): string {
+  return resolveBackendAssetUrl(item.thumbnail || item.content || "", apiBaseUrl);
 }
 
-export function canPreviewHistoryItem(item: HistoryItem): boolean {
-  return Boolean(getHistoryItemAssetUrl(item));
+export function canPreviewHistoryItem(item: HistoryItem, apiBaseUrl?: string | null): boolean {
+  return Boolean(getHistoryItemAssetUrl(item, apiBaseUrl));
 }
 
 export function getHistoryPreviewSequence(history: HistoryItem[]): HistoryItem[] {

@@ -30,6 +30,14 @@ export function resolveBackendAssetUrl(url?: string | null, apiBaseUrl?: string 
   return new URL(url, apiBaseUrl).toString();
 }
 
+export function isTransientBrowserMediaUrl(url?: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+
+  return url.startsWith("data:") || url.startsWith("blob:");
+}
+
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

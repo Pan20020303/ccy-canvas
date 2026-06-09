@@ -31,6 +31,7 @@ export function HistoryImagePickerModal({
   onClose: () => void;
   onConfirm: (selectedItems: HistoryItem[]) => void;
 }) {
+  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
   const [activeTab, setActiveTab] = useState<HistoryAssetsTab>("image");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -141,7 +142,7 @@ export function HistoryImagePickerModal({
                         {group.items.map((item) => {
                           const selected = selectedIds.includes(item.id);
                           const canSelectMore = selected || selectedIds.length < MAX_SELECTION;
-                          const assetUrl = getHistoryItemAssetUrl(item);
+                          const assetUrl = getHistoryItemAssetUrl(item, apiBaseUrl);
 
                           return (
                             <button

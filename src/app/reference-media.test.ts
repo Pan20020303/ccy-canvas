@@ -4,6 +4,7 @@ import {
   clearReferencePayloadValue,
   getReferencePayloadValue,
   getReferenceNodeTypeFromMimeType,
+  isTransientBrowserMediaUrl,
   resolveBackendAssetUrl,
   setReferencePayloadValue,
 } from "./reference-media";
@@ -34,6 +35,12 @@ describe("reference media helpers", () => {
 
   it("returns an empty string when asset url is missing", () => {
     expect(resolveBackendAssetUrl(undefined as never, "http://127.0.0.1:8080")).toBe("");
+  });
+
+  it("detects transient browser-only media urls", () => {
+    expect(isTransientBrowserMediaUrl("blob:http://localhost:5173/abc")).toBe(true);
+    expect(isTransientBrowserMediaUrl("data:image/png;base64,abc")).toBe(true);
+    expect(isTransientBrowserMediaUrl("/uploads/2026-06/example.png")).toBe(false);
   });
 
   it("prefers transient reference payload values over preview urls", () => {
