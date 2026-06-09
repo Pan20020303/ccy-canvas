@@ -51,10 +51,16 @@ func (rt *AgentRunRouter) RegisterChi(r chi.Router) {
 type agentRunRequest struct {
 	// What the user typed.
 	Message string `json:"message"`
+	// Optional: which chat thread to attach this turn to. When empty the
+	// runner targets the most recent thread (creating one on first ever
+	// turn) — matches the legacy single-thread behavior.
+	ConversationID string `json:"conversation_id"`
 	// Current canvas snapshot for the agent to reason about.
 	Nodes []skillsapp.CanvasNode `json:"nodes"`
 	Edges []skillsapp.CanvasEdge `json:"edges"`
-	// Recent conversation context for the selected agent.
+	// Recent conversation context for the selected agent. Kept for backward
+	// compat with the old API shape; server-side history is the source of
+	// truth now and overrides this if non-empty.
 	History []agentRunHistoryTurn `json:"history"`
 }
 
@@ -98,11 +104,17 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) Resolve upstream LLM endpoint for the agent's model.
-	baseURL, apiKey, err := rt.catalogSvc.ResolveModelEndpoint(r.Context(), agent.Model)
+	// 3) Resolve every upstream provider that can serve the agent's model.
+	// When more than one vendor declares the same model, ChatStreamMulti will
+	// fall back across them on transient errors.
+	resolved, err := rt.catalogSvc.ResolveModelEndpoints(r.Context(), agent.Model)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	endpoints := make([]skillsapp.Endpoint, 0, len(resolved))
+	for _, ep := range resolved {
+		endpoints = append(endpoints, skillsapp.Endpoint{BaseURL: ep.BaseURL, APIKey: ep.APIKey})
 	}
 
 	// 4) Set up SSE headers + emitter.
@@ -124,11 +136,15 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
 	}
-	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent)
+	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ConversationID)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load conversation"})
 		return
 	}
+	// Announce the resolved conversation id so the client can switch to it
+	// when the server transparently created a new thread.
+	emitter.Emit("conversation", map[string]string{"id": formatUUID(conversation.ID)})
+
 	historyMessages, err := rt.q.ListAgentConversationMessages(r.Context(), sqlc.ListAgentConversationMessagesParams{
 		ConversationID: conversation.ID,
 		Limit:          24,
@@ -151,7 +167,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		UserID: userID, AgentID: agent.ID, ConversationID: conversation.ID, UserInput: req.Message,
 	})
 
-	runner := skillsapp.Runner{LLM: rt.llm, BaseURL: baseURL, APIKey: apiKey}
+	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -193,11 +209,28 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 			Role:           "assistant",
 			Content:        stats.FinalReply,
 		})
+		// Auto-fill the title from the first user turn so the switcher has
+		// something more meaningful than "新对话". Keep existing titles intact.
+		nextTitle := conversation.Title
+		if nextTitle == "" || nextTitle == agent.Name {
+			nextTitle = truncateForTitle(req.Message)
+		}
 		_, _ = rt.q.TouchAgentConversation(r.Context(), sqlc.TouchAgentConversationParams{
 			ID:    conversation.ID,
-			Title: conversation.Title,
+			Title: nextTitle,
 		})
 	}
+}
+
+// truncateForTitle keeps the auto-derived conversation title short so the
+// switcher UI doesn't blow out the dropdown width.
+func truncateForTitle(s string) string {
+	const limit = 30
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func toRunHistoryFromMessages(messages []sqlc.AgentConversationMessage) []skillsapp.ChatMessage {
@@ -215,7 +248,23 @@ func toRunHistoryFromMessages(messages []sqlc.AgentConversationMessage) []skills
 	return history
 }
 
-func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent) (sqlc.AgentConversation, error) {
+// ensureAgentConversation resolves which thread this run belongs to. Priority:
+//   1. explicit conversation_id from the request body (user picked one)
+//   2. the most recently updated thread for (user, agent)
+//   3. brand-new thread (first ever run)
+func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent, conversationID string) (sqlc.AgentConversation, error) {
+	if conversationID != "" {
+		cid, err := parseUUID(conversationID)
+		if err != nil {
+			return sqlc.AgentConversation{}, err
+		}
+		return rt.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
+			ID:      cid,
+			UserID:  userID,
+			AgentID: agent.ID,
+		})
+	}
+
 	conversation, err := rt.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
 		UserID:  userID,
 		AgentID: agent.ID,
@@ -229,6 +278,6 @@ func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pg
 	return rt.q.InsertAgentConversation(ctx, sqlc.InsertAgentConversationParams{
 		UserID:  userID,
 		AgentID: agent.ID,
-		Title:   agent.Name,
+		Title:   "",
 	})
 }

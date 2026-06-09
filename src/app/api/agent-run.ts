@@ -15,7 +15,8 @@ import type { AgentConversationTurn } from "../components/agent-conversation";
 
 export type AgentSSEEventType =
   | "thought" | "tool_call" | "tool_result"
-  | "message" | "message_delta" | "canvas_patch" | "error" | "done";
+  | "message" | "message_delta" | "canvas_patch"
+  | "conversation" | "error" | "done";
 
 export type AgentSSEEvent =
   | { type: "thought";       data: { content: string } }
@@ -24,6 +25,7 @@ export type AgentSSEEvent =
   | { type: "message_delta"; data: { delta: string } }
   | { type: "message";       data: { content: string } }
   | { type: "canvas_patch";  data: CanvasPatch }
+  | { type: "conversation";  data: { id: string } }
   | { type: "error";         data: { message: string } }
   | { type: "done";          data: { steps: number } };
 
@@ -42,7 +44,13 @@ const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
  */
 export async function runAgent(
   agentId: string,
-  body: { message: string; nodes: unknown[]; edges: unknown[]; history?: AgentConversationTurn[] },
+  body: {
+    message: string;
+    nodes: unknown[];
+    edges: unknown[];
+    history?: AgentConversationTurn[];
+    conversation_id?: string;
+  },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {
   const controller = new AbortController();

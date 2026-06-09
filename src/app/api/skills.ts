@@ -163,10 +163,39 @@ export type AgentConversationHistoryItem = {
   created_at: string;
 };
 
-export function listAgentConversationHistory(agentId: string, limit = 12): Promise<AgentConversationHistoryItem[]> {
-  return apiClient.get<AgentConversationHistoryItem[]>(`/api/app/agents/${agentId}/conversation?limit=${limit}`);
+export function listAgentConversationHistory(
+  agentId: string,
+  limit = 12,
+  conversationId?: string,
+): Promise<AgentConversationHistoryItem[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (conversationId) params.set("conversation_id", conversationId);
+  return apiClient.get<AgentConversationHistoryItem[]>(`/api/app/agents/${agentId}/conversation?${params.toString()}`);
 }
 
 export function clearAgentConversationHistory(agentId: string): Promise<void> {
   return apiClient.delete(`/api/app/agents/${agentId}/conversation`);
+}
+
+// ─── Multi-thread conversation management ───────────────────────────────────
+
+export type AgentConversationSummary = {
+  id: string;
+  title: string;
+  message_count: number;
+  last_message_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export function listAgentConversations(agentId: string): Promise<AgentConversationSummary[]> {
+  return apiClient.get<AgentConversationSummary[]>(`/api/app/agents/${agentId}/conversations`);
+}
+
+export function createAgentConversation(agentId: string, title?: string): Promise<AgentConversationSummary> {
+  return apiClient.post<AgentConversationSummary>(`/api/app/agents/${agentId}/conversations`, { title: title ?? "" });
+}
+
+export function deleteAgentConversation(agentId: string, conversationId: string): Promise<void> {
+  return apiClient.delete(`/api/app/agents/${agentId}/conversations/${conversationId}`);
 }

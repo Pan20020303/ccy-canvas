@@ -35,6 +35,8 @@ SELECT id, user_id, agent_id, title, last_message_at, created_at, updated_at
 FROM agent_conversations
 WHERE user_id = $1
   AND agent_id = $2
+ORDER BY updated_at DESC
+LIMIT 1
 `
 
 func (q *Queries) GetAgentConversationByUserAndAgent(ctx context.Context, arg GetAgentConversationByUserAndAgentParams) (AgentConversation, error) {
@@ -147,6 +149,87 @@ func (q *Queries) ListAgentConversationMessages(ctx context.Context, arg ListAge
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+type GetAgentConversationByIDParams struct {
+	ID      pgtype.UUID `json:"id"`
+	UserID  pgtype.UUID `json:"user_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+const getAgentConversationByID = `-- name: GetAgentConversationByID :one
+SELECT id, user_id, agent_id, title, last_message_at, created_at, updated_at
+FROM agent_conversations
+WHERE id = $1
+  AND user_id = $2
+  AND agent_id = $3
+`
+
+func (q *Queries) GetAgentConversationByID(ctx context.Context, arg GetAgentConversationByIDParams) (AgentConversation, error) {
+	row := q.db.QueryRow(ctx, getAgentConversationByID, arg.ID, arg.UserID, arg.AgentID)
+	var item AgentConversation
+	err := row.Scan(&item.ID, &item.UserID, &item.AgentID, &item.Title, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt)
+	return item, err
+}
+
+type ListUserAgentConversationsParams struct {
+	UserID  pgtype.UUID `json:"user_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+type ListUserAgentConversationsRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	UserID        pgtype.UUID        `json:"user_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Title         string             `json:"title"`
+	LastMessageAt pgtype.Timestamptz `json:"last_message_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	MessageCount  int32              `json:"message_count"`
+}
+
+const listUserAgentConversations = `-- name: ListUserAgentConversations :many
+SELECT c.id, c.user_id, c.agent_id, c.title, c.last_message_at, c.created_at, c.updated_at,
+       COALESCE((SELECT count(*) FROM agent_conversation_messages m WHERE m.conversation_id = c.id), 0)::int AS message_count
+FROM agent_conversations c
+WHERE c.user_id = $1
+  AND c.agent_id = $2
+ORDER BY c.updated_at DESC
+`
+
+func (q *Queries) ListUserAgentConversations(ctx context.Context, arg ListUserAgentConversationsParams) ([]ListUserAgentConversationsRow, error) {
+	rows, err := q.db.Query(ctx, listUserAgentConversations, arg.UserID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserAgentConversationsRow{}
+	for rows.Next() {
+		var item ListUserAgentConversationsRow
+		if err := rows.Scan(&item.ID, &item.UserID, &item.AgentID, &item.Title, &item.LastMessageAt, &item.CreatedAt, &item.UpdatedAt, &item.MessageCount); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+type DeleteAgentConversationByIDParams struct {
+	ID      pgtype.UUID `json:"id"`
+	UserID  pgtype.UUID `json:"user_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+const deleteAgentConversationByID = `-- name: DeleteAgentConversationByID :exec
+DELETE FROM agent_conversations
+WHERE id = $1
+  AND user_id = $2
+  AND agent_id = $3
+`
+
+func (q *Queries) DeleteAgentConversationByID(ctx context.Context, arg DeleteAgentConversationByIDParams) error {
+	_, err := q.db.Exec(ctx, deleteAgentConversationByID, arg.ID, arg.UserID, arg.AgentID)
+	return err
 }
 
 var _ pgx.Row

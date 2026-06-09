@@ -121,6 +121,31 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSec,
 		DefaultStatus: http.StatusNoContent,
 	}, h.clearAgentConversationHistory)
+
+	// Multi-thread conversations: list / create / delete individual threads.
+	huma.Register(api, huma.Operation{
+		OperationID: "list-agent-conversations",
+		Method:      http.MethodGet,
+		Path:        "/api/app/agents/{id}/conversations",
+		Tags:        []string{"App", "Agents"},
+		Security:    userSec,
+	}, h.listAgentConversations)
+	huma.Register(api, huma.Operation{
+		OperationID:   "create-agent-conversation",
+		Method:        http.MethodPost,
+		Path:          "/api/app/agents/{id}/conversations",
+		Tags:          []string{"App", "Agents"},
+		Security:      userSec,
+		DefaultStatus: http.StatusCreated,
+	}, h.createAgentConversation)
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-agent-conversation",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/agents/{id}/conversations/{conversation_id}",
+		Tags:          []string{"App", "Agents"},
+		Security:      userSec,
+		DefaultStatus: http.StatusNoContent,
+	}, h.deleteAgentConversation)
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -190,15 +215,56 @@ type AgentConversationItem struct {
 }
 
 type listAgentConversationInput struct {
-	ID    string `path:"id"`
-	Limit int32  `query:"limit" minimum:"1" maximum:"50" default:"12"`
+	ID             string `path:"id"`
+	ConversationID string `query:"conversation_id"`
+	Limit          int32  `query:"limit" minimum:"1" maximum:"50" default:"12"`
 }
 
 type listAgentConversationOutput struct {
 	Body struct {
 		Data      []AgentConversationItem `json:"data"`
 		RequestID string                  `json:"request_id"`
-	} 
+	}
+}
+
+// Per-thread conversation summary returned by listAgentConversations.
+type AgentConversationSummary struct {
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	MessageCount  int32  `json:"message_count"`
+	LastMessageAt string `json:"last_message_at"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+type listAgentConversationsInput struct {
+	ID string `path:"id"`
+}
+
+type listAgentConversationsOutput struct {
+	Body struct {
+		Data      []AgentConversationSummary `json:"data"`
+		RequestID string                     `json:"request_id"`
+	}
+}
+
+type createAgentConversationInput struct {
+	ID   string `path:"id"`
+	Body struct {
+		Title string `json:"title,omitempty"`
+	}
+}
+
+type createAgentConversationOutput struct {
+	Body struct {
+		Data      AgentConversationSummary `json:"data"`
+		RequestID string                   `json:"request_id"`
+	}
+}
+
+type deleteAgentConversationInput struct {
+	ID             string `path:"id"`
+	ConversationID string `path:"conversation_id"`
 }
 
 // ─── Skill handlers ──────────────────────────────────────────────────────────
@@ -217,6 +283,7 @@ func (h *Handler) listVisibleSkills(ctx context.Context, _ *struct{}) (*listSkil
 		return nil, huma.Error500InternalServerError("Failed to list skills")
 	}
 	out := &listSkillsOutput{}
+	out.Body.Data = make([]SkillItem, 0, len(rows))
 	for _, r := range rows {
 		out.Body.Data = append(out.Body.Data, toSkillItem(r))
 	}
@@ -407,6 +474,7 @@ func (h *Handler) listVisibleAgents(ctx context.Context, _ *struct{}) (*listAgen
 		return nil, huma.Error500InternalServerError("Failed to list agents")
 	}
 	out := &listAgentsOutput{}
+	out.Body.Data = make([]AgentItem, 0, len(rows))
 	for _, r := range rows {
 		out.Body.Data = append(out.Body.Data, toAgentItem(r))
 	}
@@ -516,13 +584,11 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 		return nil, err
 	}
 
-	conversation, err := h.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
-		UserID:  uid,
-		AgentID: agent.ID,
-	})
+	conversation, err := h.resolveConversation(ctx, uid, agent.ID, input.ConversationID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			out := &listAgentConversationOutput{}
+			out.Body.Data = []AgentConversationItem{}
 			out.Body.RequestID = httpx.RequestIDFrom(ctx)
 			return out, nil
 		}
@@ -538,6 +604,7 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 	}
 
 	out := &listAgentConversationOutput{}
+	out.Body.Data = make([]AgentConversationItem, 0, len(messages)/2+1)
 	out.Body.Data = append(out.Body.Data, toConversationItems(messages)...)
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
@@ -556,6 +623,104 @@ func (h *Handler) clearAgentConversationHistory(ctx context.Context, input *dele
 		return nil, huma.Error500InternalServerError("Failed to clear conversation history")
 	}
 	return nil, nil
+}
+
+// listAgentConversations returns all chat threads the user owns with this agent,
+// most recently updated first. Powers the conversation switcher in the UI.
+func (h *Handler) listAgentConversations(ctx context.Context, input *listAgentConversationsInput) (*listAgentConversationsOutput, error) {
+	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.q.ListUserAgentConversations(ctx, sqlc.ListUserAgentConversationsParams{
+		UserID:  uid,
+		AgentID: agent.ID,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list conversations")
+	}
+	out := &listAgentConversationsOutput{}
+	out.Body.Data = make([]AgentConversationSummary, 0, len(rows))
+	for _, r := range rows {
+		out.Body.Data = append(out.Body.Data, AgentConversationSummary{
+			ID:            formatUUID(r.ID),
+			Title:         r.Title,
+			MessageCount:  r.MessageCount,
+			LastMessageAt: formatTime(r.LastMessageAt),
+			CreatedAt:     formatTime(r.CreatedAt),
+			UpdatedAt:     formatTime(r.UpdatedAt),
+		})
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+// createAgentConversation starts a fresh chat thread. The title is optional —
+// if blank, the runner will auto-populate it from the first user message.
+func (h *Handler) createAgentConversation(ctx context.Context, input *createAgentConversationInput) (*createAgentConversationOutput, error) {
+	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := h.q.InsertAgentConversation(ctx, sqlc.InsertAgentConversationParams{
+		UserID:  uid,
+		AgentID: agent.ID,
+		Title:   input.Body.Title,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to create conversation")
+	}
+	out := &createAgentConversationOutput{}
+	out.Body.Data = AgentConversationSummary{
+		ID:            formatUUID(row.ID),
+		Title:         row.Title,
+		MessageCount:  0,
+		LastMessageAt: formatTime(row.LastMessageAt),
+		CreatedAt:     formatTime(row.CreatedAt),
+		UpdatedAt:     formatTime(row.UpdatedAt),
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) deleteAgentConversation(ctx context.Context, input *deleteAgentConversationInput) (*struct{}, error) {
+	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	cid, err := parseUUID(input.ConversationID)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.q.DeleteAgentConversationByID(ctx, sqlc.DeleteAgentConversationByIDParams{
+		ID:      cid,
+		UserID:  uid,
+		AgentID: agent.ID,
+	}); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to delete conversation")
+	}
+	return nil, nil
+}
+
+// resolveConversation returns the conversation row identified by conversationID,
+// or — when conversationID is empty — the most recently updated conversation
+// for the (user, agent) pair. Returns pgx.ErrNoRows when nothing exists yet.
+func (h *Handler) resolveConversation(ctx context.Context, uid, agentID pgtype.UUID, conversationID string) (sqlc.AgentConversation, error) {
+	if conversationID != "" {
+		cid, err := parseUUID(conversationID)
+		if err != nil {
+			return sqlc.AgentConversation{}, err
+		}
+		return h.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
+			ID:      cid,
+			UserID:  uid,
+			AgentID: agentID,
+		})
+	}
+	return h.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
+		UserID:  uid,
+		AgentID: agentID,
+	})
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
