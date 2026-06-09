@@ -96,9 +96,28 @@ describe("agent slash-skill commands", () => {
     });
   });
 
-  it("ignores slash commands that are not bound to the agent", () => {
+  it("resolves slash commands against ALL invokable skills, not just bound ones", () => {
+    // `/summary` matches skill-2 which is enabled and prompt-kind but NOT
+    // bound to this agent — the new behavior still injects its template so
+    // freshly-imported skills are usable right away.
     expect(buildAgentRunMessage(agent, skills, "/summary Summarize this launch brief.")).toEqual({
-      message: "/summary Summarize this launch brief.",
+      message: [
+        "Use the following bound skill template while answering.",
+        "",
+        "Skill: /summary",
+        "Template:",
+        "Summarize the content into concise bullets.",
+        "",
+        "User request:",
+        "Summarize this launch brief.",
+      ].join("\n"),
+      invokedSkillName: "/summary",
+    });
+  });
+
+  it("leaves unknown slash commands untouched", () => {
+    expect(buildAgentRunMessage(agent, skills, "/no-such-thing hello")).toEqual({
+      message: "/no-such-thing hello",
       invokedSkillName: null,
     });
   });
