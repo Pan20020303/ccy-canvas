@@ -38,6 +38,11 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+const (
+	imageGenerationTimeoutSeconds = 600
+	videoGenerationTimeoutSeconds = 900
+)
+
 // Repository is the persistence port for the model catalog.
 type Repository interface {
 	// Provider (legacy single-provider)
@@ -352,29 +357,72 @@ func (s *Service) DisableModel(ctx context.Context, id string) (*domain.ModelDef
 // ResolveModelEndpoint looks up which enabled provider serves the given model
 // and returns its base URL + decrypted API key. Used by the agent runner so it
 // can talk to the same upstream as the rest of the app.
+//
+// When multiple providers declare the same model (the user-facing UI dedupes
+// model names but keeps every vendor's config), this returns only the first
+// match. Callers that want automatic fallback across vendors should use
+// ResolveModelEndpoints instead.
 func (s *Service) ResolveModelEndpoint(ctx context.Context, model string) (baseURL, apiKey string, err error) {
+	endpoints, err := s.ResolveModelEndpoints(ctx, model)
+	if err != nil {
+		return "", "", err
+	}
+	first := endpoints[0]
+	return first.BaseURL, first.APIKey, nil
+}
+
+// ModelEndpoint describes one upstream provider that can serve a given model.
+type ModelEndpoint struct {
+	Vendor  string
+	BaseURL string
+	APIKey  string
+}
+
+// ResolveModelEndpoints returns every enabled provider that declares the given
+// model, in priority order (sorted by Priority asc, then by config ID for a
+// stable tiebreaker). Callers can iterate this list to implement cross-vendor
+// fallback — if vendor A's request fails with a transient error, retry with
+// vendor B that serves the same model name.
+func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]ModelEndpoint, error) {
 	configs, err := s.repo.ListProviderConfigs(ctx)
 	if err != nil {
-		return "", "", apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
+
+	out := []ModelEndpoint{}
 	for _, c := range configs {
 		if c.Status != "enabled" {
 			continue
 		}
+		serves := false
 		for _, m := range c.ModelList {
 			if m == model {
-				if c.EncryptedAPIKey == "" {
-					return "", "", apperror.New(apperror.CodeInvalidInput, "Provider has no API key configured")
-				}
-				key, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
-				if derr != nil {
-					return "", "", apperror.Wrap(apperror.CodeInternal, "Failed to decrypt API key", derr)
-				}
-				return c.BaseURL, key, nil
+				serves = true
+				break
 			}
 		}
+		if !serves {
+			continue
+		}
+		if c.EncryptedAPIKey == "" {
+			// Skip silently — another provider for the same model may still work.
+			continue
+		}
+		key, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
+		if derr != nil {
+			continue
+		}
+		out = append(out, ModelEndpoint{
+			Vendor:  c.Vendor,
+			BaseURL: c.BaseURL,
+			APIKey:  key,
+		})
 	}
-	return "", "", apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
+
+	if len(out) == 0 {
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
+	}
+	return out, nil
 }
 
 // ListProviderConfigs returns all provider configs for admin.
@@ -770,9 +818,31 @@ func roundToMultiple(value, step float64) float64 {
 
 func imageGenerationTimeout() time.Duration {
 	// Some image relays hold the request open for several minutes before
-	// sending response headers. Match the frontend's 10-minute abort window
-	// so we do not fail early in the backend.
-	return 10 * time.Minute
+	// sending response headers. Keep the backend aligned with the frontend's
+	// explicit 600-second abort window so we do not fail early locally.
+	return time.Duration(imageGenerationTimeoutSeconds) * time.Second
+}
+
+func videoGenerationTimeout() time.Duration {
+	return time.Duration(videoGenerationTimeoutSeconds) * time.Second
+}
+
+func videoPollInitialDelay() time.Duration {
+	return 8 * time.Second
+}
+
+func videoPollInterval() time.Duration {
+	return 6 * time.Second
+}
+
+func videoPollMaxAttempts() int {
+	timeout := videoGenerationTimeout()
+	initialDelay := videoPollInitialDelay()
+	interval := videoPollInterval()
+	if timeout <= initialDelay {
+		return 1
+	}
+	return 1 + int((timeout-initialDelay)/interval)
 }
 
 func normalizeVolcengineImageQuality(quality string) string {
@@ -861,20 +931,8 @@ func (s *Service) generateImageEdit(ctx context.Context, baseURL, apiKey string,
 				b = decoded
 			}
 		} else if strings.HasPrefix(dataURL, "http://") || strings.HasPrefix(dataURL, "https://") {
-			fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			fr, ferr := http.NewRequestWithContext(fetchCtx, http.MethodGet, dataURL, nil)
-			if ferr != nil {
-				cancel()
-				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build fetch", ferr)
-			}
-			fetchResp, ferr := (&http.Client{Timeout: 30 * time.Second}).Do(fr)
-			if ferr != nil {
-				cancel()
-				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to fetch reference URL", ferr)
-			}
-			b, ferr = io.ReadAll(io.LimitReader(fetchResp.Body, 8*1024*1024))
-			fetchResp.Body.Close()
-			cancel()
+			var ferr error
+			b, ferr = fetchRemoteReferenceBytes(ctx, dataURL)
 			if ferr != nil {
 				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read reference", ferr)
 			}
@@ -1199,6 +1257,7 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 
 const maxRefImageDim = 1920
 const maxRefImageBytes = 4 * 1024 * 1024 // 4 MB JPEG budget
+const remoteReferenceFetchTimeout = 90 * time.Second
 
 // localPathToDataURL reads a local /uploads/... path, downscales if needed,
 // re-encodes as JPEG, and returns a data:image/jpeg;base64,... string.
@@ -1249,6 +1308,38 @@ func localPathToDataURL(rawURL string) (string, error) {
 
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 	return "data:image/jpeg;base64," + encoded, nil
+}
+
+func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, remoteReferenceFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build remote reference request: %w", err)
+	}
+	req.Header.Set("User-Agent", "ccy-canvas/1.0")
+	req.Header.Set("Accept", "image/*,*/*;q=0.8")
+
+	resp, err := (&http.Client{Timeout: remoteReferenceFetchTimeout}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch remote reference: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("remote reference returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("read remote reference body: %w", err)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("remote reference body is empty")
+	}
+	return body, nil
 }
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
@@ -1491,16 +1582,15 @@ func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiK
 	select {
 	case <-ctx.Done():
 		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-	case <-time.After(8 * time.Second):
+	case <-time.After(videoPollInitialDelay()):
 	}
 
-	// Up to ~8 minutes total: 1080p seedance can take 3-5 minutes.
-	for i := 0; i < 80; i++ {
+	for i := 0; i < videoPollMaxAttempts(); i++ {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-			case <-time.After(6 * time.Second):
+			case <-time.After(videoPollInterval()):
 			}
 		}
 
@@ -1562,19 +1652,18 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 	}
 	pollURL := resolveProviderURL(baseURL, strings.ReplaceAll(queryPath, "{taskId}", taskID))
 
-	// Wait 8 seconds before first poll.
 	select {
 	case <-ctx.Done():
 		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-	case <-time.After(8 * time.Second):
+	case <-time.After(videoPollInitialDelay()):
 	}
 
-	for i := 0; i < 60; i++ { // max ~5 minutes
+	for i := 0; i < videoPollMaxAttempts(); i++ {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-			case <-time.After(8 * time.Second):
+			case <-time.After(videoPollInterval()):
 			}
 		}
 

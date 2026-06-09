@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/crypto"
@@ -29,6 +30,55 @@ type fakeRepository struct {
 
 func (r *fakeRepository) GetRelayProvider(context.Context) (*domain.RelayProvider, error) {
 	return r.provider, nil
+}
+
+func TestImageGenerationTimeoutIsSixHundredSeconds(t *testing.T) {
+	if got := imageGenerationTimeout(); got != 600*time.Second {
+		t.Fatalf("imageGenerationTimeout() = %s, want %s", got, 600*time.Second)
+	}
+}
+
+func TestVideoGenerationTimeoutIsNineHundredSeconds(t *testing.T) {
+	if got := videoGenerationTimeout(); got != 900*time.Second {
+		t.Fatalf("videoGenerationTimeout() = %s, want %s", got, 900*time.Second)
+	}
+}
+
+func TestVideoPollMaxAttemptsMatchesTimeoutBudget(t *testing.T) {
+	if got := videoPollMaxAttempts(); got != 149 {
+		t.Fatalf("videoPollMaxAttempts() = %d, want 149", got)
+	}
+}
+
+func TestFetchRemoteReferenceBytes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("fake-image-bytes"))
+	}))
+	defer server.Close()
+
+	got, err := fetchRemoteReferenceBytes(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchRemoteReferenceBytes returned error: %v", err)
+	}
+	if string(got) != "fake-image-bytes" {
+		t.Fatalf("fetchRemoteReferenceBytes bytes = %q, want fake-image-bytes", string(got))
+	}
+}
+
+func TestFetchRemoteReferenceBytesReturnsStatusDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "blocked", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	_, err := fetchRemoteReferenceBytes(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error = %q, want status code context", err.Error())
+	}
 }
 
 func (r *fakeRepository) CreateRelayProvider(context.Context, string, string, string, string) (*domain.RelayProvider, error) {

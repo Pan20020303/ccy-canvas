@@ -25,7 +25,12 @@ import (
 //                turn that's emitted as a `thought` event, giving the user a
 //                preview of intent before any tool runs.
 type Runner struct {
-	LLM       *LLMClient
+	LLM      *LLMClient
+	// Endpoints is the ordered list of upstream providers that serve the model.
+	// Each is tried in turn — see LLMClient.ChatStreamMulti for fallback rules.
+	// BaseURL/APIKey are kept for backward compatibility; if Endpoints is empty
+	// they're synthesized into a single-element list.
+	Endpoints []Endpoint
 	BaseURL   string
 	APIKey    string
 	MaxSteps  int
@@ -86,24 +91,47 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		}
 		stats.Steps = step + 1
 
-		resp, err := r.LLM.Chat(ctx, r.BaseURL, r.APIKey, model, messages, toolDefs)
+		// Stream the upstream response: every text delta is forwarded as a
+		// `message_delta` event in real time. Tool-call fragments accumulate
+		// internally and are returned in `resp` after the stream finishes.
+		endpoints := r.Endpoints
+		if len(endpoints) == 0 {
+			// Backward compat: legacy single-endpoint path.
+			endpoints = []Endpoint{{BaseURL: r.BaseURL, APIKey: r.APIKey}}
+		}
+		var streamedAnyText bool
+		resp, err := r.LLM.ChatStreamMulti(ctx, endpoints, model, messages, toolDefs, func(delta string) {
+			if delta == "" {
+				return
+			}
+			streamedAnyText = true
+			emit("message_delta", map[string]string{"delta": delta})
+		})
 		if err != nil {
 			emit(EventError, map[string]string{"message": err.Error()})
 			return stats, err
 		}
 
-		if resp.Content != "" && len(resp.ToolCalls) > 0 {
-			emit(EventThought, map[string]string{"content": resp.Content})
-		}
-
 		if len(resp.ToolCalls) == 0 {
-			// Stream the final reply token-by-token (simulated chunking for
-			// the case where the upstream doesn't natively stream — gives the
-			// UI a nice typing animation).
-			emitStreamedReply(resp.Content, emit)
+			// No tools requested → the streamed text is the final reply.
+			// If the relay didn't actually stream and onDelta never fired,
+			// fall back to a one-shot message event so the UI sees something.
+			if !streamedAnyText && resp.Content != "" {
+				emit("message_delta", map[string]string{"delta": resp.Content})
+			}
+			emit(EventMessage, map[string]string{"content": resp.Content})
 			stats.FinalReply = resp.Content
 			emit(EventDone, map[string]int{"steps": step + 1})
 			return stats, nil
+		}
+
+		// Tool calls coming next. If the model also wrote some narrative text
+		// before requesting tools, surface it as a `thought` so the user sees
+		// the rationale. The streamed deltas have already painted it into the
+		// UI as a partial assistant bubble; emitting `thought` is for the
+		// timeline view.
+		if resp.Content != "" {
+			emit(EventThought, map[string]string{"content": resp.Content})
 		}
 
 		messages = append(messages, ChatMessage{
@@ -176,22 +204,3 @@ func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {
 	return sanitized
 }
 
-// emitStreamedReply chunks the final reply into ~25-char fragments and emits
-// `message_delta` events, then a final `message` with the full text. The UI
-// can render the deltas live and then snap to the full message for cleanup.
-func emitStreamedReply(content string, emit func(string, any)) {
-	if content == "" {
-		emit(EventMessage, map[string]string{"content": ""})
-		return
-	}
-	const chunkSize = 24
-	runes := []rune(content)
-	for i := 0; i < len(runes); i += chunkSize {
-		end := i + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
-		emit("message_delta", map[string]string{"delta": string(runes[i:end])})
-	}
-	emit(EventMessage, map[string]string{"content": content})
-}
