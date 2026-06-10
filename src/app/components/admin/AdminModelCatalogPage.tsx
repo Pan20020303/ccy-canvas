@@ -273,27 +273,45 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             />
           </Field>
 
-          {/* Video endpoints */}
-          {showSubmitQueryFields && (
-            <>
-              <Field label="提交端点" hint="自定义视频厂商必填，如 /v1/videos/generations">
-                <Input
-                  value={submitEndpoint}
-                  onChange={(e) => setSubmitEndpoint(e.target.value)}
-                  placeholder="自定义视频厂商必填，如 /v1/videos/generations"
-                  className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
-                />
-              </Field>
-              <Field label="查询端点" hint="自定义视频厂商必填，如 /v1/videos/tasks/{taskId}">
-                <Input
-                  value={queryEndpoint}
-                  onChange={(e) => setQueryEndpoint(e.target.value)}
-                  placeholder="自定义视频厂商必填，如 /v1/videos/tasks/{taskId}"
-                  className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
-                />
-              </Field>
-            </>
-          )}
+          {/* Submit / Query endpoints (image + video only). Hints / placeholders
+              switch by service type so an image config doesn't see
+              video-specific copy. For sync image APIs (e.g. RelayBases
+              gpt-image-2) the query endpoint is optional — leave empty. */}
+          {showSubmitQueryFields && (() => {
+            const isImage = serviceType === "image";
+            const submitHint = isImage
+              ? "通常 /images/generations，选择预设厂商后自动填充；同步接口可留空"
+              : "自定义视频厂商必填，如 /v1/videos/generations";
+            const submitPlaceholder = isImage
+              ? "选择预设厂商后自动填充，如 /images/generations"
+              : "自定义视频厂商必填，如 /v1/videos/generations";
+            const queryHint = isImage
+              ? "仅异步图片接口需要，如 /tasks/{taskId}；同步接口（RelayBases / OpenAI）请留空"
+              : "自定义视频厂商必填，如 /v1/videos/tasks/{taskId}";
+            const queryPlaceholder = isImage
+              ? "同步图片接口请留空"
+              : "自定义视频厂商必填，如 /v1/videos/tasks/{taskId}";
+            return (
+              <>
+                <Field label="提交端点" hint={submitHint}>
+                  <Input
+                    value={submitEndpoint}
+                    onChange={(e) => setSubmitEndpoint(e.target.value)}
+                    placeholder={submitPlaceholder}
+                    className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
+                  />
+                </Field>
+                <Field label="查询端点" hint={queryHint}>
+                  <Input
+                    value={queryEndpoint}
+                    onChange={(e) => setQueryEndpoint(e.target.value)}
+                    placeholder={queryPlaceholder}
+                    className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
+                  />
+                </Field>
+              </>
+            );
+          })()}
 
           {/* 模型列表 */}
           <Field label="模型列表" hint="选择预设厂商后自动填入，可编辑；多个用逗号或换行分隔">
