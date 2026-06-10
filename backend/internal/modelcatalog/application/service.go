@@ -992,7 +992,7 @@ func resolveProviderURL(baseURL, endpoint string) string {
 }
 
 func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
-	if isVolcengine(pc) {
+	if ResolveProfile(pc).ID == "ark" {
 		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
 	// Image-to-image (ref + prompt) requires the multipart /images/edits endpoint —
@@ -1011,13 +1011,9 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 // Reference images go in an `image` field (string or []string), not via a
 // separate multipart `/images/edits` endpoint.
 func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
 	size := mapAspectRatioToVolcengineSize(req.Model, req.Size, req.Quality)
-	submitPath := "/images/generations"
-	if pc != nil {
-		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
-			submitPath = p
-		}
-	}
+	submitPath := resolveImageGenPath(pc)
 
 	body := map[string]interface{}{
 		"model":                       req.Model,
@@ -1216,18 +1212,11 @@ func normalizeVolcengineImageQuality(quality string) string {
 }
 
 func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
 	size := mapAspectRatioToOpenAIImageSize(req.Size)
 	quality := normalizeOpenAIImageQuality(req.Quality)
-	submitPath := "/images/generations"
-	queryPath := ""
-	if pc != nil {
-		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
-			submitPath = p
-		}
-		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
-			queryPath = p
-		}
-	}
+	submitPath := resolveImageGenPath(pc)
+	queryPath := resolveImageQueryPath(pc)
 
 	body := map[string]interface{}{
 		"model":         req.Model,
@@ -1276,6 +1265,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 // images actually influence the result. Used whenever the request has at least
 // one reference image.
 func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
 	// Decode and re-encode each reference image as JPEG, downscaled if needed,
 	// using the same pipeline as the text-only flow so we send a sane payload.
 	type refImage struct {
@@ -1283,16 +1273,11 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 		bytes []byte
 	}
 	refs := make([]refImage, 0, len(req.ReferenceImages))
-	submitPath := "/images/edits"
-	queryPath := ""
-	if pc != nil {
-		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
-			submitPath = p
-		}
-		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
-			queryPath = p
-		}
-	}
+	// NOTE: submit_endpoint maps to the GENERATION operation; the edit
+	// path is resolved separately (with sibling derivation) so a config
+	// carrying "/images/generations" no longer hijacks multipart edits.
+	submitPath := resolveImageEditPath(pc)
+	queryPath := resolveImageQueryPath(pc)
 	for i, raw := range req.ReferenceImages {
 		dataURL, err := localPathToDataURL(raw)
 		if err != nil {
@@ -1732,11 +1717,12 @@ func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, erro
 }
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
 	// Volcengine ark uses a different async-task contract (path + payload + status
 	// vocabulary) than the sora-style /videos endpoint. Route only providers that
 	// actually use the Ark task contract, not every custom provider with explicit
 	// submit/query paths.
-	if isVolcengine(pc) || isArkVideoContract(pc) {
+	if ResolveProfile(pc).ID == "ark" {
 		return s.generateVideoArk(ctx, pc, baseURL, apiKey, req)
 	}
 	aspectRatio := req.AspectRatio
@@ -1754,16 +1740,8 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if duration <= 0 {
 		duration = 5
 	}
-	submitPath := "/videos"
-	queryPath := "/videos/{taskId}"
-	if pc != nil {
-		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
-			submitPath = p
-		}
-		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
-			queryPath = p
-		}
-	}
+	submitPath := resolveVideoSubmitPath(pc)
+	queryPath := resolveVideoQueryPath(pc)
 
 	body := map[string]interface{}{
 		"model":        req.Model,
@@ -1847,16 +1825,9 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 // {type:"text"|"image_url", ...} items, and completion is signalled by
 // status=="succeeded" with the URL at content.video_url.
 func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
-	submitPath := "/contents/generations/tasks"
-	queryPath := "/contents/generations/tasks/{taskId}"
-	if pc != nil {
-		if p := strings.TrimSpace(pc.SubmitEndpoint); p != "" {
-			submitPath = p
-		}
-		if p := strings.TrimSpace(pc.QueryEndpoint); p != "" {
-			queryPath = p
-		}
-	}
+	baseURL = resolveProfileBaseURL(pc, baseURL)
+	submitPath := resolveVideoSubmitPath(pc)
+	queryPath := resolveVideoQueryPath(pc)
 	if !strings.HasPrefix(submitPath, "/") {
 		submitPath = "/" + submitPath
 	}
