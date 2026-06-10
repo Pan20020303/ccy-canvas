@@ -1644,7 +1644,10 @@ func localPathToDataURL(rawURL string) (string, error) {
 	if !strings.HasPrefix(rawURL, "/uploads/") {
 		return rawURL, nil
 	}
-	diskPath := filepath.Join("uploads", strings.TrimPrefix(rawURL, "/uploads/"))
+	diskPath, err := resolveUploadDiskPath(rawURL)
+	if err != nil {
+		return "", err
+	}
 
 	f, err := os.Open(diskPath)
 	if err != nil {
@@ -1682,6 +1685,56 @@ func localPathToDataURL(rawURL string) (string, error) {
 
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 	return "data:image/jpeg;base64," + encoded, nil
+}
+
+func resolveUploadDiskPath(rawURL string) (string, error) {
+	rel := strings.TrimSpace(rawURL)
+	rel = strings.TrimPrefix(rel, "/uploads/")
+	rel = strings.TrimPrefix(rel, "uploads/")
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	rel = filepath.Clean(rel)
+	if rel == "." || rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("invalid upload reference path %q", rawURL)
+	}
+
+	candidateRoots := make([]string, 0, 16)
+	if cwd, err := os.Getwd(); err == nil {
+		candidateRoots = appendUploadRootCandidates(candidateRoots, cwd)
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidateRoots = appendUploadRootCandidates(candidateRoots, filepath.Dir(exe))
+	}
+
+	seen := map[string]struct{}{}
+	checked := make([]string, 0, len(candidateRoots))
+	for _, root := range candidateRoots {
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		candidate := filepath.Join(root, "uploads", rel)
+		checked = append(checked, candidate)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("upload reference %q not found; checked %s", rawURL, strings.Join(checked, ", "))
+}
+
+func appendUploadRootCandidates(out []string, start string) []string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		dir = start
+	}
+	for i := 0; i < 6 && dir != ""; i++ {
+		out = append(out, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return out
 }
 
 func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, error) {

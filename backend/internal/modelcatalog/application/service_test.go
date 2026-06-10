@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -84,6 +87,37 @@ func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
 	}
 	if transport.TLSHandshakeTimeout != providerTLSHandshakeTimeout {
 		t.Fatalf("transport.TLSHandshakeTimeout = %s, want %s", transport.TLSHandshakeTimeout, providerTLSHandshakeTimeout)
+	}
+}
+
+func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	uploadsDir := filepath.Join(root, "uploads", "2026-06")
+	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	pngBytes := pngBuf.Bytes()
+	if err := os.WriteFile(filepath.Join(uploadsDir, "ref.png"), pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "backend")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+
+	got, err := localPathToDataURL("/uploads/2026-06/ref.png")
+	if err != nil {
+		t.Fatalf("localPathToDataURL returned error: %v", err)
+	}
+	if !strings.HasPrefix(got, "data:image/jpeg;base64,") {
+		t.Fatalf("localPathToDataURL = %q, want jpeg data URL", got)
 	}
 }
 
