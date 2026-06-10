@@ -28,6 +28,15 @@ if (-not (Test-Path $bin)) {
 # Ensure Postgres container is up
 try { docker start ccy-canvas-postgres 2>$null | Out-Null } catch {}
 
+# Apply idempotent schema migrations before starting the API. This keeps
+# existing server databases in sync after pulling newer backend code.
+$migrationDir = Join-Path $root 'backend\db\migrations'
+if (Test-Path $migrationDir) {
+  Get-ChildItem $migrationDir -Filter '*.sql' | Sort-Object Name | ForEach-Object {
+    Get-Content $_.FullName -Raw | docker exec -i ccy-canvas-postgres psql -U postgres -d ccy_canvas 2>$null | Out-Null
+  }
+}
+
 # Load .env into the child process environment.
 # Use .NET API + explicit UTF-8 reader so BOM bytes never leak into a value.
 $envVars = @{}
