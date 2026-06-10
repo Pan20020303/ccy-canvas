@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -43,7 +44,8 @@ import (
 const (
 	imageGenerationTimeoutSeconds = 600
 	videoGenerationTimeoutSeconds = 900
-	providerTLSHandshakeTimeout   = 30 * time.Second
+	providerTLSHandshakeTimeout   = 60 * time.Second
+	providerRequestMaxAttempts    = 3
 )
 
 // Repository is the persistence port for the model catalog.
@@ -1052,7 +1054,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := client.Do(httpReq)
+	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}
@@ -1180,6 +1182,51 @@ func newProviderHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= providerRequestMaxAttempts; attempt++ {
+		clone := req.Clone(ctx)
+		clone.Body = io.NopCloser(bytes.NewReader(body))
+		clone.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+
+		resp, err := client.Do(clone)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt == providerRequestMaxAttempts || !isRetryableProviderNetworkError(err) {
+			break
+		}
+		delay := time.Duration(attempt*attempt) * time.Second
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func isRetryableProviderNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "server closed") ||
+		strings.Contains(msg, "unexpected eof")
+}
+
 func videoGenerationTimeout() time.Duration {
 	return time.Duration(videoGenerationTimeoutSeconds) * time.Second
 }
@@ -1237,7 +1284,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := client.Do(httpReq)
+	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}
@@ -1340,7 +1387,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := client.Do(httpReq)
+	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, body.Bytes())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}

@@ -90,6 +90,56 @@ func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
 	}
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type timeoutNetError string
+
+func (e timeoutNetError) Error() string   { return string(e) }
+func (e timeoutNetError) Timeout() bool   { return true }
+func (e timeoutNetError) Temporary() bool { return true }
+
+func TestDoProviderRequestWithRetryRetriesTransientNetworkError(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, timeoutNetError("net/http: TLS handshake timeout")
+			}
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != `{"ok":true}` {
+				t.Fatalf("request body = %q", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test/v1/images/edits", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := doProviderRequestWithRetry(context.Background(), client, req, []byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("doProviderRequestWithRetry returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) {
 	root := t.TempDir()
 	uploadsDir := filepath.Join(root, "uploads", "2026-06")
