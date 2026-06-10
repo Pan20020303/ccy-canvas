@@ -4,9 +4,11 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Trash2,
   XCircle,
   Search,
+  Zap,
 } from "lucide-react";
 
 import type {
@@ -21,9 +23,12 @@ import {
   updateProviderConfig,
   deleteProviderConfig,
   toggleProviderConfigStatus,
+  resetChannelHealth,
+  testChannelConnectivity,
   VENDOR_TEMPLATES,
   supportsCustomSubmitQueryEndpoints,
 } from "../../api/providerConfigs";
+import { ChannelHealthBadge } from "./ChannelHealthBadge";
 import { normalizeModelList } from "../../model-config";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -399,6 +404,10 @@ export function AdminModelCatalogPage() {
   const [search, setSearch] = useState("");
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Health management ID-tracking — each operation runs against one row at
+  // a time and shows a spinner while in flight.
+  const [resettingId, setResettingId] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editConfig, setEditConfig] = useState<ProviderConfig | null>(null);
 
@@ -438,6 +447,38 @@ export function AdminModelCatalogPage() {
       setConfigs((prev) => prev.filter((x) => x.id !== c.id));
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const handleResetHealth = async (c: ProviderConfig) => {
+    setResettingId(c.id);
+    try {
+      const updated = await resetChannelHealth(c.id);
+      // Splice the refreshed row in place so the badge updates without a
+      // full reload — UX feels snappier than a network round trip.
+      setConfigs((prev) => prev.map((x) => (x.id === c.id ? updated : x)));
+    } catch (err) {
+      alert("重置渠道健康失败：" + (err as Error).message);
+    } finally {
+      setResettingId(null);
+    }
+  };
+
+  const handleTestConnectivity = async (c: ProviderConfig) => {
+    setTestingId(c.id);
+    try {
+      const report = await testChannelConnectivity(c.id);
+      if (report.ok) {
+        alert(`✓ 连通正常\nHTTP ${report.http_status} · ${report.latency_ms} ms`);
+      } else {
+        alert(
+          `✗ 连通异常\nHTTP ${report.http_status || "—"} · ${report.latency_ms} ms\n${report.error_msg ?? ""}`,
+        );
+      }
+    } catch (err) {
+      alert("测试失败：" + (err as Error).message);
+    } finally {
+      setTestingId(null);
     }
   };
 
@@ -502,7 +543,7 @@ export function AdminModelCatalogPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.06] bg-white/[0.02]">
-              {["服务类型", "厂商", "名称", "Base URL", "默认模型", "优先级", "状态", "操作"].map((h) => (
+              {["服务类型", "厂商", "名称", "Base URL", "默认模型", "优先级", "状态", "健康", "操作"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-neutral-500">
                   {h}
                 </th>
@@ -512,13 +553,13 @@ export function AdminModelCatalogPage() {
           <tbody className="divide-y divide-white/[0.04]">
             {loading ? (
               <tr>
-                <td colSpan={8} className="py-16 text-center text-neutral-500">
+                <td colSpan={9} className="py-16 text-center text-neutral-500">
                   <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-16 text-center text-sm text-neutral-600">
+                <td colSpan={9} className="py-16 text-center text-sm text-neutral-600">
                   {configs.length === 0 ? "暂无配置，点击「新增模型配置」开始" : "无匹配结果"}
                 </td>
               </tr>
@@ -544,9 +585,28 @@ export function AdminModelCatalogPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
+                    <ChannelHealthBadge config={c} />
+                  </td>
+                  <td className="px-4 py-3">
                     <div className="flex items-center gap-3 opacity-0 transition group-hover:opacity-100">
                       <button onClick={() => openEdit(c)} title="编辑" className="text-neutral-500 hover:text-white transition">
                         <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleResetHealth(c)}
+                        disabled={resettingId === c.id}
+                        title="重置渠道健康（清空失败计数 & 冷却）"
+                        className="text-neutral-500 hover:text-emerald-400 disabled:opacity-30 transition"
+                      >
+                        {resettingId === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                      </button>
+                      <button
+                        onClick={() => handleTestConnectivity(c)}
+                        disabled={testingId === c.id}
+                        title="测试连通性"
+                        className="text-neutral-500 hover:text-cyan-400 disabled:opacity-30 transition"
+                      >
+                        {testingId === c.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
                       </button>
                       <button
                         onClick={() => handleToggle(c)}

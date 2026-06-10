@@ -102,6 +102,36 @@ type ProviderConfig struct {
 	Status         string // enabled / disabled
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Channel health (migration 011). FailureCount + LastFailureAt are
+	// updated on every error; CooldownUntil is set when the failure budget
+	// is exhausted (default 3), with the duration growing exponentially each
+	// time the channel re-enters cooldown (capped at MaxCooldown).
+	FailureCount         int32
+	LastFailureAt        *time.Time
+	LastErrorMsg         string
+	LastSuccessAt        *time.Time
+	CooldownUntil        *time.Time
+	ConsecutiveCooldowns int32
+}
+
+// InCooldown reports whether the provider is currently sidelined. A nil
+// CooldownUntil means it has never been cooled, or was explicitly reset.
+func (pc ProviderConfig) InCooldown(now time.Time) bool {
+	return pc.CooldownUntil != nil && pc.CooldownUntil.After(now)
+}
+
+// GenerationAttempt is one upstream HTTP call attempt. Multiple per
+// generation_log when cross-vendor fallback fires.
+type GenerationAttempt struct {
+	ID              string
+	GenerationLogID string
+	ProviderConfigID string // empty when not associated with a configured provider
+	Vendor          string
+	AttemptNumber   int32
+	HTTPStatus      int32 // 0 = no HTTP response (network failure)
+	ErrorMsg        string
+	DurationMs      int32
+	CreatedAt       time.Time
 }
 
 // APIKeyHint returns a masked hint for the API key (e.g. "****abcd").

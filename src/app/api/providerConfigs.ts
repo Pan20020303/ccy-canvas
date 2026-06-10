@@ -25,6 +25,22 @@ export type ProviderConfig = {
   status: "enabled" | "disabled";
   created_at: string;
   updated_at: string;
+  /** Channel-health snapshot (migration 011). Backend populates these so
+   *  admins can see at a glance which channels are sick. */
+  failure_count: number;
+  last_failure_at?: string;
+  last_error_msg?: string;
+  last_success_at?: string;
+  cooldown_until?: string;
+  consecutive_cooldowns: number;
+};
+
+/** Result of POST /api/admin/provider-configs/:id/test */
+export type ChannelTestResult = {
+  ok: boolean;
+  http_status: number;
+  latency_ms: number;
+  error_msg?: string;
 };
 
 /** User app view — minimal info. */
@@ -155,6 +171,18 @@ export function updateProviderConfig(id: string, payload: ProviderConfigPayload)
 
 export function deleteProviderConfig(id: string): Promise<void> {
   return apiClient.delete(`/api/admin/provider-configs/${id}`);
+}
+
+/** POST /api/admin/provider-configs/:id/reset-health — clears failure
+ *  counters and cooldown so the channel re-enters rotation immediately. */
+export function resetChannelHealth(id: string): Promise<ProviderConfig> {
+  return apiClient.post<ProviderConfig>(`/api/admin/provider-configs/${id}/reset-health`);
+}
+
+/** POST /api/admin/provider-configs/:id/test — probes the upstream relay
+ *  to verify credentials + network path. Doesn't consume model quota. */
+export function testChannelConnectivity(id: string): Promise<ChannelTestResult> {
+  return apiClient.post<ChannelTestResult>(`/api/admin/provider-configs/${id}/test`);
 }
 
 export function toggleProviderConfigStatus(id: string): Promise<ProviderConfig> {

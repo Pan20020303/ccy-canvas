@@ -65,6 +65,17 @@ func toProvider(p sqlc.RelayProvider) *domain.RelayProvider {
 	}
 }
 
+// timestampPtr converts a pgtype.Timestamptz to *time.Time so the domain
+// layer can distinguish "never happened" (nil) from "happened in the past"
+// (non-nil but stale) — important for the cooldown / failure tracking.
+func timestampPtr(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	v := t.Time
+	return &v
+}
+
 func toProviderConfig(p sqlc.ProviderConfig) domain.ProviderConfig {
 	return domain.ProviderConfig{
 		ID:             uuidStr(p.ID),
@@ -83,6 +94,13 @@ func toProviderConfig(p sqlc.ProviderConfig) domain.ProviderConfig {
 		Status:         p.Status,
 		CreatedAt:      p.CreatedAt.Time,
 		UpdatedAt:      p.UpdatedAt.Time,
+		// Channel health (migration 011).
+		FailureCount:         p.FailureCount,
+		LastFailureAt:        timestampPtr(p.LastFailureAt),
+		LastErrorMsg:         p.LastErrorMsg,
+		LastSuccessAt:        timestampPtr(p.LastSuccessAt),
+		CooldownUntil:        timestampPtr(p.CooldownUntil),
+		ConsecutiveCooldowns: p.ConsecutiveCooldowns,
 	}
 }
 
@@ -397,4 +415,108 @@ func (r *Repository) ListEnabledProviderConfigs(ctx context.Context) ([]domain.A
 		result = append(result, toAppProviderConfig(row))
 	}
 	return result, nil
+}
+
+// ─── Channel health (migration 011) ─────────────────────────────────────────
+
+func (r *Repository) MarkChannelSuccess(ctx context.Context, providerID string) error {
+	pgID, err := parsePgUUID(providerID)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkChannelSuccess(ctx, pgID)
+}
+
+func (r *Repository) IncrementChannelFailure(ctx context.Context, providerID, errMsg string) (int32, int32, error) {
+	pgID, err := parsePgUUID(providerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	row, err := r.q.IncrementChannelFailure(ctx, pgID, errMsg)
+	if err != nil {
+		return 0, 0, err
+	}
+	return row.FailureCount, row.ConsecutiveCooldowns, nil
+}
+
+func (r *Repository) SetChannelCooldown(ctx context.Context, providerID string, until time.Time) error {
+	pgID, err := parsePgUUID(providerID)
+	if err != nil {
+		return err
+	}
+	return r.q.SetChannelCooldown(ctx, pgID, pgtype.Timestamptz{Time: until, Valid: true})
+}
+
+func (r *Repository) ResetChannelHealth(ctx context.Context, providerID string) error {
+	pgID, err := parsePgUUID(providerID)
+	if err != nil {
+		return err
+	}
+	return r.q.ResetChannelHealth(ctx, pgID)
+}
+
+func (r *Repository) InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error {
+	var logID pgtype.UUID
+	if attempt.GenerationLogID != "" {
+		if id, err := parsePgUUID(attempt.GenerationLogID); err == nil {
+			logID = id
+		}
+	}
+	var provID pgtype.UUID
+	if attempt.ProviderConfigID != "" {
+		if id, err := parsePgUUID(attempt.ProviderConfigID); err == nil {
+			provID = id
+		}
+	}
+	var httpStatus pgtype.Int4
+	if attempt.HTTPStatus > 0 {
+		httpStatus = pgtype.Int4{Int32: attempt.HTTPStatus, Valid: true}
+	}
+	var duration pgtype.Int4
+	if attempt.DurationMs > 0 {
+		duration = pgtype.Int4{Int32: attempt.DurationMs, Valid: true}
+	}
+	_, err := r.q.InsertGenerationAttempt(ctx, sqlc.InsertGenerationAttemptParams{
+		GenerationLogID:  logID,
+		ProviderConfigID: provID,
+		Vendor:           attempt.Vendor,
+		AttemptNumber:    attempt.AttemptNumber,
+		HttpStatus:       httpStatus,
+		ErrorMsg:         attempt.ErrorMsg,
+		DurationMs:       duration,
+	})
+	return err
+}
+
+func (r *Repository) ListGenerationAttemptsByLog(ctx context.Context, logID string) ([]domain.GenerationAttempt, error) {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q.ListGenerationAttemptsByLog(ctx, pgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.GenerationAttempt, 0, len(rows))
+	for _, row := range rows {
+		item := domain.GenerationAttempt{
+			ID:              uuidStr(row.ID),
+			GenerationLogID: uuidStr(row.GenerationLogID),
+			Vendor:          row.Vendor,
+			AttemptNumber:   row.AttemptNumber,
+			ErrorMsg:        row.ErrorMsg,
+			CreatedAt:       row.CreatedAt.Time,
+		}
+		if row.ProviderConfigID.Valid {
+			item.ProviderConfigID = uuidStr(row.ProviderConfigID)
+		}
+		if row.HttpStatus.Valid {
+			item.HTTPStatus = row.HttpStatus.Int32
+		}
+		if row.DurationMs.Valid {
+			item.DurationMs = row.DurationMs.Int32
+		}
+		out = append(out, item)
+	}
+	return out, nil
 }

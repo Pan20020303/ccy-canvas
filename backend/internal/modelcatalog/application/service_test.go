@@ -173,6 +173,22 @@ func (r *fakeRepository) ListEnabledProviderConfigs(context.Context) ([]domain.A
 	return nil, nil
 }
 
+// Channel-health methods — minimal no-op implementations so the fake satisfies
+// the Repository interface. Tests that exercise channel-health rotation will
+// need to either swap in a richer fake or set the fields directly.
+func (r *fakeRepository) MarkChannelSuccess(context.Context, string) error { return nil }
+func (r *fakeRepository) IncrementChannelFailure(context.Context, string, string) (int32, int32, error) {
+	return 0, 0, nil
+}
+func (r *fakeRepository) SetChannelCooldown(context.Context, string, time.Time) error { return nil }
+func (r *fakeRepository) ResetChannelHealth(context.Context, string) error            { return nil }
+func (r *fakeRepository) InsertGenerationAttempt(context.Context, domain.GenerationAttempt) error {
+	return nil
+}
+func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([]domain.GenerationAttempt, error) {
+	return nil, nil
+}
+
 func TestSyncModelsCountsOnlyNewDrafts(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

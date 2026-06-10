@@ -112,6 +112,28 @@ func toProviderStatus(ps domain.ProviderStatus) ProviderStatusResponse {
 	}
 }
 
+// formatPgUUID returns the canonical 36-char hex form of a pgtype.UUID, or
+// an empty string when the value is null. Kept inline so the handler isn't
+// forced to import the skills package just for one helper.
+func formatPgUUID(u pgtype.UUID) string {
+	if !u.Valid {
+		return ""
+	}
+	const hex = "0123456789abcdef"
+	buf := make([]byte, 36)
+	pos := 0
+	for i, b := range u.Bytes {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			buf[pos] = '-'
+			pos++
+		}
+		buf[pos] = hex[b>>4]
+		buf[pos+1] = hex[b&0x0f]
+		pos += 2
+	}
+	return string(buf)
+}
+
 func toHTTPError(err error) error {
 	if err == nil {
 		return nil
@@ -279,6 +301,26 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      adminSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.toggleProviderConfigStatus)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "reset-channel-health",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/provider-configs/{id}/reset-health",
+		Summary:       "Clear failure counters and cooldown so the channel re-enters rotation",
+		Tags:          []string{"Admin", "ProviderConfig"},
+		Security:      adminSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.resetChannelHealth)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "test-channel-connectivity",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/provider-configs/{id}/test",
+		Summary:       "Probe the upstream provider to verify connectivity",
+		Tags:          []string{"Admin", "ProviderConfig"},
+		Security:      adminSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.testChannelConnectivity)
 
 	// --- User App: ProviderConfig ---
 	huma.Register(api, huma.Operation{
@@ -561,6 +603,13 @@ type ProviderConfigItem struct {
 	Status         string   `json:"status"`
 	CreatedAt      string   `json:"created_at"`
 	UpdatedAt      string   `json:"updated_at"`
+	// Channel-health snapshot. Empty timestamps + zero counters = healthy.
+	FailureCount         int32  `json:"failure_count"`
+	LastFailureAt        string `json:"last_failure_at,omitempty"`
+	LastErrorMsg         string `json:"last_error_msg,omitempty"`
+	LastSuccessAt        string `json:"last_success_at,omitempty"`
+	CooldownUntil        string `json:"cooldown_until,omitempty"`
+	ConsecutiveCooldowns int32  `json:"consecutive_cooldowns"`
 }
 
 type AppProviderConfigItem struct {
@@ -574,24 +623,36 @@ type AppProviderConfigItem struct {
 }
 
 func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
+	fmtTime := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format(time.RFC3339)
+	}
 	return ProviderConfigItem{
-		ID:             pc.ID,
-		ServiceType:    pc.ServiceType,
-		Vendor:         pc.Vendor,
-		Name:           pc.Name,
-		APISpec:        pc.APISpec,
-		BaseURL:        pc.BaseURL,
-		APIKeySet:      pc.EncryptedAPIKey != "",
-		APIKeyHint:     pc.APIKeyHint(),
-		SubmitEndpoint: pc.SubmitEndpoint,
-		QueryEndpoint:  pc.QueryEndpoint,
-		ModelList:      pc.ModelList,
-		DefaultModel:   pc.DefaultModel,
-		Priority:       pc.Priority,
-		IsDefault:      pc.IsDefault,
-		Status:         pc.Status,
-		CreatedAt:      pc.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      pc.UpdatedAt.Format(time.RFC3339),
+		ID:                   pc.ID,
+		ServiceType:          pc.ServiceType,
+		Vendor:               pc.Vendor,
+		Name:                 pc.Name,
+		APISpec:              pc.APISpec,
+		BaseURL:              pc.BaseURL,
+		APIKeySet:            pc.EncryptedAPIKey != "",
+		APIKeyHint:           pc.APIKeyHint(),
+		SubmitEndpoint:       pc.SubmitEndpoint,
+		QueryEndpoint:        pc.QueryEndpoint,
+		ModelList:            pc.ModelList,
+		DefaultModel:         pc.DefaultModel,
+		Priority:             pc.Priority,
+		IsDefault:            pc.IsDefault,
+		Status:               pc.Status,
+		CreatedAt:            pc.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:            pc.UpdatedAt.Format(time.RFC3339),
+		FailureCount:         pc.FailureCount,
+		LastFailureAt:        fmtTime(pc.LastFailureAt),
+		LastErrorMsg:         pc.LastErrorMsg,
+		LastSuccessAt:        fmtTime(pc.LastSuccessAt),
+		CooldownUntil:        fmtTime(pc.CooldownUntil),
+		ConsecutiveCooldowns: pc.ConsecutiveCooldowns,
 	}
 }
 
@@ -759,6 +820,50 @@ func (h *Handler) toggleProviderConfigStatus(ctx context.Context, input *toggleP
 	return out, nil
 }
 
+// resetChannelHealth wipes the per-channel failure counters and cooldown so
+// the next request re-includes this provider, regardless of its prior
+// state. Returns the refreshed config so the admin UI can update in place.
+func (h *Handler) resetChannelHealth(ctx context.Context, input *toggleProviderConfigInput) (*providerConfigOutput, error) {
+	if err := h.svc.ResetChannelHealth(ctx, input.ID); err != nil {
+		return nil, toHTTPError(err)
+	}
+	result, err := h.svc.GetProviderConfigByID(ctx, input.ID)
+	if err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &providerConfigOutput{}
+	out.Body.Data = toProviderConfigItem(*result)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type testChannelOutput struct {
+	Body struct {
+		OK          bool   `json:"ok"`
+		HttpStatus  int    `json:"http_status"`
+		LatencyMs   int    `json:"latency_ms"`
+		ErrorMsg    string `json:"error_msg,omitempty"`
+		RequestID   string `json:"request_id"`
+	}
+}
+
+// testChannelConnectivity actively probes the provider with a cheap request
+// (HEAD on the base URL, fallback to GET) to confirm credentials work and
+// the network path is up. Doesn't consume model quota.
+func (h *Handler) testChannelConnectivity(ctx context.Context, input *toggleProviderConfigInput) (*testChannelOutput, error) {
+	report, err := h.svc.TestChannelConnectivity(ctx, input.ID)
+	if err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &testChannelOutput{}
+	out.Body.OK = report.OK
+	out.Body.HttpStatus = report.HTTPStatus
+	out.Body.LatencyMs = report.LatencyMs
+	out.Body.ErrorMsg = report.ErrorMsg
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
 type listAppProviderConfigsOutput struct {
 	Body struct {
 		Data      []AppProviderConfigItem `json:"data"`
@@ -827,6 +932,12 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		}
 	}
 
+	// Pass the log ID so per-attempt rows in generation_attempts link back
+	// to this user-facing log entry (only when the log row was created OK).
+	var logIDStr string
+	if logID.Valid {
+		logIDStr = formatPgUUID(logID)
+	}
 	result, err := h.svc.Generate(ctx, application.GenerateRequest{
 		ServiceType:     input.Body.ServiceType,
 		Model:           input.Body.Model,
@@ -840,6 +951,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceVideo:  input.Body.ReferenceVideo,
 		ReferenceVideos: input.Body.ReferenceVideos,
 		ReferenceMode:   input.Body.ReferenceMode,
+		GenerationLogID: logIDStr,
 	})
 	durationMs := int32(time.Since(startedAt).Milliseconds())
 

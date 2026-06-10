@@ -130,6 +130,29 @@ type ProviderConfig struct {
 	Status          string             `json:"status"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	// Channel-health fields (migration 011_channel_health). Used by the
+	// dynamic routing layer in modelcatalog.application.channel_health to
+	// skip cooled-down providers and recover them after the window expires.
+	FailureCount         int32              `json:"failure_count"`
+	LastFailureAt        pgtype.Timestamptz `json:"last_failure_at"`
+	LastErrorMsg         string             `json:"last_error_msg"`
+	LastSuccessAt        pgtype.Timestamptz `json:"last_success_at"`
+	CooldownUntil        pgtype.Timestamptz `json:"cooldown_until"`
+	ConsecutiveCooldowns int32              `json:"consecutive_cooldowns"`
+}
+
+// GenerationAttempt is one upstream HTTP call to a provider on behalf of a
+// generation_log entry. Multiple rows per log when fallback fires.
+type GenerationAttempt struct {
+	ID               pgtype.UUID        `json:"id"`
+	GenerationLogID  pgtype.UUID        `json:"generation_log_id"`
+	ProviderConfigID pgtype.UUID        `json:"provider_config_id"`
+	Vendor           string             `json:"vendor"`
+	AttemptNumber    int32              `json:"attempt_number"`
+	HttpStatus       pgtype.Int4        `json:"http_status"`
+	ErrorMsg         string             `json:"error_msg"`
+	DurationMs       pgtype.Int4        `json:"duration_ms"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type RelayProvider struct {

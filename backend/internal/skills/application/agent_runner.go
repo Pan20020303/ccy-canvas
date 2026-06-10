@@ -31,6 +31,9 @@ type Runner struct {
 	// BaseURL/APIKey are kept for backward compatibility; if Endpoints is empty
 	// they're synthesized into a single-element list.
 	Endpoints []Endpoint
+	// Health is the optional channel-health reporter. When set, each endpoint
+	// success/failure is recorded so future requests can avoid sick channels.
+	Health    ChannelHealthReporter
 	BaseURL   string
 	APIKey    string
 	MaxSteps  int
@@ -106,7 +109,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			}
 			streamedAnyText = true
 			emit("message_delta", map[string]string{"delta": delta})
-		})
+		}, r.Health)
 		if err != nil {
 			emit(EventError, map[string]string{"message": err.Error()})
 			return stats, err

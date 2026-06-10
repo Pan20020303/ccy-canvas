@@ -138,6 +138,10 @@ export type NodeGenerationParams = {
   quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+  // Video reference variant (Seedance 2.0 tabs). Drives the prompt panel's
+  // reference-slot layout; passed through to the backend as a hint about
+  // how upstream media should be interpreted.
+  referenceVariant?: string;
 };
 
 type UpstreamReferenceMedia = {

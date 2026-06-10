@@ -114,7 +114,11 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	endpoints := make([]skillsapp.Endpoint, 0, len(resolved))
 	for _, ep := range resolved {
-		endpoints = append(endpoints, skillsapp.Endpoint{BaseURL: ep.BaseURL, APIKey: ep.APIKey})
+		endpoints = append(endpoints, skillsapp.Endpoint{
+			ProviderID: ep.ProviderID,
+			BaseURL:    ep.BaseURL,
+			APIKey:     ep.APIKey,
+		})
 	}
 
 	// 4) Set up SSE headers + emitter.
@@ -167,7 +171,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		UserID: userID, AgentID: agent.ID, ConversationID: conversation.ID, UserInput: req.Message,
 	})
 
-	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints}
+	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints, Health: rt.catalogSvc}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 

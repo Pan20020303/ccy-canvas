@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,14 @@ type Repository interface {
 	UpdateProviderConfig(ctx context.Context, pc domain.ProviderConfig) (*domain.ProviderConfig, error)
 	DeleteProviderConfig(ctx context.Context, id string) error
 	ListEnabledProviderConfigs(ctx context.Context) ([]domain.AppProviderConfig, error)
+
+	// Channel health (migration 011).
+	MarkChannelSuccess(ctx context.Context, providerID string) error
+	IncrementChannelFailure(ctx context.Context, providerID, errMsg string) (failureCount, consecutiveCooldowns int32, err error)
+	SetChannelCooldown(ctx context.Context, providerID string, until time.Time) error
+	ResetChannelHealth(ctx context.Context, providerID string) error
+	InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error
+	ListGenerationAttemptsByLog(ctx context.Context, logID string) ([]domain.GenerationAttempt, error)
 }
 
 // Service provides model catalog use cases.
@@ -374,24 +383,42 @@ func (s *Service) ResolveModelEndpoint(ctx context.Context, model string) (baseU
 }
 
 // ModelEndpoint describes one upstream provider that can serve a given model.
+// The ProviderID lets callers report success/failure back to the channel-
+// health layer so the next request can avoid a sick channel.
 type ModelEndpoint struct {
-	Vendor  string
-	BaseURL string
-	APIKey  string
+	ProviderID string
+	Vendor     string
+	BaseURL    string
+	APIKey     string
+	// CooldownUntil is the channel's stored cooldown timestamp (zero if
+	// healthy). When ResolveModelEndpoints falls back to returning ALL
+	// channels because every one is cooled, this is used to sort soonest-
+	// available first.
+	CooldownUntil time.Time
 }
 
-// ResolveModelEndpoints returns every enabled provider that declares the given
-// model, in priority order (sorted by Priority asc, then by config ID for a
-// stable tiebreaker). Callers can iterate this list to implement cross-vendor
-// fallback — if vendor A's request fails with a transient error, retry with
-// vendor B that serves the same model name.
+// ResolveModelEndpoints returns every enabled provider that declares the
+// given model, in priority order. Cooled-down channels are filtered out
+// up front so the next request automatically skips a sick relay.
+//
+// FALLBACK GUARANTEE: when EVERY channel is currently in cooldown (rare
+// disaster scenario where all relays went down at once), this returns the
+// full list anyway, sorted by `cooldown_until` ASC. That way the request
+// at least tries the channel that's closest to recovering, instead of
+// erroring out with "no provider available".
+//
+// Callers iterate this slice for cross-vendor fallback and MUST call
+// `MarkChannelSuccess`/`MarkChannelFailure` on the returned ProviderID so
+// the next request can route around the bad channel.
 func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]ModelEndpoint, error) {
 	configs, err := s.repo.ListProviderConfigs(ctx)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
 
-	out := []ModelEndpoint{}
+	now := time.Now()
+	healthy := []ModelEndpoint{}
+	cooled := []ModelEndpoint{} // fallback pool when every channel is cooled
 	for _, c := range configs {
 		if c.Status != "enabled" {
 			continue
@@ -407,24 +434,40 @@ func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]Mo
 			continue
 		}
 		if c.EncryptedAPIKey == "" {
-			// Skip silently — another provider for the same model may still work.
 			continue
 		}
 		key, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
 		if derr != nil {
 			continue
 		}
-		out = append(out, ModelEndpoint{
-			Vendor:  c.Vendor,
-			BaseURL: c.BaseURL,
-			APIKey:  key,
-		})
+		ep := ModelEndpoint{
+			ProviderID: c.ID,
+			Vendor:     c.Vendor,
+			BaseURL:    c.BaseURL,
+			APIKey:     key,
+		}
+		if c.InCooldown(now) {
+			ep.CooldownUntil = *c.CooldownUntil
+			cooled = append(cooled, ep)
+		} else {
+			healthy = append(healthy, ep)
+		}
 	}
 
-	if len(out) == 0 {
-		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
+	if len(healthy) > 0 {
+		return healthy, nil
 	}
-	return out, nil
+
+	// All-cooled fallback: sort cooled endpoints by soonest recovery time
+	// so we try the channel that's closest to being back online first.
+	if len(cooled) > 0 {
+		sort.SliceStable(cooled, func(i, j int) bool {
+			return cooled[i].CooldownUntil.Before(cooled[j].CooldownUntil)
+		})
+		return cooled, nil
+	}
+
+	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
 }
 
 // ListProviderConfigs returns all provider configs for admin.
@@ -434,6 +477,13 @@ func (s *Service) ListProviderConfigs(ctx context.Context) ([]domain.ProviderCon
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list provider configs", err)
 	}
 	return configs, nil
+}
+
+// GetProviderConfigByID returns a single config or nil when not found.
+// Thin passthrough exposed so the admin handler can refresh a row after
+// mutating its health state.
+func (s *Service) GetProviderConfigByID(ctx context.Context, id string) (*domain.ProviderConfig, error) {
+	return s.repo.GetProviderConfigByID(ctx, id)
 }
 
 // CreateProviderConfig creates a new provider config entry.
@@ -537,6 +587,11 @@ type GenerateRequest struct {
 	ReferenceVideo  string
 	ReferenceVideos []string
 	ReferenceMode   string // auto / start_frame / start_end / image_reference
+	// GenerationLogID is the parent row in generation_logs (when the caller
+	// pre-creates the log before invoking Generate). Used to link each
+	// per-attempt row in generation_attempts back to the request. Empty
+	// string is allowed — attempts are still recorded, just unlinked.
+	GenerationLogID string
 }
 
 // GenerateResult carries the generation result.
@@ -545,57 +600,165 @@ type GenerateResult struct {
 	Content string `json:"content"` // text content or image URL
 }
 
-// Generate finds the matching provider config, decrypts the API key, and calls the vendor.
-func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
-	// Find matching enabled provider config that contains the requested model.
-	configs, err := s.repo.ListProviderConfigs(ctx)
+// candidateChannel is a provider that matched the request's (service_type,
+// model) tuple along with its decrypted API key. Built by buildCandidates
+// so Generate can iterate them for cross-vendor fallback.
+type candidateChannel struct {
+	cfg     *domain.ProviderConfig
+	baseURL string
+	apiKey  string
+}
+
+// buildCandidates returns every healthy (not-in-cooldown) provider that
+// could serve req, in priority order. When every match is in cooldown we
+// fall back to the all-cooled list sorted by soonest recovery — same
+// disaster-recovery posture as ResolveModelEndpoints uses for the agent
+// streaming path.
+func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, error) {
+	configs, err := s.repo.ListProviderConfigs(context.Background())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
-
-	var matched *domain.ProviderConfig
-	for _, c := range configs {
+	now := time.Now()
+	healthy, cooled := []candidateChannel{}, []candidateChannel{}
+	for i := range configs {
+		c := configs[i]
 		if c.Status != "enabled" {
 			continue
 		}
 		if req.ServiceType != "" && c.ServiceType != req.ServiceType {
 			continue
 		}
+		serves := false
 		for _, m := range c.ModelList {
 			if m == req.Model {
-				matched = &c
+				serves = true
 				break
 			}
 		}
-		if matched != nil {
-			break
+		if !serves {
+			continue
+		}
+		if c.EncryptedAPIKey == "" {
+			continue
+		}
+		apiKey, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
+		if derr != nil {
+			continue
+		}
+		cand := candidateChannel{
+			cfg:     &c,
+			baseURL: strings.TrimRight(c.BaseURL, "/"),
+			apiKey:  apiKey,
+		}
+		if c.InCooldown(now) {
+			cooled = append(cooled, cand)
+		} else {
+			healthy = append(healthy, cand)
 		}
 	}
-	if matched == nil {
-		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
+	if len(healthy) > 0 {
+		return healthy, nil
 	}
-	if matched.EncryptedAPIKey == "" {
-		return nil, apperror.New(apperror.CodeInvalidInput, "Provider API key is not configured")
+	if len(cooled) > 0 {
+		sort.SliceStable(cooled, func(i, j int) bool {
+			return cooled[i].cfg.CooldownUntil.Before(*cooled[j].cfg.CooldownUntil)
+		})
+		return cooled, nil
 	}
+	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
+}
 
-	apiKey, err := crypto.Decrypt(s.encryptionKey, matched.EncryptedAPIKey)
-	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to decrypt API key", err)
-	}
-
-	baseURL := strings.TrimRight(matched.BaseURL, "/")
-
-	// Dispatch by service type.
-	switch matched.ServiceType {
+// dispatchToVendor runs ONE attempt against the supplied channel by
+// routing to the existing vendor-specific helper. Centralizes the switch
+// so the fallback loop in Generate doesn't have to duplicate it.
+func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req GenerateRequest) (*GenerateResult, error) {
+	switch c.cfg.ServiceType {
 	case "image":
-		return s.generateImage(ctx, matched, baseURL, apiKey, req)
+		return s.generateImage(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	case "text":
-		return s.generateText(ctx, baseURL, apiKey, req)
+		return s.generateText(ctx, c.baseURL, c.apiKey, req)
 	case "video":
-		return s.generateVideo(ctx, matched, baseURL, apiKey, req)
+		return s.generateVideo(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	default:
-		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", matched.ServiceType))
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", c.cfg.ServiceType))
 	}
+}
+
+// Generate routes the request to a vendor. Image requests get automatic
+// cross-vendor fallback: when the first channel fails with anything other
+// than a CategoryClientFault (bad prompt) we move on to the next candidate
+// and keep going until one succeeds or we exhaust the list. Video/audio
+// retain the previous "first match only" behavior — they're long-running
+// async tasks where mid-flight switching wastes upstream quota. All
+// service types still report success / failure to the channel-health
+// layer so admins can see which vendor is sick in the UI.
+func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
+	candidates, err := s.buildCandidates(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Video / audio: one shot, but still report health + record attempts.
+	if req.ServiceType == "video" || req.ServiceType == "audio" {
+		c := candidates[0]
+		started := time.Now()
+		result, err := s.dispatchToVendor(ctx, c, req)
+		duration := int(time.Since(started).Milliseconds())
+		s.recordChannelOutcome(ctx, req, c, 1, err, duration)
+		return result, err
+	}
+
+	// Image / text: walk every candidate in priority order, stop on success
+	// or on a client-fault (bad input — switching vendors won't help).
+	var lastErr error
+	for i, c := range candidates {
+		started := time.Now()
+		result, err := s.dispatchToVendor(ctx, c, req)
+		duration := int(time.Since(started).Milliseconds())
+		s.recordChannelOutcome(ctx, req, c, i+1, err, duration)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		cat := ClassifyError(httpStatusFromError(err), err.Error())
+		if cat == CategoryClientFault {
+			// User's input is malformed — no point trying other vendors.
+			return nil, err
+		}
+		// Otherwise: try the next candidate (MarkChannelFailure was
+		// already called inside recordChannelOutcome).
+	}
+	return nil, lastErr
+}
+
+// recordChannelOutcome updates the channel's health state AND inserts a
+// generation_attempts row so admins can see exactly which vendor served
+// each request. Called from Generate's fallback loop for every attempt.
+//
+// The current GenerationLogID is not yet threaded here — the generate
+// handler creates a generation_logs row independently. We pass an empty
+// log ID for now; the per-attempt logs are still useful aggregated by
+// (provider, time) even without the back-pointer.
+func (s *Service) recordChannelOutcome(
+	ctx context.Context,
+	req GenerateRequest,
+	c candidateChannel,
+	attemptNumber int,
+	err error,
+	durationMs int,
+) {
+	httpStatus := httpStatusFromError(err)
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+		s.MarkChannelFailure(ctx, c.cfg.ID, ClassifyError(httpStatus, errMsg), errMsg)
+	} else {
+		s.MarkChannelSuccess(ctx, c.cfg.ID)
+	}
+	logID := req.GenerationLogID // empty when not threaded yet
+	s.RecordGenerationAttempt(ctx, logID, c.cfg.ID, c.cfg.Vendor,
+		attemptNumber, httpStatus, durationMs, errMsg)
 }
 
 // isVolcengine returns true when a provider config targets Volcengine ark

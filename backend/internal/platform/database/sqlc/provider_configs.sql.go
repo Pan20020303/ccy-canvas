@@ -11,14 +11,54 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// providerConfigSelectColumns is the ordered column list used by every
+// SELECT that hydrates a full ProviderConfig struct. Centralized so adding
+// channel-health fields doesn't require touching 5 separate query strings
+// and 5 separate Scan() argument lists.
+const providerConfigSelectColumns = `id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+       submit_endpoint, query_endpoint, model_list, default_model,
+       priority, is_default, status, created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_success_at,
+       cooldown_until, consecutive_cooldowns`
+
+// scanProviderConfig populates a ProviderConfig from a row. Matches the
+// column order of providerConfigSelectColumns exactly.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
+	return row.Scan(
+		&dst.ID,
+		&dst.ServiceType,
+		&dst.Vendor,
+		&dst.Name,
+		&dst.ApiSpec,
+		&dst.BaseUrl,
+		&dst.EncryptedApiKey,
+		&dst.SubmitEndpoint,
+		&dst.QueryEndpoint,
+		&dst.ModelList,
+		&dst.DefaultModel,
+		&dst.Priority,
+		&dst.IsDefault,
+		&dst.Status,
+		&dst.CreatedAt,
+		&dst.UpdatedAt,
+		&dst.FailureCount,
+		&dst.LastFailureAt,
+		&dst.LastErrorMsg,
+		&dst.LastSuccessAt,
+		&dst.CooldownUntil,
+		&dst.ConsecutiveCooldowns,
+	)
+}
+
 const createProviderConfig = `-- name: CreateProviderConfig :one
 INSERT INTO provider_configs (service_type, vendor, name, api_spec, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at
-`
+RETURNING ` + providerConfigSelectColumns
 
 type CreateProviderConfigParams struct {
 	ServiceType     string   `json:"service_type"`
@@ -38,39 +78,12 @@ type CreateProviderConfigParams struct {
 
 func (q *Queries) CreateProviderConfig(ctx context.Context, arg CreateProviderConfigParams) (ProviderConfig, error) {
 	row := q.db.QueryRow(ctx, createProviderConfig,
-		arg.ServiceType,
-		arg.Vendor,
-		arg.Name,
-		arg.ApiSpec,
-		arg.BaseUrl,
-		arg.EncryptedApiKey,
-		arg.SubmitEndpoint,
-		arg.QueryEndpoint,
-		arg.ModelList,
-		arg.DefaultModel,
-		arg.Priority,
-		arg.IsDefault,
-		arg.Status,
+		arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.BaseUrl,
+		arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
+		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status,
 	)
 	var i ProviderConfig
-	err := row.Scan(
-		&i.ID,
-		&i.ServiceType,
-		&i.Vendor,
-		&i.Name,
-		&i.ApiSpec,
-		&i.BaseUrl,
-		&i.EncryptedApiKey,
-		&i.SubmitEndpoint,
-		&i.QueryEndpoint,
-		&i.ModelList,
-		&i.DefaultModel,
-		&i.Priority,
-		&i.IsDefault,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
+	err := scanProviderConfig(row, &i)
 	return i, err
 }
 
@@ -84,9 +97,7 @@ func (q *Queries) DeleteProviderConfig(ctx context.Context, id pgtype.UUID) erro
 }
 
 const getProviderConfigByID = `-- name: GetProviderConfigByID :one
-SELECT id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at
+SELECT ` + providerConfigSelectColumns + `
 FROM provider_configs
 WHERE id = $1
 `
@@ -94,52 +105,46 @@ WHERE id = $1
 func (q *Queries) GetProviderConfigByID(ctx context.Context, id pgtype.UUID) (ProviderConfig, error) {
 	row := q.db.QueryRow(ctx, getProviderConfigByID, id)
 	var i ProviderConfig
-	err := row.Scan(
-		&i.ID,
-		&i.ServiceType,
-		&i.Vendor,
-		&i.Name,
-		&i.ApiSpec,
-		&i.BaseUrl,
-		&i.EncryptedApiKey,
-		&i.SubmitEndpoint,
-		&i.QueryEndpoint,
-		&i.ModelList,
-		&i.DefaultModel,
-		&i.Priority,
-		&i.IsDefault,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
+	err := scanProviderConfig(row, &i)
 	return i, err
 }
 
+// ListEnabledProviderConfigsRow intentionally omits encrypted_api_key — used
+// by the user-facing app endpoint where the key MUST NOT leak. Health fields
+// are included since they're public-ish (frontend only displays aggregates).
 const listEnabledProviderConfigs = `-- name: ListEnabledProviderConfigs :many
 SELECT id, service_type, vendor, name, api_spec, base_url,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at
+       priority, is_default, status, created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_success_at,
+       cooldown_until, consecutive_cooldowns
 FROM provider_configs
 WHERE status = 'enabled'
 ORDER BY service_type, priority ASC
 `
 
 type ListEnabledProviderConfigsRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	ServiceType    string             `json:"service_type"`
-	Vendor         string             `json:"vendor"`
-	Name           string             `json:"name"`
-	ApiSpec        string             `json:"api_spec"`
-	BaseUrl        string             `json:"base_url"`
-	SubmitEndpoint string             `json:"submit_endpoint"`
-	QueryEndpoint  string             `json:"query_endpoint"`
-	ModelList      []string           `json:"model_list"`
-	DefaultModel   string             `json:"default_model"`
-	Priority       int32              `json:"priority"`
-	IsDefault      bool               `json:"is_default"`
-	Status         string             `json:"status"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	ID                   pgtype.UUID        `json:"id"`
+	ServiceType          string             `json:"service_type"`
+	Vendor               string             `json:"vendor"`
+	Name                 string             `json:"name"`
+	ApiSpec              string             `json:"api_spec"`
+	BaseUrl              string             `json:"base_url"`
+	SubmitEndpoint       string             `json:"submit_endpoint"`
+	QueryEndpoint        string             `json:"query_endpoint"`
+	ModelList            []string           `json:"model_list"`
+	DefaultModel         string             `json:"default_model"`
+	Priority             int32              `json:"priority"`
+	IsDefault            bool               `json:"is_default"`
+	Status               string             `json:"status"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	FailureCount         int32              `json:"failure_count"`
+	LastFailureAt        pgtype.Timestamptz `json:"last_failure_at"`
+	LastErrorMsg         string             `json:"last_error_msg"`
+	LastSuccessAt        pgtype.Timestamptz `json:"last_success_at"`
+	CooldownUntil        pgtype.Timestamptz `json:"cooldown_until"`
+	ConsecutiveCooldowns int32              `json:"consecutive_cooldowns"`
 }
 
 func (q *Queries) ListEnabledProviderConfigs(ctx context.Context) ([]ListEnabledProviderConfigsRow, error) {
@@ -152,36 +157,21 @@ func (q *Queries) ListEnabledProviderConfigs(ctx context.Context) ([]ListEnabled
 	for rows.Next() {
 		var i ListEnabledProviderConfigsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ServiceType,
-			&i.Vendor,
-			&i.Name,
-			&i.ApiSpec,
-			&i.BaseUrl,
-			&i.SubmitEndpoint,
-			&i.QueryEndpoint,
-			&i.ModelList,
-			&i.DefaultModel,
-			&i.Priority,
-			&i.IsDefault,
-			&i.Status,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.ID, &i.ServiceType, &i.Vendor, &i.Name, &i.ApiSpec, &i.BaseUrl,
+			&i.SubmitEndpoint, &i.QueryEndpoint, &i.ModelList, &i.DefaultModel,
+			&i.Priority, &i.IsDefault, &i.Status, &i.CreatedAt, &i.UpdatedAt,
+			&i.FailureCount, &i.LastFailureAt, &i.LastErrorMsg, &i.LastSuccessAt,
+			&i.CooldownUntil, &i.ConsecutiveCooldowns,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
 const listProviderConfigs = `-- name: ListProviderConfigs :many
-SELECT id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at
+SELECT ` + providerConfigSelectColumns + `
 FROM provider_configs
 ORDER BY service_type, priority ASC, created_at ASC
 `
@@ -195,32 +185,12 @@ func (q *Queries) ListProviderConfigs(ctx context.Context) ([]ProviderConfig, er
 	items := []ProviderConfig{}
 	for rows.Next() {
 		var i ProviderConfig
-		if err := rows.Scan(
-			&i.ID,
-			&i.ServiceType,
-			&i.Vendor,
-			&i.Name,
-			&i.ApiSpec,
-			&i.BaseUrl,
-			&i.EncryptedApiKey,
-			&i.SubmitEndpoint,
-			&i.QueryEndpoint,
-			&i.ModelList,
-			&i.DefaultModel,
-			&i.Priority,
-			&i.IsDefault,
-			&i.Status,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
+		if err := scanProviderConfig(rows, &i); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
 const updateProviderConfig = `-- name: UpdateProviderConfig :one
@@ -240,10 +210,7 @@ SET service_type     = $2,
     status           = $14,
     updated_at       = now()
 WHERE id = $1
-RETURNING id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at
-`
+RETURNING ` + providerConfigSelectColumns
 
 type UpdateProviderConfigParams struct {
 	ID              pgtype.UUID `json:"id"`
@@ -264,39 +231,155 @@ type UpdateProviderConfigParams struct {
 
 func (q *Queries) UpdateProviderConfig(ctx context.Context, arg UpdateProviderConfigParams) (ProviderConfig, error) {
 	row := q.db.QueryRow(ctx, updateProviderConfig,
-		arg.ID,
-		arg.ServiceType,
-		arg.Vendor,
-		arg.Name,
-		arg.ApiSpec,
-		arg.BaseUrl,
-		arg.EncryptedApiKey,
-		arg.SubmitEndpoint,
-		arg.QueryEndpoint,
-		arg.ModelList,
-		arg.DefaultModel,
-		arg.Priority,
-		arg.IsDefault,
-		arg.Status,
+		arg.ID, arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec,
+		arg.BaseUrl, arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
+		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status,
 	)
 	var i ProviderConfig
+	err := scanProviderConfig(row, &i)
+	return i, err
+}
+
+// ─── Channel health: success / failure / reset ─────────────────────────────
+
+// MarkChannelSuccess clears the consecutive-failure counters when a request
+// succeeds. Idempotent — safe to call even if the row was already healthy.
+const markChannelSuccess = `-- name: MarkChannelSuccess :exec
+UPDATE provider_configs
+SET failure_count = 0,
+    last_success_at = now(),
+    consecutive_cooldowns = 0,
+    cooldown_until = NULL,
+    last_error_msg = '',
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) MarkChannelSuccess(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChannelSuccess, id)
+	return err
+}
+
+// IncrementChannelFailure atomically bumps the failure counter and stores
+// the latest error message. Returns the post-increment count so the caller
+// can decide whether to enter cooldown.
+const incrementChannelFailure = `-- name: IncrementChannelFailure :one
+UPDATE provider_configs
+SET failure_count = failure_count + 1,
+    last_failure_at = now(),
+    last_error_msg = $2,
+    updated_at = now()
+WHERE id = $1
+RETURNING failure_count, consecutive_cooldowns
+`
+
+type IncrementChannelFailureRow struct {
+	FailureCount         int32 `json:"failure_count"`
+	ConsecutiveCooldowns int32 `json:"consecutive_cooldowns"`
+}
+
+func (q *Queries) IncrementChannelFailure(ctx context.Context, id pgtype.UUID, errMsg string) (IncrementChannelFailureRow, error) {
+	row := q.db.QueryRow(ctx, incrementChannelFailure, id, errMsg)
+	var r IncrementChannelFailureRow
+	err := row.Scan(&r.FailureCount, &r.ConsecutiveCooldowns)
+	return r, err
+}
+
+// SetChannelCooldown puts a channel into cooldown until the supplied
+// timestamp, resetting failure_count so the counter starts fresh after
+// the cooldown expires. consecutive_cooldowns bumps for exponential backoff.
+const setChannelCooldown = `-- name: SetChannelCooldown :exec
+UPDATE provider_configs
+SET cooldown_until = $2,
+    consecutive_cooldowns = consecutive_cooldowns + 1,
+    failure_count = 0,
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) SetChannelCooldown(ctx context.Context, id pgtype.UUID, until pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, setChannelCooldown, id, until)
+	return err
+}
+
+// ResetChannelHealth wipes ALL health state on the channel. Called from the
+// admin "重置健康" button when an operator knows the underlying provider is
+// fixed and wants to re-include it immediately.
+const resetChannelHealth = `-- name: ResetChannelHealth :exec
+UPDATE provider_configs
+SET failure_count = 0,
+    consecutive_cooldowns = 0,
+    cooldown_until = NULL,
+    last_error_msg = '',
+    last_failure_at = NULL,
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) ResetChannelHealth(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, resetChannelHealth, id)
+	return err
+}
+
+// ─── Generation attempts (per-call audit log) ──────────────────────────────
+
+const insertGenerationAttempt = `-- name: InsertGenerationAttempt :one
+INSERT INTO generation_attempts (
+  generation_log_id, provider_config_id, vendor, attempt_number,
+  http_status, error_msg, duration_ms
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, generation_log_id, provider_config_id, vendor, attempt_number,
+          http_status, error_msg, duration_ms, created_at
+`
+
+type InsertGenerationAttemptParams struct {
+	GenerationLogID  pgtype.UUID `json:"generation_log_id"`
+	ProviderConfigID pgtype.UUID `json:"provider_config_id"`
+	Vendor           string      `json:"vendor"`
+	AttemptNumber    int32       `json:"attempt_number"`
+	HttpStatus       pgtype.Int4 `json:"http_status"`
+	ErrorMsg         string      `json:"error_msg"`
+	DurationMs       pgtype.Int4 `json:"duration_ms"`
+}
+
+func (q *Queries) InsertGenerationAttempt(ctx context.Context, arg InsertGenerationAttemptParams) (GenerationAttempt, error) {
+	row := q.db.QueryRow(ctx, insertGenerationAttempt,
+		arg.GenerationLogID, arg.ProviderConfigID, arg.Vendor, arg.AttemptNumber,
+		arg.HttpStatus, arg.ErrorMsg, arg.DurationMs,
+	)
+	var i GenerationAttempt
 	err := row.Scan(
-		&i.ID,
-		&i.ServiceType,
-		&i.Vendor,
-		&i.Name,
-		&i.ApiSpec,
-		&i.BaseUrl,
-		&i.EncryptedApiKey,
-		&i.SubmitEndpoint,
-		&i.QueryEndpoint,
-		&i.ModelList,
-		&i.DefaultModel,
-		&i.Priority,
-		&i.IsDefault,
-		&i.Status,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.ID, &i.GenerationLogID, &i.ProviderConfigID, &i.Vendor,
+		&i.AttemptNumber, &i.HttpStatus, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt,
 	)
 	return i, err
+}
+
+const listGenerationAttemptsByLog = `-- name: ListGenerationAttemptsByLog :many
+SELECT id, generation_log_id, provider_config_id, vendor, attempt_number,
+       http_status, error_msg, duration_ms, created_at
+FROM generation_attempts
+WHERE generation_log_id = $1
+ORDER BY attempt_number ASC
+`
+
+func (q *Queries) ListGenerationAttemptsByLog(ctx context.Context, logID pgtype.UUID) ([]GenerationAttempt, error) {
+	rows, err := q.db.Query(ctx, listGenerationAttemptsByLog, logID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GenerationAttempt{}
+	for rows.Next() {
+		var i GenerationAttempt
+		if err := rows.Scan(
+			&i.ID, &i.GenerationLogID, &i.ProviderConfigID, &i.Vendor,
+			&i.AttemptNumber, &i.HttpStatus, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
 }

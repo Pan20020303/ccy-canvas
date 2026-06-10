@@ -83,10 +83,13 @@ func (c *LLMClient) Chat(
 	return c.ChatStream(ctx, baseURL, apiKey, model, messages, tools, nil)
 }
 
-// Endpoint identifies one upstream provider candidate.
+// Endpoint identifies one upstream provider candidate. ProviderID lets the
+// runner report per-endpoint success/failure to the channel-health layer
+// so the next request can route around a sick channel.
 type Endpoint struct {
-	BaseURL string
-	APIKey  string
+	ProviderID string
+	BaseURL    string
+	APIKey     string
 }
 
 // ChatStream runs one completion turn against an OpenAI-compatible endpoint
@@ -103,13 +106,26 @@ func (c *LLMClient) ChatStream(
 	tools []ToolDef,
 	onDelta StreamCallback,
 ) (*ChatResponse, error) {
-	return c.ChatStreamMulti(ctx, []Endpoint{{BaseURL: baseURL, APIKey: apiKey}}, model, messages, tools, onDelta)
+	return c.ChatStreamMulti(ctx, []Endpoint{{BaseURL: baseURL, APIKey: apiKey}}, model, messages, tools, onDelta, nil)
+}
+
+// ChannelHealthReporter receives per-endpoint outcomes so the routing
+// layer can update its long-lived health state (failure counters, cooldown
+// windows). Implemented by modelcatalog.application.Service via a small
+// shim — kept as an interface here to avoid the skills package importing
+// modelcatalog (would tangle the layering).
+type ChannelHealthReporter interface {
+	OnEndpointSuccess(ctx context.Context, providerID string)
+	OnEndpointFailure(ctx context.Context, providerID string, httpStatus int, errMsg string)
 }
 
 // ChatStreamMulti tries each endpoint in order, returning the first success.
 // On transient errors (EOF / connection reset / etc.) it retries the same
 // endpoint up to twice; on a hard failure it advances to the next endpoint,
 // implementing cross-vendor fallback for the same model name.
+//
+// If `health` is non-nil, success / failure of each endpoint is reported
+// so future requests can sidestep recently-failed channels (see channel_health).
 //
 // Use this when the model is served by multiple providers (e.g. two relays
 // that both expose `claude-sonnet-4-5`) — calls succeed as long as ANY of
@@ -121,20 +137,26 @@ func (c *LLMClient) ChatStreamMulti(
 	messages []ChatMessage,
 	tools []ToolDef,
 	onDelta StreamCallback,
+	health ChannelHealthReporter,
 ) (*ChatResponse, error) {
 	if len(endpoints) == 0 {
 		return nil, errors.New("no endpoints configured for model")
 	}
 
 	var lastErr error
-	for endpointIdx, ep := range endpoints {
+	for _, ep := range endpoints {
 		const maxAttempts = 3
+		var endpointLastErr error
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, onDelta)
 			if err == nil {
+				if health != nil && ep.ProviderID != "" {
+					health.OnEndpointSuccess(ctx, ep.ProviderID)
+				}
 				return resp, nil
 			}
 			lastErr = err
+			endpointLastErr = err
 			// If the error isn't transient we don't bother retrying the same
 			// endpoint — but we DO continue to the next endpoint if available,
 			// because a 5xx / 401 / etc. from one provider doesn't tell us
@@ -151,9 +173,12 @@ func (c *LLMClient) ChatStreamMulti(
 			case <-time.After(time.Duration(attempt*attempt) * 250 * time.Millisecond):
 			}
 		}
-		// Reached the per-endpoint retry cap — advance to the next provider
-		// candidate. Only when we exhaust ALL of them do we surface lastErr.
-		_ = endpointIdx
+		// Endpoint exhausted — report failure (http status is extracted from
+		// the error string in modelcatalog.ClassifyError; we pass 0 here
+		// because streaming errors typically don't surface a clean status).
+		if health != nil && ep.ProviderID != "" && endpointLastErr != nil {
+			health.OnEndpointFailure(ctx, ep.ProviderID, 0, endpointLastErr.Error())
+		}
 	}
 	return nil, lastErr
 }
