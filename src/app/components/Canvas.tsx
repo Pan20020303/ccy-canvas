@@ -1556,6 +1556,31 @@ const InnerCanvas = () => {
         </div>
       </div>
 
+      {/* Zoom % indicator — read-only pill at the top center of the
+          canvas. Matches NeoWOW's `极简 · NNN%` chip; the "极简" render
+          mode is deferred until a real implementation lands, so for now
+          we surface zoom alone. */}
+      <div className="pointer-events-none absolute left-1/2 top-4 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl tabular-nums">
+        {Math.round(viewport.zoom * 100)}%
+      </div>
+
+      {/* Canvas stats — node / edge / group counts, NeoWOW-style hairline
+          pill in the bottom-right corner. Sits to the left of the Agent
+          FAB so they don't overlap. */}
+      <div className="pointer-events-none absolute bottom-6 right-24 z-30 flex items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl">
+        <span className="tabular-nums">
+          {language === 'zh' ? '节点' : 'Nodes'} {nodes.length}
+        </span>
+        <span className="text-neutral-600">/</span>
+        <span className="tabular-nums">
+          {language === 'zh' ? '边' : 'Edges'} {edges.length}
+        </span>
+        <span className="text-neutral-600">·</span>
+        <span className="tabular-nums">
+          {groups.length} {language === 'zh' ? '分组' : 'groups'}
+        </span>
+      </div>
+
       <SaveAssetDialog />
 
       {/* Agent run panel + toggle FAB (bottom-right) */}

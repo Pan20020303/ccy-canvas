@@ -125,7 +125,7 @@ export const Toolbar = () => {
       mm.add("(prefers-reduced-motion: no-preference)", () => {
         gsap.from(root.children, {
           autoAlpha: 0,
-          x: -14,
+          y: 14,
           duration: 0.36,
           ease: "power2.out",
           stagger: 0.06,
@@ -146,8 +146,8 @@ export const Toolbar = () => {
 
     gsap.fromTo(
       panelRef.current,
-      { autoAlpha: 0, x: -12 },
-      { autoAlpha: 1, x: 0, duration: 0.24, ease: "power2.out" },
+      { autoAlpha: 0, y: 12 },
+      { autoAlpha: 1, y: 0, duration: 0.24, ease: "power2.out" },
     );
   }, [open]);
 
@@ -182,46 +182,45 @@ export const Toolbar = () => {
   const SideBtn = ({ k, icon: Icon, label }: { k: PanelKey; icon: typeof Layers; label: string }) => (
     <button
       onClick={() => toggle(k)}
-      className={`group relative flex items-center justify-center rounded-xl p-3 transition-all ${
+      className={`group relative flex items-center justify-center rounded-full p-2.5 transition-all ${
         open === k ? 'bg-white/10 text-cyan-300' : 'text-neutral-400 hover:bg-white/5 hover:text-cyan-300'
       }`}
     >
-      <Icon className="h-5 w-5" />
-      <div className="pointer-events-none absolute left-full ml-4 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+      <Icon className="h-4 w-4" />
+      <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
         {label}
       </div>
     </button>
   );
 
   return (
-    <div ref={rootRef} className="absolute left-6 top-1/2 z-40 flex -translate-y-1/2 items-start gap-3">
-      <div className="flex flex-col gap-1 rounded-2xl border border-white/10 bg-black/40 p-2 shadow-2xl backdrop-blur-xl">
+    <div ref={rootRef} className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col-reverse items-center gap-3">
+      <div className="flex flex-row items-center gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
         <button
           onClick={() => toggle('add')}
-          className="group relative flex items-center justify-center rounded-xl p-3 transition-all hover:bg-white/10"
+          className="group relative flex items-center justify-center rounded-full p-2.5 transition-all hover:bg-white/10"
         >
           <Plus
-            className={`h-5 w-5 transition-transform duration-300 ease-out ${
+            className={`h-4 w-4 transition-transform duration-300 ease-out ${
               open === 'add' ? 'rotate-45 text-cyan-300' : 'text-cyan-400 group-hover:rotate-45'
             }`}
           />
         </button>
 
-        <div className="my-1 h-px bg-white/10" />
+        <div className="mx-1 h-4 w-px bg-white/10" />
 
         <SideBtn k="projects" icon={Layers} label={language === 'zh' ? '空间 / 项目' : 'Spaces / Projects'} />
         <SideBtn k="assets" icon={Package} label={language === 'zh' ? '资源库' : 'Assets'} />
         <SideBtn k="files" icon={FolderOpen} label={language === 'zh' ? '文件 / 历史' : 'Files / History'} />
 
-        <div className="flex-1" />
-        <div className="my-1 h-px bg-white/10" />
+        <div className="mx-1 h-4 w-px bg-white/10" />
 
         <button
           onClick={() => setSettingsOpen(true)}
-          className="group relative flex items-center justify-center rounded-xl p-3 text-neutral-400 transition-all hover:bg-white/10 hover:text-cyan-300"
+          className="group relative flex items-center justify-center rounded-full p-2.5 text-neutral-400 transition-all hover:bg-white/10 hover:text-cyan-300"
         >
-          <SettingsIcon className="h-5 w-5" />
-          <div className="pointer-events-none absolute left-full ml-4 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+          <SettingsIcon className="h-4 w-4" />
+          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
             {dict.settings}
           </div>
         </button>

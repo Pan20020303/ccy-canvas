@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import gsap from 'gsap';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useViewport } from '@xyflow/react';
 import {
   Type,
   Image as ImageIcon,
@@ -33,6 +33,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
+import { resolveBackendAssetUrl } from '../../reference-media';
+import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
 import { ModelBrandIcon } from '../ModelBrandIcon';
@@ -277,11 +279,21 @@ const MediaParamsPopover = ({
   const hasDurationSlider = template.supportsDuration && template.durationRange && !template.durationOptions?.length;
   const hasDurationOptions = template.supportsDuration && template.durationOptions?.length;
 
+  // Some resolution labels carry a qualitative hint inline (Seedance style).
+  // Falls back to just the raw value when no friendly label exists.
+  const RES_HINTS: Record<string, string> = {
+    '480p': '',
+    '720p': language === 'zh' ? '标清' : 'SD',
+    '1080p': language === 'zh' ? '高清' : 'HD',
+    '2k': '2K',
+    '4k': '4K',
+  };
+
   return (
     <div className="relative nodrag">
       <button
         onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-1.5 rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-300 transition hover:bg-white/5"
+        className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-neutral-300 transition hover:bg-white/[0.06]"
       >
         <LayoutTemplate className="h-3 w-3 text-neutral-400" />
         <span>{labelParts.join(' · ')}</span>
@@ -289,125 +301,97 @@ const MediaParamsPopover = ({
       </button>
       {open ? (
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full left-0 z-20 mb-2 w-[340px] rounded-xl border border-white/10 bg-[#1a1d22]/95 p-4 shadow-2xl backdrop-blur-xl">
-            {/* Aspect Ratio */}
+          {/* Backdrop catches outside-clicks. Higher than the panel container so
+              clicking anywhere outside closes us — including in adjacent nodes. */}
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-0 z-40 mb-3 w-[320px] overflow-hidden rounded-3xl border border-white/8 bg-[#15181d]/85 p-5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]">
+            {/* ── Duration ────────────────────────────────────────────── */}
+            {(hasDurationSlider || hasDurationOptions) ? (
+              <div className="mb-5">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '时长' : 'Duration'}</div>
+                <div className="mb-2 text-2xl font-medium tracking-tight text-white">{duration}s</div>
+                {hasDurationSlider ? (
+                  <>
+                    <input
+                      type="range"
+                      min={template.durationRange!.min}
+                      max={template.durationRange!.max}
+                      step={template.durationRange!.step}
+                      value={duration}
+                      onChange={(event) => onDuration(Number(event.target.value))}
+                      className="prompt-duration-slider w-full accent-white"
+                    />
+                    {/* Tick labels — first / last / every N in between */}
+                    <div className="mt-1 flex justify-between text-[10px] text-neutral-500 tabular-nums">
+                      {(() => {
+                        const r = template.durationRange!;
+                        const ticks: number[] = [];
+                        for (let v = r.min; v <= r.max; v += r.step) ticks.push(v);
+                        return ticks.map((t) => (
+                          <span key={t} className={clsx(t === duration ? 'text-white' : '')}>{t}s</span>
+                        ));
+                      })()}
+                    </div>
+                  </>
+                ) : null}
+                {hasDurationOptions ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {template.durationOptions!.map((opt) => (
+                      <PillButton key={opt} active={opt === duration} onClick={() => onDuration(opt)}>{opt}s</PillButton>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {/* ── Resolution ──────────────────────────────────────────── */}
+            {hasResolution ? (
+              <div className="mb-5">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '分辨率' : 'Resolution'}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {template.resolutionOptions!.map((option) => {
+                    const hint = RES_HINTS[option.toLowerCase()];
+                    return (
+                      <PillButton key={option} active={option === resolution} onClick={() => onResolution(option)}>
+                        {option}{hint ? ` (${hint})` : ''}
+                      </PillButton>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Quality (image only) ────────────────────────────────── */}
+            {hasQuality ? (
+              <div className="mb-5">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '质量' : 'Quality'}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {template.qualityOptions!.map((option) => (
+                    <PillButton key={option} active={option === quality} onClick={() => onQuality(option)}>
+                      {option}
+                    </PillButton>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Aspect ratio ────────────────────────────────────────── */}
             {hasAspect ? (
-              <>
-                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '比例' : 'Ratio'}</div>
-                <div className="mb-4 grid grid-cols-5 gap-2">
+              <div>
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '宽高比' : 'Aspect ratio'}</div>
+                <div className="flex flex-wrap gap-1.5">
                   {template.supportsAutoAspect ? (
-                    <button
-                      onClick={() => onAspectRatio('auto')}
-                      className={clsx(
-                        'col-span-2 flex flex-col items-start justify-center gap-1 rounded-md border p-3 transition',
-                        aspectRatio === 'auto'
-                          ? 'border-white/15 bg-white/10 text-white'
-                          : 'border-transparent text-neutral-400 hover:bg-white/5',
-                      )}
-                    >
-                      <LayoutTemplate className="h-4 w-4" />
-                      <span className="text-xs">{language === 'zh' ? '自适应' : 'Auto'}</span>
-                    </button>
+                    <PillButton active={aspectRatio === 'auto'} onClick={() => onAspectRatio('auto')}>
+                      {language === 'zh' ? '自适应' : 'Auto'}
+                    </PillButton>
                   ) : null}
                   {template.aspectRatioOptions!.map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => onAspectRatio(option)}
-                      className={clsx(
-                        'flex flex-col items-center gap-1 rounded-md border p-1.5 transition',
-                        option === aspectRatio ? 'border-white/15 bg-white/10' : 'border-transparent hover:bg-white/5',
-                      )}
-                    >
-                      <RatioPreview ratio={option} />
-                      <span className="text-[10px] text-neutral-400">{option}</span>
-                    </button>
+                    <PillButton key={option} active={option === aspectRatio} onClick={() => onAspectRatio(option)}>
+                      {ASPECT_LABEL[option] ?? option}
+                    </PillButton>
                   ))}
                 </div>
-              </>
-            ) : null}
-            {/* Resolution */}
-            {hasResolution ? (
-              <>
-                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '清晰度' : 'Resolution'}</div>
-                <div className="mb-4 grid grid-cols-3 gap-2">
-                  {template.resolutionOptions!.map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => onResolution(option)}
-                      className={clsx(
-                        'rounded-lg py-2 text-sm transition',
-                        option === resolution
-                          ? 'border border-white/15 bg-white/10 text-white'
-                          : 'text-neutral-400 hover:bg-white/5',
-                      )}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            {hasQuality ? (
-              <>
-                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '质量' : 'Quality'}</div>
-                <div className="mb-4 grid grid-cols-2 gap-2">
-                  {template.qualityOptions!.map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => onQuality(option)}
-                      className={clsx(
-                        'rounded-lg py-2 text-sm transition',
-                        option === quality
-                          ? 'border border-white/15 bg-white/10 text-white'
-                          : 'text-neutral-400 hover:bg-white/5',
-                      )}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-            {/* Duration — slider */}
-            {hasDurationSlider ? (
-              <>
-                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '视频时长' : 'Duration'}</div>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={template.durationRange!.min}
-                    max={template.durationRange!.max}
-                    step={template.durationRange!.step}
-                    value={duration}
-                    onChange={(event) => onDuration(Number(event.target.value))}
-                    className="flex-1 accent-cyan-400"
-                  />
-                  <span className="text-sm text-neutral-300">{duration}s</span>
-                </div>
-              </>
-            ) : null}
-            {/* Duration — fixed options */}
-            {hasDurationOptions ? (
-              <>
-                <div className="mb-2 text-xs text-neutral-400">{language === 'zh' ? '视频时长' : 'Duration'}</div>
-                <div className={clsx('grid gap-2', template.durationOptions!.length <= 3 ? 'grid-cols-2' : 'grid-cols-3')}>
-                  {template.durationOptions!.map((opt) => (
-                    <button
-                      key={opt}
-                      onClick={() => onDuration(opt)}
-                      className={clsx(
-                        'rounded-lg py-2 text-sm transition',
-                        opt === duration
-                          ? 'border border-white/15 bg-white/10 text-white'
-                          : 'text-neutral-400 hover:bg-white/5',
-                      )}
-                    >
-                      {opt}s
-                    </button>
-                  ))}
-                </div>
-              </>
+              </div>
             ) : null}
           </div>
         </>
@@ -416,7 +400,72 @@ const MediaParamsPopover = ({
   );
 };
 
+/** Pill button used throughout MediaParamsPopover. Captures the glass style:
+ *  inactive = subtle translucent fill; active = white text on a brighter
+ *  ring + soft inner glow that matches the reference design. */
+function PillButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        'rounded-full px-3 py-1.5 text-xs transition',
+        active
+          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
+          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Friendly label for aspect ratios — shows orientation hint for the most
+ *  common values, otherwise falls back to the raw "W:H" string. */
+const ASPECT_LABEL: Record<string, string> = {
+  '16:9': '横屏 (16:9)',
+  '9:16': '竖屏 (9:16)',
+  '1:1':  '方形 (1:1)',
+};
+
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
+
+/** Empty-state placeholder for media generation nodes. Renders a large
+ *  centered icon over a softly-glowing background, with a placeholder
+ *  caption underneath ("输入提示词生成视频" / "输入提示词生成图片" / etc.).
+ *  Matches the design reference (gray hint text under the icon). */
+function MediaEmptyPlaceholder({
+  icon: Icon,
+  zh,
+  className,
+  caption,
+}: {
+  icon: any;
+  zh: boolean;
+  className?: string;
+  caption: { zh: string; en: string };
+}) {
+  return (
+    <div
+      className={clsx(
+        'flex flex-col items-center justify-center gap-3 rounded-[12px] border text-neutral-500',
+        className,
+      )}
+    >
+      <Icon className="h-7 w-7 text-neutral-600" />
+      <span className="text-[12px] text-neutral-500">
+        {zh ? caption.zh : caption.en}
+      </span>
+    </div>
+  );
+}
 
 /** Render text with inline mention thumbnails. Splits on `[@xxx]` tags. */
 function renderMentionRichText(text: string, mentions: { tag: string; id: string; thumb: string }[]): React.ReactNode {
@@ -505,11 +554,13 @@ const getAspectRatioClass = (aspectRatio: string | undefined, fallback: string) 
   }
 };
 
-// All node types now share a neutral shell; semantic color is removed from the outer frame.
+// Flat dark shell — no gradients, no inner ring. Selected = single hairline ring.
+// Bg sits a touch above canvas (#0a0a0a); border kept very faint so the card
+// reads from value contrast rather than a stroked outline.
 const NEUTRAL_NODE_SHELL = {
-  shell: 'border-white/10 before:from-white/[0.05] before:to-transparent shadow-[0_18px_48px_-28px_rgba(0,0,0,0.85)]',
-  selected: 'shadow-[0_0_0_1px_rgba(255,255,255,0.22),0_20px_56px_-28px_rgba(0,0,0,0.92)]',
-  surface: 'border-white/8 bg-[linear-gradient(180deg,rgba(42,42,42,0.92),rgba(29,29,29,0.96))]',
+  shell: 'border-white/8 shadow-[0_6px_20px_-14px_rgba(0,0,0,0.7)]',
+  selected: 'shadow-[inset_0_0_0_1.5px_rgba(255,255,255,0.38)]',
+  surface: 'border-white/8 bg-[#23242a]',
 } as const;
 
 const NODE_TONE_STYLES = {
@@ -625,6 +676,13 @@ const PromptPanel = ({
   serviceType: ServiceType;
   fallbackModel: string;
 }) => {
+  // The prompt panel renders at a FIXED screen size regardless of canvas
+  // zoom: at 50% zoom the panel would otherwise shrink to half size and
+  // become unreadable. We counter-scale by `1 / viewport.zoom` so the
+  // visual size stays constant. The 0×0 anchor + absolute child pattern
+  // keeps the surrounding layout from being warped by the scale.
+  const viewport = useViewport();
+  const inverseZoom = 1 / (viewport.zoom || 1);
   const language = useStore((state) => state.language);
   const edges = useStore((state) => state.edges);
   const allNodes = useStore((state) => state.nodes);
@@ -632,8 +690,16 @@ const PromptPanel = ({
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
   const updateNodeData = useStore((state) => state.updateNodeData);
-  const upstreamIds = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
-  const upstreamNodes = useMemo(() => upstreamIds.map((id, idx) => {
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const onEdgesChange = useStore((state) => state.onEdgesChange);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Keep the full edge so the strip can wire the disconnect button to a
+  // specific edge id instead of guessing one from (source,target).
+  const upstreamEdges = edges.filter((edge) => edge.target === nodeId);
+  const upstreamIds = upstreamEdges.map((edge) => edge.source);
+  const upstreamNodes = useMemo(() => upstreamEdges.map((edge, idx) => {
+    const id = edge.source;
     const n = allNodes.find((node) => node.id === id);
     const d = (n?.data ?? {}) as Record<string, string>;
     const type = n?.type ?? '';
@@ -642,8 +708,8 @@ const PromptPanel = ({
     const thumb = d.url || d.thumbnail || '';
     const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : `节点 ${idx + 1}`;
     const icon = isImage ? '图' : isVideo ? '视' : '节';
-    return { id, type, thumb, label, icon };
-  }), [upstreamIds, allNodes]);
+    return { id, edgeId: edge.id, type, thumb, label, icon, index: idx + 1 };
+  }), [upstreamEdges, allNodes]);
 
   const currentNode = allNodes.find((node) => node.id === nodeId);
   const params = getNodeParams(currentNode?.data);
@@ -671,6 +737,20 @@ const PromptPanel = ({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const compactOverlayRef = useRef<HTMLDivElement>(null);
   const expandedOverlayRef = useRef<HTMLDivElement>(null);
+
+  // Esc closes the expanded modal — the X button alone is too easy to miss
+  // when the panel has no preview yet and the textarea fills the surface.
+  useEffect(() => {
+    if (!expanded) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', handleKey, true);
+    return () => window.removeEventListener('keydown', handleKey, true);
+  }, [expanded]);
 
   const enabledConfigs = useMemo(
     () => backendModels
@@ -935,23 +1015,93 @@ const PromptPanel = ({
     overlay.scrollLeft = textarea.scrollLeft;
   };
 
-  // Preview strip above the textarea: each upstream node gets a thumbnail
-  // + its `@tag` label, so the user can map "this image" → "this mention"
-  // without needing the chip in the textarea to embed the picture (which
-  // would break caret alignment).
-  const previewStrip = upstreamNodes.length ? (
-    <div className="prompt-editor-scroll mb-3 flex items-center gap-2 overflow-x-auto pb-1">
+  // Video service type gets a reference-mode tab strip à la Seedance 2.0:
+  // each tab represents a different way of supplying references (first/last
+  // keyframes, multi-image consistency, motion mimicking, etc.). The chosen
+  // mode is persisted in node.generationParams.referenceVariant and surfaced
+  // to the backend via the generate request.
+  const videoReferenceModes = serviceType === 'video' ? [
+    { key: 'first-last',    label: language === 'zh' ? '首尾帧'    : 'First / Last' },
+    { key: 'multi-image',   label: language === 'zh' ? '多图参考'  : 'Multi-image'   },
+    { key: 'motion-mimic',  label: language === 'zh' ? '动作模仿'  : 'Motion mimic'  },
+    { key: 'all-in-one',    label: language === 'zh' ? '全能参考'  : 'All-in-one'    },
+    { key: 'video-edit',    label: language === 'zh' ? '视频编辑'  : 'Video edit'    },
+  ] : [];
+  const activeReferenceMode = (params.referenceVariant as string) || (videoReferenceModes[0]?.key ?? '');
+
+  const referenceTabs = videoReferenceModes.length ? (
+    <div className="mb-3 flex items-center gap-1 overflow-x-auto pb-0.5">
+      {videoReferenceModes.map((m) => {
+        const isActive = m.key === activeReferenceMode;
+        return (
+          <button
+            key={m.key}
+            type="button"
+            onClick={() => updateNodeGenerationParams(nodeId, { referenceVariant: m.key })}
+            className={clsx(
+              'shrink-0 rounded-full px-3 py-1 text-xs transition',
+              isActive
+                ? 'bg-white/15 text-white ring-1 ring-white/30'
+                : 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/8 hover:bg-white/[0.06] hover:text-neutral-200',
+            )}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  /** Confirm handler for the asset picker. Two sources flow in:
+   *  - source: 'history' → spawn a reference node + connect upstream
+   *  - source: 'canvas'  → just connect the existing node upstream
+   *    (no node duplication; the original lives once on the canvas)
+   *  Both paths use the same edge creation, keeping the generation
+   *  pipeline blind to where the reference came from. */
+  const handlePickerConfirm = useCallback((picked: PickedAsset[]) => {
+    if (!picked.length) return;
+    const self = allNodes.find((n) => n.id === nodeId);
+    const base = self?.position ?? { x: 0, y: 0 };
+    picked.forEach((item, index) => {
+      if (item.source === 'canvas') {
+        // Resolve the actual node id from the synthetic picker id.
+        const rawId = item.id.replace(/^canvas-/, '');
+        if (!rawId || rawId === nodeId) return;
+        // Skip if an edge already exists between rawId → this node.
+        if (allNodes.length && edges.some((edge) => edge.source === rawId && edge.target === nodeId)) return;
+        onConnect({ source: rawId, target: nodeId, sourceHandle: null, targetHandle: null } as never);
+        return;
+      }
+      // History source: materialise a reference node next to ourselves.
+      if (!item.url) return;
+      const refId = `ref-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 4)}`;
+      const isVideo = item.kind === 'video';
+      addNode({
+        id: refId,
+        type: isVideo ? 'referenceVideoNode' : 'referenceImageNode',
+        position: { x: base.x - 340, y: base.y + index * 60 },
+        data: { url: item.url, status: 'done', sourceName: item.title },
+      } as never);
+      onConnect({ source: refId, target: nodeId, sourceHandle: null, targetHandle: null } as never);
+    });
+    setPickerOpen(false);
+  }, [addNode, allNodes, edges, nodeId, onConnect]);
+
+  // Preview strip above the textarea: each upstream node renders as a
+  // square thumbnail with a numbered badge in the corner. Hovering shows
+  // a delete X that removes the EDGE (the upstream node itself stays on
+  // canvas). Trailing dashed `+` slot opens the asset picker. NeoWOW
+  // layout: all items same size in one flex row, no labels below.
+  const previewStrip = (
+    <div className="prompt-editor-scroll mb-3 flex items-center gap-2 overflow-x-auto px-1 py-2">
       {upstreamNodes.map((up) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id);
         const isUsed = Boolean(matched);
         return (
           <div
-            key={up.id}
-            className={clsx(
-              "shrink-0 flex flex-col items-center gap-1 transition",
-              isUsed ? "opacity-100" : "opacity-60 hover:opacity-100",
-            )}
+            key={up.edgeId}
+            className="group/ref relative shrink-0"
             title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
           >
             {up.thumb ? (
@@ -959,27 +1109,51 @@ const PromptPanel = ({
                 src={up.thumb}
                 alt=""
                 className={clsx(
-                  "h-10 w-10 rounded-lg object-cover transition",
-                  isUsed ? "ring-2 ring-cyan-400/50" : "",
+                  'h-12 w-12 rounded-lg object-cover transition',
+                  isUsed ? 'ring-2 ring-cyan-400/50' : 'opacity-80',
                 )}
                 draggable={false}
               />
             ) : (
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400">
+              <div
+                className={clsx(
+                  'flex h-12 w-12 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition',
+                  isUsed && 'ring-2 ring-cyan-400/50',
+                )}
+              >
                 {up.icon}
               </div>
             )}
-            <span className={clsx(
-              "text-[10px] font-mono tabular-nums",
-              isUsed ? "text-cyan-300" : "text-neutral-500",
-            )}>
-              {matched?.tag ?? tag}
-            </span>
+            {/* Index badge — NeoWOW shows the order of references in
+                the corner of each thumbnail. Hidden when the delete
+                button is visible to avoid stacking. */}
+            <div className="pointer-events-none absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-black/85 px-1 text-[10px] font-medium text-white shadow group-hover/ref:opacity-0">
+              {up.index}
+            </div>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdgesChange([{ id: up.edgeId, type: 'remove' }] as never);
+              }}
+              className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 shadow transition group-hover/ref:opacity-100 hover:bg-rose-400"
+              title={language === 'zh' ? '移除引用' : 'Disconnect reference'}
+            >
+              <X className="h-2.5 w-2.5" strokeWidth={3} />
+            </button>
           </div>
         );
       })}
+      <button
+        type="button"
+        onClick={() => setPickerOpen(true)}
+        className="shrink-0 flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-white/15 bg-white/[0.02] text-neutral-400 transition hover:border-white/30 hover:bg-white/[0.05] hover:text-neutral-200"
+        title={language === 'zh' ? '从素材库添加引用' : 'Add reference from library'}
+      >
+        <Plus className="h-4 w-4" />
+      </button>
     </div>
-  ) : null;
+  );
 
   const renderPromptEditor = (expandedMode = false) => {
     const overlayRef = expandedMode ? expandedOverlayRef : compactOverlayRef;
@@ -1105,29 +1279,52 @@ const PromptPanel = ({
 
   return (
     <>
-      <div className="relative mt-6 -ml-[80px] w-[520px] rounded-2xl border border-white/[0.06] bg-[#15181d]/92 px-5 py-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.8)] backdrop-blur-2xl nodrag">
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="absolute right-4 top-4 z-10 flex h-7 w-7 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
-          title="放大"
+      {/* Anchor stays in normal flow but contributes no extra width — the
+          actual panel below is absolutely-positioned and counter-scaled so
+          it renders at fixed screen size regardless of canvas zoom.
+          The gap below the node is set in SCREEN pixels (divided by zoom
+          so the gap is constant on screen at any zoom level). The
+          transform-origin of `top center` keeps the panel anchored to the
+          node's bottom-center as it scales. */}
+      <div className="relative" style={{ height: 0, marginTop: `${16 * inverseZoom}px` }}>
+        <div
+          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-2xl border border-white/[0.06] bg-[#15181d]/92 px-5 py-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.8)] backdrop-blur-2xl nodrag"
+          style={{
+            transform: `translateX(-50%) scale(${inverseZoom})`,
+            transformOrigin: 'top center',
+          }}
         >
-          <Expand className="h-3.5 w-3.5" />
-        </button>
-        {previewStrip}
-        {renderPromptEditor(false)}
-        {bottomControls}
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="absolute right-4 top-4 z-10 flex h-7 w-7 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
+            title="放大"
+          >
+            <Expand className="h-3.5 w-3.5" />
+          </button>
+          {referenceTabs}
+          {previewStrip}
+          {renderPromptEditor(false)}
+          {bottomControls}
+        </div>
       </div>
       {expanded ? createPortal(
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm">
-          <div className="relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 bg-[#1a1d22]/96 px-6 py-5 shadow-2xl">
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm"
+          onClick={() => setExpanded(false)}
+        >
+          <div
+            className="relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 bg-[#1a1d22]/96 px-6 py-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
             <button
               type="button"
               onClick={() => setExpanded(false)}
-              className="absolute right-5 top-5 flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
+              className="absolute right-5 top-5 z-10 flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
             >
               <X className="h-4 w-4" />
             </button>
+            {referenceTabs}
             {previewStrip}
             {renderPromptEditor(true)}
             {bottomControls}
@@ -1135,6 +1332,11 @@ const PromptPanel = ({
         </div>,
         document.body,
       ) : null}
+      <AssetPickerModal
+        isOpen={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onConfirm={handlePickerConfirm}
+      />
     </>
   );
 };
@@ -1206,10 +1408,10 @@ const BaseNode = ({
           {topFloatingPanel}
         </div>
       ) : null}
-      <div className="mb-2 flex items-center justify-between gap-3 pl-1 text-[11px] text-neutral-400">
+      <div className="mb-1.5 flex items-center justify-between gap-3 text-[11.5px] text-neutral-200">
         <div className="flex min-w-0 items-center gap-1.5">
-          <Icon className="h-3 w-3 shrink-0" />
-          <div className="min-w-0">{title}</div>
+          <Icon className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
+          <div className="min-w-0 font-medium tracking-wide">{title}</div>
         </div>
         {headerRight ? <div className="shrink-0 text-[10px] text-neutral-500">{headerRight}</div> : null}
       </div>
@@ -1218,9 +1420,9 @@ const BaseNode = ({
         <div
           ref={shellRef}
           className={clsx(
-            'relative overflow-hidden rounded-[22px] border bg-[linear-gradient(180deg,rgba(29,34,42,0.82),rgba(15,18,24,0.74))] text-neutral-100 transition-all duration-200 backdrop-blur-2xl supports-[backdrop-filter]:bg-[linear-gradient(180deg,rgba(29,34,42,0.62),rgba(15,18,24,0.56))] before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-16 before:bg-gradient-to-b after:pointer-events-none after:absolute after:inset-[1px] after:rounded-[20px] after:border after:border-white/[0.03]',
+            'relative overflow-hidden rounded-[14px] border bg-[#1e1f24] text-neutral-100 transition-shadow duration-150',
             toneStyles.shell,
-            selected ? toneStyles.selected : 'shadow-[0_16px_50px_-32px_rgba(0,0,0,0.9)]',
+            selected && toneStyles.selected,
           )}
           >
           <div>{children}</div>
@@ -1233,25 +1435,40 @@ const BaseNode = ({
         <Handle
           type="target"
           position={Position.Left}
-          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[22px] !border-0 !bg-transparent !opacity-0"
+          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
           style={{ transform: 'none', pointerEvents: isConnectionDragging ? 'auto' : 'none' }}
         />
-        <div
+        {/* Four-way quick-connect. Each side gets a source Handle (drag to
+            connect) wrapping a `+` bubble that, on click, spawns a default
+            downstream node in that direction and links it. Existing edges
+            persisted with `sourceHandle: null` continue to resolve through
+            the first matching source — keeping the right side first
+            preserves legacy behavior. Bubbles fade in on hover OR when the
+            node is the sole selection. */}
+        {/* Left + handle — a real target so users can drop incoming
+            connections explicitly on the input port. The full-area target
+            handle above still catches drops anywhere on the card, so this
+            small visible port is purely additive. */}
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="qc-target-left"
           className={clsx(
-            'pointer-events-none absolute left-0 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100',
-            selected && '!opacity-100',
+            '!h-6 !w-6 !-left-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
+            selected && !multiSelectActive && '!opacity-100',
           )}
+          style={{ transform: 'translate(0, -50%)' }}
         >
-          <div className="flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
+          <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
             <Plus className="h-3 w-3 text-neutral-300" />
           </div>
-        </div>
+        </Handle>
         <Handle
           type="source"
           position={Position.Right}
           className={clsx(
-            '!h-6 !w-6 !-right-3 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
-            selected && '!opacity-100',
+            '!h-6 !w-6 !-right-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
+            selected && !multiSelectActive && '!opacity-100',
           )}
           style={{ transform: 'translate(0, -50%)' }}
         >
@@ -1438,7 +1655,7 @@ export const TextNode = ({ id, data, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
-      <div className={clsx('w-full min-h-[88px] rounded-[20px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
+      <div className={clsx('w-full min-h-[88px] rounded-[12px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
         {data.content || (language === 'zh' ? '输入文本后结果会出现在这里...' : 'Generated text will appear here...')}
       </div>
     </BaseNode>
@@ -1489,15 +1706,18 @@ export const ImageNode = ({ id, data, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
           onDoubleClick={() => setPreview(true)}
         >
           <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" onLoad={handleImageLoad} />
         </div>
       ) : (
-        <div className={clsx('flex items-center justify-center rounded-[20px] border text-orange-100/45', NODE_TONE_STYLES.image.surface, aspectClass)}>
-          <ImageIcon className="h-6 w-6" />
-        </div>
+        <MediaEmptyPlaceholder
+          icon={ImageIcon}
+          zh={language === 'zh'}
+          className={clsx(NODE_TONE_STYLES.image.surface, aspectClass)}
+          caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
+        />
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
@@ -1745,7 +1965,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       >
         <div
           className={clsx(
-            'relative flex items-center justify-center overflow-hidden rounded-[20px] border text-violet-100/40',
+            'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
             aspectClass,
             data.url && 'cursor-zoom-in',
@@ -1782,7 +2002,12 @@ export const VideoNode = ({ id, data, selected }: any) => {
           ) : data.poster ? (
             <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
-          {!data.url ? <Video className="relative z-10 h-6 w-6" /> : null}
+          {!data.url ? (
+            <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">
+              <Video className="h-7 w-7 text-neutral-600" />
+              <span className="text-[12px]">{language === 'zh' ? '输入提示词生成视频' : 'Enter a prompt to generate'}</span>
+            </div>
+          ) : null}
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -1810,7 +2035,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[20px] border cursor-zoom-in",
+          "relative overflow-hidden rounded-[12px] border cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
           mediaAspectRatio ? "min-h-[120px]" : "aspect-video",
         )}
@@ -1863,7 +2088,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[20px] border cursor-zoom-in",
+          "relative overflow-hidden rounded-[12px] border cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
           mediaAspectRatio ? "min-h-[120px]" : "aspect-video",
         )}
@@ -1918,7 +2143,7 @@ export const AudioNode = ({ id, data, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
-      <div className={clsx('flex items-center space-x-3 rounded-[20px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+      <div className={clsx('flex items-center space-x-3 rounded-[12px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/18">
           <Music className="h-3.5 w-3.5 text-emerald-300" />
         </div>
@@ -1953,7 +2178,7 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
-      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[20px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
+      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
         {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
       </div>
     </BaseNode>
@@ -1975,7 +2200,7 @@ const RenamableTextNode = ({ id, data: rawData, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
-      <div className={clsx('w-full min-h-[88px] rounded-[20px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
+      <div className={clsx('w-full min-h-[88px] rounded-[12px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
         {data.content || (language === 'zh' ? '输入文本后结果会出现在这里...' : 'Generated text will appear here...')}
       </div>
     </BaseNode>
@@ -2044,7 +2269,7 @@ function ResilientImage({
           setFailed(false);
           setBust((n) => n + 1);
         }}
-        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[20px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
+        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[12px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
         title={src}
       >
         <ImageOff className="h-5 w-5" />
@@ -2115,7 +2340,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative overflow-hidden rounded-[20px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
           onDoubleClick={() => setPreview(true)}
         >
           <ResilientImage
@@ -2126,9 +2351,12 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
           />
         </div>
       ) : (
-        <div className={clsx('flex items-center justify-center rounded-[20px] border text-orange-100/45', NODE_TONE_STYLES.image.surface, aspectClass)}>
-          <ImageIcon className="h-6 w-6" />
-        </div>
+        <MediaEmptyPlaceholder
+          icon={ImageIcon}
+          zh={language === 'zh'}
+          className={clsx(NODE_TONE_STYLES.image.surface, aspectClass)}
+          caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
+        />
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
@@ -2220,7 +2448,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>
         <div
           className={clsx(
-            'relative flex items-center justify-center overflow-hidden rounded-[20px] border text-violet-100/40',
+            'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
             aspectClass,
             data.url && 'cursor-zoom-in',
@@ -2257,7 +2485,12 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
           ) : data.poster ? (
             <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
-          {!data.url ? <Video className="relative z-10 h-6 w-6" /> : null}
+          {!data.url ? (
+            <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">
+              <Video className="h-7 w-7 text-neutral-600" />
+              <span className="text-[12px]">{language === 'zh' ? '输入提示词生成视频' : 'Enter a prompt to generate'}</span>
+            </div>
+          ) : null}
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -2281,7 +2514,7 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
-      <div className={clsx('flex items-center space-x-3 rounded-[20px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+      <div className={clsx('flex items-center space-x-3 rounded-[12px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/18">
           <Music className="h-3.5 w-3.5 text-emerald-300" />
         </div>
@@ -2318,7 +2551,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
-      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[20px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
+      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
         {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
       </div>
     </BaseNode>
@@ -2389,8 +2622,9 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       ? '当前没有可用的视觉模型'
       : undefined;
 
-  /** Floating formatting toolbar shown above the node when actively editing. */
-  const editorToolbar = activeMode === 'editor' && isEditing ? (
+  /** Formatting toolbar markup — reused both as the floating bar above
+   *  the selected node and inside the fullscreen editor modal. */
+  const renderEditorToolbar = () => (
     <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
       {([
         { Icon: Highlighter, key: 'bg', title: language === 'zh' ? '高亮背景色' : 'Highlight', onClick: () => exec('hiliteColor', '#fde68a') },
@@ -2423,7 +2657,11 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
           )
       ))}
     </div>
-  ) : undefined;
+  );
+
+  const editorToolbar = activeMode === 'editor' && (isEditing || selected)
+    ? renderEditorToolbar()
+    : undefined;
 
   return (
     <BaseNode
@@ -2440,11 +2678,26 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
           'nodrag nopan space-y-2 p-3 text-sm',
           // Only apply the inner-bordered "surface" frame in non-editor modes.
           // In editor mode the contentEditable sits flush on the BaseNode shell.
-          activeMode !== 'editor' && clsx('rounded-[20px] border shadow-inner', NODE_TONE_STYLES.text.surface),
+          activeMode !== 'editor' && clsx('rounded-[12px] border shadow-inner', NODE_TONE_STYLES.text.surface),
         )}
         onMouseDown={stopNodeGesture}
         onPointerDown={stopNodeGesture}
         onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => {
+          // Double-click anywhere on the text node → open fullscreen editor.
+          // We don't gate on activeMode because the chooser surface also
+          // benefits from entering fullscreen directly. The handler runs
+          // BEFORE the contentEditable's native word-select, so we let
+          // that proceed (no stopPropagation) and just trigger the modal.
+          if (!isFullscreen) {
+            // Auto-flip to editor mode if user double-clicks from chooser,
+            // so the fullscreen editor has something coherent to render.
+            if (activeMode !== 'editor') {
+              updateNodeData(id, { textMode: 'editor' });
+            }
+            setIsFullscreen(true);
+          }
+        }}
       >
         {activeMode === 'chooser' ? (
           <>
@@ -2571,11 +2824,17 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
             <button
               type="button"
               onClick={() => setIsFullscreen(false)}
-              className="absolute right-5 top-5 flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
+              className="absolute right-5 top-5 z-10 flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-neutral-300 transition hover:bg-white/[0.06]"
             >
               <X className="h-4 w-4" />
             </button>
-            <div className="mb-3 text-sm text-neutral-300">{title}</div>
+            {/* Title on the left, formatting toolbar centered — matches the
+                NeoWOW fullscreen layout where H1/H2/B/I/list sit at the top
+                of the editor. */}
+            <div className="mb-3 flex items-center justify-between gap-4 pr-12">
+              <div className="text-sm text-neutral-300">{title}</div>
+              {renderEditorToolbar()}
+            </div>
             <div
               ref={fullscreenEditorRef}
               contentEditable

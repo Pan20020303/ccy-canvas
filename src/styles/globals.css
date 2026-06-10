@@ -282,58 +282,29 @@ html.theme-light .prompt-editor-scroll {
   scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
 }
 
-/* ─── Light-mode cursors — invert the dark fill to dark-on-light visibility.
-   The original cursors are dark-grey with a green dot which gets eaten by the
-   light background. Swap to: white-filled arrow with dark stroke + green dot. */
-html.theme-light {
-  --cursor-default: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M5 2 L5 24 L11 19 L14 28 L18 26 L14 18 L22 18 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='15' cy='6' r='5.5' fill='%2322c55e' stroke='%23ffffff' stroke-width='1.8'/></svg>") 5 2, default;
-
-  --cursor-pointer: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M11 3 v12 l3-3 l3 7 l3-1 l-3-7 h4 z' fill='%2306b6d4' stroke='%23ffffff' stroke-width='1.4'/></svg>") 8 2, pointer;
-
-  --cursor-text: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2020/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M9 4 h6 M9 20 h6 M12 4 v16' stroke='%231c1f24' stroke-width='1.8' fill='none'/></svg>") 12 12, text;
-
-  --cursor-grab: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M12 2 Q12 1 14.5 1 Q17 1 17 2 L17 13 Q19 11 21 13 Q23 11 25 13 Q26 13 26 16 Q26 27 18 27 L11 27 Q5 27 5 21 L5 18 Q5 13 8 13 L8 10 Q8 8 10.5 8 Q13 8 13 10 L13 13 Q13 16 12 16 L12 2 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='%23ffffff' stroke-width='1.8'/></svg>") 14 1, grab;
-
-  --cursor-grabbing: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M8 11 Q8 8 11 8 L20 8 Q23 8 24 10 Q25 10 26 12 L26 18 Q26 25 17 25 Q8 25 7 19 L7 13 Q7 11 8 11 Z' fill='%23ffffff' stroke='%23111827' stroke-width='1.4' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='%23ffffff' stroke-width='1.8'/></svg>") 13 11, grabbing;
-}
-
-/* Custom cursor skin — dark body + status dot */
-:root {
-  /* Normal: dark arrow + green dot (图2) — dot near tip */
-  --cursor-default: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M5 2 L5 24 L11 19 L14 28 L18 26 L14 18 L22 18 Z' fill='%23111827' stroke='white' stroke-width='1.2' stroke-linejoin='round'/><circle cx='15' cy='6' r='5.5' fill='%2322c55e' stroke='white' stroke-width='1.8'/></svg>") 5 2, default;
-
-  --cursor-pointer: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M11 3 v12 l3-3 l3 7 l3-1 l-3-7 h4 z' fill='%23a5f3fc' stroke='%2306b6d4' stroke-width='1'/></svg>") 8 2, pointer;
-
-  --cursor-text: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2020/svg' width='24' height='24' viewBox='0 0 24 24'><path d='M9 4 h6 M9 20 h6 M12 4 v16' stroke='%2322d3ee' stroke-width='1.5' fill='none'/></svg>") 12 12, text;
-
-  /* Grab: single-path pointing hand + red dot near fingertip (图1) */
-  --cursor-grab: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M12 2 Q12 1 14.5 1 Q17 1 17 2 L17 13 Q19 11 21 13 Q23 11 25 13 Q26 13 26 16 Q26 27 18 27 L11 27 Q5 27 5 21 L5 18 Q5 13 8 13 L8 10 Q8 8 10.5 8 Q13 8 13 10 L13 13 Q13 16 12 16 L12 2 Z' fill='%23111827' stroke='white' stroke-width='1.2' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='white' stroke-width='1.8'/></svg>") 14 1, grab;
-
-  /* Grabbing: closed fist + red dot near top */
-  --cursor-grabbing: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M8 11 Q8 8 11 8 L20 8 Q23 8 24 10 Q25 10 26 12 L26 18 Q26 25 17 25 Q8 25 7 19 L7 13 Q7 11 8 11 Z' fill='%23111827' stroke='white' stroke-width='1.2' stroke-linejoin='round'/><circle cx='21' cy='5' r='5.5' fill='%23ef4444' stroke='white' stroke-width='1.8'/></svg>") 13 11, grabbing;
-}
-
-html, body {
-  cursor: var(--cursor-default);
-}
-
-button, a, [role="button"], .react-flow__handle {
-  cursor: var(--cursor-pointer);
-}
-
-input, textarea {
-  cursor: var(--cursor-text);
-}
-
+/* ─── Cursors — use native OS cursors, no custom skins.
+   Buttons/links keep the finger pointer via their own `cursor-pointer` classes.
+   Text inputs get the I-beam from the UA stylesheet.
+   On the canvas:
+     - default          → arrow (also used during marquee/box-select)
+     - space held       → grab  (ready to pan)
+     - panning / node-drag → grabbing
+     - connecting an edge → crosshair
+     - resizing a node    → handled by the resize handle's own cursor
+*/
 .react-flow__pane,
 .react-flow__renderer,
 .react-flow__container {
-  cursor: var(--cursor-default) !important;
+  cursor: default !important;
 }
 
 .react-flow__pane.dragging,
 .react-flow__node.dragging {
-  cursor: var(--cursor-grab) !important;
+  cursor: grabbing !important;
+}
+
+.react-flow__handle {
+  cursor: crosshair;
 }
 
 /* Canvas grab/grabbing mode — overrides all ReactFlow internals */
@@ -342,7 +313,7 @@ input, textarea {
 .canvas-mode-grab .react-flow__pane,
 .canvas-mode-grab .react-flow__node,
 .canvas-mode-grab .react-flow__renderer {
-  cursor: var(--cursor-grab) !important;
+  cursor: grab !important;
 }
 
 .canvas-mode-grabbing,
@@ -350,7 +321,7 @@ input, textarea {
 .canvas-mode-grabbing .react-flow__pane,
 .canvas-mode-grabbing .react-flow__node,
 .canvas-mode-grabbing .react-flow__renderer {
-  cursor: var(--cursor-grabbing) !important;
+  cursor: grabbing !important;
 }
 
 /* Rich text editor — restore semantic styles inside contentEditable. */
