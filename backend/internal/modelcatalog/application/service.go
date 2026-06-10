@@ -77,17 +77,38 @@ type Repository interface {
 	ResetChannelHealth(ctx context.Context, providerID string) error
 	InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error
 	ListGenerationAttemptsByLog(ctx context.Context, logID string) ([]domain.GenerationAttempt, error)
+
+	// Channel timeout counter (migration 012) — bumped instead of the
+	// failure counter so timeouts don't trigger cooldown. The router
+	// makes no decisions based on this; it's diagnostic data for the
+	// admin badge.
+	MarkChannelTimeout(ctx context.Context, providerID string) error
+
+	// Generation log lifecycle — needed by the detached task runner so the
+	// goroutine can write its own outcome even after the client has hung up.
+	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32) error
 }
 
 // Service provides model catalog use cases.
 type Service struct {
 	repo          Repository
 	encryptionKey []byte
+	// eventBus is optional — when set, the detached task goroutine
+	// publishes TaskEvent on completion so SSE-subscribed clients get
+	// realtime updates instead of waiting for the 8s recovery poller.
+	eventBus *TaskEventBus
 }
 
 // NewService creates a new model catalog Service.
 func NewService(repo Repository, encryptionKey []byte) *Service {
 	return &Service{repo: repo, encryptionKey: encryptionKey}
+}
+
+// WithEventBus wires an event bus into the service so completion
+// events can be pushed. Returns the service for chaining.
+func (s *Service) WithEventBus(bus *TaskEventBus) *Service {
+	s.eventBus = bus
+	return s
 }
 
 // GetProviderStatus returns the demasked relay provider status.
@@ -592,6 +613,15 @@ type GenerateRequest struct {
 	// per-attempt row in generation_attempts back to the request. Empty
 	// string is allowed — attempts are still recorded, just unlinked.
 	GenerationLogID string
+	// UserID identifies the requesting user. Needed by the detached task
+	// goroutine to fan completion events through TaskEventBus on the
+	// per-user channel. Optional; when empty, completion events are
+	// skipped and only the generation_logs row is updated.
+	UserID string
+	// NodeID is the canvas node that requested this generation. Surfaced
+	// on TaskEvent so SSE clients can correlate the push back to the
+	// right node without an extra DB lookup.
+	NodeID string
 }
 
 // GenerateResult carries the generation result.
@@ -693,13 +723,102 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 // async tasks where mid-flight switching wastes upstream quota. All
 // service types still report success / failure to the channel-health
 // layer so admins can see which vendor is sick in the UI.
-func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
+// maxRuntimeForType returns the maximum wall-clock time a detached task
+// goroutine is allowed to run for a given service type. Env overrides:
+//
+//	IMAGE_TASK_MAX_RUNTIME_SECONDS
+//	VIDEO_TASK_MAX_RUNTIME_SECONDS
+//	AUDIO_TASK_MAX_RUNTIME_SECONDS
+//
+// Defaults: image 15 min, video 30 min, audio 10 min. This is the *hard*
+// upper bound — well past every provider's typical worst case, so a task
+// hitting it almost always means the upstream is truly stuck.
+func maxRuntimeForType(serviceType string) time.Duration {
+	envKey := ""
+	def := 5 * time.Minute
+	switch serviceType {
+	case "image":
+		envKey = "IMAGE_TASK_MAX_RUNTIME_SECONDS"
+		def = 15 * time.Minute
+	case "video":
+		envKey = "VIDEO_TASK_MAX_RUNTIME_SECONDS"
+		def = 30 * time.Minute
+	case "audio":
+		envKey = "AUDIO_TASK_MAX_RUNTIME_SECONDS"
+		def = 10 * time.Minute
+	}
+	if envKey != "" {
+		if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return time.Duration(n) * time.Second
+			}
+		}
+	}
+	return def
+}
+
+func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	candidates, err := s.buildCandidates(req)
 	if err != nil {
 		return nil, err
 	}
 
-	// Video / audio: one shot, but still report health + record attempts.
+	// Detach the generation work from the caller's context. The caller
+	// (HTTP handler bound to client connection) may give up and return 408
+	// to the browser, but the upstream task can keep running and write its
+	// outcome to generation_logs. Stage 2 will surface those late results
+	// to the UI; Stage 1's contract is "no more lost generations".
+	detachedCtx, cancelDetached := context.WithTimeout(context.Background(), maxRuntimeForType(req.ServiceType))
+
+	type genResult struct {
+		result *GenerateResult
+		err    error
+	}
+	doneCh := make(chan genResult, 1)
+	startedAt := time.Now()
+
+	go func() {
+		defer cancelDetached()
+
+		result, runErr := s.runCandidateLoop(detachedCtx, candidates, req)
+
+		// Cache the upstream URL to local disk so the asset survives
+		// after the provider's signed URL expires. Best-effort: on
+		// failure the original URL is kept. Skipped for inline-text
+		// results (no URL to download) and for already-cached / data:
+		// URLs. See PersistRemoteAsset for the full skip rules.
+		if runErr == nil && result != nil && result.Type == "url" && result.Content != "" {
+			if cachedURL, cacheErr := PersistRemoteAsset(detachedCtx, result.Content); cacheErr == nil {
+				result.Content = cachedURL
+			}
+		}
+
+		// Persist the outcome ourselves. The handler used to do this, but
+		// now the handler may have already returned to the client by the
+		// time we finish — so the goroutine owns the lifecycle write.
+		duration := time.Since(startedAt)
+		s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration)
+
+		// Push to SSE subscribers (no-op if no eventBus or no userID).
+		s.publishTaskEvent(req, result, runErr, duration)
+
+		doneCh <- genResult{result: result, err: runErr}
+	}()
+
+	select {
+	case res := <-doneCh:
+		return res.result, res.err
+	case <-callerCtx.Done():
+		// Client disconnected / aborted. Goroutine continues; the
+		// persist call inside it will eventually write the final state.
+		return nil, callerCtx.Err()
+	}
+}
+
+// runCandidateLoop preserves the original per-service-type dispatch logic:
+// video/audio = single shot, image/text = priority-order fallback. Extracted
+// so Generate() can wrap it cleanly inside the detached goroutine.
+func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateChannel, req GenerateRequest) (*GenerateResult, error) {
 	if req.ServiceType == "video" || req.ServiceType == "audio" {
 		c := candidates[0]
 		started := time.Now()
@@ -709,8 +828,6 @@ func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 		return result, err
 	}
 
-	// Image / text: walk every candidate in priority order, stop on success
-	// or on a client-fault (bad input — switching vendors won't help).
 	var lastErr error
 	for i, c := range candidates {
 		started := time.Now()
@@ -730,6 +847,58 @@ func (s *Service) Generate(ctx context.Context, req GenerateRequest) (*GenerateR
 		// already called inside recordChannelOutcome).
 	}
 	return nil, lastErr
+}
+
+// persistGenerationOutcome writes the final status/result/error to the
+// generation_logs row. Uses a fresh background context with a small
+// budget so the write succeeds even when the detached ctx has expired
+// from its own maxRuntime cap. Best-effort: a write failure is logged
+// implicitly via the silent error return — the channel-attempt audit
+// trail still records the underlying upstream outcome.
+func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult, err error, duration time.Duration) {
+	if logID == "" || s.repo == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	status := "success"
+	errMsg := ""
+	resultURL := ""
+	if err != nil {
+		status = "error"
+		errMsg = err.Error()
+	} else if result != nil {
+		resultURL = result.Content
+	}
+	_ = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()))
+}
+
+// publishTaskEvent emits a TaskEvent to all SSE subscribers of the user
+// who initiated this generation. Skips silently when no event bus is
+// wired or no userID was attached (e.g. anonymous-tested generations).
+func (s *Service) publishTaskEvent(req GenerateRequest, result *GenerateResult, err error, duration time.Duration) {
+	if s.eventBus == nil || req.UserID == "" {
+		return
+	}
+	status := "success"
+	errMsg := ""
+	resultURL := ""
+	if err != nil {
+		status = "error"
+		errMsg = err.Error()
+	} else if result != nil {
+		resultURL = result.Content
+	}
+	s.eventBus.Publish(req.UserID, TaskEvent{
+		TaskID:      req.GenerationLogID,
+		NodeID:      req.NodeID,
+		ServiceType: req.ServiceType,
+		Status:      status,
+		ResultURL:   resultURL,
+		ErrorMsg:    errMsg,
+		DurationMs:  int(duration.Milliseconds()),
+	})
 }
 
 // recordChannelOutcome updates the channel's health state AND inserts a
@@ -752,7 +921,15 @@ func (s *Service) recordChannelOutcome(
 	var errMsg string
 	if err != nil {
 		errMsg = err.Error()
-		s.MarkChannelFailure(ctx, c.cfg.ID, ClassifyError(httpStatus, errMsg), errMsg)
+		cat := ClassifyError(httpStatus, errMsg)
+		// Timeouts get their own counter (Stage 4) and are NOT counted
+		// against the cooldown threshold. Everything else flows through
+		// the existing failure-counter / cooldown machinery.
+		if cat == CategoryTimeout {
+			s.MarkChannelTimeout(ctx, c.cfg.ID)
+		} else {
+			s.MarkChannelFailure(ctx, c.cfg.ID, cat, errMsg)
+		}
 	} else {
 		s.MarkChannelSuccess(ctx, c.cfg.ID)
 	}

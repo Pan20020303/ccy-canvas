@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,38 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/crypto"
 )
+
+// verifyCachedAsset asserts that a cached `/uploads/generated/...` URL
+// points to a real file on disk whose bytes match `want`. Also cleans
+// the file up so the test doesn't leave artifacts on the filesystem.
+func verifyCachedAsset(t *testing.T, localURL string, want []byte) {
+	t.Helper()
+	diskPath := filepath.Join("..", "..", "..", "..", strings.TrimPrefix(localURL, "/"))
+	// service runs from the test's package dir; the asset cache writes
+	// relative to the backend module's working dir (cwd at runtime).
+	// We try a couple plausible roots so the test works regardless of
+	// where `go test` is invoked from.
+	candidates := []string{
+		strings.TrimPrefix(localURL, "/"),
+		diskPath,
+		filepath.Join(".", strings.TrimPrefix(localURL, "/")),
+	}
+	var bytes []byte
+	var err error
+	for _, p := range candidates {
+		bytes, err = os.ReadFile(p)
+		if err == nil {
+			defer os.Remove(p)
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("cached asset file not found via any of %v: %v", candidates, err)
+	}
+	if string(bytes) != string(want) {
+		t.Errorf("cached asset bytes = %q, want %q", bytes, want)
+	}
+}
 
 type fakeRepository struct {
 	provider        *domain.RelayProvider
@@ -188,6 +222,10 @@ func (r *fakeRepository) InsertGenerationAttempt(context.Context, domain.Generat
 func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([]domain.GenerationAttempt, error) {
 	return nil, nil
 }
+func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, string, string, string, int32) error {
+	return nil
+}
+func (r *fakeRepository) MarkChannelTimeout(context.Context, string) error { return nil }
 
 func TestSyncModelsCountsOnlyNewDrafts(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
@@ -382,9 +420,14 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "data:image/png;base64,ZmFrZQ==" {
-		t.Fatalf("result.Content = %q", result.Content)
+	// Asset cache now persists `data:` URIs to disk (so generation_logs
+	// doesn't store multi-MB base64 blobs). Verify the new shape: a
+	// local /uploads/generated/... path with the right extension and a
+	// file on disk that decodes back to the upstream payload.
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
+	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
 func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
@@ -449,9 +492,10 @@ func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "data:image/png;base64,ZmFrZQ==" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
+	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
 func TestGenerateImageUsesConfiguredSubmitAndQueryEndpoints(t *testing.T) {

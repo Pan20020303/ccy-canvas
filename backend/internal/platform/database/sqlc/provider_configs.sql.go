@@ -383,3 +383,23 @@ func (q *Queries) ListGenerationAttemptsByLog(ctx context.Context, logID pgtype.
 	}
 	return items, rows.Err()
 }
+
+// ─── Hand-written: timeout counter (Stage 4, migration 012) ────────────
+//
+// Bumps an information-only counter when an upstream call times out.
+// Intentionally does NOT touch failure_count or cooldown_until — those
+// govern the router's cooldown decision, and we want timeouts to be
+// excluded from that.
+
+const markChannelTimeout = `-- name: MarkChannelTimeout :exec
+UPDATE provider_configs
+SET timeout_count = timeout_count + 1,
+    last_timeout_at = now(),
+    updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) MarkChannelTimeout(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markChannelTimeout, id)
+	return err
+}

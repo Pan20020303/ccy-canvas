@@ -108,6 +108,8 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     { vendor: "StepFun",    label: "阶跃 · Step",           baseURL: "https://api.stepfun.com/v1",                      apiSpec: "openai", models: ["step-2-16k", "step-1-256k", "step-1-flash"] },
   ],
   image: [
+    // 中转 / Relay
+    { vendor: "RelayBases", label: "RelayBases · gpt-image-2", baseURL: "https://image-2.relaybases.com/v1",        apiSpec: "openai", models: ["gpt-image-2"], submitEndpoint: "/images/generations", queryEndpoint: "" },
     // 国际
     { vendor: "OpenAI",     label: "OpenAI DALL·E / gpt-image", baseURL: "https://api.openai.com/v1",                  apiSpec: "openai", models: ["dall-e-3", "dall-e-2", "gpt-image-1"] },
     { vendor: "Stability",  label: "Stability AI",          baseURL: "https://api.stability.ai/v2beta",                apiSpec: "custom", models: ["sd3-large", "sd3-medium", "stable-image-ultra", "stable-image-core"] },
@@ -220,6 +222,11 @@ export type GeneratePayload = {
 export type GenerateResult = {
   type: "text" | "url";
   content: string;
+  /** Generation log row id — present when the backend was able to
+   *  persist a log row. Frontend stores this on the node so recovery
+   *  polling (Stage 2) can ask the backend "what happened to this
+   *  task?" after a client-side timeout. */
+  task_id?: string;
 };
 
 export function generate(payload: GeneratePayload, signal?: AbortSignal): Promise<GenerateResult> {

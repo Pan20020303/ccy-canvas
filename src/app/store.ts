@@ -16,6 +16,7 @@ import {
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
+import { batchTasksByNodeIds, getTask, type TaskItem } from './api/tasks';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
@@ -473,6 +474,234 @@ const seedInvitations: AdminInvitation[] = [
 
 const runAborters: Record<string, AbortController> = {};
 const generationTimeoutMs = 900 * 1000;
+
+// ─── Task recovery polling (Stage 2) ─────────────────────────────────────
+//
+// When a generation hits the client-side timeout, the upstream task may
+// still finish on the server (Stage 1 detaches it from the client ctx).
+// The poller runs every TASK_POLL_INTERVAL_MS and asks the backend for
+// the latest status of every node that's currently marked as running.
+// On 'success' / 'error' it flips the node's data accordingly and stops
+// tracking it. Singleton timer; starts on first runNode and survives
+// across multiple runs.
+
+const TASK_POLL_INTERVAL_MS = 8000;
+let taskPollerTimer: ReturnType<typeof setInterval> | null = null;
+// Tracks nodes the poller should watch. We need this because the store's
+// node list is the source of truth but we don't want to scan all nodes
+// every tick; the set is the working subset.
+const trackedTaskNodes = new Set<string>();
+
+/** Apply a task lookup result back onto its node. Called from the poller
+ *  for each non-pending row the backend returns. */
+function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (task.status !== 'success' && task.status !== 'error') {
+    return; // still pending — leave node alone
+  }
+  const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
+  if (!targetNode) {
+    trackedTaskNodes.delete(task.node_id);
+    return;
+  }
+  const currentStatus = (targetNode.data as Record<string, unknown>)?.status;
+  if (currentStatus !== 'running' && currentStatus !== 'generating') {
+    // The node has already moved on (user ran a new generation, or the
+    // success path already handled it). Drop tracking and skip.
+    trackedTaskNodes.delete(task.node_id);
+    return;
+  }
+
+  setStore((state) => ({
+    nodes: state.nodes.map((node) => {
+      if (node.id !== task.node_id) return node;
+      const isUrl = task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio';
+      if (task.status === 'success') {
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            status: 'done',
+            taskId: task.id,
+            queuedAfterTimeout: false,
+            ...(isUrl
+              ? { url: task.result_url, output: task.result_url }
+              : { content: task.result_url, output: task.result_url }),
+          },
+        };
+      }
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          status: 'error',
+          taskId: task.id,
+          queuedAfterTimeout: false,
+          error: task.error_msg || 'Generation failed',
+        },
+      };
+    }),
+  }));
+  trackedTaskNodes.delete(task.node_id);
+}
+
+/** One tick of the task poller. Fetches the latest status for every
+ *  tracked node and calls applyTaskResultToNode on each non-pending row.
+ *  Silent on network errors — a failed poll just leaves nodes in their
+ *  current 'running' state until the next tick. */
+async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  // Reconcile the tracked set with what's actually in the store: drop
+  // nodes that are no longer running, add any running ones we somehow
+  // missed (post-reload-recovery).
+  const runningNodeIds = getStore().nodes
+    .filter((n) => {
+      const status = (n.data as Record<string, unknown>)?.status;
+      return status === 'running' || status === 'generating';
+    })
+    .map((n) => n.id);
+
+  // Add any that aren't yet tracked (covers reload recovery).
+  for (const id of runningNodeIds) trackedTaskNodes.add(id);
+  // Drop any that have left running state.
+  for (const id of [...trackedTaskNodes]) {
+    if (!runningNodeIds.includes(id)) trackedTaskNodes.delete(id);
+  }
+
+  if (trackedTaskNodes.size === 0) return;
+
+  // Prefer per-task lookup for nodes that have a taskId saved (precise
+  // and avoids ambiguity if the user ran multiple generations on the
+  // same node). Fall back to batch-by-node-id for nodes without one.
+  const nodes = getStore().nodes;
+  const withTaskId: string[] = [];   // taskIds to fetch one-by-one
+  const nodeIdToTaskId = new Map<string, string>();
+  const withoutTaskId: string[] = [];
+
+  for (const nodeId of trackedTaskNodes) {
+    const node = nodes.find((n) => n.id === nodeId);
+    const taskId = (node?.data as Record<string, unknown> | undefined)?.taskId as string | undefined;
+    if (taskId) {
+      withTaskId.push(taskId);
+      nodeIdToTaskId.set(nodeId, taskId);
+    } else {
+      withoutTaskId.push(nodeId);
+    }
+  }
+
+  const requests: Promise<TaskItem[]>[] = [];
+  if (withoutTaskId.length > 0) {
+    requests.push(batchTasksByNodeIds(withoutTaskId).catch(() => []));
+  }
+  for (const taskId of withTaskId) {
+    requests.push(getTask(taskId).then((t) => [t]).catch(() => []));
+  }
+
+  const results = await Promise.all(requests);
+  for (const tasks of results) {
+    for (const task of tasks) {
+      applyTaskResultToNode(task, getStore, setStore);
+    }
+  }
+}
+
+/** Start the recovery poller (idempotent — calling twice is a no-op).
+ *  Bound to the store's get/set so the tick function can read & mutate
+ *  state without taking the store as a parameter every call. */
+function ensureTaskPollerStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (taskPollerTimer) return;
+  taskPollerTimer = setInterval(() => {
+    // SSE-up mode: skip the poll — server pushes events in real time.
+    // The 8 s tick still fires (cheap) so we can resume polling without
+    // restarting if SSE drops mid-session.
+    if (sseOnline) return;
+    void pollTrackedTasks(getStore, setStore);
+  }, TASK_POLL_INTERVAL_MS);
+}
+
+// ─── SSE task-completion stream (Stage 3) ────────────────────────────────
+//
+// Subscribes once to /api/app/tasks/stream and converts each TaskEvent
+// into the same node-state mutation the poller would apply. When the
+// stream is healthy we let it push results in real time; when it
+// reconnects after an error we let the 8 s poller fill the gap until
+// the next event arrives.
+
+type TaskEventPayload = {
+  task_id: string;
+  node_id: string;
+  service_type: string;
+  status: string;
+  result_url: string;
+  error_msg: string;
+  duration_ms: number;
+};
+
+let taskEventSource: EventSource | null = null;
+let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let sseOnline = false;
+
+function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  // Reuse the poller's per-task application — they share semantics.
+  applyTaskResultToNode(
+    {
+      id: event.task_id,
+      node_id: event.node_id,
+      service_type: event.service_type,
+      model: '',
+      status: event.status,
+      result_url: event.result_url,
+      error_msg: event.error_msg,
+      duration_ms: event.duration_ms,
+      created_at: '',
+    },
+    getStore,
+    setStore,
+  );
+}
+
+function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (taskEventSource) return;
+
+  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const url = `${apiBaseUrl}/api/app/tasks/stream`;
+  try {
+    taskEventSource = new EventSource(url, { withCredentials: true });
+  } catch {
+    return; // EventSource not supported (e.g. SSR) — poller remains the safety net
+  }
+
+  taskEventSource.onopen = () => {
+    sseOnline = true;
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
+  };
+
+  taskEventSource.onmessage = (msg) => {
+    try {
+      const event = JSON.parse(msg.data) as TaskEventPayload;
+      if (event && typeof event === 'object' && event.node_id) {
+        applyTaskEventToNode(event, getStore, setStore);
+      }
+    } catch {
+      // Malformed frame — ignore; the poller will catch up on next tick.
+    }
+  };
+
+  taskEventSource.onerror = () => {
+    sseOnline = false;
+    // Browser EventSource auto-retries by default, but if the server
+    // closed cleanly (4xx/auth) the connection goes back to CLOSED and
+    // never reopens. Close + reopen with backoff to cover both cases.
+    try { taskEventSource?.close(); } catch { /* */ }
+    taskEventSource = null;
+    if (sseReconnectTimer) return;
+    sseReconnectTimer = setTimeout(() => {
+      sseReconnectTimer = null;
+      ensureTaskStreamStarted(getStore, setStore);
+    }, 5000);
+  };
+}
 
 let storageUserId = '';
 
@@ -1480,7 +1709,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     set((snapshot) => ({
       activeRun: { nodeId, startedAt: Date.now() },
       nodes: snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'running', error: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model } }
+        ? { ...node, data: { ...node.data, status: 'running', error: undefined, queuedAfterTimeout: false, prompt: payload.prompt, resolvedPrompt, model: payload.model } }
         : node),
     }));
 
@@ -1490,6 +1719,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const aborter = new AbortController();
     runAborters[nodeId] = aborter;
     const timeout = setTimeout(() => aborter.abort(), generationTimeoutMs);
+
+    // Make sure the recovery poller is running. Idempotent — first call
+    // wires up the interval, subsequent calls are no-ops.
+    ensureTaskPollerStarted(get, set as never);
+    trackedTaskNodes.add(nodeId);
 
     try {
       const result = await apiGenerate({
@@ -1519,6 +1753,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
               data: {
                 ...node.data,
                 status: 'done',
+                taskId: result.task_id,
+                queuedAfterTimeout: false,
                 ...(result.type === 'url'
                   ? { url: persistedContent, output: persistedContent }
                   : { content: result.content, output: result.content }),
@@ -1526,6 +1762,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             }
           : node),
       }));
+      trackedTaskNodes.delete(nodeId);
 
       // Add to history for the file manager panel.
       get().addHistory({
@@ -1540,12 +1777,31 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Generation failed';
-      set((snapshot) => ({
-        activeRun: null,
-        nodes: snapshot.nodes.map((node) => node.id === nodeId
-          ? { ...node, data: { ...node.data, status: 'error', error: message } }
-          : node),
-      }));
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      const isTimeoutLike = isAbort || /timeout|timed out|aborted|deadline/i.test(message);
+
+      if (isTimeoutLike) {
+        // Client gave up but backend Stage-1 task may still finish.
+        // Leave status='running' and flag queuedAfterTimeout so the
+        // loading overlay can swap to "已加入队列" copy. Cleared when
+        // the recovery poller / SSE event flips the node to done/error.
+        set((snapshot) => ({
+          activeRun: null,
+          nodes: snapshot.nodes.map((node) => node.id === nodeId
+            ? { ...node, data: { ...node.data, status: 'running', queuedAfterTimeout: true, error: undefined } }
+            : node),
+        }));
+      } else {
+        // Real, non-timeout failure (4xx, network down, etc.). Surface
+        // the error directly and stop tracking.
+        set((snapshot) => ({
+          activeRun: null,
+          nodes: snapshot.nodes.map((node) => node.id === nodeId
+            ? { ...node, data: { ...node.data, status: 'error', error: message } }
+            : node),
+        }));
+        trackedTaskNodes.delete(nodeId);
+      }
     } finally {
       clearTimeout(timeout);
       delete runAborters[nodeId];
@@ -1662,3 +1918,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     snapToGrid: state.snapToGrid,
   }),
 }));
+
+// Boot the recovery poller once the store exists. Safe to call before any
+// runNode: it just ticks every 8s and finds nothing to do until a node
+// hits 'running' state. After a page reload, any node that was running
+// at refresh time gets picked up automatically on the first tick.
+ensureTaskPollerStarted(useStore.getState, useStore.setState as never);
+// Open the SSE stream so completion events arrive in real time. When
+// the stream is healthy the poller becomes a no-op (it short-circuits
+// on sseOnline). On disconnect the poller takes over within 8 s.
+ensureTaskStreamStarted(useStore.getState, useStore.setState as never);

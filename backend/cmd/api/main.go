@@ -54,7 +54,8 @@ func main() {
 
 	// Model Catalog
 	catalogRepo := infrastructure.NewRepository(queries)
-	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey)
+	taskBus := application.NewTaskEventBus()
+	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).WithEventBus(taskBus)
 	catalogHandler := modelhttp.NewHandler(catalogService, queries)
 
 	allowedOrigins := []string{
@@ -120,6 +121,10 @@ func main() {
 	// which would break Server-Sent Events).
 	agentRunRouter := skillshttp.NewAgentRunRouter(queries, skillsExecutor, catalogService, sessionManager)
 	agentRunRouter.RegisterChi(router)
+
+	// Task-completion SSE stream — same chi-direct rationale as above.
+	taskStreamRouter := modelhttp.NewTaskStreamRouter(taskBus, sessionManager)
+	taskStreamRouter.RegisterChi(router)
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {

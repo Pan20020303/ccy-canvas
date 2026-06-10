@@ -104,6 +104,12 @@ const (
 	// 400 with "prompt too long", 422 validation, etc. Switching vendor
 	// won't help — return the error to the user, don't mark the channel.
 	CategoryClientFault
+	// CategoryTimeout — request exceeded the allotted wall-clock (i/o
+	// timeout, context deadline exceeded, upstream 408). Per Stage 4 of
+	// the timeout-treatment plan, these do NOT count toward the cooldown
+	// failure budget: an upstream having a slow minute shouldn't kick
+	// the whole channel out of rotation.
+	CategoryTimeout
 )
 
 // ClassifyError inspects an HTTP status code (0 means "no HTTP response, was
@@ -112,6 +118,27 @@ const (
 // against a fixed set of well-known relay vocabulary.
 func ClassifyError(httpStatus int, errMsg string) ErrorCategory {
 	lower := strings.ToLower(errMsg)
+
+	// Timeouts get their own bucket regardless of how they arrived
+	// (transport-level i/o timeout, context deadline exceeded, or an
+	// upstream HTTP 408). Classified first so timeout-shaped errors
+	// can't fall through into Transient (which would count toward
+	// the cooldown budget).
+	timeoutHints := []string{
+		"i/o timeout",
+		"context deadline exceeded",
+		"deadline exceeded",
+		"timeout exceeded",
+		"timed out",
+	}
+	for _, h := range timeoutHints {
+		if strings.Contains(lower, h) {
+			return CategoryTimeout
+		}
+	}
+	if httpStatus == 408 {
+		return CategoryTimeout
+	}
 
 	// Transport-level failures land here with httpStatus = 0.
 	if httpStatus == 0 {
@@ -122,7 +149,6 @@ func ClassifyError(httpStatus int, errMsg string) ErrorCategory {
 			"connection reset",
 			"broken pipe",
 			"forcibly closed",
-			"i/o timeout",
 			"no such host",       // DNS hiccup — usually transient
 			"connection refused", // service restart? give it a beat
 		}
@@ -217,6 +243,17 @@ func (s *Service) MarkChannelFailure(ctx context.Context, providerID string, cat
 	}
 	until := time.Now().Add(computeCooldown(consecutiveCooldowns))
 	_ = s.repo.SetChannelCooldown(ctx, providerID, until)
+}
+
+// MarkChannelTimeout bumps the channel's timeout counter without touching
+// the failure counter or cooldown. Per Stage 4 of the timeout-treatment
+// plan, timeouts are an informational signal — visible to admins via the
+// health badge — but do NOT cause the router to sideline the provider.
+func (s *Service) MarkChannelTimeout(ctx context.Context, providerID string) {
+	if providerID == "" {
+		return
+	}
+	_ = s.repo.MarkChannelTimeout(ctx, providerID)
 }
 
 // ResetChannelHealth clears all counters and cooldown on a channel. Wired

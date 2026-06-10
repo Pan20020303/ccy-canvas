@@ -455,6 +455,28 @@ func (r *Repository) ResetChannelHealth(ctx context.Context, providerID string) 
 	return r.q.ResetChannelHealth(ctx, pgID)
 }
 
+func (r *Repository) MarkChannelTimeout(ctx context.Context, providerID string) error {
+	pgID, err := parsePgUUID(providerID)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkChannelTimeout(ctx, pgID)
+}
+
+func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.UpdateGenerationLogResult(ctx, sqlc.UpdateGenerationLogResultParams{
+		ID:         pgID,
+		Status:     status,
+		ResultUrl:  resultURL,
+		ErrorMsg:   errMsg,
+		DurationMs: durationMs,
+	})
+}
+
 func (r *Repository) InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error {
 	var logID pgtype.UUID
 	if attempt.GenerationLogID != "" {

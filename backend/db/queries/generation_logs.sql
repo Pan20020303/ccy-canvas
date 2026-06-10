@@ -46,3 +46,23 @@ SELECT count(*)::int AS total,
        count(*) FILTER (WHERE status = 'error')::int AS errors
 FROM generation_logs
 WHERE created_at >= CURRENT_DATE;
+
+-- name: GetGenerationLogByIDForUser :one
+-- Lookup a specific generation log by ID, scoped to the requesting user
+-- so a malicious client can't poll someone else's task state.
+SELECT id, user_id, node_id, service_type, model, prompt, status, result_url, error_msg, duration_ms, cost, created_at
+FROM generation_logs
+WHERE id = $1 AND user_id = $2;
+
+-- name: GetLatestGenerationLogsForUserNodes :many
+-- For each (node_id) in the given list, return the most recent log row
+-- owned by this user. Powers the frontend's reload-recovery polling:
+-- when the browser doesn't have a task_id (e.g. after a refresh), it
+-- batch-asks "what's the latest state for these N nodes I think are
+-- still running?".
+SELECT DISTINCT ON (node_id)
+       id, user_id, node_id, service_type, model, prompt, status, result_url, error_msg, duration_ms, cost, created_at
+FROM generation_logs
+WHERE user_id = $1
+  AND node_id = ANY($2::text[])
+ORDER BY node_id, created_at DESC;

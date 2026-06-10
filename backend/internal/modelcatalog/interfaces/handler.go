@@ -148,7 +148,15 @@ func toHTTPError(err error) error {
 		case apperror.CodeInvalidInput, apperror.CodeInvitationInvalid, apperror.CodeEmailAlreadyExists:
 			return huma.Error400BadRequest(appErr.Message)
 		default:
-			return huma.Error500InternalServerError(appErr.Message)
+			// 500s in admin/operator paths: surface the underlying cause so
+			// the user sees the real reason (missing migration, DB constraint,
+			// etc.) instead of a generic wrap. The risk of leaking internals
+			// is acceptable for these routes — they are admin-only.
+			msg := appErr.Message
+			if appErr.Err != nil {
+				msg = appErr.Message + ": " + appErr.Err.Error()
+			}
+			return huma.Error500InternalServerError(msg)
 		}
 	}
 	return err
@@ -342,6 +350,25 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.generate)
+
+	// --- User App: Task lookup (recovery polling) ---
+	huma.Register(api, huma.Operation{
+		OperationID: "get-task-by-id",
+		Method:      http.MethodGet,
+		Path:        "/api/app/tasks/{id}",
+		Summary:     "Get a generation task by ID (scoped to current user)",
+		Tags:        []string{"App", "Generation"},
+		Security:    userSecurity,
+	}, h.getTaskByID)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "batch-tasks-by-node-ids",
+		Method:      http.MethodPost,
+		Path:        "/api/app/tasks/batch",
+		Summary:     "Get the most recent task per node id (current user only)",
+		Tags:        []string{"App", "Generation"},
+		Security:    userSecurity,
+	}, h.batchTasksByNodeIDs)
 }
 
 // --- Admin: Provider handlers ---
@@ -891,11 +918,147 @@ type generateInput struct {
 	}
 }
 
+// generateData is the response data block — extends the upstream
+// GenerateResult with the persisted task id so the frontend can poll
+// for late-completing generations after a client-side timeout.
+type generateData struct {
+	application.GenerateResult
+	TaskID string `json:"task_id,omitempty"`
+}
+
 type generateOutput struct {
 	Body struct {
-		Data      application.GenerateResult `json:"data"`
-		RequestID string                     `json:"request_id"`
+		Data      generateData `json:"data"`
+		RequestID string       `json:"request_id"`
 	}
+}
+
+// TaskItem is the read-projection of a generation_logs row, served to the
+// frontend by the recovery polling endpoints. We deliberately omit the
+// prompt/cost fields — they're not needed for status updates and adding
+// them would leak more user data than necessary across the network.
+type TaskItem struct {
+	ID          string `json:"id"`
+	NodeID      string `json:"node_id"`
+	ServiceType string `json:"service_type"`
+	Model       string `json:"model"`
+	Status      string `json:"status"`
+	ResultURL   string `json:"result_url"`
+	ErrorMsg    string `json:"error_msg"`
+	DurationMs  int    `json:"duration_ms"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type getTaskByIDInput struct {
+	ID string `path:"id" doc:"Generation log / task id (UUID)"`
+}
+
+type taskOutput struct {
+	Body struct {
+		Data      TaskItem `json:"data"`
+		RequestID string   `json:"request_id"`
+	}
+}
+
+type batchTasksInput struct {
+	Body struct {
+		NodeIDs []string `json:"node_ids" doc:"List of canvas node ids to look up"`
+	}
+}
+
+type batchTasksOutput struct {
+	Body struct {
+		Data      []TaskItem `json:"data"`
+		RequestID string     `json:"request_id"`
+	}
+}
+
+func toTaskItem(row sqlc.GenerationLog) TaskItem {
+	createdAt := ""
+	if row.CreatedAt.Valid {
+		createdAt = row.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	id := ""
+	if row.ID.Valid {
+		id = formatPgUUID(row.ID)
+	}
+	durationMs := 0
+	if row.DurationMs != 0 {
+		durationMs = int(row.DurationMs)
+	}
+	return TaskItem{
+		ID:          id,
+		NodeID:      row.NodeID,
+		ServiceType: row.ServiceType,
+		Model:       row.Model,
+		Status:      row.Status,
+		ResultURL:   row.ResultUrl,
+		ErrorMsg:    row.ErrorMsg,
+		DurationMs:  durationMs,
+		CreatedAt:   createdAt,
+	}
+}
+
+func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*taskOutput, error) {
+	if h.q == nil {
+		return nil, huma.Error500InternalServerError("Database unavailable")
+	}
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	if !userID.Valid {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	var taskID pgtype.UUID
+	if err := taskID.Scan(input.ID); err != nil {
+		return nil, huma.Error400BadRequest("Invalid task id")
+	}
+	row, err := h.q.GetGenerationLogByIDForUser(ctx, sqlc.GetGenerationLogByIDForUserParams{
+		ID:     taskID,
+		UserID: userID,
+	})
+	if err != nil {
+		return nil, huma.Error404NotFound("Task not found")
+	}
+	out := &taskOutput{}
+	out.Body.Data = toTaskItem(row)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) batchTasksByNodeIDs(ctx context.Context, input *batchTasksInput) (*batchTasksOutput, error) {
+	out := &batchTasksOutput{}
+	out.Body.Data = []TaskItem{}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	if h.q == nil || len(input.Body.NodeIDs) == 0 {
+		return out, nil
+	}
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	if !userID.Valid {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	// Cap batch size to keep a malicious or buggy client from sweeping the
+	// whole table. 200 covers any reasonable canvas in one round trip.
+	ids := input.Body.NodeIDs
+	if len(ids) > 200 {
+		ids = ids[:200]
+	}
+	rows, err := h.q.GetLatestGenerationLogsForUserNodes(ctx, sqlc.GetLatestGenerationLogsForUserNodesParams{
+		UserID:  userID,
+		NodeIDs: ids,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	out.Body.Data = make([]TaskItem, 0, len(rows))
+	for _, row := range rows {
+		out.Body.Data = append(out.Body.Data, toTaskItem(row))
+	}
+	return out, nil
 }
 
 func (h *Handler) generate(ctx context.Context, input *generateInput) (*generateOutput, error) {
@@ -914,7 +1077,9 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	}
 
 	// Best-effort: write a 'pending' log row before invoking the provider.
-	startedAt := time.Now()
+	// The service goroutine will flip this row to success/error when the
+	// upstream task finishes (which may be after this handler has already
+	// returned to the client).
 	var logID pgtype.UUID
 	if h.q != nil {
 		if logRow, lerr := h.q.InsertGenerationLog(ctx, sqlc.InsertGenerationLogParams{
@@ -938,6 +1103,10 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	if logID.Valid {
 		logIDStr = formatPgUUID(logID)
 	}
+	var userIDStr string
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		userIDStr = claims.UserID
+	}
 	result, err := h.svc.Generate(ctx, application.GenerateRequest{
 		ServiceType:     input.Body.ServiceType,
 		Model:           input.Body.Model,
@@ -952,34 +1121,25 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceVideos: input.Body.ReferenceVideos,
 		ReferenceMode:   input.Body.ReferenceMode,
 		GenerationLogID: logIDStr,
+		UserID:          userIDStr,
+		NodeID:          input.Body.NodeId,
 	})
-	durationMs := int32(time.Since(startedAt).Milliseconds())
 
-	// Best-effort: update the pending row with the final result/error.
-	if h.q != nil && logID.Valid {
-		status := "success"
-		errMsg := ""
-		resultURL := ""
-		if err != nil {
-			status = "error"
-			errMsg = err.Error()
-		} else if result != nil {
-			resultURL = result.Content
-		}
-		_ = h.q.UpdateGenerationLogResult(ctx, sqlc.UpdateGenerationLogResultParams{
-			ID:         logID,
-			Status:     status,
-			ResultUrl:  resultURL,
-			ErrorMsg:   errMsg,
-			DurationMs: durationMs,
-		})
-	}
+	// NOTE: writing the final outcome to generation_logs is now owned by the
+	// detached goroutine inside service.Generate (see persistGenerationOutcome).
+	// We intentionally do NOT update the log here. If the client times out the
+	// handler returns 408 immediately while the upstream task keeps running;
+	// the goroutine writes the eventual success/error itself when it finishes,
+	// so the log row reflects reality instead of a premature "client gave up".
 
 	if err != nil {
 		return nil, toHTTPError(err)
 	}
 	out := &generateOutput{}
-	out.Body.Data = *result
+	out.Body.Data.GenerateResult = *result
+	if logID.Valid {
+		out.Body.Data.TaskID = formatPgUUID(logID)
+	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }

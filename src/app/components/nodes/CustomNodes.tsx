@@ -118,11 +118,22 @@ function useNodeLoadingProgress(nodeId: string, loading: boolean) {
 function NodeLoadingCenterBadge({ nodeId }: { nodeId: string }) {
   const language = useStore((state) => state.language);
   const progress = useNodeLoadingProgress(nodeId, true);
+  // When the frontend HTTP request timed out but the backend task is
+  // still running (Stage 1 detached goroutine + Stage 2/3 recovery),
+  // we surface "已加入队列" so the user understands the work hasn't
+  // been lost. Cleared automatically when the task settles.
+  const queuedAfterTimeout = useStore((state) =>
+    Boolean(((state.nodes.find((n) => n.id === nodeId)?.data ?? {}) as { queuedAfterTimeout?: boolean }).queuedAfterTimeout),
+  );
+
+  const label = queuedAfterTimeout
+    ? (language === 'zh' ? '已加入队列，等待后台完成...' : 'Queued — waiting for backend...')
+    : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
       <div className="rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-        {language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`}
+        {label}
       </div>
     </div>
   );
@@ -132,10 +143,17 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
   const language = useStore((state) => state.language);
   const cancelNode = useStore((state) => state.cancelNode);
   const progress = useNodeLoadingProgress(nodeId, loading);
+  const queuedAfterTimeout = useStore((state) =>
+    Boolean(((state.nodes.find((n) => n.id === nodeId)?.data ?? {}) as { queuedAfterTimeout?: boolean }).queuedAfterTimeout),
+  );
 
   if (!loading || progress == null) {
     return null;
   }
+
+  const label = queuedAfterTimeout
+    ? (language === 'zh' ? '已加入队列，等待后台完成...' : 'Queued — waiting for backend...')
+    : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
 
   return (
     <div
@@ -145,7 +163,7 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
       )}
     >
       <div className="flex items-center gap-3 rounded-2xl border border-white/35 bg-white/78 px-4 py-2 text-sm font-medium text-neutral-900 shadow-[0_16px_44px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-        <span>{language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`}</span>
+        <span>{label}</span>
         <button
           type="button"
           onClick={(event) => {
