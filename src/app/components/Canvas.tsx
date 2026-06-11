@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -61,6 +61,12 @@ import {
 import { nodeTypes } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
+
+// 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
+// 打开导演台时按需加载,首屏 0 影响.
+const DirectorStageOverlay = lazy(() =>
+  import('./nodes/DirectorStageOverlay').then((m) => ({ default: m.DirectorStageOverlay })),
+);
 import { AgentRunPanel } from './AgentRunPanel';
 
 const edgeTypes = { flow: FlowEdge };
@@ -68,7 +74,7 @@ const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode';
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode';
 type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
 type ContextMenuState = {
   x: number;
@@ -268,6 +274,7 @@ const InnerCanvas = () => {
   const bringNodeToFront = useStore((state) => state.bringNodeToFront);
   const sendNodeToBack = useStore((state) => state.sendNodeToBack);
   const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
+  const directorStageNodeId = useStore((state) => state.directorStageNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -832,6 +839,7 @@ const InnerCanvas = () => {
             data: {
               status: 'error',
               sourceName: file.name,
+              sourceKind: 'upload',
               error: `Upload failed (${resp.status}): ${bodyText || file.name}`,
             },
           });
@@ -851,6 +859,7 @@ const InnerCanvas = () => {
             data: {
               status: 'error',
               sourceName: file.name,
+              sourceKind: 'upload',
               error: `Upload response missing file url: ${file.name}`,
             },
           });
@@ -871,7 +880,7 @@ const InnerCanvas = () => {
           id,
           type: nodeType,
           position,
-          data: { url, status: 'done', sourceName: file.name },
+          data: { url, status: 'done', sourceName: file.name, sourceKind: 'upload' },
         });
 
         if (referenceValue) {
@@ -886,12 +895,13 @@ const InnerCanvas = () => {
           position: snapToGrid
             ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
             : { x: flowPos.x, y: flowPos.y + offsetY },
-          data: {
-            status: 'error',
-            sourceName: file.name,
-            error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
-          },
-        });
+        data: {
+          status: 'error',
+          sourceName: file.name,
+          sourceKind: 'upload',
+          error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
+        },
+      });
         offsetY += 320;
       }
     }
@@ -927,7 +937,7 @@ const InnerCanvas = () => {
         position: snapToGrid
           ? snapPosition({ x: basePosition.x + index * 44, y: basePosition.y + index * 44 })
           : { x: basePosition.x + index * 44, y: basePosition.y + index * 44 },
-        data: { url, status: 'done', sourceName: item.title },
+        data: { url, status: 'done', sourceName: item.title, sourceKind: 'upload' },
       });
     });
   }, [addNode, contextMenu, snapToGrid]);
@@ -1488,18 +1498,22 @@ const InnerCanvas = () => {
                     onClick={() => onPickerSelect(option.kind)}
                   />
                 ))}
-                {FUTURE_NODE_OPTIONS.map((option) => (
-                  <ContextMenuButton
-                    key={option.key}
-                    icon={option.icon}
-                    labelZh={option.zh}
-                    labelEn={option.en}
-                    subtitleZh={option.subtitleZh}
-                    subtitleEn={option.subtitleEn}
-                    badge={option.badge}
-                    disabled
-                  />
-                ))}
+                {FUTURE_NODE_OPTIONS.map((option) => {
+                  const isDirectorStage = option.key === 'director-desk';
+                  return (
+                    <ContextMenuButton
+                      key={option.key}
+                      icon={option.icon}
+                      labelZh={option.zh}
+                      labelEn={option.en}
+                      subtitleZh={option.subtitleZh}
+                      subtitleEn={option.subtitleEn}
+                      badge={option.badge}
+                      disabled={!isDirectorStage}
+                      onClick={isDirectorStage ? () => onPickerSelect('directorStageNode') : undefined}
+                    />
+                  );
+                })}
                 <div className="px-3 pt-3 text-xs text-neutral-500">
                   {language === 'zh' ? '添加资源' : 'Add Resource'}
                 </div>
@@ -1583,6 +1597,13 @@ const InnerCanvas = () => {
 
       <SaveAssetDialog />
 
+      {/* 3D 导演台 overlay — 仅在用户打开时挂载,关闭后整个 WebGL 上下文释放. */}
+      {directorStageNodeId ? (
+        <Suspense fallback={null}>
+          <DirectorStageOverlay />
+        </Suspense>
+      ) : null}
+
       {/* Agent run panel + toggle FAB (bottom-right) */}
       <button
         onClick={() => setAgentPanelOpen((v) => !v)}
@@ -1659,12 +1680,12 @@ function GroupTitle({
         onStartDrag(event);
       }}
       onDoubleClick={(event) => { event.stopPropagation(); setEditing(true); }}
-      className="pointer-events-auto absolute left-0 top-0 z-20 -translate-y-[110%] flex cursor-grab select-none items-center gap-1 whitespace-nowrap rounded text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200 active:cursor-grabbing"
+      className="pointer-events-auto absolute left-0 top-0 z-20 -translate-y-[110%] flex cursor-grab select-none items-center gap-1 whitespace-nowrap rounded font-medium text-white/60 transition hover:bg-white/5 hover:text-white/90 active:cursor-grabbing"
       style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
       title={language === 'zh' ? '拖动移动整组 · 双击重命名' : 'Drag to move group · double-click to rename'}
     >
-      <span aria-hidden className="opacity-50">⋮⋮</span>
-      <span>{name} · {count}{language === 'zh' ? ' 个节点' : ' nodes'}</span>
+      <span aria-hidden className="opacity-30">⋮⋮</span>
+      <span>{name}</span>
     </div>
   );
 }

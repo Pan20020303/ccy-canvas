@@ -626,6 +626,15 @@ export type GeneratePayload = {
   reference_mode?: string;
   reference_video?: string;
   reference_videos?: string[];
+  edit_operation?: string;
+  mask_image?: string;
+  output_count?: number;
+  expand_direction?: string;
+  derive_from_node_id?: string;
+  trim_range?: { start: number; end: number };
+  crop_rect?: { x: number; y: number; width: number; height: number };
+  target_tracks?: string[];
+  output_format?: string;
 };
 
 export type GenerateResult = {

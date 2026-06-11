@@ -126,6 +126,22 @@ describe("skill-agent presenters", () => {
     ]);
   });
 
+  it("does not keep showing a disabled current model that is no longer available", () => {
+    const models: AppProviderConfig[] = [
+      {
+        id: "a",
+        service_type: "text",
+        vendor: "OpenAI",
+        name: "OpenAI",
+        model_list: ["gpt-4.1-mini"],
+        default_model: "gpt-4.1-mini",
+        priority: 1,
+      },
+    ];
+
+    expect(getAgentAvailableModels(models, "retired-model")).toEqual(["gpt-4.1-mini"]);
+  });
+
   it("summarizes the agent experience in user language", () => {
     expect(getAgentExperienceHints(agent, [promptSkill], true)).toEqual([
       "使用管理员预配的模型",

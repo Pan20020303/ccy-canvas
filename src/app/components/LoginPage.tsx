@@ -143,7 +143,7 @@ export const LoginPage = () => {
             type="email"
             value={email}
             onChange={setEmail}
-            icon={<Mail className="h-[22px] w-[22px] text-white/45" strokeWidth={1.75} />}
+            icon={<Mail className="h-[20px] w-[20px] text-white/45" strokeWidth={1.75} />}
             placeholder={copy.mailPlaceholder}
             label={copy.email}
           />
@@ -151,7 +151,7 @@ export const LoginPage = () => {
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={setPassword}
-            icon={<Lock className="h-[22px] w-[22px] text-white/45" strokeWidth={1.75} />}
+            icon={<Lock className="h-[20px] w-[20px] text-white/45" strokeWidth={1.75} />}
             placeholder={copy.passwordPlaceholder}
             label={copy.password}
             trailing={
@@ -161,19 +161,19 @@ export const LoginPage = () => {
                 className="text-white/38 transition hover:text-white/64"
                 aria-label={showPassword ? copy.hidePassword : copy.showPassword}
               >
-                {showPassword ? <Eye className="h-[22px] w-[22px]" strokeWidth={1.75} /> : <EyeOff className="h-[22px] w-[22px]" strokeWidth={1.75} />}
+                {showPassword ? <Eye className="h-[20px] w-[20px]" strokeWidth={1.75} /> : <EyeOff className="h-[20px] w-[20px]" strokeWidth={1.75} />}
               </button>
             }
           />
         </div>
 
-        <div className="mt-5 flex items-center justify-between gap-4 text-[15px] text-white/52">
+        <div className="mt-4 flex items-center justify-between gap-4 text-[14px] text-white/52">
           <label className="flex cursor-pointer items-center gap-3">
             <input
               type="checkbox"
               checked={remember}
               onChange={(event) => setRemember(event.target.checked)}
-              className="h-5 w-5 rounded-[4px] border border-white/22 bg-transparent text-[#ff5d1f] accent-[#ff5d1f]"
+              className="h-[18px] w-[18px] rounded-[4px] border border-white/22 bg-transparent text-[#ff5d1f] accent-[#ff5d1f]"
             />
             <span>{copy.remember}</span>
           </label>
@@ -182,39 +182,41 @@ export const LoginPage = () => {
           </button>
         </div>
 
-        {error ? <p className="mt-4 text-sm text-[#ff8b61]">{error}</p> : null}
+        {error ? <p className="mt-3 text-sm text-[#ff8b61]">{error}</p> : null}
 
+        {/* CTA 按钮按 φ 比例:height 56 = text 16 × ~3.5;角半径 14 = 输入 12 × φ⁰·⁵.
+            阴影更含蓄,让透明背景能透出来. */}
         <button
           type="submit"
           data-auth-cta
           disabled={submitting}
-          className="group relative mt-7 flex h-[74px] w-full items-center justify-center overflow-hidden rounded-[16px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[18px] font-semibold tracking-[0.08em] text-white shadow-[0_18px_48px_rgba(255,92,31,0.28)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+          className="group relative mt-6 flex h-[56px] w-full items-center justify-center overflow-hidden rounded-[14px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[16px] font-semibold tracking-[0.08em] text-white shadow-[0_14px_36px_rgba(255,92,31,0.24)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
         >
           <span className="absolute inset-0 bg-[radial-gradient(circle_at_84%_78%,rgba(255,233,201,0.4),transparent_14%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent_55%)] opacity-90" />
           <span className="relative">{submitting ? copy.loading : copy.submit}</span>
-          <ArrowUpRight className="absolute right-7 h-6 w-6 text-white" strokeWidth={2} />
-          <span className="absolute -right-2 bottom-0 h-16 w-16 rotate-45 bg-[radial-gradient(circle,rgba(255,244,228,0.95)_0%,rgba(255,177,124,0.85)_18%,rgba(255,95,31,0.0)_72%)] opacity-95" />
+          <ArrowUpRight className="absolute right-5 h-5 w-5 text-white" strokeWidth={2} />
+          <span className="absolute -right-2 bottom-0 h-14 w-14 rotate-45 bg-[radial-gradient(circle,rgba(255,244,228,0.95)_0%,rgba(255,177,124,0.85)_18%,rgba(255,95,31,0.0)_72%)] opacity-95" />
         </button>
 
-        <div className="mt-12 flex items-center gap-5 text-[15px] text-white/40">
-          <div className="h-px flex-1 bg-white/14" />
+        <div className="mt-9 flex items-center gap-5 text-[14px] text-white/40">
+          <div className="h-px flex-1 bg-white/12" />
           <span>{copy.divider}</span>
-          <div className="h-px flex-1 bg-white/14" />
+          <div className="h-px flex-1 bg-white/12" />
         </div>
 
-        <div className="mt-7 grid grid-cols-3 gap-3 sm:gap-4" data-auth-socials>
+        <div className="mt-6 grid grid-cols-3 gap-3 sm:gap-3.5" data-auth-socials>
           <SocialButton label={copy.google}>
             <GoogleIcon />
           </SocialButton>
           <SocialButton label={copy.github}>
-            <Github className="h-6 w-6 text-white" strokeWidth={1.9} />
+            <Github className="h-5 w-5 text-white" strokeWidth={1.9} />
           </SocialButton>
           <SocialButton label={copy.sso}>
-            <ShieldCheck className="h-6 w-6 text-white" strokeWidth={1.8} />
+            <ShieldCheck className="h-5 w-5 text-white" strokeWidth={1.8} />
           </SocialButton>
         </div>
 
-        <p className="mt-9 text-center text-[17px] text-white/42">
+        <p className="mt-7 text-center text-[14.5px] text-white/42">
           {copy.registerHint}
           <Link to="/register" className="ml-2 font-medium text-[#ff661f] transition hover:text-[#ff8a53]">
             {copy.register}
@@ -236,9 +238,11 @@ function SocialButton({
     <button
       type="button"
       data-auth-social
-      className="flex h-[86px] items-center justify-center gap-3 rounded-[14px] border border-white/14 bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(11,14,20,0.92))] px-4 text-[17px] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/24 hover:bg-white/[0.04]"
+      /* 3 列 × 高 64 → 每个按钮 w/h ≈ φ,跟 CTA 内部 padding 节奏一致.
+         bg 透明度下调到 0.52/0.58 让卡片整体一致透出背景视频. */
+      className="flex h-[64px] items-center justify-center gap-2.5 rounded-[12px] border border-white/12 bg-[linear-gradient(180deg,rgba(17,20,28,0.52),rgba(11,14,20,0.58))] px-3 text-[14px] text-white/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/24 hover:bg-white/[0.06]"
     >
-      {children}
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white">{children}</span>
       <span>{label}</span>
     </button>
   );
@@ -246,7 +250,7 @@ function SocialButton({
 
 function GoogleIcon() {
   return (
-    <svg aria-hidden="true" className="h-6 w-6" viewBox="0 0 24 24">
+    <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24">
       <path
         d="M21.805 12.041c0-.79-.071-1.548-.202-2.273H12v4.303h5.497a4.698 4.698 0 0 1-2.037 3.084v2.56h3.3c1.932-1.779 3.045-4.399 3.045-7.674Z"
         fill="#4285F4"

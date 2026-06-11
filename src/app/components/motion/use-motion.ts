@@ -25,7 +25,10 @@ export function useMountFadeIn<T extends HTMLElement>(
       });
     });
     return () => ctx.revert();
-  }, [config.delay, config.duration, config.ease, from]);
+    // One-shot mount animation by design. Depending on inline object
+    // identity here replays the intro on every rerender and causes flicker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return ref;
 }
 

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -512,6 +513,70 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 	verifyCachedAsset(t, result.Content, []byte("fake"))
+}
+
+func TestGenerateDoesNotFallbackToSecondProvider(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	var firstHits atomic.Int32
+	var secondHits atomic.Int32
+
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits.Add(1)
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("first provider path = %q, want /images/generations", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"first provider failed"}}`))
+	}))
+	defer firstServer.Close()
+
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits.Add(1)
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/should-not-be-used.png"}]}`))
+	}))
+	defer secondServer.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{
+			{
+				ID:              "provider-1",
+				ServiceType:     "image",
+				Status:          "enabled",
+				BaseURL:         firstServer.URL,
+				EncryptedAPIKey: encryptedKey,
+				ModelList:       []string{"gpt-image-2"},
+			},
+			{
+				ID:              "provider-2",
+				ServiceType:     "image",
+				Status:          "enabled",
+				BaseURL:         secondServer.URL,
+				EncryptedAPIKey: encryptedKey,
+				ModelList:       []string{"gpt-image-2"},
+			},
+		},
+	}
+	service := NewService(repo, key)
+
+	_, err = service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "gpt-image-2",
+		Prompt:      "draw a scooter",
+	})
+	if err == nil {
+		t.Fatal("Generate returned nil error, want first provider failure")
+	}
+	if got := firstHits.Load(); got != 1 {
+		t.Fatalf("first provider hits = %d, want 1", got)
+	}
+	if got := secondHits.Load(); got != 0 {
+		t.Fatalf("second provider hits = %d, want 0", got)
+	}
 }
 
 func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {

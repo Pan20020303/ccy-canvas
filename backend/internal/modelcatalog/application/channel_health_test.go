@@ -58,7 +58,9 @@ func TestClassifyError(t *testing.T) {
 }
 
 // computeCooldown should follow the formula
-//   initial × backoffFactor^consecutiveCooldowns, capped at maxCooldown.
+//
+//	initial × backoffFactor^consecutiveCooldowns, capped at maxCooldown.
+//
 // Verify against the user-approved defaults (initial=5min, factor=2, max=60min).
 func TestComputeCooldownExponentialBackoff(t *testing.T) {
 	// Save / restore the global so we don't leak test state.
@@ -122,7 +124,7 @@ type stubError string
 
 func (s stubError) Error() string { return string(s) }
 
-// healthFakeRepo is a focused fake just for the cooldown-policy test.
+// healthFakeRepo is a focused fake just for the channel-health policy test.
 // We don't need the full fakeRepository from service_test.go (which
 // drags in a lot of unrelated machinery) — only the channel-health
 // methods are exercised here.
@@ -149,7 +151,9 @@ func (r *healthFakeRepo) MarkChannelTimeout(_ context.Context, _ string) error {
 
 // Unused by the test but required by the Repository interface — keep
 // minimal panicking stubs so the file compiles without the full fake.
-func (r *healthFakeRepo) GetRelayProvider(_ context.Context) (*domain.RelayProvider, error) { panic("nope") }
+func (r *healthFakeRepo) GetRelayProvider(_ context.Context) (*domain.RelayProvider, error) {
+	panic("nope")
+}
 func (r *healthFakeRepo) CreateRelayProvider(_ context.Context, _, _, _, _ string) (*domain.RelayProvider, error) {
 	panic("nope")
 }
@@ -201,10 +205,9 @@ func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _
 	panic("nope")
 }
 
-// Per Stage 4: timeout marks bump a separate counter and must never
-// trigger cooldown, even when called many times in a row. Other
-// failure categories still walk the existing failure-counter path.
-func TestMarkChannelTimeoutNeverCoolsDown(t *testing.T) {
+// Timeouts should only update the timeout counter. Failures still get
+// recorded, but the service must not auto-lock or schedule cooldown.
+func TestMarkChannelHealthDoesNotAutoCooldown(t *testing.T) {
 	original := channelHealthConfig
 	defer func() { channelHealthConfig = original }()
 	channelHealthConfig = channelHealthCfg{
@@ -229,9 +232,13 @@ func TestMarkChannelTimeoutNeverCoolsDown(t *testing.T) {
 		t.Error("MarkChannelTimeout must never schedule cooldown")
 	}
 
-	// Sanity: a real channel-dead error still cools down on the 3rd hit.
+	// Sanity: a real channel-dead error is still recorded, but should no
+	// longer auto-schedule a cooldown.
 	svc.MarkChannelFailure(context.Background(), "channel-1", CategoryChannelDead, "401")
-	if !repo.cooldownSet {
-		t.Error("MarkChannelFailure(CategoryChannelDead) should set cooldown immediately")
+	if repo.failureCalls != 1 {
+		t.Errorf("MarkChannelFailure should increment failure count once; got %d", repo.failureCalls)
+	}
+	if repo.cooldownSet {
+		t.Error("MarkChannelFailure must not auto-schedule cooldown")
 	}
 }

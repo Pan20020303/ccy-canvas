@@ -25,9 +25,10 @@ import (
 //                turn that's emitted as a `thought` event, giving the user a
 //                preview of intent before any tool runs.
 type Runner struct {
-	LLM      *LLMClient
-	// Endpoints is the ordered list of upstream providers that serve the model.
-	// Each is tried in turn — see LLMClient.ChatStreamMulti for fallback rules.
+	LLM *LLMClient
+	// Endpoints is the upstream provider list that serves the model.
+	// The catalog now resolves a single preferred endpoint for each model so
+	// we do not automatically switch between vendors mid-run.
 	// BaseURL/APIKey are kept for backward compatibility; if Endpoints is empty
 	// they're synthesized into a single-element list.
 	Endpoints []Endpoint
@@ -206,4 +207,3 @@ func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {
 	}
 	return sanitized
 }
-

@@ -1,4 +1,5 @@
 import type { ServiceType } from "./model-config";
+import type { ReferenceModeKey } from "./reference-modes";
 
 export type DurationRange = {
   min: number;
@@ -24,6 +25,10 @@ export type ModelTemplate = {
   durationRange?: DurationRange;
   /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
   durationOptions?: number[];
+  /** Video reference modes this model supports. Drives the tab strip in
+   *  the prompt panel. Omitted → no reference tabs (pure text-to-video).
+   *  See reference-modes.ts for the capability registry. */
+  referenceModes?: ReferenceModeKey[];
   defaults?: {
     mode?: string;
     resolution?: string;
@@ -93,6 +98,8 @@ const SORA_V3_TEMPLATE = {
     step: 1,
     defaultValue: 5,
   },
+  // Sora supports a first reference frame and full video edit/remix.
+  referenceModes: ["first-last", "video-edit"] as ReferenceModeKey[],
   defaults: {
     resolution: "480p",
     aspectRatio: "16:9",
@@ -112,6 +119,7 @@ const SORA_2_TEMPLATE = {
     step: 4,
     defaultValue: 8,
   },
+  referenceModes: ["first-last", "video-edit"] as ReferenceModeKey[],
   defaults: {
     resolution: "720p",
     aspectRatio: "16:9",
@@ -129,6 +137,9 @@ const SEEDANCE_2_TEMPLATE = {
   resolutionOptions: ["480p", "720p", "1080p"],
   aspectRatioOptions: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
   durationRange: { min: 4, max: 15, step: 1, defaultValue: 5 },
+  // Seedance 2.0 is the most capable: first/last frame, 1–9 multi-image,
+  // motion mimic, and mixed all-in-one references.
+  referenceModes: ["first-last", "multi-image", "motion-mimic", "all-in-one"] as ReferenceModeKey[],
   defaults: { resolution: "720p", aspectRatio: "16:9" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
@@ -141,11 +152,15 @@ const SEEDANCE_2_FAST_TEMPLATE = {
 const SEEDANCE_15_PRO_TEMPLATE = {
   ...SEEDANCE_2_TEMPLATE,
   durationRange: { min: 4, max: 12, step: 1, defaultValue: 5 },
+  // Seedance 1.5 supports first/last frame + multi-image, no motion mimic.
+  referenceModes: ["first-last", "multi-image"] as ReferenceModeKey[],
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
 const SEEDANCE_10_PRO_TEMPLATE = {
   ...SEEDANCE_2_TEMPLATE,
   durationRange: { min: 2, max: 12, step: 1, defaultValue: 5 },
+  // Seedance 1.0 first/last frame only.
+  referenceModes: ["first-last"] as ReferenceModeKey[],
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
 // Seedream (image) — the UI exposes ratios, then the backend maps them to

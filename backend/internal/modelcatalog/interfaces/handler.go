@@ -866,11 +866,11 @@ func (h *Handler) resetChannelHealth(ctx context.Context, input *toggleProviderC
 
 type testChannelOutput struct {
 	Body struct {
-		OK          bool   `json:"ok"`
-		HttpStatus  int    `json:"http_status"`
-		LatencyMs   int    `json:"latency_ms"`
-		ErrorMsg    string `json:"error_msg,omitempty"`
-		RequestID   string `json:"request_id"`
+		OK         bool   `json:"ok"`
+		HttpStatus int    `json:"http_status"`
+		LatencyMs  int    `json:"latency_ms"`
+		ErrorMsg   string `json:"error_msg,omitempty"`
+		RequestID  string `json:"request_id"`
 	}
 }
 
@@ -902,19 +902,28 @@ type listAppProviderConfigsOutput struct {
 
 type generateInput struct {
 	Body struct {
-		NodeId          string   `json:"node_id" doc:"Canvas node id (for log correlation)"`
-		ServiceType     string   `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
-		Model           string   `json:"model" minLength:"1" doc:"Model name"`
-		Prompt          string   `json:"prompt" minLength:"1" doc:"User prompt"`
-		Size            string   `json:"size,omitempty" doc:"Image ratio (e.g. 1:1, 16:9, auto)"`
-		Resolution      string   `json:"resolution,omitempty" doc:"Video resolution (e.g. 480p, 720p)"`
-		Quality         string   `json:"quality,omitempty" doc:"Image quality (auto, high, medium, low)"`
-		Duration        int      `json:"duration,omitempty" doc:"Video duration in seconds"`
-		AspectRatio     string   `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
-		ReferenceImages []string `json:"reference_images,omitempty" doc:"Reference image URLs"`
-		ReferenceVideo  string   `json:"reference_video,omitempty" doc:"Single reference video URL"`
-		ReferenceVideos []string `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
-		ReferenceMode   string   `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
+		NodeId           string                      `json:"node_id" doc:"Canvas node id (for log correlation)"`
+		ServiceType      string                      `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
+		Model            string                      `json:"model" minLength:"1" doc:"Model name"`
+		Prompt           string                      `json:"prompt" minLength:"1" doc:"User prompt"`
+		Size             string                      `json:"size,omitempty" doc:"Image ratio (e.g. 1:1, 16:9, auto)"`
+		Resolution       string                      `json:"resolution,omitempty" doc:"Video resolution (e.g. 480p, 720p)"`
+		Quality          string                      `json:"quality,omitempty" doc:"Image quality (auto, high, medium, low)"`
+		Duration         int                         `json:"duration,omitempty" doc:"Video duration in seconds"`
+		AspectRatio      string                      `json:"aspect_ratio,omitempty" doc:"Video aspect ratio (16:9, 9:16, etc.)"`
+		ReferenceImages  []string                    `json:"reference_images,omitempty" doc:"Reference image URLs"`
+		ReferenceVideo   string                      `json:"reference_video,omitempty" doc:"Single reference video URL"`
+		ReferenceVideos  []string                    `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
+		EditOperation    string                      `json:"edit_operation,omitempty" doc:"Image edit operation hint"`
+		MaskImage        string                      `json:"mask_image,omitempty" doc:"Image edit mask"`
+		OutputCount      int                         `json:"output_count,omitempty" doc:"Number of requested outputs"`
+		ExpandDirection  string                      `json:"expand_direction,omitempty" doc:"Expansion direction hint"`
+		DeriveFromNodeID string                      `json:"derive_from_node_id,omitempty" doc:"Source node id for derivatives"`
+		TrimRange        *application.VideoTrimRange `json:"trim_range,omitempty" doc:"Video trim range in seconds"`
+		CropRect         *application.VideoCropRect  `json:"crop_rect,omitempty" doc:"Normalized crop rectangle"`
+		TargetTracks     []string                    `json:"target_tracks,omitempty" doc:"Requested output tracks"`
+		OutputFormat     string                      `json:"output_format,omitempty" doc:"Requested output format hint"`
+		ReferenceMode    string                      `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
 	}
 }
 
@@ -1108,21 +1117,30 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		userIDStr = claims.UserID
 	}
 	result, err := h.svc.Generate(ctx, application.GenerateRequest{
-		ServiceType:     input.Body.ServiceType,
-		Model:           input.Body.Model,
-		Prompt:          input.Body.Prompt,
-		Size:            input.Body.Size,
-		Resolution:      input.Body.Resolution,
-		Quality:         input.Body.Quality,
-		Duration:        input.Body.Duration,
-		AspectRatio:     input.Body.AspectRatio,
-		ReferenceImages: input.Body.ReferenceImages,
-		ReferenceVideo:  input.Body.ReferenceVideo,
-		ReferenceVideos: input.Body.ReferenceVideos,
-		ReferenceMode:   input.Body.ReferenceMode,
-		GenerationLogID: logIDStr,
-		UserID:          userIDStr,
-		NodeID:          input.Body.NodeId,
+		ServiceType:      input.Body.ServiceType,
+		Model:            input.Body.Model,
+		Prompt:           input.Body.Prompt,
+		Size:             input.Body.Size,
+		Resolution:       input.Body.Resolution,
+		Quality:          input.Body.Quality,
+		Duration:         input.Body.Duration,
+		AspectRatio:      input.Body.AspectRatio,
+		ReferenceImages:  input.Body.ReferenceImages,
+		ReferenceVideo:   input.Body.ReferenceVideo,
+		ReferenceVideos:  input.Body.ReferenceVideos,
+		EditOperation:    input.Body.EditOperation,
+		MaskImage:        input.Body.MaskImage,
+		OutputCount:      input.Body.OutputCount,
+		ExpandDirection:  input.Body.ExpandDirection,
+		DeriveFromNodeID: input.Body.DeriveFromNodeID,
+		TrimRange:        input.Body.TrimRange,
+		CropRect:         input.Body.CropRect,
+		TargetTracks:     input.Body.TargetTracks,
+		OutputFormat:     input.Body.OutputFormat,
+		ReferenceMode:    input.Body.ReferenceMode,
+		GenerationLogID:  logIDStr,
+		UserID:           userIDStr,
+		NodeID:           input.Body.NodeId,
 	})
 
 	// NOTE: writing the final outcome to generation_logs is now owned by the

@@ -11,8 +11,12 @@ import {
   Globe,
   ChevronDown,
   ArrowUp,
+  Download,
   LayoutTemplate,
   Sparkles,
+  Scissors,
+  Crop,
+  FileText,
   Plus,
   X,
   Expand,
@@ -37,6 +41,13 @@ import { resolveBackendAssetUrl } from '../../reference-media';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
+import {
+  REFERENCE_MODE_SPECS,
+  modesForModel,
+  isModeSatisfied,
+  firstSatisfiedMode,
+  type ReferenceModeKey,
+} from '../../reference-modes';
 import { ModelBrandIcon } from '../ModelBrandIcon';
 import {
   canUseReversePrompt,
@@ -46,6 +57,25 @@ import {
   splitFilenameExtension,
 } from '../../text-node-modes';
 import { getGenerationProgressPercent } from './loading-progress';
+import { Button } from '../ui/button';
+import { Textarea } from '../ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 
 // ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
 
@@ -817,6 +847,18 @@ const PromptPanel = ({
     return availableModels[0] ?? fallbackModel;
   }, [availableModels, fallbackModel, params.model]);
 
+  useEffect(() => {
+    if (!modelIsDisabled || !activeModel || activeModel === params.model) {
+      return;
+    }
+
+    const owningConfig = enabledConfigs.find((config) => config.modelList.includes(activeModel));
+    updateNodeGenerationParams(nodeId, {
+      model: activeModel,
+      vendor: owningConfig?.vendor ?? activeVendor,
+    });
+  }, [activeModel, activeVendor, enabledConfigs, modelIsDisabled, nodeId, params.model, updateNodeGenerationParams]);
+
   const template = getModelTemplate(activeModel);
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
   const currentResolution = params.resolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
@@ -1034,36 +1076,83 @@ const PromptPanel = ({
   };
 
   // Video service type gets a reference-mode tab strip à la Seedance 2.0:
-  // each tab represents a different way of supplying references (first/last
-  // keyframes, multi-image consistency, motion mimicking, etc.). The chosen
-  // mode is persisted in node.generationParams.referenceVariant and surfaced
-  // to the backend via the generate request.
-  const videoReferenceModes = serviceType === 'video' ? [
-    { key: 'first-last',    label: language === 'zh' ? '首尾帧'    : 'First / Last' },
-    { key: 'multi-image',   label: language === 'zh' ? '多图参考'  : 'Multi-image'   },
-    { key: 'motion-mimic',  label: language === 'zh' ? '动作模仿'  : 'Motion mimic'  },
-    { key: 'all-in-one',    label: language === 'zh' ? '全能参考'  : 'All-in-one'    },
-    { key: 'video-edit',    label: language === 'zh' ? '视频编辑'  : 'Video edit'    },
-  ] : [];
-  const activeReferenceMode = (params.referenceVariant as string) || (videoReferenceModes[0]?.key ?? '');
+  // each tab is a distinct upstream request shape (first/last keyframes,
+  // multi-image consistency, motion mimic, video edit, …). Tabs are gated
+  // by both the active model's declared capabilities AND the current
+  // upstream reference inputs — see reference-modes.ts. The chosen mode is
+  // persisted in node.generationParams.referenceVariant.
 
-  const referenceTabs = videoReferenceModes.length ? (
+  // Count current upstream image / video references feeding this node.
+  const refCounts = useMemo(() => {
+    let images = 0;
+    let videos = 0;
+    for (const up of upstreamNodes) {
+      if (up.type === 'imageNode' || up.type === 'referenceImageNode') images += 1;
+      else if (up.type === 'videoNode' || up.type === 'referenceVideoNode') videos += 1;
+    }
+    return { images, videos };
+  }, [upstreamNodes]);
+
+  // The modes this model supports, in registry order.
+  const modelReferenceModes = useMemo<ReferenceModeKey[]>(
+    () => (serviceType === 'video' ? modesForModel(template?.referenceModes) : []),
+    [serviceType, template?.referenceModes],
+  );
+
+  const persistedReferenceMode = (params.referenceVariant as ReferenceModeKey | undefined);
+  // Resolve the effective active mode: prefer the persisted choice when it's
+  // still both supported AND satisfiable; otherwise fall back to the first
+  // satisfiable supported mode (or the first supported as a last resort).
+  const activeReferenceMode = useMemo<ReferenceModeKey | ''>(() => {
+    if (modelReferenceModes.length === 0) return '';
+    if (
+      persistedReferenceMode &&
+      modelReferenceModes.includes(persistedReferenceMode) &&
+      isModeSatisfied(persistedReferenceMode, refCounts)
+    ) {
+      return persistedReferenceMode;
+    }
+    return firstSatisfiedMode(modelReferenceModes, refCounts) ?? modelReferenceModes[0];
+  }, [modelReferenceModes, persistedReferenceMode, refCounts]);
+
+  // Auto-fallback persistence: if the persisted mode drifted out of the
+  // valid set (e.g. user deleted the upstream video while on 动作模仿),
+  // write the resolved mode back so the node never sits in an illegal state.
+  useEffect(() => {
+    if (serviceType !== 'video') return;
+    if (!activeReferenceMode) return;
+    if (persistedReferenceMode !== activeReferenceMode) {
+      updateNodeGenerationParams(nodeId, { referenceVariant: activeReferenceMode });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeReferenceMode, persistedReferenceMode, serviceType, nodeId]);
+
+  const referenceTabs = modelReferenceModes.length ? (
     <div className="mb-3 flex items-center gap-1 overflow-x-auto pb-0.5">
-      {videoReferenceModes.map((m) => {
-        const isActive = m.key === activeReferenceMode;
+      {modelReferenceModes.map((key) => {
+        const spec = REFERENCE_MODE_SPECS[key];
+        const isActive = key === activeReferenceMode;
+        const satisfied = isModeSatisfied(key, refCounts);
         return (
           <button
-            key={m.key}
+            key={key}
             type="button"
-            onClick={() => updateNodeGenerationParams(nodeId, { referenceVariant: m.key })}
+            disabled={!satisfied}
+            title={satisfied ? undefined : (language === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en)}
+            onClick={() => {
+              if (!satisfied) return;
+              updateNodeGenerationParams(nodeId, { referenceVariant: key });
+            }}
             className={clsx(
               'shrink-0 rounded-full px-3 py-1 text-xs transition',
               isActive
                 ? 'bg-white/15 text-white ring-1 ring-white/30'
-                : 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/8 hover:bg-white/[0.06] hover:text-neutral-200',
+                : satisfied
+                  ? 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/8 hover:bg-white/[0.06] hover:text-neutral-200'
+                  : 'cursor-not-allowed bg-white/[0.02] text-neutral-600 ring-1 ring-white/[0.04]',
             )}
           >
-            {m.label}
+            {language === 'zh' ? spec.label.zh : spec.label.en}
           </button>
         );
       })}
@@ -1105,60 +1194,75 @@ const PromptPanel = ({
     setPickerOpen(false);
   }, [addNode, allNodes, edges, nodeId, onConnect]);
 
+  // Named slots for the active reference mode. When the mode defines
+  // slots (e.g. 首帧 / 尾帧 for first-last), each thumbnail in order gets
+  // its slot label underneath; extra thumbnails beyond the named slots
+  // fall back to a numeric index. Modes with no slots (multi-image,
+  // all-in-one) keep the plain numbered badges.
+  const activeModeSlots = activeReferenceMode
+    ? REFERENCE_MODE_SPECS[activeReferenceMode].slots
+    : [];
+
   // Preview strip above the textarea: each upstream node renders as a
   // square thumbnail with a numbered badge in the corner. Hovering shows
   // a delete X that removes the EDGE (the upstream node itself stays on
-  // canvas). Trailing dashed `+` slot opens the asset picker. NeoWOW
-  // layout: all items same size in one flex row, no labels below.
+  // canvas). Trailing dashed `+` slot opens the asset picker.
   const previewStrip = (
-    <div className="prompt-editor-scroll mb-3 flex items-center gap-2 overflow-x-auto px-1 py-2">
-      {upstreamNodes.map((up) => {
+    <div className="prompt-editor-scroll mb-3 flex items-start gap-2 overflow-x-auto px-1 py-2">
+      {upstreamNodes.map((up, idx) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id);
         const isUsed = Boolean(matched);
+        const slot = activeModeSlots[idx];
+        const slotLabel = slot ? (language === 'zh' ? slot.zh : slot.en) : '';
         return (
           <div
             key={up.edgeId}
-            className="group/ref relative shrink-0"
+            className="group/ref relative shrink-0 flex flex-col items-center gap-1"
             title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
           >
-            {up.thumb ? (
-              <img
-                src={up.thumb}
-                alt=""
-                className={clsx(
-                  'h-12 w-12 rounded-lg object-cover transition',
-                  isUsed ? 'ring-2 ring-cyan-400/50' : 'opacity-80',
-                )}
-                draggable={false}
-              />
-            ) : (
-              <div
-                className={clsx(
-                  'flex h-12 w-12 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition',
-                  isUsed && 'ring-2 ring-cyan-400/50',
-                )}
-              >
-                {up.icon}
+            <div className="relative">
+              {up.thumb ? (
+                <img
+                  src={up.thumb}
+                  alt=""
+                  className={clsx(
+                    'h-12 w-12 rounded-lg object-cover transition',
+                    isUsed ? 'ring-2 ring-cyan-400/50' : 'opacity-80',
+                  )}
+                  draggable={false}
+                />
+              ) : (
+                <div
+                  className={clsx(
+                    'flex h-12 w-12 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition',
+                    isUsed && 'ring-2 ring-cyan-400/50',
+                  )}
+                >
+                  {up.icon}
+                </div>
+              )}
+              {/* Index badge — hidden when the delete button is visible. */}
+              <div className="pointer-events-none absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-black/85 px-1 text-[10px] font-medium text-white shadow group-hover/ref:opacity-0">
+                {up.index}
               </div>
-            )}
-            {/* Index badge — NeoWOW shows the order of references in
-                the corner of each thumbnail. Hidden when the delete
-                button is visible to avoid stacking. */}
-            <div className="pointer-events-none absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-black/85 px-1 text-[10px] font-medium text-white shadow group-hover/ref:opacity-0">
-              {up.index}
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onEdgesChange([{ id: up.edgeId, type: 'remove' }] as never);
+                }}
+                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 shadow transition group-hover/ref:opacity-100 hover:bg-rose-400"
+                title={language === 'zh' ? '移除引用' : 'Disconnect reference'}
+              >
+                <X className="h-2.5 w-2.5" strokeWidth={3} />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onEdgesChange([{ id: up.edgeId, type: 'remove' }] as never);
-              }}
-              className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 shadow transition group-hover/ref:opacity-100 hover:bg-rose-400"
-              title={language === 'zh' ? '移除引用' : 'Disconnect reference'}
-            >
-              <X className="h-2.5 w-2.5" strokeWidth={3} />
-            </button>
+            {slotLabel ? (
+              <span className={clsx('max-w-[52px] truncate text-[9px]', slot?.optional ? 'text-neutral-500' : 'text-neutral-300')}>
+                {slotLabel}
+              </span>
+            ) : null}
           </div>
         );
       })}
@@ -1246,8 +1350,8 @@ const PromptPanel = ({
     <div className="mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
         <Dropdown
-          label={<ModelBrandIcon model={modelIsDisabled && params.model ? params.model : activeModel} size={14} />}
-          value={modelIsDisabled && params.model ? `${params.model}（已停用）` : activeModel}
+          label={<ModelBrandIcon model={activeModel} size={14} />}
+          value={activeModel}
           options={availableModels}
           onChange={handleModelChange}
           menuMinWidth={240}
@@ -1391,6 +1495,10 @@ const BaseNode = ({
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
+  // Counter-scale the top floating toolbar so it keeps a constant screen size
+  // across canvas zoom, matching the prompt panel's behaviour.
+  const baseViewport = useViewport();
+  const baseInverseZoom = 1 / (baseViewport.zoom || 1);
 
   // Pulse the shell when a long-running generation completes — bridges the
   // gap between "loader spinning" and "the output is just sitting there",
@@ -1422,8 +1530,18 @@ const BaseNode = ({
   return (
     <div className="group w-[300px]">
       {selected && !multiSelectActive && topFloatingPanel ? (
-        <div className="pointer-events-auto absolute left-1/2 z-30 -translate-x-1/2 -translate-y-full pb-3" style={{ top: 0 }}>
-          {topFloatingPanel}
+        <div className="absolute left-1/2 top-0 z-30" style={{ height: 0, width: 0 }}>
+          <div
+            className="pointer-events-auto pb-3"
+            style={{
+              width: 'max-content',
+              whiteSpace: 'nowrap',
+              transform: `translate(-50%, -100%) scale(${baseInverseZoom})`,
+              transformOrigin: 'bottom center',
+            }}
+          >
+            {topFloatingPanel}
+          </div>
         </div>
       ) : null}
       <div className="mb-1.5 flex items-center justify-between gap-3 text-[11.5px] text-neutral-200">
@@ -1659,6 +1777,986 @@ const PreviewModal = ({ kind, src, onClose }: { kind: 'image' | 'video'; src: st
     document.body,
   );
 };
+
+type ImageActionKind = 'panorama' | 'angles' | 'lighting' | 'grid-compose' | 'enhance' | 'split' | 'edit';
+
+type ImageActionDraft = {
+  prompt: string;
+  anglePreset?: string;
+  lightingPreset?: string;
+  gridPreset?: string;
+  expandDirection?: string;
+  outputCount?: number;
+  referenceImages?: string[];
+  maskImage?: string;
+  splitRows?: number;
+  splitCols?: number;
+};
+
+const ANGLE_PRESETS = [
+  { id: 'front-side-back', labelZh: '正侧背', labelEn: 'Front / Side / Back', prompt: '输出正面、侧面、背面三视图，保持主体一致，背景简洁。', outputs: 3 },
+  { id: 'top-front-side', labelZh: '俯视/平视/仰视', labelEn: 'Top / Eye / Low', prompt: '输出俯视、平视、仰视三种机位，保持主体一致，构图统一。', outputs: 3 },
+  { id: 'three-view', labelZh: '三视图', labelEn: 'Three-view', prompt: '输出三视图表现，主体一致，角度清晰。', outputs: 3 },
+];
+
+const LIGHTING_PRESETS = [
+  { id: 'studio-key', labelZh: '棚拍主光', labelEn: 'Studio key light', prompt: '保持主体和构图不变，使用棚拍主光，轮廓清晰，质感高级。' },
+  { id: 'side-light', labelZh: '侧光', labelEn: 'Side light', prompt: '保持主体不变，改为侧光照明，增强体积感与阴影层次。' },
+  { id: 'rim-light', labelZh: '逆光 / 轮廓光', labelEn: 'Back / rim light', prompt: '保持主体不变，改为逆光与轮廓光，突出边缘高光。' },
+  { id: 'soft-light', labelZh: '柔光', labelEn: 'Soft light', prompt: '保持主体不变，改为柔和漫射光，减少硬阴影，画面更通透。' },
+];
+
+const GRID_COMPOSE_PRESETS = [
+  { id: '4', labelZh: '4宫格 (2×2)', labelEn: '4 grid (2×2)', value: '2x2' },
+  { id: '9', labelZh: '9宫格 (3×3)', labelEn: '9 grid (3×3)', value: '3x3' },
+  { id: '16', labelZh: '16宫格 (4×4)', labelEn: '16 grid (4×4)', value: '4x4' },
+  { id: '25', labelZh: '25宫格 (5×5)', labelEn: '25 grid (5×5)', value: '5x5' },
+];
+
+const GRID_SPLIT_PRESETS = GRID_COMPOSE_PRESETS;
+
+const VIDEO_EDIT_PRESETS = [
+  { id: 'scene-preserve', labelZh: '保留主体', labelEn: 'Preserve subject', prompt: '保持主体和构图基本不变，只处理视频编辑目标。' },
+  { id: 'highlight-reframe', labelZh: '强化观感', labelEn: 'Enhance look', prompt: '在保留主要内容的前提下，提升整体观感与完成度。' },
+];
+
+const VIDEO_PARSE_PRESETS = [
+  { id: 'summary', labelZh: '场景摘要', labelEn: 'Scene summary', targetTracks: ['summary'] as string[] },
+  { id: 'transcript', labelZh: '字幕转写', labelEn: 'Transcript', targetTracks: ['transcript'] as string[] },
+];
+
+const VIDEO_AUDIO_PRESETS = [
+  { id: 'voice', labelZh: '人声分离', labelEn: 'Voice separation', targetTracks: ['voice'] as string[] },
+  { id: 'av', labelZh: '音视频分离', labelEn: 'Audio/video split', targetTracks: ['audio', 'video'] as string[] },
+];
+
+type VideoActionKind = 'trim' | 'crop' | 'enhance' | 'parse' | 'subtitle-clean' | 'audio-separate';
+
+type VideoActionDraft = {
+  prompt: string;
+  trimStart: number;
+  trimEnd: number;
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+  outputFormat: string;
+  targetTracks: string[];
+};
+
+function parseGridValue(value: string) {
+  const [rows, cols] = value.split('x').map((item) => Number(item));
+  return {
+    rows: Number.isFinite(rows) && rows > 0 ? rows : 3,
+    cols: Number.isFinite(cols) && cols > 0 ? cols : 3,
+  };
+}
+
+function parseRatioValue(ratio: string) {
+  const [w, h] = ratio.split(':').map((item) => Number(item));
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return 1;
+  }
+  return w / h;
+}
+
+async function loadImageElement(src: string): Promise<HTMLImageElement> {
+  const target = /^data:/.test(src)
+    ? src
+    : (/^https?:\/\//.test(src)
+      ? `/api/app/proxy-media?url=${encodeURIComponent(src)}`
+      : resolveBackendAssetUrl(src));
+  const response = await fetch(target, { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Failed to load image: ${response.status}`);
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Image decode failed'));
+    img.src = objectUrl;
+  });
+  URL.revokeObjectURL(objectUrl);
+  return img;
+}
+
+async function canvasToDataUrl(canvas: HTMLCanvasElement) {
+  return canvas.toDataURL('image/png');
+}
+
+async function buildSelectionMask(sourceUrl: string, selection: { x: number; y: number; width: number; height: number }) {
+  const img = await loadImageElement(sourceUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Mask canvas unavailable');
+  const editSelection = selection.width > 0 && selection.height > 0
+    ? selection
+    : { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  ctx.fillStyle = 'rgba(0,0,0,1)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(editSelection.x, editSelection.y, editSelection.width, editSelection.height);
+  return canvasToDataUrl(canvas);
+}
+
+async function buildPanoramaReference(sourceUrl: string, targetRatio = '21:9') {
+  const img = await loadImageElement(sourceUrl);
+  const ratio = parseRatioValue(targetRatio);
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  const srcRatio = srcW / srcH;
+  const padScale = 1.15;
+  const targetW = ratio >= srcRatio ? Math.max(srcW, Math.round(srcH * ratio * padScale)) : Math.round(srcW * padScale);
+  const targetH = ratio >= srcRatio ? Math.round(targetW / ratio) : Math.max(srcH, Math.round(srcW / ratio * padScale));
+  const drawW = srcW;
+  const drawH = srcH;
+  const offsetX = Math.round((targetW - drawW) / 2);
+  const offsetY = Math.round((targetH - drawH) / 2);
+
+  const sourceCanvas = document.createElement('canvas');
+  sourceCanvas.width = targetW;
+  sourceCanvas.height = targetH;
+  const sourceCtx = sourceCanvas.getContext('2d');
+  if (!sourceCtx) throw new Error('Source canvas unavailable');
+  sourceCtx.fillStyle = '#050505';
+  sourceCtx.fillRect(0, 0, targetW, targetH);
+  sourceCtx.drawImage(img, offsetX, offsetY, drawW, drawH);
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = targetW;
+  maskCanvas.height = targetH;
+  const maskCtx = maskCanvas.getContext('2d');
+  if (!maskCtx) throw new Error('Mask canvas unavailable');
+  maskCtx.fillStyle = 'rgba(0,0,0,1)';
+  maskCtx.fillRect(0, 0, targetW, targetH);
+  maskCtx.clearRect(offsetX, offsetY, drawW, drawH);
+
+  return {
+    referenceImages: [await canvasToDataUrl(sourceCanvas)],
+    maskImage: await canvasToDataUrl(maskCanvas),
+  };
+}
+
+async function splitImageIntoTiles(sourceUrl: string, rows: number, cols: number) {
+  const img = await loadImageElement(sourceUrl);
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  const tileW = srcW / cols;
+  const tileH = srcH / rows;
+  const tiles: string[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(tileW));
+      canvas.height = Math.max(1, Math.round(tileH));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+      ctx.drawImage(
+        img,
+        Math.round(col * tileW),
+        Math.round(row * tileH),
+        Math.round(tileW),
+        Math.round(tileH),
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      );
+      tiles.push(await canvasToDataUrl(canvas));
+    }
+  }
+  return tiles;
+}
+
+function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
+  const language = useStore((state) => state.language);
+  const nodes = useStore((state) => state.nodes);
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const createGroup = useStore((state) => state.createGroup);
+  const runNode = useStore((state) => state.runNode);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
+  const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
+  const sourceUrl = String(sourceData.url ?? '');
+  const [session, setSession] = useState<{
+    action: ImageActionKind;
+    draft: ImageActionDraft;
+    open: boolean;
+    compareOpen: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const latestDerived = useMemo(
+    () => {
+      const matches = nodes.filter((node) => (node.data as Record<string, unknown> | undefined)?.derivedFromNodeId === sourceNodeId);
+      return matches[matches.length - 1];
+    },
+    [nodes, sourceNodeId],
+  );
+  const latestDerivedUrl = String((latestDerived?.data as Record<string, unknown> | undefined)?.url ?? '');
+
+  useEffect(() => {
+    if (!session) return;
+    if (!session.open && !session.compareOpen) return;
+  }, [session]);
+
+  const sourceTitle = language === 'zh' ? '图片二次创作' : 'Image actions';
+
+  const closeSession = () => setSession(null);
+
+  const openDraft = (action: ImageActionKind, draft: Partial<ImageActionDraft> = {}) => {
+    const basePrompt = (() => {
+      switch (action) {
+        case 'panorama':
+          return language === 'zh'
+            ? '向四周扩展场景，补全环境细节，保持主体不变，画面更宽。'
+            : 'Expand the scene around the subject, preserve the subject, and widen the canvas naturally.';
+        case 'angles':
+          return language === 'zh'
+            ? '保持主体一致，输出不同机位/角度版本，背景简洁。'
+            : 'Keep the subject consistent and produce alternate viewpoints with a clean background.';
+        case 'lighting':
+          return language === 'zh'
+            ? '保持构图和主体不变，只调整光照与氛围。'
+            : 'Keep composition and subject unchanged while changing lighting and mood.';
+        case 'grid-compose':
+          return language === 'zh'
+            ? '把参考图整理成整洁的宫格展示，统一风格与边距。'
+            : 'Compose the reference into a tidy grid layout with consistent spacing and style.';
+        case 'enhance':
+          return language === 'zh'
+            ? '保留构图与主体，提升清晰度、纹理与细节层次。'
+            : 'Preserve composition and subject while enhancing sharpness, texture, and details.';
+        case 'edit':
+          return language === 'zh'
+            ? '在选区内进行局部编辑，保持整体风格一致。'
+            : 'Perform local editing inside the selected area while preserving style.';
+        default:
+          return '';
+      }
+    })();
+    setSession({
+      action,
+      open: true,
+      compareOpen: false,
+      draft: {
+        prompt: basePrompt,
+        outputCount: action === 'angles' ? 3 : 1,
+        expandDirection: action === 'panorama' ? 'horizontal' : 'both',
+        ...draft,
+      },
+    });
+  };
+
+  const spawnDerivedNode = useCallback(async (payload: {
+    prompt: string;
+    outputCount?: number;
+    referenceImages?: string[];
+    maskImage?: string;
+    editOperation?: string;
+    expandDirection?: string;
+    anglePreset?: string;
+    lightingPreset?: string;
+    gridPreset?: string;
+  }) => {
+    if (!sourceNode) return;
+    const base = sourceNode.position ?? { x: 0, y: 0 };
+    const derivedId = `img-derive-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    addNode({
+      id: derivedId,
+      type: 'imageNode',
+      position: { x: base.x + 360, y: base.y + Math.random() * 40 - 20 },
+      data: {
+        customTitle: language === 'zh' ? '派生图' : 'Derived image',
+        status: 'idle',
+        sourceKind: 'derived',
+        derivedFromNodeId: sourceNodeId,
+        derivationAction: session?.action ?? 'enhance',
+        generationParams: {
+          model: (sourceData.generationParams as Record<string, unknown> | undefined)?.model ?? 'gpt-image-2',
+          aspectRatio: (sourceData.generationParams as Record<string, unknown> | undefined)?.aspectRatio ?? '1:1',
+          quality: (sourceData.generationParams as Record<string, unknown> | undefined)?.quality ?? 'auto',
+          resolution: (sourceData.generationParams as Record<string, unknown> | undefined)?.resolution ?? '720p',
+          durationSeconds: (sourceData.generationParams as Record<string, unknown> | undefined)?.durationSeconds,
+          referenceImages: payload.referenceImages,
+          maskImage: payload.maskImage,
+          editOperation: payload.editOperation,
+          expandDirection: payload.expandDirection,
+          outputCount: payload.outputCount,
+          anglePreset: payload.anglePreset,
+          lightingPreset: payload.lightingPreset,
+          gridPreset: payload.gridPreset,
+          deriveFromNodeId: sourceNodeId,
+        },
+      },
+    } as never);
+    onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+    await runNode(derivedId, { prompt: payload.prompt, model: (sourceData.generationParams as Record<string, unknown> | undefined)?.model as string | undefined });
+  }, [addNode, onConnect, runNode, session?.action, sourceData.generationParams, sourceNode, sourceNodeId, language]);
+
+  const handleGenerate = async () => {
+    if (!session || busy || !sourceUrl) return;
+    setBusy(true);
+    try {
+      const draft = session.draft;
+      if (session.action === 'panorama') {
+        const panorama = await buildPanoramaReference(sourceUrl, draft.expandDirection === 'vertical' ? '9:16' : '21:9');
+        await spawnDerivedNode({
+          prompt: draft.prompt,
+          referenceImages: panorama.referenceImages,
+          maskImage: panorama.maskImage,
+          editOperation: 'panorama',
+          expandDirection: draft.expandDirection,
+          outputCount: 1,
+        });
+      } else if (session.action === 'edit') {
+        const maskImage = await buildSelectionMask(sourceUrl, { x: 0, y: 0, width: 0, height: 0 });
+        await spawnDerivedNode({
+          prompt: draft.prompt,
+          referenceImages: [sourceUrl],
+          maskImage,
+          editOperation: 'local_edit',
+          outputCount: 1,
+        });
+      } else if (session.action === 'angles') {
+        const outputs = Math.max(1, draft.outputCount ?? 3);
+        const angleLabel = draft.anglePreset ?? 'three-view';
+        const anglePrompt = `${draft.prompt} ${angleLabel}`;
+        for (let index = 0; index < outputs; index += 1) {
+          // Stagger each derived node slightly so multi-output sets are readable.
+          // The backend can still collapse to one output if the provider ignores n.
+          await spawnDerivedNode({
+            prompt: anglePrompt,
+            outputCount: 1,
+            anglePreset: draft.anglePreset,
+          });
+        }
+      } else {
+        await spawnDerivedNode({
+          prompt: draft.prompt,
+          outputCount: 1,
+          lightingPreset: draft.lightingPreset,
+          gridPreset: draft.gridPreset,
+        });
+      }
+      closeSession();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSplit = async (value: string) => {
+    if (!sourceUrl || !sourceNode) return;
+    const { rows, cols } = parseGridValue(value);
+    const tiles = await splitImageIntoTiles(sourceUrl, rows, cols);
+    const base = sourceNode.position ?? { x: 0, y: 0 };
+    const createdIds: string[] = [];
+    tiles.forEach((tile, index) => {
+      const id = `img-slice-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`;
+      createdIds.push(id);
+      addNode({
+        id,
+        type: 'referenceImageNode',
+        position: { x: base.x + 320 + (index % cols) * 110, y: base.y + Math.floor(index / cols) * 110 },
+        data: {
+          url: tile,
+          status: 'done',
+          sourceName: language === 'zh' ? `切片 ${index + 1}` : `Slice ${index + 1}`,
+          sourceKind: 'derived',
+          sourceNodeId,
+          derivedFromNodeId: sourceNodeId,
+          derivationAction: 'split',
+          sliceGrid: { rows, cols, index },
+        },
+      } as never);
+      onConnect({ source: sourceNodeId, target: id, sourceHandle: null, targetHandle: null } as never);
+    });
+    if (createdIds.length > 1) {
+      createGroup(createdIds);
+    }
+  };
+
+  if (!sourceNode || sourceNode.type !== 'imageNode' || !sourceUrl) return null;
+
+  const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
+
+  return (
+    <>
+      <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+        <Button variant="ghost" size="sm" onClick={() => openDraft('panorama')} className={actionButtonClass}>
+          <Globe className="h-3.5 w-3.5" />
+          {language === 'zh' ? '全景' : 'Panorama'}
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <Sparkles className="h-3.5 w-3.5" />
+              {language === 'zh' ? '多角度' : 'Angles'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {ANGLE_PRESETS.map((preset) => (
+              <DropdownMenuItem
+                key={preset.id}
+                onClick={() => openDraft('angles', { anglePreset: preset.id, prompt: preset.prompt, outputCount: preset.outputs })}
+              >
+                <div className="flex w-full items-center justify-between gap-3">
+                  <span>{language === 'zh' ? preset.labelZh : preset.labelEn}</span>
+                  <span className="text-[10px] text-neutral-500">{preset.outputs}</span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <Highlighter className="h-3.5 w-3.5" />
+              {language === 'zh' ? '打光' : 'Lighting'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {LIGHTING_PRESETS.map((preset) => (
+              <DropdownMenuItem
+                key={preset.id}
+                onClick={() => openDraft('lighting', { lightingPreset: preset.id, prompt: preset.prompt })}
+              >
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              {language === 'zh' ? '九宫格' : 'Grid'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-60">
+            {GRID_COMPOSE_PRESETS.map((preset) => (
+              <DropdownMenuItem key={preset.id} onClick={() => openDraft('grid-compose', { gridPreset: preset.value, prompt: language === 'zh' ? `将图片整理为${preset.labelZh}展示。` : `Compose the image into a ${preset.labelEn} layout.` })}>
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button variant="ghost" size="sm" onClick={() => openDraft('enhance')} className={actionButtonClass}>
+          <Sparkles className="h-3.5 w-3.5" />
+          {language === 'zh' ? '高清' : 'HD'}
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              {language === 'zh' ? '宫格切分' : 'Split'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-60">
+            {GRID_SPLIT_PRESETS.map((preset) => (
+              <DropdownMenuItem key={preset.id} onClick={() => void handleSplit(preset.value)}>
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => void handleSplit('3x3')}>
+              {language === 'zh' ? '自定义 (默认 3×3)' : 'Custom (default 3×3)'}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <div className="mx-1 h-5 w-px bg-white/10" />
+        <Button variant="ghost" size="icon" onClick={() => openDraft('edit')} title={language === 'zh' ? '局部编辑' : 'Edit region'}>
+          <Highlighter className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => setSession({ action: 'enhance', open: false, compareOpen: true, draft: { prompt: '' } })} title={language === 'zh' ? '对比' : 'Compare'}>
+          <CopyIcon className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => {
+          const a = document.createElement('a');
+          a.href = sourceUrl;
+          a.download = `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'image'}.png`;
+          a.click();
+        }} title={language === 'zh' ? '下载' : 'Download'}>
+          <Download className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => setFullscreenOpen(true)} title={language === 'zh' ? '全屏' : 'Fullscreen'}>
+          <Expand className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) closeSession(); }}>
+        <DialogContent className="max-w-3xl border-white/10 bg-[#111318] text-neutral-100">
+          <DialogHeader>
+            <DialogTitle>{sourceTitle}</DialogTitle>
+          </DialogHeader>
+          {session ? (
+            <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+              <div className="space-y-3">
+                <Textarea
+                  value={session.draft.prompt}
+                  onChange={(event) => setSession({ ...session, draft: { ...session.draft, prompt: event.target.value } })}
+                  className="min-h-[160px] border-white/10 bg-white/[0.03] text-sm"
+                  placeholder={language === 'zh' ? '输入二次创作提示词' : 'Enter the derivation prompt'}
+                />
+                {session.action === 'angles' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">{language === 'zh' ? '输出数量' : 'Outputs'}</span>
+                    <select
+                      value={session.draft.outputCount ?? 3}
+                      onChange={(event) => setSession({ ...session, draft: { ...session.draft, outputCount: Number(event.target.value) } })}
+                      className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
+                    >
+                      <option value={1}>1</option>
+                      <option value={3}>3</option>
+                    </select>
+                  </div>
+                ) : null}
+                {session.action === 'panorama' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-neutral-400">{language === 'zh' ? '扩展方向' : 'Direction'}</span>
+                    <select
+                      value={session.draft.expandDirection ?? 'horizontal'}
+                      onChange={(event) => setSession({ ...session, draft: { ...session.draft, expandDirection: event.target.value } })}
+                      className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
+                    >
+                      <option value="horizontal">{language === 'zh' ? '横向扩展' : 'Horizontal'}</option>
+                      <option value="vertical">{language === 'zh' ? '纵向扩展' : 'Vertical'}</option>
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
+                  {latestDerivedUrl ? (
+                    <img src={latestDerivedUrl} alt="" className="h-48 w-full object-cover" />
+                  ) : (
+                    <img src={sourceUrl} alt="" className="h-48 w-full object-cover" />
+                  )}
+                </div>
+                <div className="text-xs text-neutral-400">
+                  {language === 'zh' ? '将保留原图并生成派生新节点。' : 'The original image will stay; a derived node will be created.'}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
+            <Button onClick={() => void handleGenerate()} disabled={busy}>
+              {busy ? (language === 'zh' ? '生成中…' : 'Working…') : (language === 'zh' ? '开始生成' : 'Generate')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(session?.compareOpen)} onOpenChange={(open) => {
+        if (!open && session) setSession({ ...session, compareOpen: false });
+      }}>
+        <DialogContent className="max-w-5xl border-white/10 bg-[#111318] text-neutral-100">
+          <DialogHeader>
+            <DialogTitle>{language === 'zh' ? '对比' : 'Compare'}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <div className="text-xs text-neutral-400">{language === 'zh' ? '原图' : 'Source'}</div>
+              <img src={sourceUrl} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs text-neutral-400">{language === 'zh' ? '最新派生' : 'Latest derived'}</div>
+              <img src={latestDerivedUrl || sourceUrl} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {fullscreenOpen ? <PreviewModal kind="image" src={sourceUrl} onClose={() => setFullscreenOpen(false)} /> : null}
+    </>
+  );
+}
+
+function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
+  const language = useStore((state) => state.language);
+  const nodes = useStore((state) => state.nodes);
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const createGroup = useStore((state) => state.createGroup);
+  const runNode = useStore((state) => state.runNode);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
+  const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
+  const sourceUrl = String(sourceData.url ?? '');
+  const sourceDuration = Number(sourceData.mediaDuration ?? sourceData.durationSeconds ?? sourceData.duration ?? 0) || 0;
+  const sourceModel = String(sourceData.generationParams?.model ?? 'runway-gen3');
+  const [session, setSession] = useState<{
+    action: VideoActionKind;
+    draft: VideoActionDraft;
+    open: boolean;
+  } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+
+  const sourceTitle = language === 'zh' ? '视频二次处理' : 'Video actions';
+  const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
+
+  const openSession = (action: VideoActionKind, draft: Partial<VideoActionDraft> = {}) => {
+    const defaults: VideoActionDraft = {
+      prompt: action === 'trim'
+        ? (language === 'zh' ? '截取视频片段，保留主体和画质。' : 'Trim the clip while preserving subject and quality.')
+        : action === 'crop'
+          ? (language === 'zh' ? '裁剪画面区域并保持整体观感自然。' : 'Crop the frame while keeping the result natural.')
+          : action === 'enhance'
+            ? (language === 'zh' ? '提升视频清晰度、细节和整体完成度。' : 'Enhance clarity, details, and overall finish.')
+            : action === 'parse'
+              ? (language === 'zh' ? '解析视频内容，输出字幕、场景和关键信息。' : 'Parse the video and output transcript, scenes, and key points.')
+              : action === 'subtitle-clean'
+                ? (language === 'zh' ? '智能去除视频字幕，保留主体内容。' : 'Intelligently remove subtitles while preserving the main content.')
+                : (language === 'zh' ? '从视频中分离音频轨道。' : 'Separate the audio track from the video.'),
+      trimStart: 0,
+      trimEnd: sourceDuration > 0 ? sourceDuration : 10,
+      cropX: 0,
+      cropY: 0,
+      cropWidth: 1,
+      cropHeight: 1,
+      outputFormat: action === 'audio-separate' ? 'wav' : action === 'parse' ? 'txt' : 'mp4',
+      targetTracks:
+        action === 'parse'
+          ? ['transcript']
+          : action === 'audio-separate'
+            ? ['audio']
+            : action === 'subtitle-clean'
+              ? ['subtitles']
+              : ['video'],
+    };
+    setSession({
+      action,
+      open: true,
+      draft: { ...defaults, ...draft },
+    });
+  };
+
+  const spawnDerivedNode = useCallback(async (params: {
+    nodeType: 'videoNode' | 'audioNode' | 'textNode';
+    action: VideoActionKind;
+    prompt: string;
+    title: string;
+    trimRange?: { start: number; end: number };
+    cropRect?: { x: number; y: number; width: number; height: number };
+    outputFormat?: string;
+    targetTracks?: string[];
+    editOperation?: string;
+  }) => {
+    if (!sourceNode) return;
+    const base = sourceNode.position ?? { x: 0, y: 0 };
+    const derivedId = `${params.nodeType}-derive-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const targetModel = params.nodeType === 'textNode'
+      ? 'gpt-4.1-mini'
+      : params.nodeType === 'audioNode'
+        ? 'suno-v4'
+        : sourceModel;
+    const generationParams = {
+      model: targetModel,
+      aspectRatio: sourceData.generationParams?.aspectRatio,
+      resolution: sourceData.generationParams?.resolution,
+      quality: sourceData.generationParams?.quality,
+      durationSeconds: sourceData.generationParams?.durationSeconds,
+      trimRange: params.trimRange,
+      cropRect: params.cropRect,
+      targetTracks: params.targetTracks,
+      outputFormat: params.outputFormat,
+      editOperation: params.editOperation,
+      deriveFromNodeId: sourceNodeId,
+      referenceVideo: sourceUrl,
+    };
+
+    addNode({
+      id: derivedId,
+      type: params.nodeType,
+      position: { x: base.x + 360, y: base.y + Math.random() * 40 - 20 },
+      data: {
+        customTitle: params.title,
+        status: 'idle',
+        sourceKind: 'derived',
+        derivedFromNodeId: sourceNodeId,
+        derivationAction: params.action,
+        derivationMeta: {
+          trimRange: params.trimRange,
+          cropRect: params.cropRect,
+          outputFormat: params.outputFormat,
+          targetTracks: params.targetTracks,
+          editOperation: params.editOperation,
+        },
+        generationParams,
+      },
+    } as never);
+    onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+    await runNode(derivedId, { prompt: params.prompt, model: targetModel });
+  }, [addNode, onConnect, runNode, sourceData.generationParams, sourceModel, sourceNode, sourceNodeId, sourceUrl]);
+
+  const handleSubmit = async () => {
+    if (!session || busy || !sourceUrl) return;
+    setBusy(true);
+    try {
+      const d = session.draft;
+      if (session.action === 'trim') {
+        await spawnDerivedNode({
+          nodeType: 'videoNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '剪辑结果' : 'Trimmed clip',
+          trimRange: { start: Math.max(0, d.trimStart), end: Math.max(Math.max(0, d.trimStart), d.trimEnd) },
+          outputFormat: d.outputFormat || 'mp4',
+          targetTracks: d.targetTracks,
+          editOperation: 'trim',
+        });
+      } else if (session.action === 'crop') {
+        await spawnDerivedNode({
+          nodeType: 'videoNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '裁剪结果' : 'Cropped clip',
+          cropRect: {
+            x: Math.max(0, d.cropX),
+            y: Math.max(0, d.cropY),
+            width: Math.max(0.05, d.cropWidth),
+            height: Math.max(0.05, d.cropHeight),
+          },
+          outputFormat: d.outputFormat || 'mp4',
+          targetTracks: d.targetTracks,
+          editOperation: 'crop',
+        });
+      } else if (session.action === 'enhance') {
+        await spawnDerivedNode({
+          nodeType: 'videoNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '高清结果' : 'Enhanced clip',
+          outputFormat: d.outputFormat || 'mp4',
+          targetTracks: d.targetTracks,
+          editOperation: 'enhance',
+        });
+      } else if (session.action === 'subtitle-clean') {
+        await spawnDerivedNode({
+          nodeType: 'videoNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '去字幕结果' : 'Subtitle-cleaned clip',
+          outputFormat: d.outputFormat || 'mp4',
+          targetTracks: d.targetTracks,
+          editOperation: 'subtitle_clean',
+        });
+      } else if (session.action === 'parse') {
+        await spawnDerivedNode({
+          nodeType: 'textNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '视频解析' : 'Video parse',
+          outputFormat: d.outputFormat || 'txt',
+          targetTracks: d.targetTracks,
+          editOperation: 'parse',
+        });
+      } else if (session.action === 'audio-separate') {
+        await spawnDerivedNode({
+          nodeType: 'audioNode',
+          action: session.action,
+          prompt: d.prompt,
+          title: language === 'zh' ? '音频分离结果' : 'Separated audio',
+          outputFormat: d.outputFormat || 'wav',
+          targetTracks: d.targetTracks,
+          editOperation: 'audio_separate',
+        });
+      }
+      setSession(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!sourceNode || sourceNode.type !== 'videoNode' || !sourceUrl) return null;
+
+  return (
+    <>
+      <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+        <Button variant="ghost" size="sm" onClick={() => openSession('trim')} className={actionButtonClass}>
+          <Scissors className="h-3.5 w-3.5" />
+          {language === 'zh' ? '剪辑' : 'Trim'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => openSession('crop')} className={actionButtonClass}>
+          <Crop className="h-3.5 w-3.5" />
+          {language === 'zh' ? '裁剪' : 'Crop'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => openSession('enhance')} className={actionButtonClass}>
+          <Sparkles className="h-3.5 w-3.5" />
+          {language === 'zh' ? '高清' : 'HD'}
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <FileText className="h-3.5 w-3.5" />
+              {language === 'zh' ? '解析' : 'Parse'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {VIDEO_PARSE_PRESETS.map((preset) => (
+              <DropdownMenuItem
+                key={preset.id}
+                onClick={() => openSession('parse', { prompt: language === 'zh' ? `解析视频并输出${preset.labelZh}` : `Parse the video and output ${preset.labelEn.toLowerCase()}.`, targetTracks: preset.targetTracks })}
+              >
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <Highlighter className="h-3.5 w-3.5" />
+              {language === 'zh' ? '智能去字幕' : 'Subtitle clean'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {VIDEO_EDIT_PRESETS.map((preset) => (
+              <DropdownMenuItem key={preset.id} onClick={() => openSession('subtitle-clean', { prompt: preset.prompt })}>
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className={actionButtonClass}>
+              <Music className="h-3.5 w-3.5" />
+              {language === 'zh' ? '音频分离' : 'Audio split'}
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {VIDEO_AUDIO_PRESETS.map((preset) => (
+              <DropdownMenuItem key={preset.id} onClick={() => openSession('audio-separate', { targetTracks: preset.targetTracks })}>
+                {language === 'zh' ? preset.labelZh : preset.labelEn}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <div className="mx-1 h-5 w-px bg-white/10" />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            const a = document.createElement('a');
+            a.href = sourceUrl;
+            a.download = `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'video'}.mp4`;
+            a.click();
+          }}
+          title={language === 'zh' ? '下载' : 'Download'}
+        >
+          <Download className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => setFullscreenOpen(true)} title={language === 'zh' ? '全屏' : 'Fullscreen'}>
+          <Expand className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) setSession(null); }}>
+        <DialogContent className="max-w-2xl border-white/10 bg-[#111318] text-neutral-100">
+          <DialogHeader>
+            <DialogTitle>{sourceTitle}</DialogTitle>
+          </DialogHeader>
+          {session ? (
+            <div className="space-y-4">
+              <Textarea
+                value={session.draft.prompt}
+                onChange={(event) => setSession({ ...session, draft: { ...session.draft, prompt: event.target.value } })}
+                className="min-h-[120px] border-white/10 bg-white/[0.03] text-sm"
+                placeholder={language === 'zh' ? '输入处理说明' : 'Enter the processing prompt'}
+              />
+              {(session.action === 'trim' || session.action === 'crop') ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {session.action === 'trim' ? (
+                    <>
+                      <label className="space-y-1 text-xs text-neutral-400">
+                        <span>{language === 'zh' ? '开始时间(秒)' : 'Start (s)'}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={session.draft.trimStart}
+                          onChange={(event) => setSession({ ...session, draft: { ...session.draft, trimStart: Number(event.target.value) } })}
+                          className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="space-y-1 text-xs text-neutral-400">
+                        <span>{language === 'zh' ? '结束时间(秒)' : 'End (s)'}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={session.draft.trimEnd}
+                          onChange={(event) => setSession({ ...session, draft: { ...session.draft, trimEnd: Number(event.target.value) } })}
+                          className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm"
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      {(['cropX', 'cropY', 'cropWidth', 'cropHeight'] as const).map((field) => (
+                        <label key={field} className="space-y-1 text-xs text-neutral-400">
+                          <span>{field}</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.05"
+                            value={session.draft[field]}
+                            onChange={(event) => setSession({ ...session, draft: { ...session.draft, [field]: Number(event.target.value) } })}
+                            className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm"
+                          />
+                        </label>
+                      ))}
+                    </>
+                  )}
+                </div>
+              ) : null}
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1 text-xs text-neutral-400">
+                  <span>{language === 'zh' ? '输出格式' : 'Output format'}</span>
+                  <input
+                    value={session.draft.outputFormat}
+                    onChange={(event) => setSession({ ...session, draft: { ...session.draft, outputFormat: event.target.value } })}
+                    className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="space-y-1 text-xs text-neutral-400">
+                  <span>{language === 'zh' ? '目标轨道' : 'Target tracks'}</span>
+                  <input
+                    value={session.draft.targetTracks.join(',')}
+                    onChange={(event) => setSession({ ...session, draft: { ...session.draft, targetTracks: event.target.value.split(',').map((item) => item.trim()).filter(Boolean) } })}
+                    className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setSession(null)} disabled={busy}>
+                  {language === 'zh' ? '取消' : 'Cancel'}
+                </Button>
+                <Button onClick={() => void handleSubmit()} disabled={busy} className="bg-orange-500 text-white hover:bg-orange-600">
+                  {busy ? (language === 'zh' ? '处理中…' : 'Working…') : (language === 'zh' ? '生成派生节点' : 'Create derivative')}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      {fullscreenOpen && sourceUrl ? <PreviewModal kind="video" src={sourceUrl} onClose={() => setFullscreenOpen(false)} /> : null}
+    </>
+  );
+}
 
 export const TextNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
@@ -2036,20 +3134,29 @@ export const VideoNode = ({ id, data, selected }: any) => {
 
 export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
+  const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
   const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
+  const sourceKindLabel = data.sourceKind === 'upload'
+    ? (language === 'zh' ? '上传' : 'Upload')
+    : data.sourceKind === 'derived'
+      ? (language === 'zh' ? '派生' : 'Derived')
+      : data.sourceKind === 'generated'
+        ? (language === 'zh' ? '生成' : 'Generated')
+        : '';
 
   return (
     <BaseNode
       icon={ImageIcon}
       tone="neutral"
       title={<EditableNodeTitle nodeId={id} value={displayName || "Untitled"} field="sourceName" preserveExtension />}
-      headerRight={resolutionLabel}
+      headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
+      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
@@ -2089,20 +3196,29 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
 
 export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
+  const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
   const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
+  const sourceKindLabel = data.sourceKind === 'upload'
+    ? (language === 'zh' ? '上传' : 'Upload')
+    : data.sourceKind === 'derived'
+      ? (language === 'zh' ? '派生' : 'Derived')
+      : data.sourceKind === 'generated'
+        ? (language === 'zh' ? '生成' : 'Generated')
+        : '';
 
   return (
     <BaseNode
       icon={Video}
       tone="neutral"
       title={<EditableNodeTitle nodeId={id} value={displayName || "Untitled"} field="sourceName" preserveExtension />}
-      headerRight={resolutionLabel}
+      headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
+      topFloatingPanel={data.url ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
@@ -2350,6 +3466,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       tone="image"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
+      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
@@ -2461,6 +3578,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.error}
+      topFloatingPanel={data.url ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>
@@ -2492,6 +3610,9 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
                 const { videoWidth, videoHeight } = video;
                 if (videoWidth && videoHeight && (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight)) {
                   updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
+                }
+                if (video.duration && data.mediaDuration !== video.duration) {
+                  updateNodeData(id, { mediaDuration: video.duration });
                 }
                 // Force first-frame paint when autoplay is blocked: nudge
                 // the playhead a hair past zero so the browser must draw
@@ -2871,6 +3992,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
 
 import { AgentNode } from './AgentNode';
 import { StickyNoteNode } from './StickyNoteNode';
+import { DirectorStageNode } from './DirectorStageNode';
 
 export const nodeTypes = {
   textNode: ModeTextNode,
@@ -2882,5 +4004,6 @@ export const nodeTypes = {
   referenceVideoNode: ReferenceVideoNode,
   agentNode: AgentNode,
   stickyNoteNode: StickyNoteNode,
+  directorStageNode: DirectorStageNode,
 };
 

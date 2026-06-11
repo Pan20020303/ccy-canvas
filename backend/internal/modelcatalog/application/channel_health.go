@@ -38,10 +38,9 @@ func httpStatusFromError(err error) int {
 // Channel-health policy.
 //
 // Each provider_config (= "channel") accumulates a consecutive-failure
-// counter. When it crosses failureThreshold or the latest error is in the
-// CategoryChannelDead bucket (auth / model_not_found / rate-limit), the
-// channel enters cooldown for `initialCooldown × 2^consecutive_cooldowns`,
-// capped at maxCooldown. A successful call resets every counter.
+// counter and last-error snapshot for operator visibility. We no longer
+// push channels into cooldown automatically; the admin surface can alert on
+// repeated failures, but routing keeps trying the configured provider list.
 //
 // Defaults match the user's confirmed preferences (3 failures / 5 min /
 // exp backoff to 60 min); env vars override at startup so production can
@@ -221,11 +220,10 @@ func (s *Service) MarkChannelSuccess(ctx context.Context, providerID string) {
 	_ = s.repo.MarkChannelSuccess(ctx, providerID)
 }
 
-// MarkChannelFailure increments the failure counter and, if the failure
-// budget is exhausted OR the category demands immediate cooldown, sets a
-// cooldown_until timestamp with exponential backoff. Best-effort: errors
-// from the storage layer are swallowed (we'd rather lose a counter update
-// than fail the actual generation request because of bookkeeping).
+// MarkChannelFailure increments the failure counter and stores the latest
+// error for admin visibility. Best-effort: errors from the storage layer
+// are swallowed (we'd rather lose a counter update than fail the actual
+// generation request because of bookkeeping).
 func (s *Service) MarkChannelFailure(ctx context.Context, providerID string, cat ErrorCategory, errMsg string) {
 	if providerID == "" || cat == CategoryClientFault {
 		return
@@ -233,16 +231,10 @@ func (s *Service) MarkChannelFailure(ctx context.Context, providerID string, cat
 	if len(errMsg) > maxErrorMsgLen {
 		errMsg = errMsg[:maxErrorMsgLen]
 	}
-	failureCount, consecutiveCooldowns, err := s.repo.IncrementChannelFailure(ctx, providerID, errMsg)
+	_, _, err := s.repo.IncrementChannelFailure(ctx, providerID, errMsg)
 	if err != nil {
 		return
 	}
-	shouldCooldown := cat == CategoryChannelDead || failureCount >= channelHealthConfig.failureThreshold
-	if !shouldCooldown {
-		return
-	}
-	until := time.Now().Add(computeCooldown(consecutiveCooldowns))
-	_ = s.repo.SetChannelCooldown(ctx, providerID, until)
 }
 
 // MarkChannelTimeout bumps the channel's timeout counter without touching

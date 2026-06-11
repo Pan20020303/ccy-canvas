@@ -420,9 +420,9 @@ export const Toolbar = () => {
                             const id = `asset-use-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
                             const position = { x: 240 + Math.random() * 60, y: 180 + Math.random() * 60 };
                             if (asset.kind === 'image') {
-                              addNode({ id, type: 'referenceImageNode', position, data: { url: asset.url, sourceName: asset.name } } as never);
+                              addNode({ id, type: 'referenceImageNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
                             } else if (asset.kind === 'video') {
-                              addNode({ id, type: 'referenceVideoNode', position, data: { url: asset.url, sourceName: asset.name } } as never);
+                              addNode({ id, type: 'referenceVideoNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
                             } else {
                               addNode({ id, type: 'textNode', position, data: { content: asset.text ?? '', customTitle: asset.name, textMode: 'editor' } } as never);
                             }

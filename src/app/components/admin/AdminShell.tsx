@@ -1,7 +1,8 @@
-import { type ReactNode, useRef } from "react";
-import { ArrowLeft } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowLeft, Megaphone } from "lucide-react";
 import { Link } from "react-router";
 
+import { getAdminStats } from "../../api/admin";
 import { AdminSidebar } from "./AdminSidebar";
 import { useAdminWorkbenchMotion } from "./useAdminWorkbenchMotion";
 
@@ -14,8 +15,29 @@ type AdminShellProps = {
 
 export function AdminShell({ title, description, action, children }: AdminShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [errorCount, setErrorCount] = useState(0);
 
   useAdminWorkbenchMotion({ rootRef });
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const stats = await getAdminStats();
+        if (alive) setErrorCount(stats.errors_today ?? 0);
+      } catch {
+        if (alive) setErrorCount(0);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => {
+      void load();
+    }, 30000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   return (
     <div ref={rootRef} className="min-h-screen bg-[#060606] text-neutral-100">
@@ -34,7 +56,31 @@ export function AdminShell({ title, description, action, children }: AdminShellP
                   返回工作区
                 </Link>
               </div>
-              {action ? <div data-admin-hero className="shrink-0">{action}</div> : null}
+              <div className="flex items-center gap-3">
+                <Link
+                  to="/admin"
+                  title={errorCount > 0 ? `今日有 ${errorCount} 次生成异常` : "当前暂无生成异常"}
+                  className={[
+                    "inline-flex h-11 items-center gap-2 rounded-full border px-4 text-sm transition",
+                    errorCount > 0
+                      ? "border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15"
+                      : "border-white/[0.08] bg-white/[0.04] text-neutral-300 hover:border-[#ff6a1f]/25 hover:bg-white/[0.07] hover:text-white",
+                  ].join(" ")}
+                >
+                  <Megaphone className="h-4 w-4" />
+                  <span className="hidden sm:inline">告警</span>
+                  {errorCount > 0 ? (
+                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-rose-400 px-1.5 py-0.5 text-[11px] font-semibold text-rose-950">
+                      {errorCount}
+                    </span>
+                  ) : (
+                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-white/8 px-1.5 py-0.5 text-[11px] text-neutral-400">
+                      <AlertTriangle className="h-3 w-3" />
+                    </span>
+                  )}
+                </Link>
+                {action ? <div data-admin-hero className="shrink-0">{action}</div> : null}
+              </div>
             </div>
 
             <header className="mt-6 flex flex-wrap items-start justify-between gap-6">

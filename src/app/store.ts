@@ -26,6 +26,13 @@ import {
 } from './canvas-clipboard';
 import { computeGroupBounds } from './group-routing';
 import { clearReferencePayloadValue, getReferencePayloadValue, isTransientBrowserMediaUrl } from './reference-media';
+import { getModelTemplate } from './model-templates';
+import {
+  REFERENCE_MODE_SPECS,
+  modesForModel,
+  isModeSatisfied,
+  type ReferenceModeKey,
+} from './reference-modes';
 
 type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
@@ -46,6 +53,8 @@ export type HistoryItem = {
   content?: string;
   aspectRatio: HistoryAspectRatio;
   promptExcerpt?: string;
+  sourceNodeId?: string;
+  derivationAction?: string;
 };
 
 export type HistoryDraft = Omit<HistoryItem, 'spaceId' | 'spaceType' | 'projectId' | 'mediaType' | 'aspectRatio'> &
@@ -139,6 +148,22 @@ export type NodeGenerationParams = {
   quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+  editOperation?: string;
+  maskImage?: string;
+  outputCount?: number;
+  expandDirection?: string;
+  deriveFromNodeId?: string;
+  trimRange?: { start: number; end: number };
+  cropRect?: { x: number; y: number; width: number; height: number };
+  targetTracks?: string[];
+  outputFormat?: string;
+  gridPreset?: string;
+  splitPreset?: string;
+  lightingPreset?: string;
+  anglePreset?: string;
+  referenceImages?: string[];
+  referenceVideo?: string;
+  referenceVideos?: string[];
   // Video reference variant (Seedance 2.0 tabs). Drives the prompt panel's
   // reference-slot layout; passed through to the backend as a hint about
   // how upstream media should be interpreted.
@@ -222,6 +247,11 @@ type AppState = {
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
   saveAssetDialogNodeId: string | null;
+  /** Which directorStageNode currently has its full-screen overlay open.
+   *  null = closed. The overlay component reads this and renders accordingly. */
+  directorStageNodeId: string | null;
+  openDirectorStage: (nodeId: string) => void;
+  closeDirectorStage: () => void;
   openSaveAssetDialog: (nodeId: string) => void;
   closeSaveAssetDialog: () => void;
   isAssetLibraryOpen: boolean;
@@ -289,6 +319,7 @@ const initialNodes: Node[] = [
     data: {
       url: 'https://images.unsplash.com/photo-1478827536114-da961b7f86d2?w=800&q=80',
       caption: 'Concept Art',
+      sourceKind: 'generated',
     },
   },
 ];
@@ -1539,6 +1570,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
   closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
+  directorStageNodeId: null,
+  openDirectorStage: (nodeId) => set({ directorStageNodeId: nodeId }),
+  closeDirectorStage: () => set({ directorStageNodeId: null }),
   isAssetLibraryOpen: false,
   setAssetLibraryOpen: (open) => set({ isAssetLibraryOpen: open }),
   setGroupMembers: (groupId, nodeIds) => set((state) => {
@@ -1667,7 +1701,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
-    const referenceMedia = collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
+    const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
+    const referenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length
+      ? {
+          imageUrls: genParams.referenceImages ?? [],
+          videoUrls: [
+            ...(genParams.referenceVideo ? [genParams.referenceVideo] : []),
+            ...(genParams.referenceVideos ?? []),
+          ],
+        }
+      : collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
@@ -1697,13 +1740,51 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         });
 
     // Get aspectRatio (used as size ratio) and resolution from generation params.
-    const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
     const aspectRatio = genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
     const rawRes = genParams?.resolution ?? '720p';
     const resolution = rawRes.replace(/[^0-9pP]/g, '').toLowerCase() || '720p';
     const quality = (genParams?.quality ?? 'auto').trim().toLowerCase() || 'auto';
+
+    // ── Reference-mode resolution (video only) ──────────────────────────
+    // Resolve the active reference mode from the capability registry, then
+    // preflight-validate the upstream inputs BEFORE spending a request.
+    // The backend reference_mode is derived from the chosen mode, not from
+    // ad-hoc input counting. See reference-modes.ts.
+    let resolvedReferenceMode: string | undefined;
+    if (serviceType === 'video') {
+      const counts = {
+        images: referenceMedia.imageUrls.length,
+        videos: referenceMedia.videoUrls.length,
+      };
+      const template = getModelTemplate(payload.model ?? '');
+      const supported = modesForModel(template?.referenceModes);
+      const persisted = genParams?.referenceVariant as ReferenceModeKey | undefined;
+      // Pick the mode the same way the UI does: persisted choice when still
+      // valid, else first satisfiable supported mode.
+      const chosen: ReferenceModeKey | undefined =
+        persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts)
+          ? persisted
+          : (supported.find((k) => isModeSatisfied(k, counts)) ?? supported[0]);
+
+      if (chosen) {
+        const spec = REFERENCE_MODE_SPECS[chosen];
+        // Preflight: if the chosen mode's input requirements aren't met,
+        // surface the reason on the node and abort without a network call.
+        if (!isModeSatisfied(chosen, counts)) {
+          const lang = get().language;
+          const hint = lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en;
+          set((snapshot) => ({
+            nodes: snapshot.nodes.map((node) => node.id === nodeId
+              ? { ...node, data: { ...node.data, status: 'error', error: hint } }
+              : node),
+          }));
+          return;
+        }
+        resolvedReferenceMode = spec.backendMode;
+      }
+    }
 
     // Set status to running — clear error but keep old url/content until new result arrives.
     set((snapshot) => ({
@@ -1734,12 +1815,25 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         size: aspectRatio,
         resolution: serviceType === 'video' ? resolution : undefined,
         quality: serviceType === 'image' ? quality : undefined,
+        edit_operation: genParams?.editOperation,
+        mask_image: genParams?.maskImage,
+        output_count: genParams?.outputCount,
+        expand_direction: genParams?.expandDirection,
+        derive_from_node_id: genParams?.deriveFromNodeId,
+        trim_range: genParams?.trimRange,
+        crop_rect: genParams?.cropRect,
+        target_tracks: genParams?.targetTracks,
+        output_format: genParams?.outputFormat,
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
         reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,
-        reference_mode: referenceMedia.imageUrls.length > 0
-          ? (referenceMedia.videoUrls.length > 0 ? 'image_reference' : 'auto')
-          : undefined,
+        // For video, the mode comes from the capability registry (resolved
+        // above). For image, keep the legacy auto/image_reference heuristic.
+        reference_mode: serviceType === 'video'
+          ? resolvedReferenceMode
+          : (referenceMedia.imageUrls.length > 0
+            ? (referenceMedia.videoUrls.length > 0 ? 'image_reference' : 'auto')
+            : undefined),
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
       }, aborter.signal);
@@ -1753,6 +1847,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
               data: {
                 ...node.data,
                 status: 'done',
+                sourceKind: (currentNode?.data as Record<string, unknown> | undefined)?.derivedFromNodeId
+                  ? ((currentNode?.data as Record<string, unknown> | undefined)?.sourceKind ?? 'derived')
+                  : (serviceType === 'image' || serviceType === 'video' ? 'generated' : (node.data as Record<string, unknown> | undefined)?.sourceKind),
                 taskId: result.task_id,
                 queuedAfterTimeout: false,
                 ...(result.type === 'url'
@@ -1774,6 +1871,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         thumbnail: result.type === 'url' ? persistedContent : undefined,
         content: result.type === 'text' ? result.content : undefined,
         promptExcerpt: payload.prompt.slice(0, 120),
+        sourceNodeId: (currentNode?.data as Record<string, unknown> | undefined)?.derivedFromNodeId as string | undefined,
+        derivationAction: (currentNode?.data as Record<string, unknown> | undefined)?.derivationAction as string | undefined,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Generation failed';

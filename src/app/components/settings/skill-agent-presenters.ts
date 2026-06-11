@@ -59,10 +59,6 @@ export function getAgentAvailableModels(models: AppProviderConfig[], currentMode
     output.push(clean);
   };
 
-  if (currentModel) {
-    add(currentModel);
-  }
-
   models
     .filter((model) => model.service_type === "text")
     .sort((a, b) => a.priority - b.priority)

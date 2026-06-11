@@ -424,6 +424,14 @@ function AgentEditor({
   zh: boolean;
   saving: boolean;
 }) {
+  const resolvedModel = allModels.includes(value.model) ? value.model : (allModels[0] ?? "");
+
+  useEffect(() => {
+    if (resolvedModel && resolvedModel !== value.model) {
+      onChange({ ...value, model: resolvedModel });
+    }
+  }, [onChange, resolvedModel, value]);
+
   const toggleSkill = (id: string) => {
     const set = new Set(value.skillIds);
     if (set.has(id)) {
@@ -462,7 +470,7 @@ function AgentEditor({
       <div className="grid grid-cols-2 gap-3">
         <Row label={zh ? "默认模型" : "Default model"}>
           <select
-            value={value.model}
+            value={resolvedModel}
             onChange={(event) => onChange({ ...value, model: event.target.value })}
             className="w-full rounded border border-white/10 bg-black/30 p-2 text-xs text-neutral-100 outline-none"
           >

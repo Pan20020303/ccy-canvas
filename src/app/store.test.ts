@@ -700,6 +700,58 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
   });
 
+  it("passes through video derivation fields and records source metadata in history", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/derived.mp4" },
+        request_id: "req-video-derive",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "video-source",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      data: { url: "http://localhost:8080/uploads/2026-01/source.mp4" },
+    } as never);
+    useStore.getState().addNode({
+      id: "video-derived",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      data: {
+        derivedFromNodeId: "video-source",
+        derivationAction: "trim",
+        generationParams: {
+          trimRange: { start: 1.5, end: 4.2 },
+          cropRect: { x: 0.1, y: 0.2, width: 0.7, height: 0.6 },
+          targetTracks: ["video", "audio"],
+          outputFormat: "mp4",
+          editOperation: "trim",
+          deriveFromNodeId: "video-source",
+          referenceVideo: "http://localhost:8080/uploads/2026-01/source.mp4",
+        },
+      },
+    } as never);
+
+    await useStore.getState().runNode("video-derived", { prompt: "trim this clip", model: "sora-v3-fast" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain("\"trim_range\":{\"start\":1.5,\"end\":4.2}");
+    expect(String(init.body)).toContain("\"crop_rect\":{\"x\":0.1,\"y\":0.2,\"width\":0.7,\"height\":0.6}");
+    expect(String(init.body)).toContain("\"target_tracks\":[\"video\",\"audio\"]");
+    expect(String(init.body)).toContain("\"output_format\":\"mp4\"");
+    expect(String(init.body)).toContain("\"derive_from_node_id\":\"video-source\"");
+
+    expect(useStore.getState().history[0]).toMatchObject({
+      sourceNodeId: "video-source",
+      derivationAction: "trim",
+    });
+  });
+
   it("updates arbitrary node ui state through updateNodeData", async () => {
     const { useStore } = await loadStore();
 

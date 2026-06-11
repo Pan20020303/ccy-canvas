@@ -28,7 +28,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -394,8 +393,7 @@ func (s *Service) DisableModel(ctx context.Context, id string) (*domain.ModelDef
 //
 // When multiple providers declare the same model (the user-facing UI dedupes
 // model names but keeps every vendor's config), this returns only the first
-// match. Callers that want automatic fallback across vendors should use
-// ResolveModelEndpoints instead.
+// match.
 func (s *Service) ResolveModelEndpoint(ctx context.Context, model string) (baseURL, apiKey string, err error) {
 	endpoints, err := s.ResolveModelEndpoints(ctx, model)
 	if err != nil {
@@ -414,34 +412,21 @@ type ModelEndpoint struct {
 	BaseURL    string
 	APIKey     string
 	// CooldownUntil is the channel's stored cooldown timestamp (zero if
-	// healthy). When ResolveModelEndpoints falls back to returning ALL
-	// channels because every one is cooled, this is used to sort soonest-
-	// available first.
+	// healthy). It remains available for admin UI inspection even though
+	// generation routing no longer auto-skips or reorders channels.
 	CooldownUntil time.Time
 }
 
-// ResolveModelEndpoints returns every enabled provider that declares the
-// given model, in priority order. Cooled-down channels are filtered out
-// up front so the next request automatically skips a sick relay.
-//
-// FALLBACK GUARANTEE: when EVERY channel is currently in cooldown (rare
-// disaster scenario where all relays went down at once), this returns the
-// full list anyway, sorted by `cooldown_until` ASC. That way the request
-// at least tries the channel that's closest to recovering, instead of
-// erroring out with "no provider available".
-//
-// Callers iterate this slice for cross-vendor fallback and MUST call
-// `MarkChannelSuccess`/`MarkChannelFailure` on the returned ProviderID so
-// the next request can route around the bad channel.
+// ResolveModelEndpoints returns the first enabled provider that declares the
+// given model. We do not auto-fallback across vendors or sort by health; if a
+// provider is failing, the error is surfaced to the caller and the admin badge
+// can alarm on it.
 func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]ModelEndpoint, error) {
 	configs, err := s.repo.ListProviderConfigs(ctx)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
 
-	now := time.Now()
-	healthy := []ModelEndpoint{}
-	cooled := []ModelEndpoint{} // fallback pool when every channel is cooled
 	for _, c := range configs {
 		if c.Status != "enabled" {
 			continue
@@ -463,31 +448,12 @@ func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]Mo
 		if derr != nil {
 			continue
 		}
-		ep := ModelEndpoint{
+		return []ModelEndpoint{{
 			ProviderID: c.ID,
 			Vendor:     c.Vendor,
 			BaseURL:    c.BaseURL,
 			APIKey:     key,
-		}
-		if c.InCooldown(now) {
-			ep.CooldownUntil = *c.CooldownUntil
-			cooled = append(cooled, ep)
-		} else {
-			healthy = append(healthy, ep)
-		}
-	}
-
-	if len(healthy) > 0 {
-		return healthy, nil
-	}
-
-	// All-cooled fallback: sort cooled endpoints by soonest recovery time
-	// so we try the channel that's closest to being back online first.
-	if len(cooled) > 0 {
-		sort.SliceStable(cooled, func(i, j int) bool {
-			return cooled[i].CooldownUntil.Before(cooled[j].CooldownUntil)
-		})
-		return cooled, nil
+		}}, nil
 	}
 
 	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", model))
@@ -597,19 +563,40 @@ func (s *Service) ListAppProviderConfigs(ctx context.Context) ([]domain.AppProvi
 // ─── Generation ─────────────────────────────────────────────────────────────
 
 // GenerateRequest carries the user's generation request.
+type VideoTrimRange struct {
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
+type VideoCropRect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
 type GenerateRequest struct {
-	ServiceType     string // image / text / video / audio
-	Model           string // e.g. "gpt-image-2"
-	Prompt          string
-	Size            string // ratio like "1:1", "16:9", "auto"
-	Resolution      string // image: "1k"/"2k"/"4k"; video: "480p"/"720p"
-	Quality         string // image quality: auto / high / medium / low
-	Duration        int    // video duration in seconds
-	AspectRatio     string // video aspect ratio: "16:9", "9:16", etc.
-	ReferenceImages []string
-	ReferenceVideo  string
-	ReferenceVideos []string
-	ReferenceMode   string // auto / start_frame / start_end / image_reference
+	ServiceType      string // image / text / video / audio
+	Model            string // e.g. "gpt-image-2"
+	Prompt           string
+	Size             string // ratio like "1:1", "16:9", "auto"
+	Resolution       string // image: "1k"/"2k"/"4k"; video: "480p"/"720p"
+	Quality          string // image quality: auto / high / medium / low
+	EditOperation    string
+	MaskImage        string
+	OutputCount      int
+	ExpandDirection  string
+	DeriveFromNodeID string
+	TrimRange        *VideoTrimRange
+	CropRect         *VideoCropRect
+	TargetTracks     []string
+	OutputFormat     string
+	Duration         int    // video duration in seconds
+	AspectRatio      string // video aspect ratio: "16:9", "9:16", etc.
+	ReferenceImages  []string
+	ReferenceVideo   string
+	ReferenceVideos  []string
+	ReferenceMode    string // auto / start_frame / start_end / image_reference / motion_mimic / video_edit
 	// GenerationLogID is the parent row in generation_logs (when the caller
 	// pre-creates the log before invoking Generate). Used to link each
 	// per-attempt row in generation_attempts back to the request. Empty
@@ -634,25 +621,23 @@ type GenerateResult struct {
 
 // candidateChannel is a provider that matched the request's (service_type,
 // model) tuple along with its decrypted API key. Built by buildCandidates
-// so Generate can iterate them for cross-vendor fallback.
+// so Generate can dispatch the request without mutating channel health.
 type candidateChannel struct {
 	cfg     *domain.ProviderConfig
 	baseURL string
 	apiKey  string
 }
 
-// buildCandidates returns every healthy (not-in-cooldown) provider that
-// could serve req, in priority order. When every match is in cooldown we
-// fall back to the all-cooled list sorted by soonest recovery — same
-// disaster-recovery posture as ResolveModelEndpoints uses for the agent
-// streaming path.
+// buildCandidates returns the first enabled provider that could serve req,
+// in the existing priority order. We intentionally avoid automatic
+// fallback/switching here; a failure is surfaced back to the caller and the
+// admin UI can alarm on repeated errors instead of the router silently
+// rerouting elsewhere.
 func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, error) {
 	configs, err := s.repo.ListProviderConfigs(context.Background())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
-	now := time.Now()
-	healthy, cooled := []candidateChannel{}, []candidateChannel{}
 	for i := range configs {
 		c := configs[i]
 		if c.Status != "enabled" {
@@ -683,20 +668,7 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 			baseURL: strings.TrimRight(c.BaseURL, "/"),
 			apiKey:  apiKey,
 		}
-		if c.InCooldown(now) {
-			cooled = append(cooled, cand)
-		} else {
-			healthy = append(healthy, cand)
-		}
-	}
-	if len(healthy) > 0 {
-		return healthy, nil
-	}
-	if len(cooled) > 0 {
-		sort.SliceStable(cooled, func(i, j int) bool {
-			return cooled[i].cfg.CooldownUntil.Before(*cooled[j].cfg.CooldownUntil)
-		})
-		return cooled, nil
+		return []candidateChannel{cand}, nil
 	}
 	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
 }
@@ -817,38 +789,19 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 	}
 }
 
-// runCandidateLoop preserves the original per-service-type dispatch logic:
-// video/audio = single shot, image/text = priority-order fallback. Extracted
-// so Generate() can wrap it cleanly inside the detached goroutine.
+// runCandidateLoop dispatches a single request to the chosen provider.
+// We no longer auto-switch channels on failure; the same provider should
+// keep handling the model until an operator changes the config.
 func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateChannel, req GenerateRequest) (*GenerateResult, error) {
-	if req.ServiceType == "video" || req.ServiceType == "audio" {
-		c := candidates[0]
-		started := time.Now()
-		result, err := s.dispatchToVendor(ctx, c, req)
-		duration := int(time.Since(started).Milliseconds())
-		s.recordChannelOutcome(ctx, req, c, 1, err, duration)
-		return result, err
+	if len(candidates) == 0 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "No provider candidate available")
 	}
-
-	var lastErr error
-	for i, c := range candidates {
-		started := time.Now()
-		result, err := s.dispatchToVendor(ctx, c, req)
-		duration := int(time.Since(started).Milliseconds())
-		s.recordChannelOutcome(ctx, req, c, i+1, err, duration)
-		if err == nil {
-			return result, nil
-		}
-		lastErr = err
-		cat := ClassifyError(httpStatusFromError(err), err.Error())
-		if cat == CategoryClientFault {
-			// User's input is malformed — no point trying other vendors.
-			return nil, err
-		}
-		// Otherwise: try the next candidate (MarkChannelFailure was
-		// already called inside recordChannelOutcome).
-	}
-	return nil, lastErr
+	c := candidates[0]
+	started := time.Now()
+	result, err := s.dispatchToVendor(ctx, c, req)
+	duration := int(time.Since(started).Milliseconds())
+	s.recordChannelOutcome(ctx, req, c, 1, err, duration)
+	return result, err
 }
 
 // persistGenerationOutcome writes the final status/result/error to the
@@ -1004,6 +957,13 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 		return s.generateImageEdit(ctx, pc, baseURL, apiKey, req)
 	}
 	return s.generateImageTextOnly(ctx, pc, baseURL, apiKey, req)
+}
+
+func requestedImageCount(req GenerateRequest) int {
+	if req.OutputCount > 0 {
+		return req.OutputCount
+	}
+	return 1
 }
 
 // generateImageVolcengine talks to Volcengine ark's /images/generations.
@@ -1268,7 +1228,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	body := map[string]interface{}{
 		"model":         req.Model,
 		"prompt":        req.Prompt,
-		"n":             1,
+		"n":             requestedImageCount(req),
 		"size":          size,
 		"quality":       quality,
 		"background":    "auto",
@@ -1368,9 +1328,40 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to write multipart image", err)
 		}
 	}
+	if strings.TrimSpace(req.MaskImage) != "" {
+		maskDataURL, err := localPathToDataURL(req.MaskImage)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to load edit mask", err)
+		}
+		var maskBytes []byte
+		if strings.HasPrefix(maskDataURL, "data:") {
+			if idx := strings.Index(maskDataURL, "base64,"); idx > 0 {
+				decoded, derr := base64.StdEncoding.DecodeString(maskDataURL[idx+len("base64,"):])
+				if derr != nil {
+					return nil, apperror.Wrap(apperror.CodeInternal, "Failed to decode edit mask", derr)
+				}
+				maskBytes = decoded
+			}
+		} else if strings.HasPrefix(maskDataURL, "http://") || strings.HasPrefix(maskDataURL, "https://") {
+			maskBytes, err = fetchRemoteReferenceBytes(ctx, maskDataURL)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to fetch edit mask", err)
+			}
+		}
+		if len(maskBytes) == 0 {
+			return nil, apperror.New(apperror.CodeInternal, "Edit mask resolved to empty bytes")
+		}
+		maskPart, err := mw.CreateFormFile("mask", "mask.png")
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build mask multipart", err)
+		}
+		if _, err := maskPart.Write(maskBytes); err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to write mask multipart image", err)
+		}
+	}
 	_ = mw.WriteField("model", req.Model)
 	_ = mw.WriteField("prompt", req.Prompt)
-	_ = mw.WriteField("n", "1")
+	_ = mw.WriteField("n", strconv.Itoa(requestedImageCount(req)))
 	if size := mapAspectRatioToOpenAIImageSize(req.Size); size != "" {
 		_ = mw.WriteField("size", size)
 	}
@@ -1872,6 +1863,24 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if len(req.ReferenceVideos) > 0 {
 		body["reference_videos"] = req.ReferenceVideos
 	}
+	if strings.TrimSpace(req.EditOperation) != "" {
+		body["edit_operation"] = req.EditOperation
+	}
+	if req.TrimRange != nil {
+		body["trim_range"] = req.TrimRange
+	}
+	if req.CropRect != nil {
+		body["crop_rect"] = req.CropRect
+	}
+	if len(req.TargetTracks) > 0 {
+		body["target_tracks"] = req.TargetTracks
+	}
+	if strings.TrimSpace(req.OutputFormat) != "" {
+		body["output_format"] = req.OutputFormat
+	}
+	if strings.TrimSpace(req.DeriveFromNodeID) != "" {
+		body["derive_from_node_id"] = req.DeriveFromNodeID
+	}
 	bodyJSON, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), strings.NewReader(string(bodyJSON)))
@@ -1915,6 +1924,32 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	}
 
 	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
+}
+
+// collectArkReferenceVideos gathers all reference videos for the Ark
+// content array, de-duplicating the single ReferenceVideo against the
+// ReferenceVideos slice (the frontend may populate either depending on
+// how many videos are connected). Returns raw paths/URLs; the caller
+// resolves each to a data URL.
+func collectArkReferenceVideos(req GenerateRequest) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(req.ReferenceVideos)+1)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		if _, ok := seen[v]; ok {
+			return
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	add(req.ReferenceVideo)
+	for _, v := range req.ReferenceVideos {
+		add(v)
+	}
+	return out
 }
 
 // generateVideoArk talks to Volcengine ark's async video API
@@ -1961,6 +1996,14 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 			"text": req.Prompt,
 		})
 	}
+	// Role assignment is driven by the explicit reference_mode, not by the
+	// image count. Only the first/last-frame mode tags images with frame
+	// roles; multi-image / all-in-one / motion modes leave them untagged so
+	// Ark treats them as consistency references.
+	//   start_end       → img[0]=first_frame, img[1]=last_frame (if present)
+	//   start_frame     → img[0]=first_frame (legacy single-frame alias)
+	//   (other / empty) → no roles
+	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
 	for i, raw := range req.ReferenceImages {
 		du, err := localPathToDataURL(raw)
 		if err != nil {
@@ -1970,17 +2013,27 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 			"type":      "image_url",
 			"image_url": map[string]interface{}{"url": du},
 		}
-		if len(req.ReferenceImages) == 2 {
+		if useFrameRoles {
 			if i == 0 {
 				item["role"] = "first_frame"
-			}
-			if i == 1 {
+			} else if i == 1 {
 				item["role"] = "last_frame"
 			}
-		} else if req.ReferenceMode == "start_frame" && i == 0 {
-			item["role"] = "first_frame"
 		}
 		content = append(content, item)
+	}
+
+	// Motion-mimic / video-edit reference videos ride in the same content
+	// array as video_url items so Ark can condition on them.
+	for _, rawVid := range collectArkReferenceVideos(req) {
+		du, err := localPathToDataURL(rawVid)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference video: %v", err), err)
+		}
+		content = append(content, map[string]interface{}{
+			"type":      "video_url",
+			"video_url": map[string]interface{}{"url": du},
+		})
 	}
 
 	body := map[string]interface{}{
@@ -1992,6 +2045,24 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	}
 	if req.Resolution != "" {
 		body["resolution"] = req.Resolution
+	}
+	if strings.TrimSpace(req.EditOperation) != "" {
+		body["edit_operation"] = req.EditOperation
+	}
+	if req.TrimRange != nil {
+		body["trim_range"] = req.TrimRange
+	}
+	if req.CropRect != nil {
+		body["crop_rect"] = req.CropRect
+	}
+	if len(req.TargetTracks) > 0 {
+		body["target_tracks"] = req.TargetTracks
+	}
+	if strings.TrimSpace(req.OutputFormat) != "" {
+		body["output_format"] = req.OutputFormat
+	}
+	if strings.TrimSpace(req.DeriveFromNodeID) != "" {
+		body["derive_from_node_id"] = req.DeriveFromNodeID
 	}
 	bodyJSON, _ := json.Marshal(body)
 
