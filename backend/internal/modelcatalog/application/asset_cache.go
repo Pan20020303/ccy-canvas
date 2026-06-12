@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -8,17 +9,19 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ccy-canvas/backend/internal/platform/assetstore"
 
 	"github.com/google/uuid"
 )
 
 // PersistRemoteAsset downloads a generated asset from an upstream URL and
-// writes it under uploads/generated/{yyyy-mm}/{uuid}.{ext}, returning a
-// stable backend-served path (/uploads/generated/...).
+// writes it under generated/{yyyy-mm}/{uuid}.{ext}, returning a stable
+// URL from the configured asset store (local /uploads/... by default, COS
+// when STORAGE_BACKEND=cos).
 //
 // Why server-side: upstream URLs from OpenAI/Volcengine/Sora-style relays
 // frequently expire (signed URLs valid for hours-to-days, or relay-host
@@ -83,49 +86,30 @@ func PersistRemoteAsset(ctx context.Context, remoteURL string) (string, error) {
 
 	ext := extensionFor(trimmed, resp.Header.Get("Content-Type"))
 
-	// One subdir per month keeps the directory small (filesystems get
-	// unhappy with 100k+ entries in a single dir). Same scheme as the
-	// existing user upload handler in workspace/interfaces/upload_handler.go.
 	dateDir := time.Now().Format("2006-01")
-	dir := filepath.Join("uploads", "generated", dateDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return remoteURL, err
-	}
-
 	filename := uuid.New().String() + ext
-	diskPath := filepath.Join(dir, filename)
 
-	// Cap the disk write to a generous ceiling so a misbehaving upstream
-	// streaming a multi-GB file can't fill our disk on a single request.
+	// Cap the persisted body so a misbehaving upstream streaming a
+	// multi-GB file can't fill local disk or object storage.
 	const maxBytes = 200 * 1024 * 1024 // 200 MB
-	dst, err := os.Create(diskPath)
+	limited := io.LimitReader(resp.Body, maxBytes)
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = mime.TypeByExtension(ext)
+	}
+	storedURL, err := assetstore.Save(ctx, fmt.Sprintf("generated/%s/%s", dateDir, filename), limited, contentType)
 	if err != nil {
 		return remoteURL, err
 	}
-	written, copyErr := io.Copy(dst, io.LimitReader(resp.Body, maxBytes))
-	closeErr := dst.Close()
-	if copyErr != nil || closeErr != nil {
-		// Don't leave a half-written file on disk.
-		_ = os.Remove(diskPath)
-		if copyErr != nil {
-			return remoteURL, copyErr
-		}
-		return remoteURL, closeErr
-	}
-	if written == 0 {
-		_ = os.Remove(diskPath)
-		return remoteURL, fmt.Errorf("upstream asset was empty")
-	}
 
-	return fmt.Sprintf("/uploads/generated/%s/%s", dateDir, filename), nil
+	return storedURL, nil
 }
 
 // persistDataURI decodes a `data:<mime>;base64,<payload>` URI to bytes
 // and writes them to uploads/generated/{yyyy-mm}/{uuid}.{ext}. Same
-// disk layout as PersistRemoteAsset so the static handler serves both
-// identically. Returns the local /uploads/... path on success; on any
-// parse / decode / write failure returns the original URI so the
-// caller can still surface SOMETHING renderable to the user.
+// using the same key layout as PersistRemoteAsset. Returns the stored URL
+// on success; on any parse / decode / write failure returns the original
+// URI so the caller can still surface SOMETHING renderable to the user.
 func persistDataURI(uri string) (string, error) {
 	// Expected: data:<mime>;base64,<base64data>
 	const prefix = "data:"
@@ -150,7 +134,7 @@ func persistDataURI(uri string) (string, error) {
 		}
 	}
 
-	var bytes []byte
+	var payloadBytes []byte
 	if isBase64 {
 		decoded, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
@@ -160,32 +144,28 @@ func persistDataURI(uri string) (string, error) {
 				return uri, err
 			}
 		}
-		bytes = decoded
+		payloadBytes = decoded
 	} else {
 		// Plain text payload — URL-decode and use as-is.
 		unescaped, err := url.QueryUnescape(payload)
 		if err != nil {
 			return uri, err
 		}
-		bytes = []byte(unescaped)
+		payloadBytes = []byte(unescaped)
 	}
 
-	if len(bytes) == 0 {
+	if len(payloadBytes) == 0 {
 		return uri, fmt.Errorf("decoded data URI was empty")
 	}
 
 	ext := extensionFor("", mimeType)
 	dateDir := time.Now().Format("2006-01")
-	dir := filepath.Join("uploads", "generated", dateDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return uri, err
-	}
 	filename := uuid.New().String() + ext
-	diskPath := filepath.Join(dir, filename)
-	if err := os.WriteFile(diskPath, bytes, 0o644); err != nil {
+	storedURL, err := assetstore.Save(context.Background(), fmt.Sprintf("generated/%s/%s", dateDir, filename), bytes.NewReader(payloadBytes), mimeType)
+	if err != nil {
 		return uri, err
 	}
-	return fmt.Sprintf("/uploads/generated/%s/%s", dateDir, filename), nil
+	return storedURL, nil
 }
 
 // extensionFor picks the best file extension we can derive from the

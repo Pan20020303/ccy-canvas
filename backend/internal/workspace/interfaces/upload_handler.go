@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/platform/session"
 	"ccy-canvas/backend/internal/shared/httpx"
 
@@ -18,7 +18,6 @@ import (
 
 const maxUploadSize = 50 * 1024 * 1024 // 50 MB
 const maxProxySize = 100 * 1024 * 1024 // 100 MB
-const uploadDir = "uploads"
 
 // RegisterUploadRoutes registers file upload and media proxy endpoints.
 func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
@@ -57,15 +56,7 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			return
 		}
 
-		// Create upload directory.
 		dateDir := time.Now().Format("2006-01")
-		dir := filepath.Join(uploadDir, dateDir)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to create upload directory"})
-			return
-		}
-
-		// Generate unique filename.
 		ext := filepath.Ext(header.Filename)
 		if ext == "" {
 			if strings.HasPrefix(contentType, "image/png") {
@@ -81,22 +72,11 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			}
 		}
 		filename := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-		filePath := filepath.Join(dir, filename)
-
-		dst, err := os.Create(filePath)
+		url, err := assetstore.Save(r.Context(), fmt.Sprintf("%s/%s", dateDir, filename), file, contentType)
 		if err != nil {
 			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file"})
 			return
 		}
-		defer dst.Close()
-
-		if _, err := io.Copy(dst, file); err != nil {
-			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to write file"})
-			return
-		}
-
-		// Return URL path (served as static files).
-		url := fmt.Sprintf("/uploads/%s/%s", dateDir, filename)
 
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{
 			"url":          url,
