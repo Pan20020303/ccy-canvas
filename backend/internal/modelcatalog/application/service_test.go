@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -840,6 +841,74 @@ func TestGenerateImageChatCompletionsParsesDataB64Response(t *testing.T) {
 	}
 	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
 		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
+	}
+}
+
+func TestGenerateImageChatCompletionsPollsTaskURL(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	oldInitialDelay := imageTaskPollInitialDelay
+	oldInterval := imageTaskPollInterval
+	oldMaxAttempts := imageTaskPollMaxAttempts
+	imageTaskPollInitialDelay = time.Millisecond
+	imageTaskPollInterval = time.Millisecond
+	imageTaskPollMaxAttempts = 3
+	defer func() {
+		imageTaskPollInitialDelay = oldInitialDelay
+		imageTaskPollInterval = oldInterval
+		imageTaskPollMaxAttempts = oldMaxAttempts
+	}()
+
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(fmt.Sprintf(
+				`{"task_id":"gemini-img-test","status":"running","progress":0,"poll_url":"%s/api/tasks/gemini-img-test"}`,
+				serverURL,
+			)))
+		case "/api/tasks/gemini-img-test":
+			_, _ = w.Write([]byte(`{"task_id":"gemini-img-test","status":"succeeded","progress":100,"image_url":"https://example.com/generated-from-poll.png"}`))
+		default:
+			t.Fatalf("unexpected path = %q", r.URL.Path)
+		}
+	}))
+	serverURL = server.URL
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"request_format":"chat_completions_image",
+		"allowed_parameters":["model","messages","stream"],
+		"defaults":{"stream":false}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-chat-task",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"GPT Image 2"},
+			SubmitEndpoint:  "/v1/chat/completions",
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "GPT Image 2",
+		Prompt:      "redesign this image",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/generated-from-poll.png" {
+		t.Fatalf("result.Content = %q", result.Content)
 	}
 }
 

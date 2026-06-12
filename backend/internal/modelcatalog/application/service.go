@@ -48,6 +48,12 @@ const (
 	providerRequestMaxAttempts    = 3
 )
 
+var (
+	imageTaskPollInitialDelay = 10 * time.Second
+	imageTaskPollInterval     = 5 * time.Second
+	imageTaskPollMaxAttempts  = 30
+)
+
 // Repository is the persistence port for the model catalog.
 type Repository interface {
 	// Provider (legacy single-provider)
@@ -1802,6 +1808,9 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	if readErr != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
 	}
+	if taskID := extractImageTaskID(respBody); taskID != "" {
+		return s.pollImageTask(ctx, baseURL, apiKey, resolveImageQueryPath(pc), taskID, extractImageTaskPollURL(respBody))
+	}
 	return parseChatImageGenerationResponse(respBody)
 }
 
@@ -1861,7 +1870,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 
 	// Parse response — supports both sync (standard OpenAI) and async (task-based) formats.
 	if taskID := extractImageTaskID(respBody); taskID != "" {
-		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID)
+		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID, "")
 	}
 
 	return parseImageGenerationResponse(respBody)
@@ -1993,7 +2002,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	}
 
 	if taskID := extractImageTaskID(respBody); taskID != "" {
-		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID)
+		return s.pollImageTask(ctx, baseURL, apiKey, queryPath, taskID, "")
 	}
 
 	// Reuse the same flexible response parser as the text-only path.
@@ -2101,13 +2110,27 @@ func extractImageTaskID(respBody []byte) string {
 	return ""
 }
 
+func extractImageTaskPollURL(respBody []byte) string {
+	var taskCheck map[string]interface{}
+	if err := json.Unmarshal(respBody, &taskCheck); err != nil {
+		return ""
+	}
+	if pollURL, ok := taskCheck["poll_url"].(string); ok && strings.TrimSpace(pollURL) != "" {
+		return strings.TrimSpace(pollURL)
+	}
+	return ""
+}
+
 // pollImageTask polls an async image generation task until it completes or times out.
-func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath, taskID string) (*GenerateResult, error) {
+func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath, taskID, pollURL string) (*GenerateResult, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// Try multiple URL patterns used by various providers.
 	// apimart.ai uses GET /v1/tasks/{task_id}
 	pollURLs := make([]string, 0, 4)
+	if strings.TrimSpace(pollURL) != "" {
+		pollURLs = append(pollURLs, resolveProviderURL(baseURL, strings.TrimSpace(pollURL)))
+	}
 	if strings.TrimSpace(queryPath) != "" {
 		pollURLs = append(pollURLs, resolveProviderURL(baseURL, strings.ReplaceAll(queryPath, "{taskId}", taskID)))
 	}
@@ -2117,19 +2140,19 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 		baseURL+"/async/tasks/"+taskID,
 	)
 
-	// Wait 10s before first poll per apimart docs, then every 5s.
+	// Wait before first poll per upstream docs, then poll at a fixed interval.
 	select {
 	case <-ctx.Done():
 		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-	case <-time.After(10 * time.Second):
+	case <-time.After(imageTaskPollInitialDelay):
 	}
 
-	for i := 0; i < 30; i++ { // max ~2.5 minutes after initial wait
+	for i := 0; i < imageTaskPollMaxAttempts; i++ {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
-			case <-time.After(5 * time.Second):
+			case <-time.After(imageTaskPollInterval):
 			}
 		}
 
@@ -2173,7 +2196,7 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 		}
 
 		// On last attempt, return the raw response for debugging.
-		if i == 59 && len(lastBody) > 0 {
+		if i == imageTaskPollMaxAttempts-1 && len(lastBody) > 0 {
 			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Timed out. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
 		}
 	}
@@ -2204,9 +2227,11 @@ func (s *Service) tryExtractImageFromPollResponse(body []byte) *GenerateResult {
 	}
 
 	// Search for image URL recursively — increase depth to 5 to handle nested result.images[0].url
-	url := findStringField(generic, "url", 5)
-	if url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
-		return &GenerateResult{Type: "url", Content: url}
+	for _, key := range []string{"image_url", "result_url", "download_url", "detail_url", "url"} {
+		url := findStringField(generic, key, 5)
+		if url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
+			return &GenerateResult{Type: "url", Content: url}
+		}
 	}
 	b64 := findStringField(generic, "b64_json", 5)
 	if b64 != "" {
