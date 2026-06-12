@@ -2,8 +2,11 @@ package httpx
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
+
+	"ccy-canvas/backend/internal/shared/apperror"
 
 	"github.com/google/uuid"
 )
@@ -21,13 +24,28 @@ func MaxBodyMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 				return
 			}
 			if r.ContentLength > maxBytes {
-				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				writeRequestTooLarge(w, r, maxBytes)
 				return
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func writeRequestTooLarge(w http.ResponseWriter, r *http.Request, maxBytes int64) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	_ = json.NewEncoder(w).Encode(envelope{
+		Error: errorBody{
+			Code:    apperror.CodeInvalidInput,
+			Message: "请求体过大，请减少参考素材数量或重新上传为 COS 公网图片后再试",
+			Details: map[string]any{
+				"max_bytes": maxBytes,
+			},
+		},
+		RequestID: RequestIDFrom(r.Context()),
+	})
 }
 
 func RequestIDMiddleware(next http.Handler) http.Handler {

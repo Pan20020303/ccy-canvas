@@ -106,7 +106,7 @@ func main() {
 	router.Use(middleware.RealIP)
 	router.Use(httpx.RequestIDMiddleware)
 	router.Use(httpx.CORSMiddleware(allowedOrigins))
-	router.Use(httpx.MaxBodyMiddleware(10 * 1024 * 1024)) // 10 MB cap for non-upload endpoints
+	router.Use(httpx.MaxBodyMiddleware(50 * 1024 * 1024)) // 50 MB cap for JSON endpoints; uploads use their own cap
 	router.Use(middleware.Logger)
 	router.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		httpx.ApplyCORSHeaders(w, r, allowedOriginSet)
