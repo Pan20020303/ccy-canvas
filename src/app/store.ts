@@ -25,7 +25,7 @@ import {
   type CanvasClipboardSelection,
 } from './canvas-clipboard';
 import { computeGroupBounds } from './group-routing';
-import { clearReferencePayloadValue, getReferencePayloadValue, isTransientBrowserMediaUrl } from './reference-media';
+import { clearReferencePayloadValue, getReferencePayloadValue, isTransientBrowserMediaUrl, resolveBackendAssetUrl } from './reference-media';
 import { getModelTemplate } from './model-templates';
 import {
   REFERENCE_MODE_SPECS,
@@ -881,6 +881,38 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
   return { imageUrls, videoUrls };
 }
 
+function usesPublicHttpReferenceImages(provider: AppProviderConfig | null | undefined): boolean {
+  if (!provider || provider.service_type !== 'image') {
+    return false;
+  }
+  const schema = provider.parameter_schema;
+  const referenceFormat = String(
+    schema?.reference_request_format
+      ?? schema?.referenceRequestFormat
+      ?? schema?.request_format
+      ?? schema?.requestFormat
+      ?? '',
+  ).trim().toLowerCase();
+  return referenceFormat === 'chat_completions_image'
+    || referenceFormat === 'chat-image'
+    || referenceFormat === 'multimodal_chat_image';
+}
+
+function normalizeReferenceMediaForProvider(
+  referenceMedia: UpstreamReferenceMedia,
+  provider: AppProviderConfig | null | undefined,
+  apiBaseUrl: string,
+): UpstreamReferenceMedia {
+  if (!usesPublicHttpReferenceImages(provider)) {
+    return referenceMedia;
+  }
+
+  return {
+    ...referenceMedia,
+    imageUrls: referenceMedia.imageUrls.map((url) => resolveBackendAssetUrl(url, apiBaseUrl)),
+  };
+}
+
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
   if (result.type !== 'url') {
     return result.content;
@@ -1702,7 +1734,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
     const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
-    const referenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length
+    const rawReferenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length
       ? {
           imageUrls: genParams.referenceImages ?? [],
           videoUrls: [
@@ -1711,6 +1743,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ],
         }
       : collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
+    const activeProvider = state.backendModels.find((provider) =>
+      provider.service_type === serviceType
+      && provider.vendor === (genParams?.vendor ?? provider.vendor)
+      && provider.model_list.includes(payload.model ?? ''),
+    ) ?? state.backendModels.find((provider) =>
+      provider.service_type === serviceType
+      && provider.model_list.includes(payload.model ?? ''),
+    );
+    const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+    const referenceMedia = normalizeReferenceMediaForProvider(rawReferenceMedia, activeProvider, apiBaseUrl);
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
