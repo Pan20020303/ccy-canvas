@@ -1744,7 +1744,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const aspectRatio = genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
     const rawRes = genParams?.resolution ?? '720p';
-    const resolution = rawRes.replace(/[^0-9pP]/g, '').toLowerCase() || '720p';
+    const resolution = (() => {
+      const text = rawRes.trim();
+      const imageMatch = text.match(/([124])\s*k/i);
+      if (serviceType === 'image' && imageMatch) return `${imageMatch[1]}K`;
+      const videoMatch = text.match(/(\d{3,4})\s*p/i) ?? text.match(/(\d{3,4})/);
+      if (serviceType === 'video' && videoMatch) return `${videoMatch[1]}p`;
+      return serviceType === 'image' ? '1K' : '720p';
+    })();
     const quality = (genParams?.quality ?? 'auto').trim().toLowerCase() || 'auto';
 
     // ── Reference-mode resolution (video only) ──────────────────────────
@@ -1813,7 +1820,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         model: payload.model ?? '',
         prompt: resolvedPrompt,
         size: aspectRatio,
-        resolution: serviceType === 'video' ? resolution : undefined,
+        resolution: serviceType === 'image' || serviceType === 'video' ? resolution : undefined,
         quality: serviceType === 'image' ? quality : undefined,
         edit_operation: genParams?.editOperation,
         mask_image: genParams?.maskImage,
@@ -1824,6 +1831,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         crop_rect: genParams?.cropRect,
         target_tracks: genParams?.targetTracks,
         output_format: genParams?.outputFormat,
+        parameters: genParams?.outputFormat ? { output_format: genParams.outputFormat } : undefined,
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
         reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,
@@ -1837,6 +1845,26 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
       }, aborter.signal);
+
+      if (result.type === 'queued') {
+        set((snapshot) => ({
+          activeRun: null,
+          nodes: snapshot.nodes.map((node) => node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'running',
+                  taskId: result.task_id,
+                  queuedAfterTimeout: true,
+                  error: undefined,
+                },
+              }
+            : node),
+        }));
+        return;
+      }
+
       const persistedContent = await persistGeneratedMediaUrl(result);
 
       set((snapshot) => ({

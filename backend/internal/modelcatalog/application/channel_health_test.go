@@ -204,6 +204,21 @@ func (r *healthFakeRepo) ListGenerationAttemptsByLog(_ context.Context, _ string
 func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _ string, _ int32) error {
 	panic("nope")
 }
+func (r *healthFakeRepo) CreateAdminAlert(_ context.Context, _ domain.AdminAlert) error {
+	panic("nope")
+}
+func (r *healthFakeRepo) ListAdminAlerts(_ context.Context, _ string, _, _ int32) ([]domain.AdminAlert, error) {
+	panic("nope")
+}
+func (r *healthFakeRepo) CountUnreadAdminAlerts(_ context.Context) (int32, error) {
+	panic("nope")
+}
+func (r *healthFakeRepo) MarkAdminAlertRead(_ context.Context, _ string) error {
+	panic("nope")
+}
+func (r *healthFakeRepo) MarkAllAdminAlertsRead(_ context.Context) error {
+	panic("nope")
+}
 
 // Timeouts should only update the timeout counter. Failures still get
 // recorded, but the service must not auto-lock or schedule cooldown.

@@ -1173,6 +1173,9 @@ const InnerCanvas = () => {
         multiSelectionKeyCode={["Meta", "Shift", "Control"]}
         snapToGrid={snapToGrid}
         snapGrid={[GRID_SIZE, GRID_SIZE]}
+        /* 关闭 xyflow 内置的 pane 双击缩放,让外层 wrapper 的
+           onCanvasDoubleClick 能收到事件唤出"添加节点"菜单. */
+        zoomOnDoubleClick={false}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="#222" />
         {showMiniMap ? (

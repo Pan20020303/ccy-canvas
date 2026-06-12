@@ -4,7 +4,7 @@ import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
 import { CameraControls, Grid, TransformControls } from '@react-three/drei';
 import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
-  RefreshCw, PersonStanding, Settings2, ChevronDown, Eye,
+  RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
 } from 'lucide-react';
 import * as THREE from 'three';
 
@@ -28,13 +28,35 @@ type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '21:9';
 
 type ActorTransform = {
   id: string;
+  /** 体型 id —— 'mannequin-standard' / 'mannequin-female' / 'mannequin-child'
+   *  / 'mannequin-sturdy' / 'mannequin-slim'. Mannequin 内部按 BODY_TYPES 表
+   *  调比例 + 默认色. */
   assetId: string;
   label: string;
   position: [number, number, number];
-  rotationY: number;
-  scale: number;
+  rotationY: number;                      // 老字段, 仅 Y 轴弧度
+  scale: number;                          // 老字段, uniform
+  /** 新:全 XYZ 旋转 (弧度). 未设时回落到 [0, rotationY, 0]. */
+  rotation?: [number, number, number];
+  /** 新:全 XYZ 缩放. 未设时回落到 [scale, scale, scale]. */
+  scaleXYZ?: [number, number, number];
+  /** 新:整体着色, 未设时用 BODY_TYPES[assetId].defaultColor. */
+  color?: string;
   pose?: ActorPose;
 };
+
+/** 体型预设表 —— 5 种内置素体. assetId 用作 key. */
+const BODY_TYPES: Record<string, { label: string; defaultColor: string; widthMul: number; heightMul: number; headBoost: number }> = {
+  'mannequin-standard': { label: '标准素体', defaultColor: '#d6cdbf', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00 },
+  'mannequin-female':   { label: '女性素体', defaultColor: '#e0d4c4', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00 },
+  'mannequin-child':    { label: '儿童素体', defaultColor: '#dfc8b0', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18 },
+  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#c8bda8', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98 },
+  'mannequin-slim':     { label: '纤细素体', defaultColor: '#dad0c0', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00 },
+};
+const BODY_TYPE_IDS = Object.keys(BODY_TYPES);
+function bodyTypeOf(assetId: string) {
+  return BODY_TYPES[assetId] ?? BODY_TYPES['mannequin-standard'];
+}
 
 type CameraSpec = {
   id: string;
@@ -152,8 +174,26 @@ const PRESET_KEYS = Object.keys(POSE_PRESETS);
  *                       → hips → legs. 每个关节是一个 <group>,姿势数据是
  *  各关节的欧拉角. T-pose 时所有角度都是 0,人物自然下垂站立. */
 
-const POSE_MAT = '#bdbdc1';
-const POSE_MAT_DEEP = '#a8a8ac';
+// 暖白皮调代替原来的纯灰,接近木质艺用人偶 + 现代姿势 reference 工具.
+// 这三个常量是"标准素体"的默认值;Mannequin 内部按 bodyType + actor.color
+// 实时派生出 light / deep 两档,所以这里更多是给 CameraMarker 等其他场景
+// 物件兜底用.
+const POSE_MAT = '#d6cdbf';      // 主肢体表面色
+const POSE_MAT_DEEP = '#b9b0a0'; // 关节/腹/下肢深一档
+const POSE_HEAD = '#e1d6c4';     // 头/颈/手 略亮,做高光区
+
+/** Hex 颜色 +/- 亮度. amount 在 [-1, 1] 之间. 用于从用户选的 actor.color
+ *  自动派生关节深色和高光浅色,避免再让用户挑两次. */
+function shadeColor(hex: string, amount: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return hex;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const mix = (c: number) => Math.max(0, Math.min(255, Math.round(c + 255 * amount)));
+  const toHex = (n: number) => n.toString(16).padStart(2, '0');
+  return `#${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`;
+}
 
 const Mannequin = forwardRef<THREE.Group, {
   actor: ActorTransform;
@@ -173,100 +213,206 @@ const Mannequin = forwardRef<THREE.Group, {
   };
 
   const p = { ...DEFAULT_POSE, ...(actor.pose ?? {}) };
+  // 体型 → 内部比例 (宽 / 高 / 头大小放大系数). 这是相对 actor.scale 之上
+  // 再叠加的一层 "形态调整",让女性 / 儿童 / 壮实 / 纤细看起来不像同一
+  // 个人盖印章.
+  const bt = bodyTypeOf(actor.assetId);
+  const bodyColor = actor.color || bt.defaultColor;
+  const bodyColorDeep = shadeColor(bodyColor, -0.12);
+  const bodyColorLight = shadeColor(bodyColor, 0.08);
+
+  // 兼容 + 新字段:rotation > rotationY, scaleXYZ > scale (uniform).
+  const finalRotation: [number, number, number] = actor.rotation ?? [0, actor.rotationY, 0];
+  const finalScale: [number, number, number] = actor.scaleXYZ ?? [actor.scale, actor.scale, actor.scale];
 
   return (
     <group
       ref={setRef}
       position={actor.position}
-      rotation={[0, actor.rotationY, 0]}
-      scale={actor.scale}
+      rotation={finalRotation}
+      scale={[finalScale[0] * bt.widthMul, finalScale[1] * bt.heightMul, finalScale[2] * bt.widthMul]}
       onClick={handleClick}
     >
-      {/* 髋部根 (y=0.92 是站立髋高度) */}
+      {/* 髋部根 (y=0.92 是站立髋高度) —— 比例参考真人 7.5 头身, 用胶囊
+          / 球关节 / 锥型四肢替换原始的纯柱体, 更接近木质艺用人偶. */}
       <group position={[0, 0.92, 0]}>
-        {/* 髋盆 mesh */}
+        {/* 髋盆 —— 上窄下宽倒梯形, 用胶囊侧面观更自然 */}
         <mesh castShadow>
-          <boxGeometry args={[0.3, 0.2, 0.16]} />
-          <meshStandardMaterial color={POSE_MAT_DEEP} roughness={0.7} />
+          <capsuleGeometry args={[0.13, 0.08, 6, 16]} />
+          <meshStandardMaterial color={bodyColorDeep} roughness={0.6} metalness={0.05} />
         </mesh>
 
         {/* 躯干 (relative to pelvis top) */}
-        <group position={[0, 0.1, 0]} rotation={p.torso}>
-          {/* 上躯干 mesh */}
-          <mesh position={[0, 0.13, 0]} castShadow>
-            <boxGeometry args={[0.36, 0.34, 0.18]} />
-            <meshStandardMaterial color={POSE_MAT} roughness={0.7} />
+        <group position={[0, 0.08, 0]} rotation={p.torso}>
+          {/* 腰部窄 → 胸部宽: 用两段叠加做沙漏腰线 */}
+          <mesh position={[0, 0.04, 0]} castShadow>
+            <capsuleGeometry args={[0.12, 0.06, 6, 16]} />
+            <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
+          </mesh>
+          {/* 上胸 —— 一整段平滑胶囊, 不再叠加胸肌/腹肌/锁骨小球.
+              所有"肌肉块"用堆球的方式都会出现"贴疙瘩"感, 体型靠 light
+              + rim 光的明暗去暗示, 而不是几何凸起. */}
+          <mesh position={[0, 0.2, 0]} castShadow>
+            <capsuleGeometry args={[0.155, 0.18, 8, 20]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.5} />
           </mesh>
 
           {/* 颈+头 */}
           <group position={[0, 0.34, 0]}>
             <mesh position={[0, 0.04, 0]} castShadow>
-              <cylinderGeometry args={[0.05, 0.06, 0.08, 12]} />
-              <meshStandardMaterial color="#cfcfd2" roughness={0.6} />
+              <cylinderGeometry args={[0.048, 0.058, 0.08, 16]} />
+              <meshStandardMaterial color={bodyColorLight} roughness={0.5} />
             </mesh>
-            <group position={[0, 0.04, 0]} rotation={p.head}>
-              <mesh position={[0, 0.18, 0]} castShadow>
-                <sphereGeometry args={[0.13, 16, 16]} />
-                <meshStandardMaterial color="#cfcfd2" roughness={0.6} />
+            <group position={[0, 0.08, 0]} rotation={p.head} scale={bt.headBoost}>
+              {/* 头 —— 蛋形 (Y 拉长 18%) 比正球更像人头. headBoost > 1
+                  时整个头节点都放大,儿童素体看起来头大身小. */}
+              <mesh position={[0, 0.13, 0]} castShadow scale={[1, 1.18, 1]}>
+                <sphereGeometry args={[0.115, 24, 24]} />
+                <meshStandardMaterial color={bodyColorLight} roughness={0.5} />
               </mesh>
-              <Billboard text={actor.label} position={[0, 0.42, 0]} />
+              {/* 下颌微微外凸, 让侧面有人脸形状 */}
+              <mesh position={[0, 0.05, 0.025]} castShadow>
+                <sphereGeometry args={[0.075, 16, 16]} />
+                <meshStandardMaterial color={bodyColorLight} roughness={0.5} />
+              </mesh>
+              <Billboard text={actor.label} position={[0, 0.4, 0]} />
             </group>
           </group>
 
-          {/* 左肩 → 左臂 */}
-          <group position={[-0.18, 0.24, 0]} rotation={p.shoulderL}>
-            <mesh position={[0, -0.18, 0]} castShadow>
-              <cylinderGeometry args={[0.05, 0.045, 0.36, 12]} />
-              <meshStandardMaterial color={POSE_MAT} roughness={0.7} />
+          {/* 左肩 + 左臂 —— 单段上臂胶囊 (无凸起肌肉) + 肘关节球 + 前臂
+              + 手. 主体用 capsule 而非 cylinder, 两端自然圆润. */}
+          <group position={[-0.18, 0.22, 0]} rotation={p.shoulderL}>
+            {/* 三角肌大球 */}
+            <mesh castShadow scale={[1.15, 1, 1.05]}>
+              <sphereGeometry args={[0.062, 16, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.5} />
+            </mesh>
+            {/* 上臂 —— capsule 比 cylinder 更连贯 */}
+            <mesh position={[0, -0.19, 0]} castShadow>
+              <capsuleGeometry args={[0.045, 0.28, 6, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
             <group position={[0, -0.36, 0]} rotation={p.elbowL}>
-              <mesh position={[0, -0.16, 0]} castShadow>
-                <cylinderGeometry args={[0.045, 0.04, 0.32, 12]} />
-                <meshStandardMaterial color={POSE_MAT_DEEP} roughness={0.7} />
+              <mesh castShadow>
+                <sphereGeometry args={[0.04, 14, 14]} />
+                <meshStandardMaterial color={bodyColor} roughness={0.5} />
               </mesh>
+              {/* 前臂 capsule —— 略细于上臂 */}
+              <mesh position={[0, -0.17, 0]} castShadow>
+                <capsuleGeometry args={[0.037, 0.24, 6, 16]} />
+                <meshStandardMaterial color={bodyColor} roughness={0.55} />
+              </mesh>
+              {/* 手 —— 手掌 + 拇指 */}
+              <group position={[0, -0.36, 0]}>
+                <mesh castShadow scale={[1, 1.5, 0.5]}>
+                  <sphereGeometry args={[0.044, 16, 16]} />
+                  <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
+                </mesh>
+                <mesh position={[0.025, -0.015, 0]} castShadow scale={[1.3, 0.9, 0.55]}>
+                  <sphereGeometry args={[0.02, 10, 10]} />
+                  <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
+                </mesh>
+              </group>
             </group>
           </group>
 
-          {/* 右肩 → 右臂 */}
-          <group position={[0.18, 0.24, 0]} rotation={p.shoulderR}>
-            <mesh position={[0, -0.18, 0]} castShadow>
-              <cylinderGeometry args={[0.05, 0.045, 0.36, 12]} />
-              <meshStandardMaterial color={POSE_MAT} roughness={0.7} />
+          {/* 右肩 + 右臂 (镜像) */}
+          <group position={[0.18, 0.22, 0]} rotation={p.shoulderR}>
+            <mesh castShadow scale={[1.15, 1, 1.05]}>
+              <sphereGeometry args={[0.062, 16, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.5} />
+            </mesh>
+            <mesh position={[0, -0.19, 0]} castShadow>
+              <capsuleGeometry args={[0.045, 0.28, 6, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
             <group position={[0, -0.36, 0]} rotation={p.elbowR}>
-              <mesh position={[0, -0.16, 0]} castShadow>
-                <cylinderGeometry args={[0.045, 0.04, 0.32, 12]} />
-                <meshStandardMaterial color={POSE_MAT_DEEP} roughness={0.7} />
+              <mesh castShadow>
+                <sphereGeometry args={[0.04, 14, 14]} />
+                <meshStandardMaterial color={bodyColor} roughness={0.5} />
+              </mesh>
+              <mesh position={[0, -0.17, 0]} castShadow>
+                <capsuleGeometry args={[0.037, 0.24, 6, 16]} />
+                <meshStandardMaterial color={bodyColor} roughness={0.55} />
+              </mesh>
+              <group position={[0, -0.36, 0]}>
+                <mesh castShadow scale={[1, 1.5, 0.5]}>
+                  <sphereGeometry args={[0.044, 16, 16]} />
+                  <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
+                </mesh>
+                <mesh position={[-0.025, -0.015, 0]} castShadow scale={[1.3, 0.9, 0.55]}>
+                  <sphereGeometry args={[0.02, 10, 10]} />
+                  <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
+                </mesh>
+              </group>
+            </group>
+          </group>
+        </group>
+
+        {/* 左髋 + 左腿 —— 平滑 capsule, 没有股四头/腿肚等凸起小球 */}
+        <group position={[-0.08, -0.04, 0]} rotation={p.hipL}>
+          <mesh castShadow scale={[1.05, 1, 1.05]}>
+            <sphereGeometry args={[0.07, 16, 16]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.5} />
+          </mesh>
+          {/* 大腿 capsule —— 全长 0.5 含两端 cap */}
+          <mesh position={[0, -0.26, 0]} castShadow>
+            <capsuleGeometry args={[0.06, 0.4, 6, 16]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.55} />
+          </mesh>
+          <group position={[0, -0.5, 0]} rotation={p.kneeL}>
+            <mesh castShadow>
+              <sphereGeometry args={[0.052, 14, 14]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.5} />
+            </mesh>
+            {/* 小腿 capsule —— 略细 */}
+            <mesh position={[0, -0.17, 0]} castShadow>
+              <capsuleGeometry args={[0.046, 0.24, 6, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.55} />
+            </mesh>
+            {/* 脚 —— 脚跟球 + 脚掌长椭球 */}
+            <group position={[0, -0.32, 0]}>
+              <mesh position={[0, -0.005, -0.02]} castShadow>
+                <sphereGeometry args={[0.045, 14, 14]} />
+                <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
+              </mesh>
+              <mesh position={[0, -0.015, 0.075]} castShadow scale={[1.05, 0.45, 2.1]}>
+                <sphereGeometry args={[0.055, 16, 16]} />
+                <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
               </mesh>
             </group>
           </group>
         </group>
 
-        {/* 左髋 → 左腿 */}
-        <group position={[-0.08, 0, 0]} rotation={p.hipL}>
-          <mesh position={[0, -0.25, 0]} castShadow>
-            <cylinderGeometry args={[0.065, 0.05, 0.5, 12]} />
-            <meshStandardMaterial color={POSE_MAT} roughness={0.7} />
+        {/* 右髋 + 右腿 (镜像) */}
+        <group position={[0.08, -0.04, 0]} rotation={p.hipR}>
+          <mesh castShadow scale={[1.05, 1, 1.05]}>
+            <sphereGeometry args={[0.07, 16, 16]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.5} />
           </mesh>
-          <group position={[0, -0.5, 0]} rotation={p.kneeL}>
-            <mesh position={[0, -0.16, 0]} castShadow>
-              <cylinderGeometry args={[0.05, 0.04, 0.32, 12]} />
-              <meshStandardMaterial color={POSE_MAT_DEEP} roughness={0.7} />
-            </mesh>
-          </group>
-        </group>
-
-        {/* 右髋 → 右腿 */}
-        <group position={[0.08, 0, 0]} rotation={p.hipR}>
-          <mesh position={[0, -0.25, 0]} castShadow>
-            <cylinderGeometry args={[0.065, 0.05, 0.5, 12]} />
-            <meshStandardMaterial color={POSE_MAT} roughness={0.7} />
+          <mesh position={[0, -0.26, 0]} castShadow>
+            <capsuleGeometry args={[0.06, 0.4, 6, 16]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.55} />
           </mesh>
           <group position={[0, -0.5, 0]} rotation={p.kneeR}>
-            <mesh position={[0, -0.16, 0]} castShadow>
-              <cylinderGeometry args={[0.05, 0.04, 0.32, 12]} />
-              <meshStandardMaterial color={POSE_MAT_DEEP} roughness={0.7} />
+            <mesh castShadow>
+              <sphereGeometry args={[0.052, 14, 14]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.5} />
             </mesh>
+            <mesh position={[0, -0.17, 0]} castShadow>
+              <capsuleGeometry args={[0.046, 0.24, 6, 16]} />
+              <meshStandardMaterial color={bodyColor} roughness={0.55} />
+            </mesh>
+            <group position={[0, -0.32, 0]}>
+              <mesh position={[0, -0.005, -0.02]} castShadow>
+                <sphereGeometry args={[0.045, 14, 14]} />
+                <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
+              </mesh>
+              <mesh position={[0, -0.015, 0.075]} castShadow scale={[1.05, 0.45, 2.1]}>
+                <sphereGeometry args={[0.055, 16, 16]} />
+                <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
+              </mesh>
+            </group>
           </group>
         </group>
       </group>
@@ -460,6 +606,14 @@ export function DirectorStageOverlay() {
   const [mode, setMode] = useState<TransformMode>('translate');
   const [presetFlash, setPresetFlash] = useState<{ camId: string } | null>(null);
 
+  // 两段式确认构图状态:
+  //   idle    —— 显示"确认构图"按钮,点击后变 armed.
+  //   armed   —— 已经把当前视图应用到活跃机位,弹底部提示;再点一次才真正派生节点.
+  //   capturing —— 正在逐机位渲染 + 派生 compositionPreviewNode.
+  // 设计参照 neowow:第一次点确认其实只是"锁定视角",第二次才出图.
+  const [confirmStage, setConfirmStage] = useState<'idle' | 'armed' | 'capturing'>('idle');
+  const armedTimerRef = useRef<number | null>(null);
+
   // refs
   const cameraControlsRef = useRef<any>(null);
   const transformControlsRef = useRef<any>(null);
@@ -467,6 +621,10 @@ export function DirectorStageOverlay() {
   const multiCaptureRef = useRef<MultiCaptureFn | null>(null);
 
   const [capturing, setCapturing] = useState(false);
+
+  // 派生节点 / 连线需要 store 的写口.
+  const addNode = useStore((s) => s.addNode);
+  const onConnect = useStore((s) => s.onConnect);
 
   const activeCamera = useMemo(() => cameras.find((c) => c.id === activeCameraId) ?? cameras[0], [cameras, activeCameraId]);
   const selectedActor = selection?.kind === 'actor' ? actors.find((a) => a.id === selection.id) : null;
@@ -519,6 +677,46 @@ export function DirectorStageOverlay() {
       ...a,
       pose: { ...DEFAULT_POSE, ...(a.pose ?? {}), ...patch },
     } : a));
+  }, []);
+
+  /** 属性面板通用 patcher —— 名称 / 位置 / 旋转 / 缩放 / 体型 / 颜色
+   *  都走这里. 切换体型时如果用户没显式选过 color,把 color 也清掉让
+   *  Mannequin 用新体型的默认色. */
+  const updateActor = useCallback((actorId: string, patch: Partial<ActorTransform>) => {
+    setActors((prev) => prev.map((a) => {
+      if (a.id !== actorId) return a;
+      const next: ActorTransform = { ...a, ...patch };
+      // 兼容:有 rotation 时把 rotationY 同步, 反之亦然.
+      if (patch.rotation) next.rotationY = patch.rotation[1];
+      if (typeof patch.rotationY === 'number' && !patch.rotation) {
+        next.rotation = [next.rotation?.[0] ?? 0, patch.rotationY, next.rotation?.[2] ?? 0];
+      }
+      // scale (uniform) ↔ scaleXYZ 同步.
+      if (patch.scaleXYZ) next.scale = patch.scaleXYZ[0];
+      if (typeof patch.scale === 'number' && !patch.scaleXYZ) {
+        next.scaleXYZ = [patch.scale, patch.scale, patch.scale];
+      }
+      // 切换体型自动清掉自定义 color, 让默认色刷新.
+      if (patch.assetId && patch.assetId !== a.assetId && patch.color === undefined) {
+        next.color = undefined;
+      }
+      return next;
+    }));
+  }, []);
+
+  /** 复制选中演员 —— 横向偏移 0.6m,避免叠在一起. */
+  const duplicateActor = useCallback((actorId: string) => {
+    setActors((prev) => {
+      const src = prev.find((a) => a.id === actorId);
+      if (!src) return prev;
+      const newActor: ActorTransform = {
+        ...src,
+        id: `actor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        label: `${src.label}·副`,
+        position: [src.position[0] + 0.6, src.position[1], src.position[2]],
+      };
+      return [...prev, newActor];
+    });
   }, []);
 
   const applyPosePreset = useCallback((actorId: string, presetName: string) => {
@@ -672,52 +870,121 @@ export function DirectorStageOverlay() {
 
   /** ====== Confirm + multi-camera capture ====== */
 
-  const onConfirm = useCallback(async () => {
-    if (!nodeId) return;
+  /** 第一次点确认:把当前主视口锁到活跃机位,屏幕底部弹提示,等用户再点
+   *  一次才真正派生节点。30 秒不操作自动 disarm,避免视角变了还按旧 armed
+   *  状态出图。 */
+  const armConfirm = useCallback(() => {
+    // 把当前视图应用到活跃机位.
+    const cc = cameraControlsRef.current;
+    if (cc) {
+      const pos = new THREE.Vector3();
+      const tgt = new THREE.Vector3();
+      cc.getPosition(pos);
+      cc.getTarget(tgt);
+      setCameras((prev) => prev.map((c) => c.id === activeCameraId ? {
+        ...c,
+        position: [pos.x, pos.y, pos.z],
+        lookAt: [tgt.x, tgt.y, tgt.z],
+      } : c));
+    }
+    setConfirmStage('armed');
+    if (armedTimerRef.current) window.clearTimeout(armedTimerRef.current);
+    armedTimerRef.current = window.setTimeout(() => setConfirmStage('idle'), 30_000);
+  }, [activeCameraId]);
+
+  /** 第二次点确认:逐机位渲染 + 派生 compositionPreviewNode + 自动连线
+   *  + 关 overlay. */
+  const finalizeConfirm = useCallback(async () => {
+    if (!nodeId || !node) return;
+    if (armedTimerRef.current) {
+      window.clearTimeout(armedTimerRef.current);
+      armedTimerRef.current = null;
+    }
+    setConfirmStage('capturing');
     setCapturing(true);
     try {
-      // 先把当前视口写入活跃机位 (用户可能正在调主视图).
-      let updatedCameras = cameras;
-      const cc = cameraControlsRef.current;
-      if (cc) {
-        const pos = new THREE.Vector3();
-        const tgt = new THREE.Vector3();
-        cc.getPosition(pos);
-        cc.getTarget(tgt);
-        updatedCameras = cameras.map((c) => c.id === activeCameraId ? {
-          ...c,
-          position: [pos.x, pos.y, pos.z] as [number, number, number],
-          lookAt: [tgt.x, tgt.y, tgt.z] as [number, number, number],
-        } : c);
-        setCameras(updatedCameras);
-      }
-      // 逐机位渲染 + 截图.
-      const captures: Record<string, string> = await (multiCaptureRef.current?.(updatedCameras) ?? Promise.resolve({} as Record<string, string>));
-      const lastCaptures: Record<string, { image: string; timestamp: number }> = {};
+      // 用当前主视图作为导演台节点的"封面"截图.
+      let editorPreview: string | undefined;
+      const single = captureRef.current?.();
+      if (single) editorPreview = single;
+
+      // 逐机位渲染.
+      const captures: Record<string, string> = await (multiCaptureRef.current?.(cameras) ?? Promise.resolve({} as Record<string, string>));
       const ts = Date.now();
+      const lastCaptures: Record<string, { image: string; timestamp: number }> = {};
       for (const [camId, img] of Object.entries(captures)) {
         lastCaptures[camId] = { image: img, timestamp: ts };
       }
-      const activeImg = captures[activeCameraId];
+
+      // 1) 把导演台自身刷成已构图态.
       const patch: Partial<DirectorStageData> = {
         status: 'done',
         characters: actors,
-        cameras: updatedCameras,
+        cameras,
         activeCameraId,
+        editorPreview,
         lastCaptures,
-        // 也写一份 lastCapture 兼容老的单 source handle 用法.
-        lastCapture: activeImg ? {
-          cameraId: activeCameraId,
-          image: activeImg,
-          timestamp: ts,
-        } : undefined,
       };
       updateNodeData(nodeId, patch as Record<string, unknown>);
+
+      // 2) 为每个机位派生一个 compositionPreviewNode + 自动连线.
+      // X 间距 280px(导演台宽 300 + 横向留白 ~280)让 bezier 曲线舒展,
+      // 不再挤成一个短"S"。Y 间距 260px,留出标题 + meta 行 + 边距.
+      const dirX = node.position?.x ?? 0;
+      const dirY = node.position?.y ?? 0;
+      const horizontalGap = 280;
+      const verticalGap = 260;
+      const directorWidth = 300;
+      cameras.forEach((cam, idx) => {
+        const img = captures[cam.id];
+        if (!img) return;
+        const offsetY = (idx - (cameras.length - 1) / 2) * verticalGap;
+        const previewId = `comp-preview-${nodeId}-${cam.id}-${ts}`;
+        addNode({
+          id: previewId,
+          type: 'compositionPreviewNode',
+          position: { x: dirX + directorWidth + horizontalGap, y: dirY + offsetY },
+          data: {
+            directorNodeId: nodeId,
+            cameraId: cam.id,
+            cameraLabel: cam.label,
+            image: img,
+            timestamp: ts,
+            aspect: cam.aspect,
+          },
+        } as never);
+        onConnect({
+          source: nodeId,
+          sourceHandle: null,
+          target: previewId,
+          targetHandle: null,
+        } as never);
+      });
     } finally {
       setCapturing(false);
+      setConfirmStage('idle');
       close();
     }
-  }, [nodeId, updateNodeData, close, activeCameraId, actors, cameras]);
+  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, cameras, addNode, onConnect]);
+
+  /** "确认构图"按钮统一入口:按当前阶段路由. */
+  const onConfirm = useCallback(() => {
+    if (capturing) return;
+    if (confirmStage === 'armed') {
+      void finalizeConfirm();
+    } else {
+      armConfirm();
+    }
+  }, [capturing, confirmStage, armConfirm, finalizeConfirm]);
+
+  /** 关 overlay 时清理 armed 定时器,避免下次开 overlay 还在 armed. */
+  useEffect(() => {
+    if (!nodeId && armedTimerRef.current) {
+      window.clearTimeout(armedTimerRef.current);
+      armedTimerRef.current = null;
+      setConfirmStage('idle');
+    }
+  }, [nodeId]);
 
   /** ====== Keyboard ====== */
 
@@ -783,14 +1050,22 @@ export function DirectorStageOverlay() {
           style={{ background: '#050507' }}
           onPointerMissed={onDeselect}
         >
-          <ambientLight intensity={0.45} />
+          {/* 三点布光: key + fill + rim. 多一层填充和轮廓光,
+              身体表面就有 "光面 / 阴影面 / 轮廓亮边" 三档,
+              即便是平滑 capsule 也能看出体感, 不靠几何凸起去伪造肌肉. */}
+          <ambientLight intensity={0.35} />
+          {/* Key light —— 右上前主光 */}
           <directionalLight
             position={[4, 6, 3]}
-            intensity={1.1}
+            intensity={1.05}
             castShadow
             shadow-mapSize-width={1024}
             shadow-mapSize-height={1024}
           />
+          {/* Fill light —— 左前柔光, 减弱阴影面死黑 */}
+          <directionalLight position={[-3, 3, 2.5]} intensity={0.55} color="#c8d4e2" />
+          {/* Rim / back light —— 背光勾出身体轮廓 */}
+          <directionalLight position={[-1, 4, -4]} intensity={0.7} color="#d6c9b5" />
           <Suspense fallback={null}>
             <Grid
               args={[40, 40]}
@@ -804,7 +1079,10 @@ export function DirectorStageOverlay() {
               fadeStrength={1}
               infiniteGrid
             />
-            <axesHelper args={[3]} />
+            {/* 坐标轴 —— 仅在有选中时(actor 或 camera)显示, 没选时
+                场景干净, 跟最终出图风格一致. 0.5 长度刚好够辨认 X/Y/Z
+                方向不喧宾夺主. */}
+            {selection ? <axesHelper args={[0.5]} /> : null}
             {actors.map((a) => (
               <Mannequin
                 key={a.id}
@@ -888,12 +1166,16 @@ export function DirectorStageOverlay() {
           )}
         </div>
 
-        {/* 右侧:选中演员时,姿势面板 */}
+        {/* 右侧:选中演员时,「属性 / 姿势」双 Tab 面板. */}
         {selectedActor ? (
-          <PosePanel
+          <ActorPanel
             actor={selectedActor}
+            onUpdate={(patch) => updateActor(selectedActor.id, patch)}
             onApplyPreset={(name) => applyPosePreset(selectedActor.id, name)}
             onUpdatePose={(patch) => updateActorPose(selectedActor.id, patch)}
+            onDuplicate={() => duplicateActor(selectedActor.id)}
+            onDelete={() => removeActor(selectedActor.id)}
+            disableDelete={actors.length <= 1}
           />
         ) : null}
 
@@ -1029,12 +1311,25 @@ export function DirectorStageOverlay() {
         </div>
       </div>
 
+      {/* armed 阶段:画面右下浮出 neowow 同款提示,锚定在确认按钮旁边. */}
+      {confirmStage === 'armed' ? (
+        <div className="pointer-events-none absolute bottom-16 right-4 z-10 flex max-w-[420px] items-center gap-2 rounded-md border border-amber-300/40 bg-amber-400/15 px-3 py-2 text-[12px] text-amber-50 shadow-[0_8px_24px_-12px_rgba(245,158,11,0.5)] backdrop-blur-md">
+          <Camera className="h-3.5 w-3.5 text-amber-200" />
+          <span>
+            {language === 'zh'
+              ? <>已自动选中「<span className="font-medium text-white">{activeCamera?.label ?? '机位1'}</span>」的视角进行构图,再次点击确认</>
+              : <>Locked view to <span className="font-medium text-white">{activeCamera?.label ?? 'Camera 1'}</span> — click 确认 again to finalize</>
+            }
+          </span>
+        </div>
+      ) : null}
+
       {/* 底部状态栏 + 确认. */}
       <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3">
         <div className="text-[11px] text-white/40">
           {language === 'zh'
-            ? `${actors.length} 角色 · ${cameras.length} 机位 · 确认时按机位逐张出图,每张图独立连线`
-            : `${actors.length} actors · ${cameras.length} cameras · captures one image per camera on confirm`}
+            ? `${actors.length} 角色 · ${cameras.length} 机位 · 确认两次后按机位派生「构图预览」节点`
+            : `${actors.length} actors · ${cameras.length} cameras · click confirm twice to spawn per-camera preview nodes`}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -1048,10 +1343,18 @@ export function DirectorStageOverlay() {
             type="button"
             onClick={onConfirm}
             disabled={capturing}
-            className="flex items-center gap-1.5 rounded-md border border-violet-400/30 bg-violet-500/[0.16] px-3 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/60 hover:bg-violet-500/[0.28] disabled:opacity-50"
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] transition disabled:opacity-50 ${
+              confirmStage === 'armed'
+                ? 'border-amber-300/60 bg-amber-400/[0.22] text-amber-50 hover:border-amber-300/90 hover:bg-amber-400/[0.34]'
+                : 'border-violet-400/30 bg-violet-500/[0.16] text-violet-50 hover:border-violet-400/60 hover:bg-violet-500/[0.28]'
+            }`}
           >
             {capturing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Camera className="h-3.5 w-3.5" />}
-            {language === 'zh' ? `确认构图 (×${cameras.length})` : `Capture (×${cameras.length})`}
+            {capturing
+              ? (language === 'zh' ? '正在派生预览…' : 'Spawning…')
+              : confirmStage === 'armed'
+                ? (language === 'zh' ? `再次确认 → 派生 ${cameras.length} 个预览` : `Confirm again → spawn ${cameras.length}`)
+                : (language === 'zh' ? '确认构图' : 'Confirm composition')}
           </button>
         </div>
       </div>
@@ -1061,37 +1364,245 @@ export function DirectorStageOverlay() {
 }
 
 /** ============================================================
- *  PosePanel —— 选中演员时右侧弹出的姿势 / 关节面板
+ *  ActorPanel —— 选中演员时右侧弹出的「属性 / 姿势」双 Tab 面板
  *  ============================================================ */
 
-function PosePanel({ actor, onApplyPreset, onUpdatePose }: {
+function ActorPanel({
+  actor, onUpdate, onApplyPreset, onUpdatePose, onDuplicate, onDelete, disableDelete,
+}: {
   actor: ActorTransform;
+  onUpdate: (patch: Partial<ActorTransform>) => void;
+  onApplyPreset: (name: string) => void;
+  onUpdatePose: (patch: Partial<ActorPose>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  disableDelete: boolean;
+}) {
+  const language = useStore((s) => s.language);
+  const [mainTab, setMainTab] = useState<'properties' | 'pose'>('properties');
+  const [poseTab, setPoseTab] = useState<'preset' | 'manual'>('preset');
+
+  return (
+    <div className="absolute right-4 top-4 flex w-[280px] flex-col gap-2 rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
+      {/* Tab header. */}
+      <div className="flex items-center gap-2 border-b border-white/[0.06] pb-2">
+        <button
+          type="button"
+          onClick={() => setMainTab('properties')}
+          className={`rounded px-2 py-1 text-[12px] transition ${
+            mainTab === 'properties'
+              ? 'bg-white/[0.08] font-semibold text-white'
+              : 'text-white/55 hover:bg-white/[0.04] hover:text-white'
+          }`}
+        >
+          {language === 'zh' ? '属性' : 'Props'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setMainTab('pose')}
+          className={`rounded px-2 py-1 text-[12px] transition ${
+            mainTab === 'pose'
+              ? 'bg-white/[0.08] font-semibold text-white'
+              : 'text-white/55 hover:bg-white/[0.04] hover:text-white'
+          }`}
+        >
+          {language === 'zh' ? '姿势' : 'Pose'}
+        </button>
+        <div className="ml-auto flex items-center gap-1 text-white/40">
+          <Lock className="h-3.5 w-3.5 cursor-not-allowed opacity-50" />
+        </div>
+      </div>
+
+      {mainTab === 'properties'
+        ? <ActorPropertiesContent actor={actor} onUpdate={onUpdate} />
+        : <ActorPoseContent
+            actor={actor}
+            poseTab={poseTab}
+            setPoseTab={setPoseTab}
+            onApplyPreset={onApplyPreset}
+            onUpdatePose={onUpdatePose}
+          />
+      }
+
+      {/* 底部:复制 / 删除 - 不论哪个 tab 都常驻. */}
+      <div className="mt-1 grid grid-cols-2 gap-2 border-t border-white/[0.06] pt-2">
+        <button
+          type="button"
+          onClick={onDuplicate}
+          className="rounded border border-white/12 bg-white/[0.04] px-2 py-1.5 text-[11.5px] text-white/80 transition hover:border-white/30 hover:bg-white/[0.08] hover:text-white"
+        >
+          {language === 'zh' ? '复制' : 'Duplicate'}
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={disableDelete}
+          className="rounded border border-rose-400/30 bg-rose-500/[0.10] px-2 py-1.5 text-[11.5px] text-rose-200 transition hover:border-rose-400/60 hover:bg-rose-500/[0.22] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {language === 'zh' ? '删除' : 'Delete'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 属性 Tab 内容 —— 名称 / 位置 / 旋转 / 缩放 / 体型 / 颜色. */
+function ActorPropertiesContent({ actor, onUpdate }: {
+  actor: ActorTransform;
+  onUpdate: (patch: Partial<ActorTransform>) => void;
+}) {
+  const language = useStore((s) => s.language);
+  const bt = bodyTypeOf(actor.assetId);
+  const color = actor.color || bt.defaultColor;
+  const rotation = actor.rotation ?? [0, actor.rotationY, 0];
+  const scale: [number, number, number] = actor.scaleXYZ ?? [actor.scale, actor.scale, actor.scale];
+  const uniformScale = scale[0]; // 显示给 uniform slider
+
+  const radToDeg = (r: number) => Math.round((r * 180) / PI);
+  const degToRad = (d: number) => (d * PI) / 180;
+
+  return (
+    <div className="flex max-h-[520px] flex-col gap-3 overflow-y-auto pr-1">
+      {/* 名称 */}
+      <Field label={language === 'zh' ? '名称' : 'Name'}>
+        <input
+          type="text"
+          value={actor.label}
+          onChange={(e) => onUpdate({ label: e.target.value })}
+          className="w-full rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 text-[12px] text-white/90 outline-none focus:border-violet-400/60"
+        />
+      </Field>
+
+      {/* 位置 */}
+      <Field label={language === 'zh' ? '位置' : 'Position'}>
+        <Vec3Input
+          value={actor.position}
+          onChange={(v) => onUpdate({ position: v })}
+          step={0.1}
+        />
+      </Field>
+
+      {/* 旋转 (度) */}
+      <Field label={language === 'zh' ? '旋转 (°)' : 'Rotation (°)'}>
+        <Vec3Input
+          value={[radToDeg(rotation[0]), radToDeg(rotation[1]), radToDeg(rotation[2])]}
+          onChange={(v) => onUpdate({ rotation: [degToRad(v[0]), degToRad(v[1]), degToRad(v[2])] })}
+          step={1}
+        />
+      </Field>
+
+      {/* 统一缩放 (uniform slider) */}
+      <Field label={language === 'zh' ? '统一缩放' : 'Uniform Scale'}>
+        <div className="flex items-center gap-2">
+          <input
+            type="range"
+            min={0.3}
+            max={4}
+            step={0.05}
+            value={uniformScale}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              onUpdate({ scale: v, scaleXYZ: [v, v, v] });
+            }}
+            className="flex-1 accent-violet-400"
+          />
+          <span className="w-10 text-right font-mono text-[11px] text-white/70">{uniformScale.toFixed(1)}</span>
+        </div>
+      </Field>
+
+      {/* 缩放 (xyz 独立) */}
+      <Field label={language === 'zh' ? '缩放' : 'Scale'}>
+        <Vec3Input
+          value={scale}
+          onChange={(v) => onUpdate({ scaleXYZ: v, scale: v[0] })}
+          step={0.1}
+        />
+      </Field>
+
+      {/* 体型 */}
+      <Field label={language === 'zh' ? '体型' : 'Body type'}>
+        <div className="grid grid-cols-2 gap-1.5">
+          {BODY_TYPE_IDS.map((id) => {
+            const meta = BODY_TYPES[id];
+            const active = actor.assetId === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onUpdate({ assetId: id })}
+                className={`flex items-center justify-center gap-1 rounded border px-2 py-1.5 text-[11px] transition ${
+                  active
+                    ? 'border-violet-400/60 bg-violet-500/[0.18] text-white'
+                    : 'border-white/12 bg-white/[0.03] text-white/70 hover:border-white/30 hover:bg-white/[0.08] hover:text-white'
+                }`}
+              >
+                <PersonStanding className={`h-3 w-3 ${active ? 'text-violet-200' : 'text-white/40'}`} />
+                {meta.label}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
+      {/* 颜色 */}
+      <Field label={language === 'zh' ? '颜色' : 'Color'}>
+        <div className="flex items-center gap-2">
+          <label className="relative h-7 w-9 cursor-pointer overflow-hidden rounded border border-white/15">
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => onUpdate({ color: e.target.value })}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
+            <div className="h-full w-full" style={{ background: color }} />
+          </label>
+          <input
+            type="text"
+            value={color.toUpperCase()}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (/^#?[0-9A-Fa-f]{6}$/.test(v)) {
+                onUpdate({ color: v.startsWith('#') ? v : `#${v}` });
+              }
+            }}
+            className="flex-1 rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 font-mono text-[12px] text-white/85 outline-none focus:border-violet-400/60"
+          />
+        </div>
+      </Field>
+    </div>
+  );
+}
+
+/** 姿势 Tab 内容 —— 与原 PosePanel 内容一致, 抽出来当 ActorPanel 子页. */
+function ActorPoseContent({
+  actor, poseTab, setPoseTab, onApplyPreset, onUpdatePose,
+}: {
+  actor: ActorTransform;
+  poseTab: 'preset' | 'manual';
+  setPoseTab: (t: 'preset' | 'manual') => void;
   onApplyPreset: (name: string) => void;
   onUpdatePose: (patch: Partial<ActorPose>) => void;
 }) {
   const language = useStore((s) => s.language);
   const pose = { ...DEFAULT_POSE, ...(actor.pose ?? {}) };
-  const [tab, setTab] = useState<'preset' | 'manual'>('preset');
 
   return (
-    <div className="absolute right-4 top-4 flex w-[260px] flex-col gap-2 rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
-      <div className="flex items-center gap-2 text-[11.5px] text-white/80">
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-[11px] text-white/55">
         <PersonStanding className="h-3.5 w-3.5 text-violet-300" />
-        <span className="font-medium">{actor.label}</span>
-        <span className="text-white/30">·</span>
-        <span className="text-white/50">{language === 'zh' ? '姿势' : 'Pose'}</span>
+        <span>{language === 'zh' ? '姿势' : 'Pose'}</span>
         <button
           type="button"
-          onClick={() => setTab(tab === 'preset' ? 'manual' : 'preset')}
-          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-white/60 hover:bg-white/[0.06] hover:text-white"
+          onClick={() => setPoseTab(poseTab === 'preset' ? 'manual' : 'preset')}
+          className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-white/[0.06] hover:text-white"
         >
           <Settings2 className="h-3 w-3" />
-          {tab === 'preset' ? (language === 'zh' ? '微调' : 'Manual') : (language === 'zh' ? '预设' : 'Presets')}
+          {poseTab === 'preset' ? (language === 'zh' ? '微调' : 'Manual') : (language === 'zh' ? '预设' : 'Presets')}
         </button>
       </div>
 
-      {tab === 'preset' ? (
-        <div className="grid grid-cols-3 gap-1 max-h-[420px] overflow-y-auto pr-1">
+      {poseTab === 'preset' ? (
+        <div className="grid max-h-[420px] grid-cols-3 gap-1 overflow-y-auto pr-1">
           {PRESET_KEYS.map((name) => (
             <button
               key={name}
@@ -1142,6 +1653,47 @@ function PosePanel({ actor, onApplyPreset, onUpdatePose }: {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** 表单字段标题包装. */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="text-[10.5px] font-medium uppercase tracking-wider text-white/45">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+/** 三轴 (x/y/z) 数字输入组件. step 控制每步增量. */
+function Vec3Input({ value, onChange, step }: {
+  value: [number, number, number];
+  onChange: (v: [number, number, number]) => void;
+  step: number;
+}) {
+  const setAxis = (axis: 0 | 1 | 2, n: number) => {
+    const next: [number, number, number] = [...value] as [number, number, number];
+    next[axis] = n;
+    onChange(next);
+  };
+  return (
+    <div className="grid grid-cols-3 gap-1.5">
+      {(['x', 'y', 'z'] as const).map((label, idx) => (
+        <div key={label} className="relative">
+          <span className="pointer-events-none absolute left-1.5 top-1.5 font-mono text-[9px] uppercase text-white/35">
+            {label}
+          </span>
+          <input
+            type="number"
+            step={step}
+            value={Number.isFinite(value[idx]) ? Number(value[idx].toFixed(2)) : 0}
+            onChange={(e) => setAxis(idx as 0 | 1 | 2, Number(e.target.value) || 0)}
+            className="w-full rounded border border-white/10 bg-white/[0.03] py-1.5 pl-5 pr-1.5 text-right font-mono text-[11px] text-white/85 outline-none focus:border-violet-400/60"
+          />
+        </div>
+      ))}
     </div>
   );
 }

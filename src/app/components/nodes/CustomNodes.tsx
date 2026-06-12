@@ -296,20 +296,24 @@ const MediaParamsPopover = ({
   quality,
   aspectRatio,
   duration,
+  outputFormat,
   onResolution,
   onQuality,
   onAspectRatio,
   onDuration,
+  onOutputFormat,
 }: {
   template: ModelTemplate;
   resolution: string;
   quality: string;
   aspectRatio: string;
   duration: number;
+  outputFormat: string;
   onResolution: (v: string) => void;
   onQuality: (v: string) => void;
   onAspectRatio: (v: string) => void;
   onDuration: (v: number) => void;
+  onOutputFormat: (v: string) => void;
 }) => {
   const [open, setOpen] = useState(false);
   const language = useStore((state) => state.language);
@@ -318,12 +322,14 @@ const MediaParamsPopover = ({
     template.supportsAutoAspect && aspectRatio === 'auto' ? (language === 'zh' ? '自适应' : 'Auto') : aspectRatio,
     template.supportsResolution ? resolution : null,
     template.supportsQuality ? quality : null,
+    template.supportsOutputFormat ? outputFormat : null,
     template.supportsDuration ? `${duration}s` : null,
   ].filter(Boolean);
 
   const hasAspect = template.supportsAspectRatio && template.aspectRatioOptions?.length;
   const hasResolution = template.supportsResolution && template.resolutionOptions?.length;
   const hasQuality = template.supportsQuality && template.qualityOptions?.length;
+  const hasOutputFormat = template.supportsOutputFormat && template.outputFormatOptions?.length;
   const hasDurationSlider = template.supportsDuration && template.durationRange && !template.durationOptions?.length;
   const hasDurationOptions = template.supportsDuration && template.durationOptions?.length;
 
@@ -423,6 +429,20 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
+            {/* ── Output format ──────────────────────────────────────── */}
+            {hasOutputFormat ? (
+              <div className="mb-5">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '输出格式' : 'Output format'}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {template.outputFormatOptions!.map((option) => (
+                    <PillButton key={option} active={option === outputFormat} onClick={() => onOutputFormat(option)}>
+                      {option.toUpperCase()}
+                    </PillButton>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {/* ── Aspect ratio ────────────────────────────────────────── */}
             {hasAspect ? (
               <div>
@@ -481,6 +501,13 @@ const ASPECT_LABEL: Record<string, string> = {
   '16:9': '横屏 (16:9)',
   '9:16': '竖屏 (9:16)',
   '1:1':  '方形 (1:1)',
+  '5:4': '横版 (5:4)',
+  '4:5': '竖版 (4:5)',
+  '4:3': '经典横版 (4:3)',
+  '3:4': '经典竖版 (3:4)',
+  '3:2': '摄影横版 (3:2)',
+  '2:3': '摄影竖版 (2:3)',
+  '21:9': '超宽屏 (21:9)',
 };
 
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
@@ -807,6 +834,8 @@ const PromptPanel = ({
         vendor: pc.vendor,
         name: pc.name,
         modelList: pc.model_list,
+        parameterSchema: pc.parameter_schema,
+        raw: pc,
       })),
     [backendModels, serviceType],
   );
@@ -859,13 +888,18 @@ const PromptPanel = ({
     });
   }, [activeModel, activeVendor, enabledConfigs, modelIsDisabled, nodeId, params.model, updateNodeGenerationParams]);
 
-  const template = getModelTemplate(activeModel);
+  const activeConfig = useMemo(
+    () => enabledConfigs.find((config) => config.modelList.includes(activeModel))?.raw ?? null,
+    [activeModel, enabledConfigs],
+  );
+  const template = getModelTemplate(activeModel, activeConfig);
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
   const currentResolution = params.resolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
   const currentAspectRatio = params.aspectRatio
     ?? (template?.supportsAutoAspect ? 'auto' : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0] ?? '');
   const currentDuration = params.durationSeconds ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
+  const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
 
   useEffect(() => {
     if (!template) {
@@ -880,6 +914,7 @@ const PromptPanel = ({
     if (template.supportsQuality && !params.quality && currentQuality) nextPatch.quality = currentQuality;
     if ((template.supportsAspectRatio || template.supportsAutoAspect) && !params.aspectRatio && currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
     if (template.supportsDuration && !params.durationSeconds && currentDuration) nextPatch.durationSeconds = currentDuration;
+    if (template.supportsOutputFormat && !params.outputFormat && currentOutputFormat) nextPatch.outputFormat = currentOutputFormat;
 
     if (Object.keys(nextPatch).length > 0) {
       updateNodeGenerationParams(nodeId, nextPatch);
@@ -892,6 +927,7 @@ const PromptPanel = ({
     currentMode,
     currentQuality,
     currentResolution,
+    currentOutputFormat,
     nodeId,
     params.aspectRatio,
     params.durationSeconds,
@@ -899,6 +935,7 @@ const PromptPanel = ({
     params.model,
     params.quality,
     params.resolution,
+    params.outputFormat,
     params.vendor,
     template,
     updateNodeGenerationParams,
@@ -986,13 +1023,13 @@ const PromptPanel = ({
   };
 
   const handleModelChange = (nextModel: string) => {
-    const nextTemplate = getModelTemplate(nextModel);
+    const owningConfig = enabledConfigs.find((config) => config.modelList.includes(nextModel));
+    const nextTemplate = getModelTemplate(nextModel, owningConfig?.raw ?? null);
     // Resolve vendor from whichever provider owns the picked model. The
     // template's hardcoded vendor wins (e.g. "doubao-*" → "doubao") so
     // backend routing stays deterministic, but if a user-imported model
     // doesn't match any template we fall back to the first provider that
     // declares it.
-    const owningConfig = enabledConfigs.find((config) => config.modelList.includes(nextModel));
     const resolvedVendor = nextTemplate?.vendor ?? owningConfig?.vendor ?? activeVendor;
     updateNodeGenerationParams(nodeId, {
       vendor: resolvedVendor,
@@ -1002,11 +1039,25 @@ const PromptPanel = ({
       quality: nextTemplate?.defaults?.quality ?? nextTemplate?.qualityOptions?.[0],
       aspectRatio: nextTemplate?.supportsAutoAspect ? 'auto' : nextTemplate?.defaults?.aspectRatio ?? nextTemplate?.aspectRatioOptions?.[0],
       durationSeconds: nextTemplate?.durationRange?.defaultValue,
+      outputFormat: nextTemplate?.defaults?.outputFormat ?? nextTemplate?.outputFormatOptions?.[0],
     });
   };
 
   const submit = () => {
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      updateNodeData(nodeId, {
+        status: 'error',
+        error: language === 'zh' ? '请输入提示词后再生成。' : 'Enter a prompt before generating.',
+      });
+      return;
+    }
+    if (!activeModel) {
+      updateNodeData(nodeId, {
+        status: 'error',
+        error: language === 'zh' ? '当前没有可用模型，请先在管理端启用模型配置。' : 'No available model. Enable a model config first.',
+      });
+      return;
+    }
     runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel });
   };
 
@@ -1347,22 +1398,23 @@ const PromptPanel = ({
   };
 
   const bottomControls = (
-    <div className="mt-3 flex items-center justify-between gap-2">
+    <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
         <Dropdown
-          label={<ModelBrandIcon model={activeModel} size={14} />}
+          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} size={14} />}
           value={activeModel}
           options={availableModels}
           onChange={handleModelChange}
           menuMinWidth={240}
           renderOption={(option, selected) => {
             // Show the model's default video duration on the right (when applicable).
-            const optTemplate = getModelTemplate(option);
+            const optionConfig = enabledConfigs.find((config) => config.modelList.includes(option))?.raw ?? null;
+            const optTemplate = getModelTemplate(option, optionConfig);
             const dur = optTemplate?.durationRange?.defaultValue
               ?? optTemplate?.durationOptions?.[0];
             return (
               <div className="flex w-full items-center gap-2">
-                <ModelBrandIcon model={option} size={18} />
+                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} size={18} />
                 <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>
@@ -1376,23 +1428,32 @@ const PromptPanel = ({
             onChange={(value) => updateNodeGenerationParams(nodeId, { mode: value })}
           />
         ) : null}
-        {template && (template.supportsResolution || template.supportsQuality || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration) ? (
+        {template && (template.supportsResolution || template.supportsQuality || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration || template.supportsOutputFormat) ? (
           <MediaParamsPopover
             template={template}
             resolution={currentResolution}
             quality={currentQuality}
             aspectRatio={currentAspectRatio}
             duration={currentDuration}
+            outputFormat={currentOutputFormat}
             onResolution={(value) => updateNodeGenerationParams(nodeId, { resolution: value })}
             onQuality={(value) => updateNodeGenerationParams(nodeId, { quality: value })}
             onAspectRatio={(value) => updateNodeGenerationParams(nodeId, { aspectRatio: value })}
             onDuration={(value) => updateNodeGenerationParams(nodeId, { durationSeconds: value })}
+            onOutputFormat={(value) => updateNodeGenerationParams(nodeId, { outputFormat: value })}
           />
         ) : null}
       </div>
       <button
-        onClick={submit}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40"
+        type="button"
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          submit();
+        }}
+        className="nodrag nopan flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40"
       >
         <ArrowUp className="h-4 w-4" />
       </button>
@@ -3993,6 +4054,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
 import { AgentNode } from './AgentNode';
 import { StickyNoteNode } from './StickyNoteNode';
 import { DirectorStageNode } from './DirectorStageNode';
+import { CompositionPreviewNode } from './CompositionPreviewNode';
 
 export const nodeTypes = {
   textNode: ModeTextNode,
@@ -4005,5 +4067,6 @@ export const nodeTypes = {
   agentNode: AgentNode,
   stickyNoteNode: StickyNoteNode,
   directorStageNode: DirectorStageNode,
+  compositionPreviewNode: CompositionPreviewNode,
 };
 

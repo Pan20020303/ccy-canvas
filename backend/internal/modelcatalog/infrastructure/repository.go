@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,22 @@ func uuidStr(u pgtype.UUID) string {
 	return uuid.UUID(u.Bytes).String()
 }
 
+func classifyErrorCode(msg string) string {
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "permission_error") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "http 403"):
+		return "permission_error"
+	case strings.Contains(lower, "rate_limit") || strings.Contains(lower, "http 429") || strings.Contains(lower, "concurrency"):
+		return "rate_limit_error"
+	case strings.Contains(lower, "service_unavailable") || strings.Contains(lower, "overloaded") || strings.Contains(lower, "http 502") || strings.Contains(lower, "http 503"):
+		return "service_unavailable_error"
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "timeout_error"
+	default:
+		return "upstream_error"
+	}
+}
+
 func toProvider(p sqlc.RelayProvider) *domain.RelayProvider {
 	var lastSync *time.Time
 	if p.LastSyncAt.Valid {
@@ -78,41 +95,73 @@ func timestampPtr(t pgtype.Timestamptz) *time.Time {
 
 func toProviderConfig(p sqlc.ProviderConfig) domain.ProviderConfig {
 	return domain.ProviderConfig{
-		ID:             uuidStr(p.ID),
-		ServiceType:    p.ServiceType,
-		Vendor:         p.Vendor,
-		Name:           p.Name,
-		APISpec:        p.ApiSpec,
-		BaseURL:        p.BaseUrl,
+		ID:              uuidStr(p.ID),
+		ServiceType:     p.ServiceType,
+		Vendor:          p.Vendor,
+		Name:            p.Name,
+		APISpec:         p.ApiSpec,
+		Protocol:        p.Protocol,
+		BaseURL:         p.BaseUrl,
 		EncryptedAPIKey: p.EncryptedApiKey,
-		SubmitEndpoint: p.SubmitEndpoint,
-		QueryEndpoint:  p.QueryEndpoint,
-		ModelList:      p.ModelList,
-		DefaultModel:   p.DefaultModel,
-		Priority:       p.Priority,
-		IsDefault:      p.IsDefault,
-		Status:         p.Status,
-		CreatedAt:      p.CreatedAt.Time,
-		UpdatedAt:      p.UpdatedAt.Time,
+		SubmitEndpoint:  p.SubmitEndpoint,
+		QueryEndpoint:   p.QueryEndpoint,
+		ModelList:       p.ModelList,
+		DefaultModel:    p.DefaultModel,
+		Priority:        p.Priority,
+		IsDefault:       p.IsDefault,
+		Status:          p.Status,
+		Capabilities:    p.Capabilities,
+		ParameterSchema: rawJSON(p.ParameterSchema),
+		CreatedAt:       p.CreatedAt.Time,
+		UpdatedAt:       p.UpdatedAt.Time,
 		// Channel health (migration 011).
 		FailureCount:         p.FailureCount,
 		LastFailureAt:        timestampPtr(p.LastFailureAt),
 		LastErrorMsg:         p.LastErrorMsg,
+		LastErrorCode:        p.LastErrorCode,
 		LastSuccessAt:        timestampPtr(p.LastSuccessAt),
 		CooldownUntil:        timestampPtr(p.CooldownUntil),
 		ConsecutiveCooldowns: p.ConsecutiveCooldowns,
 	}
 }
 
+func toAdminAlert(row sqlc.AdminAlert) domain.AdminAlert {
+	alert := domain.AdminAlert{
+		ID:           uuidStr(row.ID),
+		ServiceType:  row.ServiceType,
+		Model:        row.Model,
+		ErrorCode:    row.ErrorCode,
+		ErrorMessage: row.ErrorMessage,
+		Source:       row.Source,
+		Severity:     row.Severity,
+		Status:       row.Status,
+		ProviderName: row.ProviderName,
+	}
+	if row.ProviderConfigID.Valid {
+		alert.ProviderConfigID = uuidStr(row.ProviderConfigID)
+	}
+	if row.GenerationLogID.Valid {
+		alert.GenerationLogID = uuidStr(row.GenerationLogID)
+	}
+	if row.CreatedAt.Valid {
+		alert.CreatedAt = row.CreatedAt.Time
+	}
+	if row.LastSeenAt.Valid {
+		alert.LastSeenAt = row.LastSeenAt.Time
+	}
+	return alert
+}
+
 func toAppProviderConfig(p sqlc.ListEnabledProviderConfigsRow) domain.AppProviderConfig {
 	return domain.AppProviderConfig{
-		ID:           uuidStr(p.ID),
-		ServiceType:  p.ServiceType,
-		Vendor:       p.Vendor,
-		Name:         p.Name,
-		ModelList:    p.ModelList,
-		DefaultModel: p.DefaultModel,
-		Priority:     p.Priority,
+		ID:              uuidStr(p.ID),
+		ServiceType:     p.ServiceType,
+		Vendor:          p.Vendor,
+		Name:            p.Name,
+		ModelList:       p.ModelList,
+		DefaultModel:    p.DefaultModel,
+		Priority:        p.Priority,
+		ParameterSchema: rawJSON(p.ParameterSchema),
 	}
 }
 
@@ -352,6 +401,7 @@ func (r *Repository) CreateProviderConfig(ctx context.Context, pc domain.Provide
 		Vendor:          pc.Vendor,
 		Name:            pc.Name,
 		ApiSpec:         pc.APISpec,
+		Protocol:        pc.Protocol,
 		BaseUrl:         pc.BaseURL,
 		EncryptedApiKey: pc.EncryptedAPIKey,
 		SubmitEndpoint:  pc.SubmitEndpoint,
@@ -361,6 +411,8 @@ func (r *Repository) CreateProviderConfig(ctx context.Context, pc domain.Provide
 		Priority:        pc.Priority,
 		IsDefault:       pc.IsDefault,
 		Status:          pc.Status,
+		Capabilities:    pc.Capabilities,
+		ParameterSchema: []byte(rawJSON(pc.ParameterSchema)),
 	})
 	if err != nil {
 		return nil, err
@@ -380,6 +432,7 @@ func (r *Repository) UpdateProviderConfig(ctx context.Context, pc domain.Provide
 		Vendor:          pc.Vendor,
 		Name:            pc.Name,
 		ApiSpec:         pc.APISpec,
+		Protocol:        pc.Protocol,
 		BaseUrl:         pc.BaseURL,
 		EncryptedApiKey: pc.EncryptedAPIKey,
 		SubmitEndpoint:  pc.SubmitEndpoint,
@@ -389,6 +442,8 @@ func (r *Repository) UpdateProviderConfig(ctx context.Context, pc domain.Provide
 		Priority:        pc.Priority,
 		IsDefault:       pc.IsDefault,
 		Status:          pc.Status,
+		Capabilities:    pc.Capabilities,
+		ParameterSchema: []byte(rawJSON(pc.ParameterSchema)),
 	})
 	if err != nil {
 		return nil, err
@@ -432,7 +487,7 @@ func (r *Repository) IncrementChannelFailure(ctx context.Context, providerID, er
 	if err != nil {
 		return 0, 0, err
 	}
-	row, err := r.q.IncrementChannelFailure(ctx, pgID, errMsg)
+	row, err := r.q.IncrementChannelFailure(ctx, pgID, errMsg, classifyErrorCode(errMsg))
 	if err != nil {
 		return 0, 0, err
 	}
@@ -541,4 +596,62 @@ func (r *Repository) ListGenerationAttemptsByLog(ctx context.Context, logID stri
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func (r *Repository) CreateAdminAlert(ctx context.Context, alert domain.AdminAlert) error {
+	var providerID pgtype.UUID
+	if alert.ProviderConfigID != "" {
+		if id, err := parsePgUUID(alert.ProviderConfigID); err == nil {
+			providerID = id
+		}
+	}
+	var logID pgtype.UUID
+	if alert.GenerationLogID != "" {
+		if id, err := parsePgUUID(alert.GenerationLogID); err == nil {
+			logID = id
+		}
+	}
+	_, err := r.q.UpsertAdminAlert(ctx, sqlc.UpsertAdminAlertParams{
+		ProviderConfigID: providerID,
+		GenerationLogID:  logID,
+		ServiceType:      alert.ServiceType,
+		Model:            alert.Model,
+		ErrorCode:        alert.ErrorCode,
+		ErrorMessage:     alert.ErrorMessage,
+		Source:           alert.Source,
+		Severity:         alert.Severity,
+	})
+	return err
+}
+
+func (r *Repository) ListAdminAlerts(ctx context.Context, status string, limit, offset int32) ([]domain.AdminAlert, error) {
+	rows, err := r.q.ListAdminAlerts(ctx, sqlc.ListAdminAlertsParams{
+		Status: status,
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.AdminAlert, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toAdminAlert(row))
+	}
+	return out, nil
+}
+
+func (r *Repository) CountUnreadAdminAlerts(ctx context.Context) (int32, error) {
+	return r.q.CountUnreadAdminAlerts(ctx)
+}
+
+func (r *Repository) MarkAdminAlertRead(ctx context.Context, id string) error {
+	pgID, err := parsePgUUID(id)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkAdminAlertRead(ctx, pgID)
+}
+
+func (r *Repository) MarkAllAdminAlertsRead(ctx context.Context) error {
+	return r.q.MarkAllAdminAlertsRead(ctx)
 }

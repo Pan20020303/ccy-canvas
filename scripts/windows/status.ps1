@@ -1,4 +1,4 @@
-# Print backend + PostgreSQL status.
+# Print backend + PostgreSQL + Redis status.
 
 $ErrorActionPreference = 'SilentlyContinue'
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
@@ -18,6 +18,12 @@ if ((Test-Path $pidFile) -and (Get-Process -Id (Get-Content $pidFile) -ErrorActi
 } else {
   Write-Host 'Status: STOPPED'
 }
+try {
+  $health = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8080/api/health
+  Write-Host "Health: HTTP $($health.StatusCode)"
+} catch {
+  Write-Host 'Health: unavailable'
+}
 Write-Host ''
 
 Write-Host '─── PostgreSQL ────────────────────────────'
@@ -26,6 +32,17 @@ if ($state) {
   Write-Host "Container: $state"
   if ($state -eq 'running') {
     docker exec ccy-canvas-postgres pg_isready -U postgres -d ccy_canvas
+  }
+} else {
+  Write-Host 'Container: missing or docker not available'
+}
+Write-Host ''
+Write-Host '--- Redis ------------------------------------------------------------'
+$redisState = docker inspect -f '{{.State.Status}}' ccy-canvas-redis 2>$null
+if ($redisState) {
+  Write-Host "Container: $redisState"
+  if ($redisState -eq 'running') {
+    docker exec ccy-canvas-redis redis-cli ping
   }
 } else {
   Write-Host 'Container: missing or docker not available'

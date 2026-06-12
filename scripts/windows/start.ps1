@@ -25,18 +25,6 @@ if (-not (Test-Path $bin)) {
   exit 1
 }
 
-# Ensure Postgres container is up
-try { docker start ccy-canvas-postgres 2>$null | Out-Null } catch {}
-
-# Apply idempotent schema migrations before starting the API. This keeps
-# existing server databases in sync after pulling newer backend code.
-$migrationDir = Join-Path $root 'backend\db\migrations'
-if (Test-Path $migrationDir) {
-  Get-ChildItem $migrationDir -Filter '*.sql' | Sort-Object Name | ForEach-Object {
-    Get-Content $_.FullName -Raw | docker exec -i ccy-canvas-postgres psql -U postgres -d ccy_canvas 2>$null | Out-Null
-  }
-}
-
 # Load .env into the child process environment.
 # Use .NET API + explicit UTF-8 reader so BOM bytes never leak into a value.
 $envVars = @{}
@@ -49,6 +37,30 @@ if (Test-Path .env) {
     }
   }
   $reader.Close()
+}
+
+# Ensure local infrastructure containers are up. These are best-effort so a
+# remote Postgres/Redis deployment can still be used via .env.
+$postgresContainer = if ($envVars.ContainsKey('POSTGRES_CONTAINER') -and $envVars['POSTGRES_CONTAINER']) { $envVars['POSTGRES_CONTAINER'] } else { 'ccy-canvas-postgres' }
+try { docker start $postgresContainer 2>$null | Out-Null } catch {}
+if ($envVars.ContainsKey('REDIS_ADDR') -and $envVars['REDIS_ADDR']) {
+  if ($envVars['REDIS_ADDR'] -match '^(localhost|127\.0\.0\.1):') {
+    try { docker start ccy-canvas-redis 2>$null | Out-Null } catch {}
+    $redisPing = $null
+    try { $redisPing = docker exec ccy-canvas-redis redis-cli ping 2>$null } catch {}
+    if ($redisPing -ne 'PONG') {
+      Write-Host "Warning: REDIS_ADDR=$($envVars['REDIS_ADDR']) but ccy-canvas-redis did not answer PONG. Queue/cache will fail until Redis is running." -ForegroundColor Yellow
+    }
+  }
+}
+
+# Apply idempotent schema migrations before starting the API. This keeps
+# existing server databases in sync after pulling newer backend code.
+$migrationDir = Join-Path $root 'backend\db\migrations'
+if (Test-Path $migrationDir) {
+  Get-ChildItem $migrationDir -Filter '*.sql' | Sort-Object Name | ForEach-Object {
+    Get-Content $_.FullName -Raw | docker exec -i $postgresContainer psql -U postgres -d ccy_canvas 2>$null | Out-Null
+  }
 }
 
 # Use cmd /c with redirection to background-run the EXE and capture logs.

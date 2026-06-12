@@ -28,6 +28,9 @@ export type ModelBrandKind =
   | 'claude'      // C (Anthropic Claude)
   | 'deepseek'    // whale D (DeepSeek)
   | 'doubao'      // circular cluster (ByteDance Doubao)
+  | 'newapi'      // gateway / relay hub
+  | 'relaybases'  // relay bases image gateway
+  | 'volcengine'  // Volcengine / Doubao platform
   | 'ernie'       // E (Baidu Wenxin/ERNIE)
   | 'zhipu'       // Z (Zhipu GLM/CogView)
   | 'hunyuan'     // 混 (Tencent Hunyuan)
@@ -51,10 +54,29 @@ export type ModelBrand = {
   vendor?: string;
 };
 
-/** Map a model name to its brand descriptor. Falls back to `generic`. */
-export function getModelBrand(model: string | undefined | null): ModelBrand {
+function includesAny(value: string, keywords: string[]) {
+  return keywords.some((keyword) => value.includes(keyword));
+}
+
+/** Map model/vendor/provider names to a brand descriptor. Falls back to `generic`. */
+export function getModelBrand(
+  model: string | undefined | null,
+  vendor?: string | undefined | null,
+  providerName?: string | undefined | null,
+): ModelBrand {
   const m = (model || '').toLowerCase();
-  if (!m) return { kind: 'generic', color: '#6b7280' };
+  const v = (vendor || '').toLowerCase();
+  const p = (providerName || '').toLowerCase();
+  const all = `${m} ${v} ${p}`;
+  if (!all.trim()) return { kind: 'generic', color: '#6b7280' };
+
+  // Provider / relay names come first so a relay-backed gpt-image model does
+  // not visually masquerade as a first-party OpenAI channel.
+  if (includesAny(all, ['relaybases', 'relay bases'])) return { kind: 'relaybases', color: '#38bdf8', vendor: 'RelayBases' };
+  if (includesAny(all, ['newapi', 'new api'])) return { kind: 'newapi', color: '#22c55e', vendor: 'NewAPI' };
+  if (includesAny(all, ['volcengine', 'volces', '火山', 'doubao', '豆包', 'seedance', 'seedream'])) {
+    return { kind: 'volcengine', color: '#ff4d2d', vendor: '火山引擎 · 豆包' };
+  }
 
   // Order matters: check more-specific keywords before general ones.
   if (m.includes('midjourney') || m.includes('niji')) return { kind: 'midjourney', color: '#94a3b8', vendor: 'Midjourney' };
@@ -71,7 +93,7 @@ export function getModelBrand(model: string | undefined | null): ModelBrand {
 
   // OpenAI family
   if (m.includes('sora'))         return { kind: 'sora',       color: '#0ea5e9', vendor: 'OpenAI Sora' };
-  if (m.includes('gpt') || m.includes('dall') || m.includes('whisper') || m.includes('tts-1') || m.includes('o1-'))
+  if (includesAny(all, ['openai']) || m.includes('gpt') || m.includes('dall') || m.includes('whisper') || m.includes('tts-1') || m.includes('o1-'))
                                   return { kind: 'gpt',        color: '#22d3ee', vendor: 'OpenAI' };
 
   // Google
