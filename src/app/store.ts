@@ -534,8 +534,11 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
     trackedTaskNodes.delete(task.node_id);
     return;
   }
-  const currentStatus = (targetNode.data as Record<string, unknown>)?.status;
-  if (currentStatus !== 'running' && currentStatus !== 'generating') {
+  const targetData = targetNode.data as Record<string, unknown>;
+  const currentStatus = targetData?.status;
+  const queuedAfterTimeout = targetData?.queuedAfterTimeout === true;
+  const isSameQueuedTask = queuedAfterTimeout && (!targetData?.taskId || targetData.taskId === task.id);
+  if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask) {
     // The node has already moved on (user ran a new generation, or the
     // success path already handled it). Drop tracking and skip.
     trackedTaskNodes.delete(task.node_id);
@@ -580,13 +583,14 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
  *  Silent on network errors — a failed poll just leaves nodes in their
  *  current 'running' state until the next tick. */
 async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
-  // Reconcile the tracked set with what's actually in the store: drop
-  // nodes that are no longer running, add any running ones we somehow
-  // missed (post-reload-recovery).
+  // Reconcile the tracked set with what's actually in the store: keep
+  // actively running nodes and queued-after-timeout nodes that may have
+  // been restored as idle from a saved canvas snapshot.
   const runningNodeIds = getStore().nodes
     .filter((n) => {
-      const status = (n.data as Record<string, unknown>)?.status;
-      return status === 'running' || status === 'generating';
+      const data = n.data as Record<string, unknown>;
+      const status = data?.status;
+      return status === 'running' || status === 'generating' || data?.queuedAfterTimeout === true;
     })
     .map((n) => n.id);
 
@@ -639,6 +643,7 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
  *  state without taking the store as a parameter every call. */
 function ensureTaskPollerStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   if (taskPollerTimer) return;
+  void pollTrackedTasks(getStore, setStore);
   taskPollerTimer = setInterval(() => {
     // Keep polling as a safety net even when SSE is connected. If a browser
     // misses an event while the worker fails fast, the node still reconciles.
