@@ -749,6 +749,100 @@ func TestGenerateImageReferenceFormatUsesChatCompletionsOnlyForRefs(t *testing.T
 	}
 }
 
+func TestGenerateImageChatCompletionsParsesDataURLResponse(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""}}],"data":[{"url":"https://example.com/generated-from-data.png"}]}`))
+	}))
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"reference_request_format":"chat_completions_image",
+		"allowed_parameters":["model","prompt","n","aspect_ratio","output_resolution"],
+		"defaults":{"aspect_ratio":"1:1","output_resolution":"1K"}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-chat-data-url",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType:     "image",
+		Model:           "gpt-image-2",
+		Prompt:          "redesign this image",
+		ReferenceImages: []string{"https://example.com/reference.png"},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/generated-from-data.png" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func TestGenerateImageChatCompletionsParsesDataB64Response(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""}}],"data":[{"b64_json":"ZmFrZQ=="}]}`))
+	}))
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"request_format":"chat_completions_image",
+		"allowed_parameters":["model","messages","stream"],
+		"defaults":{"stream":false}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-chat-data-b64",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"Nano Banana 2"},
+			SubmitEndpoint:  "/v1/chat/completions",
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "Nano Banana 2",
+		Prompt:      "draw a scooter",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
+	}
+}
+
 func TestGenerateDoesNotFallbackToSecondProvider(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

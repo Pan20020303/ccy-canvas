@@ -2031,13 +2031,7 @@ func normalizeOpenAIImageQuality(quality string) string {
 	}
 }
 
-// parseImageGenerationResponse extracts a usable URL or b64_json from an
-// OpenAI-style image response. Shared by text-only and edit code paths.
-func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
-	if taskID := extractImageTaskID(respBody); taskID != "" {
-		return nil, apperror.New(apperror.CodeInternal, "Async task path not supported in edit mode yet; got task_id="+taskID)
-	}
-
+func parseImageDataEntries(respBody []byte) (*GenerateResult, bool, error) {
 	var result struct {
 		Data []struct {
 			URL     string `json:"url"`
@@ -2045,15 +2039,27 @@ func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil || len(result.Data) == 0 {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
+		return nil, false, nil
 	}
 	if result.Data[0].URL != "" {
-		return &GenerateResult{Type: "url", Content: result.Data[0].URL}, nil
+		return &GenerateResult{Type: "url", Content: result.Data[0].URL}, true, nil
 	}
 	if result.Data[0].B64JSON != "" {
-		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + result.Data[0].B64JSON}, nil
+		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + result.Data[0].B64JSON}, true, nil
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Provider returned an image entry with neither url nor b64_json")
+	return nil, true, apperror.New(apperror.CodeInternal, "Provider returned an image entry with neither url nor b64_json")
+}
+
+// parseImageGenerationResponse extracts a usable URL or b64_json from an
+// OpenAI-style image response. Shared by text-only and edit code paths.
+func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
+	if taskID := extractImageTaskID(respBody); taskID != "" {
+		return nil, apperror.New(apperror.CodeInternal, "Async task path not supported in edit mode yet; got task_id="+taskID)
+	}
+	if result, ok, err := parseImageDataEntries(respBody); ok {
+		return result, err
+	}
+	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
 }
 
 var markdownImageURLPattern = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
@@ -2067,20 +2073,21 @@ func parseChatImageGenerationResponse(respBody []byte) (*GenerateResult, error) 
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.Unmarshal(respBody, &result); err != nil || len(result.Choices) == 0 {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
+	if err := json.Unmarshal(respBody, &result); err == nil && len(result.Choices) > 0 {
+		content := strings.TrimSpace(result.Choices[0].Message.Content)
+		if content != "" {
+			if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
+				return &GenerateResult{Type: "url", Content: match[1]}, nil
+			}
+			if match := plainImageURLPattern.FindString(content); match != "" {
+				return &GenerateResult{Type: "url", Content: strings.TrimRight(match, ".,;")}, nil
+			}
+		}
 	}
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
-	if content == "" {
-		return nil, apperror.New(apperror.CodeInternal, "Provider returned empty image content")
+	if result, ok, err := parseImageDataEntries(respBody); ok {
+		return result, err
 	}
-	if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
-		return &GenerateResult{Type: "url", Content: match[1]}, nil
-	}
-	if match := plainImageURLPattern.FindString(content); match != "" {
-		return &GenerateResult{Type: "url", Content: strings.TrimRight(match, ".,;")}, nil
-	}
-	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Provider response did not include an image URL: %s", content[:min(len(content), 400)]))
+	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
 }
 
 func extractImageTaskID(respBody []byte) string {
