@@ -1,4 +1,5 @@
 import type { ServiceType } from "./model-config";
+import type { AppProviderConfig, ModelParameterSchema } from "./api/providerConfigs";
 import type { ReferenceModeKey } from "./reference-modes";
 
 export type DurationRange = {
@@ -22,9 +23,11 @@ export type ModelTemplate = {
   supportsAspectRatio?: boolean;
   supportsAutoAspect?: boolean;
   supportsDuration?: boolean;
+  supportsOutputFormat?: boolean;
   durationRange?: DurationRange;
   /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
   durationOptions?: number[];
+  outputFormatOptions?: string[];
   /** Video reference modes this model supports. Drives the tab strip in
    *  the prompt panel. Omitted → no reference tabs (pure text-to-video).
    *  See reference-modes.ts for the capability registry. */
@@ -34,6 +37,7 @@ export type ModelTemplate = {
     resolution?: string;
     quality?: string;
     aspectRatio?: string;
+    outputFormat?: string;
   };
 };
 
@@ -44,6 +48,7 @@ export type ModelRequestParams = {
   quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+  outputFormat?: string;
 };
 
 export const DEFAULT_ASPECT_RATIO_OPTIONS = [
@@ -61,6 +66,23 @@ export const DEFAULT_ASPECT_RATIO_OPTIONS = [
   "1:2",
   "9:21",
 ] as const;
+
+const OPENAI_IMAGE_SIZE_OPTIONS = ["auto", "1024x1024", "1536x1024", "1024x1536"] as const;
+
+function schemaArray<T>(schema: ModelParameterSchema | undefined, snake: keyof ModelParameterSchema, camel: keyof ModelParameterSchema): T[] | undefined {
+  const value = schema?.[snake] ?? schema?.[camel];
+  return Array.isArray(value) ? (value.filter((item) => item !== undefined && item !== null) as T[]) : undefined;
+}
+
+function schemaBool(schema: ModelParameterSchema | undefined, snake: keyof ModelParameterSchema, camel: keyof ModelParameterSchema): boolean | undefined {
+  const value = schema?.[snake] ?? schema?.[camel];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function schemaDefault(schema: ModelParameterSchema | undefined, key: string): string | undefined {
+  const value = schema?.defaults?.[key];
+  return typeof value === "string" ? value : undefined;
+}
 
 const DEFAULT_VIDEO_TEMPLATE = {
   serviceType: "video" as const,
@@ -188,12 +210,46 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsQuality: true,
     supportsAspectRatio: true,
     supportsAutoAspect: true,
+    supportsOutputFormat: true,
     qualityOptions: ["Auto", "High", "Medium", "Low"],
-    aspectRatioOptions: [...DEFAULT_ASPECT_RATIO_OPTIONS],
+    aspectRatioOptions: [...OPENAI_IMAGE_SIZE_OPTIONS, ...DEFAULT_ASPECT_RATIO_OPTIONS],
+    outputFormatOptions: ["png", "jpeg", "webp"],
     defaults: {
       quality: "Auto",
-      aspectRatio: "1:1",
+      aspectRatio: "auto",
+      outputFormat: "png",
     },
+  },
+  "gpt-image-1": {
+    vendor: "OpenAI",
+    serviceType: "image",
+    modelName: "gpt-image-1",
+    supportsQuality: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    supportsOutputFormat: true,
+    qualityOptions: ["Auto", "High", "Medium", "Low"],
+    aspectRatioOptions: [...OPENAI_IMAGE_SIZE_OPTIONS],
+    outputFormatOptions: ["png", "jpeg", "webp"],
+    defaults: { quality: "Auto", aspectRatio: "auto", outputFormat: "png" },
+  },
+  "dall-e-3": {
+    vendor: "OpenAI",
+    serviceType: "image",
+    modelName: "dall-e-3",
+    supportsQuality: true,
+    supportsAspectRatio: true,
+    qualityOptions: ["standard", "hd"],
+    aspectRatioOptions: ["1024x1024", "1792x1024", "1024x1792"],
+    defaults: { quality: "standard", aspectRatio: "1024x1024" },
+  },
+  "dall-e-2": {
+    vendor: "OpenAI",
+    serviceType: "image",
+    modelName: "dall-e-2",
+    supportsAspectRatio: true,
+    aspectRatioOptions: ["256x256", "512x512", "1024x1024"],
+    defaults: { aspectRatio: "1024x1024" },
   },
   "runway-gen3": {
     vendor: "Runway",
@@ -267,11 +323,89 @@ export const modelTemplates: Record<string, ModelTemplate> = {
   },
 };
 
-export function getModelTemplate(modelName?: string | null): ModelTemplate | null {
+function inferProviderTemplate(modelName: string, provider?: Pick<AppProviderConfig, "service_type" | "vendor" | "parameter_schema"> | null): ModelTemplate | null {
+  if (!provider) {
+    return null;
+  }
+  if (provider.service_type !== "image") {
+    return null;
+  }
+  const lower = modelName.toLowerCase();
+  if (lower.includes("gpt-image")) {
+    return {
+      vendor: provider.vendor,
+      serviceType: "image",
+      modelName,
+      supportsQuality: true,
+      supportsAspectRatio: true,
+      supportsAutoAspect: true,
+      supportsOutputFormat: true,
+      qualityOptions: ["Auto", "High", "Medium", "Low"],
+      aspectRatioOptions: [...OPENAI_IMAGE_SIZE_OPTIONS],
+      outputFormatOptions: ["png", "jpeg", "webp"],
+      defaults: { quality: "Auto", aspectRatio: "auto", outputFormat: "png" },
+    };
+  }
+  return {
+    vendor: provider.vendor,
+    serviceType: "image",
+    modelName,
+    supportsQuality: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    qualityOptions: ["Auto", "High", "Medium", "Low"],
+    aspectRatioOptions: [...DEFAULT_ASPECT_RATIO_OPTIONS],
+    defaults: { quality: "Auto", aspectRatio: "auto" },
+  };
+}
+
+function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSchema): ModelTemplate {
+  schema = schema?.models?.[template.modelName] ?? schema;
+  if (!schema || Object.keys(schema).length === 0) {
+    return template;
+  }
+  const qualityOptions = schemaArray<string>(schema, "quality_options", "qualityOptions");
+  const aspectRatioOptions = schemaArray<string>(schema, "size_options", "sizeOptions")
+    ?? schemaArray<string>(schema, "aspect_ratio_options", "aspectRatioOptions");
+  const resolutionOptions = schemaArray<string>(schema, "resolution_options", "resolutionOptions");
+  const durationOptions = schemaArray<number>(schema, "duration_options", "durationOptions");
+  const outputFormatOptions = schemaArray<string>(schema, "output_format_options", "outputFormatOptions");
+
+  return {
+    ...template,
+    supportsQuality: schemaBool(schema, "supports_quality", "supportsQuality") ?? template.supportsQuality ?? Boolean(qualityOptions?.length),
+    supportsAspectRatio: schemaBool(schema, "supports_aspect_ratio", "supportsAspectRatio") ?? template.supportsAspectRatio ?? Boolean(aspectRatioOptions?.length),
+    supportsAutoAspect: schemaBool(schema, "supports_auto_aspect", "supportsAutoAspect") ?? template.supportsAutoAspect,
+    supportsResolution: schemaBool(schema, "supports_resolution", "supportsResolution") ?? template.supportsResolution ?? Boolean(resolutionOptions?.length),
+    supportsDuration: schemaBool(schema, "supports_duration", "supportsDuration") ?? template.supportsDuration ?? Boolean(durationOptions?.length),
+    supportsOutputFormat: schemaBool(schema, "supports_output_format", "supportsOutputFormat") ?? template.supportsOutputFormat ?? Boolean(outputFormatOptions?.length),
+    qualityOptions: qualityOptions ?? template.qualityOptions,
+    aspectRatioOptions: aspectRatioOptions ?? template.aspectRatioOptions,
+    resolutionOptions: resolutionOptions ?? template.resolutionOptions,
+    durationOptions: durationOptions ?? template.durationOptions,
+    outputFormatOptions: outputFormatOptions ?? template.outputFormatOptions,
+    defaults: {
+      ...template.defaults,
+      quality: schemaDefault(schema, "quality") ?? template.defaults?.quality,
+      aspectRatio: schemaDefault(schema, "size") ?? schemaDefault(schema, "aspect_ratio") ?? template.defaults?.aspectRatio,
+      resolution: schemaDefault(schema, "resolution") ?? template.defaults?.resolution,
+      outputFormat: schemaDefault(schema, "output_format") ?? template.defaults?.outputFormat,
+    },
+  };
+}
+
+export function getModelTemplate(
+  modelName?: string | null,
+  provider?: Pick<AppProviderConfig, "service_type" | "vendor" | "parameter_schema"> | null,
+): ModelTemplate | null {
   if (!modelName) {
     return null;
   }
-  return modelTemplates[modelName] ?? null;
+  const base = modelTemplates[modelName] ?? inferProviderTemplate(modelName, provider);
+  if (!base) {
+    return null;
+  }
+  return applyParameterSchema(base, provider?.parameter_schema);
 }
 
 export function getTemplatesForServiceType(serviceType: ServiceType): ModelTemplate[] {
@@ -291,5 +425,6 @@ export function buildModelRequestBody(
     quality: template?.supportsQuality ? params.quality : undefined,
     aspect_ratio: template?.supportsAspectRatio ? params.aspectRatio : undefined,
     duration: template?.supportsDuration ? params.durationSeconds : undefined,
+    output_format: template?.supportsOutputFormat ? params.outputFormat : undefined,
   };
 }

@@ -15,10 +15,10 @@ import (
 // SELECT that hydrates a full ProviderConfig struct. Centralized so adding
 // channel-health fields doesn't require touching 5 separate query strings
 // and 5 separate Scan() argument lists.
-const providerConfigSelectColumns = `id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+const providerConfigSelectColumns = `id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema, created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns`
 
 // scanProviderConfig populates a ProviderConfig from a row. Matches the
@@ -34,6 +34,7 @@ func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
 		&dst.Vendor,
 		&dst.Name,
 		&dst.ApiSpec,
+		&dst.Protocol,
 		&dst.BaseUrl,
 		&dst.EncryptedApiKey,
 		&dst.SubmitEndpoint,
@@ -43,11 +44,14 @@ func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
 		&dst.Priority,
 		&dst.IsDefault,
 		&dst.Status,
+		&dst.Capabilities,
+		&dst.ParameterSchema,
 		&dst.CreatedAt,
 		&dst.UpdatedAt,
 		&dst.FailureCount,
 		&dst.LastFailureAt,
 		&dst.LastErrorMsg,
+		&dst.LastErrorCode,
 		&dst.LastSuccessAt,
 		&dst.CooldownUntil,
 		&dst.ConsecutiveCooldowns,
@@ -55,9 +59,9 @@ func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
 }
 
 const createProviderConfig = `-- name: CreateProviderConfig :one
-INSERT INTO provider_configs (service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+INSERT INTO provider_configs (service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
+       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status, capabilities, parameter_schema)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 RETURNING ` + providerConfigSelectColumns
 
 type CreateProviderConfigParams struct {
@@ -65,6 +69,7 @@ type CreateProviderConfigParams struct {
 	Vendor          string   `json:"vendor"`
 	Name            string   `json:"name"`
 	ApiSpec         string   `json:"api_spec"`
+	Protocol        string   `json:"protocol"`
 	BaseUrl         string   `json:"base_url"`
 	EncryptedApiKey string   `json:"encrypted_api_key"`
 	SubmitEndpoint  string   `json:"submit_endpoint"`
@@ -74,13 +79,16 @@ type CreateProviderConfigParams struct {
 	Priority        int32    `json:"priority"`
 	IsDefault       bool     `json:"is_default"`
 	Status          string   `json:"status"`
+	Capabilities    []string `json:"capabilities"`
+	ParameterSchema []byte   `json:"parameter_schema"`
 }
 
 func (q *Queries) CreateProviderConfig(ctx context.Context, arg CreateProviderConfigParams) (ProviderConfig, error) {
 	row := q.db.QueryRow(ctx, createProviderConfig,
-		arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.BaseUrl,
+		arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.Protocol, arg.BaseUrl,
 		arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
-		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status,
+		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status, arg.Capabilities,
+		arg.ParameterSchema,
 	)
 	var i ProviderConfig
 	err := scanProviderConfig(row, &i)
@@ -113,10 +121,10 @@ func (q *Queries) GetProviderConfigByID(ctx context.Context, id pgtype.UUID) (Pr
 // by the user-facing app endpoint where the key MUST NOT leak. Health fields
 // are included since they're public-ish (frontend only displays aggregates).
 const listEnabledProviderConfigs = `-- name: ListEnabledProviderConfigs :many
-SELECT id, service_type, vendor, name, api_spec, base_url,
+SELECT id, service_type, vendor, name, api_spec, protocol, base_url,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema, created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns
 FROM provider_configs
 WHERE status = 'enabled'
@@ -129,6 +137,7 @@ type ListEnabledProviderConfigsRow struct {
 	Vendor               string             `json:"vendor"`
 	Name                 string             `json:"name"`
 	ApiSpec              string             `json:"api_spec"`
+	Protocol             string             `json:"protocol"`
 	BaseUrl              string             `json:"base_url"`
 	SubmitEndpoint       string             `json:"submit_endpoint"`
 	QueryEndpoint        string             `json:"query_endpoint"`
@@ -137,11 +146,14 @@ type ListEnabledProviderConfigsRow struct {
 	Priority             int32              `json:"priority"`
 	IsDefault            bool               `json:"is_default"`
 	Status               string             `json:"status"`
+	Capabilities         []string           `json:"capabilities"`
+	ParameterSchema      []byte             `json:"parameter_schema"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	FailureCount         int32              `json:"failure_count"`
 	LastFailureAt        pgtype.Timestamptz `json:"last_failure_at"`
 	LastErrorMsg         string             `json:"last_error_msg"`
+	LastErrorCode        string             `json:"last_error_code"`
 	LastSuccessAt        pgtype.Timestamptz `json:"last_success_at"`
 	CooldownUntil        pgtype.Timestamptz `json:"cooldown_until"`
 	ConsecutiveCooldowns int32              `json:"consecutive_cooldowns"`
@@ -157,10 +169,10 @@ func (q *Queries) ListEnabledProviderConfigs(ctx context.Context) ([]ListEnabled
 	for rows.Next() {
 		var i ListEnabledProviderConfigsRow
 		if err := rows.Scan(
-			&i.ID, &i.ServiceType, &i.Vendor, &i.Name, &i.ApiSpec, &i.BaseUrl,
+			&i.ID, &i.ServiceType, &i.Vendor, &i.Name, &i.ApiSpec, &i.Protocol, &i.BaseUrl,
 			&i.SubmitEndpoint, &i.QueryEndpoint, &i.ModelList, &i.DefaultModel,
-			&i.Priority, &i.IsDefault, &i.Status, &i.CreatedAt, &i.UpdatedAt,
-			&i.FailureCount, &i.LastFailureAt, &i.LastErrorMsg, &i.LastSuccessAt,
+			&i.Priority, &i.IsDefault, &i.Status, &i.Capabilities, &i.ParameterSchema, &i.CreatedAt, &i.UpdatedAt,
+			&i.FailureCount, &i.LastFailureAt, &i.LastErrorMsg, &i.LastErrorCode, &i.LastSuccessAt,
 			&i.CooldownUntil, &i.ConsecutiveCooldowns,
 		); err != nil {
 			return nil, err
@@ -199,15 +211,18 @@ SET service_type     = $2,
     vendor           = $3,
     name             = $4,
     api_spec         = $5,
-    base_url         = $6,
-    encrypted_api_key = $7,
-    submit_endpoint  = $8,
-    query_endpoint   = $9,
-    model_list       = $10,
-    default_model    = $11,
-    priority         = $12,
-    is_default       = $13,
-    status           = $14,
+    protocol         = $6,
+    base_url         = $7,
+    encrypted_api_key = $8,
+    submit_endpoint  = $9,
+    query_endpoint   = $10,
+    model_list       = $11,
+    default_model    = $12,
+    priority         = $13,
+    is_default       = $14,
+    status           = $15,
+    capabilities     = $16,
+    parameter_schema = $17,
     updated_at       = now()
 WHERE id = $1
 RETURNING ` + providerConfigSelectColumns
@@ -218,6 +233,7 @@ type UpdateProviderConfigParams struct {
 	Vendor          string      `json:"vendor"`
 	Name            string      `json:"name"`
 	ApiSpec         string      `json:"api_spec"`
+	Protocol        string      `json:"protocol"`
 	BaseUrl         string      `json:"base_url"`
 	EncryptedApiKey string      `json:"encrypted_api_key"`
 	SubmitEndpoint  string      `json:"submit_endpoint"`
@@ -227,13 +243,16 @@ type UpdateProviderConfigParams struct {
 	Priority        int32       `json:"priority"`
 	IsDefault       bool        `json:"is_default"`
 	Status          string      `json:"status"`
+	Capabilities    []string    `json:"capabilities"`
+	ParameterSchema []byte      `json:"parameter_schema"`
 }
 
 func (q *Queries) UpdateProviderConfig(ctx context.Context, arg UpdateProviderConfigParams) (ProviderConfig, error) {
 	row := q.db.QueryRow(ctx, updateProviderConfig,
-		arg.ID, arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec,
+		arg.ID, arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.Protocol,
 		arg.BaseUrl, arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
-		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status,
+		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status, arg.Capabilities,
+		arg.ParameterSchema,
 	)
 	var i ProviderConfig
 	err := scanProviderConfig(row, &i)
@@ -250,6 +269,7 @@ SET failure_count = 0,
     last_success_at = now(),
     consecutive_cooldowns = 0,
     cooldown_until = NULL,
+    last_error_code = '',
     last_error_msg = '',
     updated_at = now()
 WHERE id = $1
@@ -268,6 +288,7 @@ UPDATE provider_configs
 SET failure_count = failure_count + 1,
     last_failure_at = now(),
     last_error_msg = $2,
+    last_error_code = $3,
     updated_at = now()
 WHERE id = $1
 RETURNING failure_count, consecutive_cooldowns
@@ -278,8 +299,8 @@ type IncrementChannelFailureRow struct {
 	ConsecutiveCooldowns int32 `json:"consecutive_cooldowns"`
 }
 
-func (q *Queries) IncrementChannelFailure(ctx context.Context, id pgtype.UUID, errMsg string) (IncrementChannelFailureRow, error) {
-	row := q.db.QueryRow(ctx, incrementChannelFailure, id, errMsg)
+func (q *Queries) IncrementChannelFailure(ctx context.Context, id pgtype.UUID, errMsg, errCode string) (IncrementChannelFailureRow, error) {
+	row := q.db.QueryRow(ctx, incrementChannelFailure, id, errMsg, errCode)
 	var r IncrementChannelFailureRow
 	err := row.Scan(&r.FailureCount, &r.ConsecutiveCooldowns)
 	return r, err
@@ -311,6 +332,7 @@ SET failure_count = 0,
     consecutive_cooldowns = 0,
     cooldown_until = NULL,
     last_error_msg = '',
+    last_error_code = '',
     last_failure_at = NULL,
     updated_at = now()
 WHERE id = $1

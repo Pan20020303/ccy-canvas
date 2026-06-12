@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"ccy-canvas/backend/internal/modelcatalog/application"
@@ -21,6 +23,36 @@ import (
 	"ccy-canvas/backend/internal/shared/httpx"
 )
 
+// TaskEnqueuer is the producer-side hook into the Asynq task queue. The
+// handler uses it (when non-nil) to enqueue durable generation tasks
+// instead of running them inline in a detached goroutine.
+//
+// Defined here as a narrow interface so this package doesn't import the
+// tasks package directly — keeps the model catalog free of Redis deps.
+// main.go wires the concrete *tasks.Queue.
+type TaskEnqueuer interface {
+	Enabled() bool
+	Enqueue(ctx context.Context, p TaskGenerationPayload) (asynqTaskID string, err error)
+}
+
+type Cache interface {
+	Get(ctx context.Context, key string, dst any) bool
+	Set(ctx context.Context, key string, value any, ttl time.Duration)
+	Delete(ctx context.Context, keys ...string)
+	DeletePattern(ctx context.Context, pattern string)
+}
+
+// TaskGenerationPayload mirrors tasks.GenerationPayload structurally.
+// Lives here as the public contract between handler and tasks package.
+type TaskGenerationPayload struct {
+	LogID       string
+	RequestID   string
+	UserID      string
+	ServiceType string
+	Model       string
+	NodeID      string
+}
+
 // Handler wires model catalog operations to the huma API.
 type Handler struct {
 	svc *application.Service
@@ -29,11 +61,28 @@ type Handler struct {
 	// upstream provider rate limits or saturate goroutines / DB connections.
 	// Default cap (8) is conservative; tune in NewHandler if needed.
 	generateLimiter chan struct{}
+	// tasks is optional. When non-nil and .Enabled() is true, generation
+	// requests are persisted + enqueued instead of running inline. Empty
+	// REDIS_ADDR at boot leaves this nil and behavior is unchanged.
+	tasks TaskEnqueuer
+	cache Cache
 }
 
 // NewHandler creates a new model catalog Handler.
 func NewHandler(svc *application.Service, q *sqlc.Queries) *Handler {
 	return &Handler{svc: svc, q: q, generateLimiter: make(chan struct{}, 8)}
+}
+
+// WithTasks wires the Asynq queue producer into the handler. Returns the
+// handler for chaining.
+func (h *Handler) WithTasks(t TaskEnqueuer) *Handler {
+	h.tasks = t
+	return h
+}
+
+func (h *Handler) WithCache(cache Cache) *Handler {
+	h.cache = cache
+	return h
 }
 
 // --- response types ---
@@ -330,6 +379,44 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		DefaultStatus: http.StatusOK,
 	}, h.testChannelConnectivity)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "list-admin-alerts",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/alerts",
+		Summary:     "List admin alerts",
+		Tags:        []string{"Admin", "Alerts"},
+		Security:    adminSecurity,
+	}, h.listAdminAlerts)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "count-unread-admin-alerts",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/alerts/unread-count",
+		Summary:     "Count unread admin alerts",
+		Tags:        []string{"Admin", "Alerts"},
+		Security:    adminSecurity,
+	}, h.countUnreadAdminAlerts)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "mark-admin-alert-read",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/alerts/{id}/read",
+		Summary:       "Mark an admin alert as read",
+		Tags:          []string{"Admin", "Alerts"},
+		Security:      adminSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.markAdminAlertRead)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "mark-all-admin-alerts-read",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/alerts/read-all",
+		Summary:       "Mark all admin alerts as read",
+		Tags:          []string{"Admin", "Alerts"},
+		Security:      adminSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.markAllAdminAlertsRead)
+
 	// --- User App: ProviderConfig ---
 	huma.Register(api, huma.Operation{
 		OperationID: "list-app-provider-configs",
@@ -613,40 +700,45 @@ func (h *Handler) listAppModels(ctx context.Context, _ *struct{}) (*listAppModel
 // ─── ProviderConfig types ───────────────────────────────────────────────────
 
 type ProviderConfigItem struct {
-	ID             string   `json:"id"`
-	ServiceType    string   `json:"service_type"`
-	Vendor         string   `json:"vendor"`
-	Name           string   `json:"name"`
-	APISpec        string   `json:"api_spec"`
-	BaseURL        string   `json:"base_url"`
-	APIKeySet      bool     `json:"api_key_set"`
-	APIKeyHint     string   `json:"api_key_hint"`
-	SubmitEndpoint string   `json:"submit_endpoint"`
-	QueryEndpoint  string   `json:"query_endpoint"`
-	ModelList      []string `json:"model_list"`
-	DefaultModel   string   `json:"default_model"`
-	Priority       int32    `json:"priority"`
-	IsDefault      bool     `json:"is_default"`
-	Status         string   `json:"status"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
+	ID              string          `json:"id"`
+	ServiceType     string          `json:"service_type"`
+	Vendor          string          `json:"vendor"`
+	Name            string          `json:"name"`
+	APISpec         string          `json:"api_spec"`
+	Protocol        string          `json:"protocol"`
+	BaseURL         string          `json:"base_url"`
+	APIKeySet       bool            `json:"api_key_set"`
+	APIKeyHint      string          `json:"api_key_hint"`
+	SubmitEndpoint  string          `json:"submit_endpoint"`
+	QueryEndpoint   string          `json:"query_endpoint"`
+	ModelList       []string        `json:"model_list"`
+	DefaultModel    string          `json:"default_model"`
+	Priority        int32           `json:"priority"`
+	IsDefault       bool            `json:"is_default"`
+	Status          string          `json:"status"`
+	Capabilities    []string        `json:"capabilities"`
+	ParameterSchema json.RawMessage `json:"parameter_schema"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
 	// Channel-health snapshot. Empty timestamps + zero counters = healthy.
 	FailureCount         int32  `json:"failure_count"`
 	LastFailureAt        string `json:"last_failure_at,omitempty"`
 	LastErrorMsg         string `json:"last_error_msg,omitempty"`
+	LastErrorCode        string `json:"last_error_code,omitempty"`
 	LastSuccessAt        string `json:"last_success_at,omitempty"`
 	CooldownUntil        string `json:"cooldown_until,omitempty"`
 	ConsecutiveCooldowns int32  `json:"consecutive_cooldowns"`
 }
 
 type AppProviderConfigItem struct {
-	ID           string   `json:"id"`
-	ServiceType  string   `json:"service_type"`
-	Vendor       string   `json:"vendor"`
-	Name         string   `json:"name"`
-	ModelList    []string `json:"model_list"`
-	DefaultModel string   `json:"default_model"`
-	Priority     int32    `json:"priority"`
+	ID              string          `json:"id"`
+	ServiceType     string          `json:"service_type"`
+	Vendor          string          `json:"vendor"`
+	Name            string          `json:"name"`
+	ModelList       []string        `json:"model_list"`
+	DefaultModel    string          `json:"default_model"`
+	Priority        int32           `json:"priority"`
+	ParameterSchema json.RawMessage `json:"parameter_schema"`
 }
 
 func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
@@ -662,6 +754,7 @@ func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
 		Vendor:               pc.Vendor,
 		Name:                 pc.Name,
 		APISpec:              pc.APISpec,
+		Protocol:             pc.Protocol,
 		BaseURL:              pc.BaseURL,
 		APIKeySet:            pc.EncryptedAPIKey != "",
 		APIKeyHint:           pc.APIKeyHint(),
@@ -672,11 +765,14 @@ func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
 		Priority:             pc.Priority,
 		IsDefault:            pc.IsDefault,
 		Status:               pc.Status,
+		Capabilities:         pc.Capabilities,
+		ParameterSchema:      pc.ParameterSchema,
 		CreatedAt:            pc.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            pc.UpdatedAt.Format(time.RFC3339),
 		FailureCount:         pc.FailureCount,
 		LastFailureAt:        fmtTime(pc.LastFailureAt),
 		LastErrorMsg:         pc.LastErrorMsg,
+		LastErrorCode:        pc.LastErrorCode,
 		LastSuccessAt:        fmtTime(pc.LastSuccessAt),
 		CooldownUntil:        fmtTime(pc.CooldownUntil),
 		ConsecutiveCooldowns: pc.ConsecutiveCooldowns,
@@ -685,13 +781,14 @@ func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
 
 func toAppProviderConfigItem(pc domain.AppProviderConfig) AppProviderConfigItem {
 	return AppProviderConfigItem{
-		ID:           pc.ID,
-		ServiceType:  pc.ServiceType,
-		Vendor:       pc.Vendor,
-		Name:         pc.Name,
-		ModelList:    pc.ModelList,
-		DefaultModel: pc.DefaultModel,
-		Priority:     pc.Priority,
+		ID:              pc.ID,
+		ServiceType:     pc.ServiceType,
+		Vendor:          pc.Vendor,
+		Name:            pc.Name,
+		ModelList:       pc.ModelList,
+		DefaultModel:    pc.DefaultModel,
+		Priority:        pc.Priority,
+		ParameterSchema: pc.ParameterSchema,
 	}
 }
 
@@ -721,18 +818,22 @@ func (h *Handler) listProviderConfigs(ctx context.Context, _ *struct{}) (*listPr
 
 type createProviderConfigInput struct {
 	Body struct {
-		ServiceType    string   `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
-		Vendor         string   `json:"vendor" doc:"Vendor name"`
-		Name           string   `json:"name" minLength:"1" maxLength:"128" doc:"Display name"`
-		APISpec        string   `json:"api_spec,omitempty" doc:"API spec (openai or custom)"`
-		BaseURL        string   `json:"base_url" doc:"Base URL"`
-		APIKey         string   `json:"api_key,omitempty" doc:"API key (encrypted at rest)"`
-		SubmitEndpoint string   `json:"submit_endpoint,omitempty" doc:"Video submit endpoint"`
-		QueryEndpoint  string   `json:"query_endpoint,omitempty" doc:"Video query endpoint"`
-		ModelList      []string `json:"model_list,omitempty" doc:"Available models"`
-		DefaultModel   string   `json:"default_model,omitempty" doc:"Default model"`
-		Priority       int32    `json:"priority,omitempty" doc:"Priority (lower = higher)"`
-		IsDefault      bool     `json:"is_default,omitempty" doc:"Set as default"`
+		ServiceType     string          `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
+		Vendor          string          `json:"vendor" doc:"Vendor name"`
+		Name            string          `json:"name" minLength:"1" maxLength:"128" doc:"Display name"`
+		APISpec         string          `json:"api_spec,omitempty" doc:"API spec (openai or custom)"`
+		Protocol        string          `json:"protocol,omitempty" doc:"Gateway protocol"`
+		BaseURL         string          `json:"base_url" doc:"Base URL"`
+		APIKey          string          `json:"api_key,omitempty" doc:"API key (encrypted at rest)"`
+		SubmitEndpoint  string          `json:"submit_endpoint,omitempty" doc:"Video submit endpoint"`
+		QueryEndpoint   string          `json:"query_endpoint,omitempty" doc:"Video query endpoint"`
+		ModelList       []string        `json:"model_list,omitempty" doc:"Available models"`
+		DefaultModel    string          `json:"default_model,omitempty" doc:"Default model"`
+		Priority        int32           `json:"priority,omitempty" doc:"Priority (lower = higher)"`
+		IsDefault       bool            `json:"is_default,omitempty" doc:"Set as default"`
+		Status          string          `json:"status,omitempty" enum:"enabled,disabled" doc:"Initial status"`
+		Capabilities    []string        `json:"capabilities,omitempty" doc:"Declared channel capabilities"`
+		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty" doc:"Supported request parameters and UI options"`
 	}
 }
 
@@ -745,20 +846,27 @@ type providerConfigOutput struct {
 
 func (h *Handler) createProviderConfig(ctx context.Context, input *createProviderConfigInput) (*providerConfigOutput, error) {
 	pc := domain.ProviderConfig{
-		ServiceType:    input.Body.ServiceType,
-		Vendor:         input.Body.Vendor,
-		Name:           input.Body.Name,
-		APISpec:        input.Body.APISpec,
-		BaseURL:        input.Body.BaseURL,
-		SubmitEndpoint: input.Body.SubmitEndpoint,
-		QueryEndpoint:  input.Body.QueryEndpoint,
-		ModelList:      input.Body.ModelList,
-		DefaultModel:   input.Body.DefaultModel,
-		Priority:       input.Body.Priority,
-		IsDefault:      input.Body.IsDefault,
+		ServiceType:     input.Body.ServiceType,
+		Vendor:          input.Body.Vendor,
+		Name:            input.Body.Name,
+		APISpec:         input.Body.APISpec,
+		Protocol:        input.Body.Protocol,
+		BaseURL:         input.Body.BaseURL,
+		SubmitEndpoint:  input.Body.SubmitEndpoint,
+		QueryEndpoint:   input.Body.QueryEndpoint,
+		ModelList:       input.Body.ModelList,
+		DefaultModel:    input.Body.DefaultModel,
+		Priority:        input.Body.Priority,
+		IsDefault:       input.Body.IsDefault,
+		Status:          input.Body.Status,
+		Capabilities:    input.Body.Capabilities,
+		ParameterSchema: input.Body.ParameterSchema,
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}
+	}
+	if pc.Status == "" {
+		pc.Status = "enabled"
 	}
 	result, err := h.svc.CreateProviderConfig(ctx, pc, input.Body.APIKey)
 	if err != nil {
@@ -773,37 +881,43 @@ func (h *Handler) createProviderConfig(ctx context.Context, input *createProvide
 type updateProviderConfigInput struct {
 	ID   string `path:"id" doc:"Provider config UUID"`
 	Body struct {
-		ServiceType    string   `json:"service_type" enum:"text,image,video,audio"`
-		Vendor         string   `json:"vendor"`
-		Name           string   `json:"name" minLength:"1" maxLength:"128"`
-		APISpec        string   `json:"api_spec,omitempty"`
-		BaseURL        string   `json:"base_url"`
-		APIKey         string   `json:"api_key,omitempty" doc:"Leave empty to keep existing key"`
-		SubmitEndpoint string   `json:"submit_endpoint,omitempty"`
-		QueryEndpoint  string   `json:"query_endpoint,omitempty"`
-		ModelList      []string `json:"model_list,omitempty"`
-		DefaultModel   string   `json:"default_model,omitempty"`
-		Priority       int32    `json:"priority,omitempty"`
-		IsDefault      bool     `json:"is_default,omitempty"`
-		Status         string   `json:"status,omitempty" enum:"enabled,disabled"`
+		ServiceType     string          `json:"service_type" enum:"text,image,video,audio"`
+		Vendor          string          `json:"vendor"`
+		Name            string          `json:"name" minLength:"1" maxLength:"128"`
+		APISpec         string          `json:"api_spec,omitempty"`
+		Protocol        string          `json:"protocol,omitempty"`
+		BaseURL         string          `json:"base_url"`
+		APIKey          string          `json:"api_key,omitempty" doc:"Leave empty to keep existing key"`
+		SubmitEndpoint  string          `json:"submit_endpoint,omitempty"`
+		QueryEndpoint   string          `json:"query_endpoint,omitempty"`
+		ModelList       []string        `json:"model_list,omitempty"`
+		DefaultModel    string          `json:"default_model,omitempty"`
+		Priority        int32           `json:"priority,omitempty"`
+		IsDefault       bool            `json:"is_default,omitempty"`
+		Status          string          `json:"status,omitempty" enum:"enabled,disabled"`
+		Capabilities    []string        `json:"capabilities,omitempty"`
+		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty"`
 	}
 }
 
 func (h *Handler) updateProviderConfig(ctx context.Context, input *updateProviderConfigInput) (*providerConfigOutput, error) {
 	pc := domain.ProviderConfig{
-		ID:             input.ID,
-		ServiceType:    input.Body.ServiceType,
-		Vendor:         input.Body.Vendor,
-		Name:           input.Body.Name,
-		APISpec:        input.Body.APISpec,
-		BaseURL:        input.Body.BaseURL,
-		SubmitEndpoint: input.Body.SubmitEndpoint,
-		QueryEndpoint:  input.Body.QueryEndpoint,
-		ModelList:      input.Body.ModelList,
-		DefaultModel:   input.Body.DefaultModel,
-		Priority:       input.Body.Priority,
-		IsDefault:      input.Body.IsDefault,
-		Status:         input.Body.Status,
+		ID:              input.ID,
+		ServiceType:     input.Body.ServiceType,
+		Vendor:          input.Body.Vendor,
+		Name:            input.Body.Name,
+		APISpec:         input.Body.APISpec,
+		Protocol:        input.Body.Protocol,
+		BaseURL:         input.Body.BaseURL,
+		SubmitEndpoint:  input.Body.SubmitEndpoint,
+		QueryEndpoint:   input.Body.QueryEndpoint,
+		ModelList:       input.Body.ModelList,
+		DefaultModel:    input.Body.DefaultModel,
+		Priority:        input.Body.Priority,
+		IsDefault:       input.Body.IsDefault,
+		Status:          input.Body.Status,
+		Capabilities:    input.Body.Capabilities,
+		ParameterSchema: input.Body.ParameterSchema,
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}
@@ -874,6 +988,76 @@ type testChannelOutput struct {
 	}
 }
 
+type AdminAlertItem struct {
+	ID               string `json:"id"`
+	ProviderConfigID string `json:"provider_config_id,omitempty"`
+	GenerationLogID  string `json:"generation_log_id,omitempty"`
+	ProviderName     string `json:"provider_name,omitempty"`
+	ServiceType      string `json:"service_type"`
+	Model            string `json:"model"`
+	ErrorCode        string `json:"error_code"`
+	ErrorMessage     string `json:"error_message"`
+	Source           string `json:"source"`
+	Severity         string `json:"severity"`
+	Status           string `json:"status"`
+	CreatedAt        string `json:"created_at"`
+	LastSeenAt       string `json:"last_seen_at"`
+}
+
+type listAdminAlertsInput struct {
+	Status string `query:"status" doc:"Optional alert status filter"`
+	Limit  int32  `query:"limit" minimum:"1" maximum:"100" default:"50"`
+	Offset int32  `query:"offset" minimum:"0" default:"0"`
+}
+
+type listAdminAlertsOutput struct {
+	Body struct {
+		Data      []AdminAlertItem `json:"data"`
+		RequestID string           `json:"request_id"`
+	}
+}
+
+type unreadAlertsOutput struct {
+	Body struct {
+		Count     int32  `json:"count"`
+		RequestID string `json:"request_id"`
+	}
+}
+
+type alertIDInput struct {
+	ID string `path:"id" doc:"Alert UUID"`
+}
+
+type alertActionOutput struct {
+	Body struct {
+		OK        bool   `json:"ok"`
+		RequestID string `json:"request_id"`
+	}
+}
+
+func toAdminAlertItem(alert domain.AdminAlert) AdminAlertItem {
+	item := AdminAlertItem{
+		ID:               alert.ID,
+		ProviderConfigID: alert.ProviderConfigID,
+		GenerationLogID:  alert.GenerationLogID,
+		ProviderName:     alert.ProviderName,
+		ServiceType:      alert.ServiceType,
+		Model:            alert.Model,
+		ErrorCode:        alert.ErrorCode,
+		ErrorMessage:     alert.ErrorMessage,
+		Source:           alert.Source,
+		Severity:         alert.Severity,
+		Status:           alert.Status,
+	}
+	if !alert.CreatedAt.IsZero() {
+		item.CreatedAt = alert.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if !alert.LastSeenAt.IsZero() {
+		item.LastSeenAt = alert.LastSeenAt.UTC().Format(time.RFC3339)
+	}
+	return item
+}
+
 // testChannelConnectivity actively probes the provider with a cheap request
 // (HEAD on the base URL, fallback to GET) to confirm credentials work and
 // the network path is up. Doesn't consume model quota.
@@ -887,6 +1071,51 @@ func (h *Handler) testChannelConnectivity(ctx context.Context, input *toggleProv
 	out.Body.HttpStatus = report.HTTPStatus
 	out.Body.LatencyMs = report.LatencyMs
 	out.Body.ErrorMsg = report.ErrorMsg
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) listAdminAlerts(ctx context.Context, input *listAdminAlertsInput) (*listAdminAlertsOutput, error) {
+	alerts, err := h.svc.ListAdminAlerts(ctx, input.Status, input.Limit, input.Offset)
+	if err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &listAdminAlertsOutput{}
+	out.Body.Data = make([]AdminAlertItem, 0, len(alerts))
+	for _, alert := range alerts {
+		out.Body.Data = append(out.Body.Data, toAdminAlertItem(alert))
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) countUnreadAdminAlerts(ctx context.Context, _ *struct{}) (*unreadAlertsOutput, error) {
+	count, err := h.svc.CountUnreadAdminAlerts(ctx)
+	if err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &unreadAlertsOutput{}
+	out.Body.Count = count
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) markAdminAlertRead(ctx context.Context, input *alertIDInput) (*alertActionOutput, error) {
+	if err := h.svc.MarkAdminAlertRead(ctx, input.ID); err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &alertActionOutput{}
+	out.Body.OK = true
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) markAllAdminAlertsRead(ctx context.Context, _ *struct{}) (*alertActionOutput, error) {
+	if err := h.svc.MarkAllAdminAlertsRead(ctx); err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &alertActionOutput{}
+	out.Body.OK = true
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
@@ -923,6 +1152,7 @@ type generateInput struct {
 		CropRect         *application.VideoCropRect  `json:"crop_rect,omitempty" doc:"Normalized crop rectangle"`
 		TargetTracks     []string                    `json:"target_tracks,omitempty" doc:"Requested output tracks"`
 		OutputFormat     string                      `json:"output_format,omitempty" doc:"Requested output format hint"`
+		Parameters       map[string]any              `json:"parameters,omitempty" doc:"Provider-specific extra parameters"`
 		ReferenceMode    string                      `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
 	}
 }
@@ -1008,6 +1238,10 @@ func toTaskItem(row sqlc.GenerationLog) TaskItem {
 	}
 }
 
+func taskCacheKey(id string) string {
+	return "generation_task:" + id
+}
+
 func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*taskOutput, error) {
 	if h.q == nil {
 		return nil, huma.Error500InternalServerError("Database unavailable")
@@ -1018,6 +1252,15 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	}
 	if !userID.Valid {
 		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.cache != nil {
+		var cached TaskItem
+		if h.cache.Get(ctx, taskCacheKey(input.ID), &cached) {
+			out := &taskOutput{}
+			out.Body.Data = cached
+			out.Body.RequestID = httpx.RequestIDFrom(ctx)
+			return out, nil
+		}
 	}
 	var taskID pgtype.UUID
 	if err := taskID.Scan(input.ID); err != nil {
@@ -1032,6 +1275,9 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	}
 	out := &taskOutput{}
 	out.Body.Data = toTaskItem(row)
+	if h.cache != nil {
+		h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 5*time.Minute)
+	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
@@ -1071,18 +1317,62 @@ func (h *Handler) batchTasksByNodeIDs(ctx context.Context, input *batchTasksInpu
 }
 
 func (h *Handler) generate(ctx context.Context, input *generateInput) (*generateOutput, error) {
+	// Resolve current user; logging is best-effort and never fails the request.
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	var userIDStr string
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		userIDStr = claims.UserID
+	}
+
+	// Build the request struct once — used for both Asynq path (encoded
+	// into request_payload JSONB) and legacy inline path.
+	req := application.GenerateRequest{
+		ServiceType:      input.Body.ServiceType,
+		Model:            input.Body.Model,
+		Prompt:           input.Body.Prompt,
+		Size:             input.Body.Size,
+		Resolution:       input.Body.Resolution,
+		Quality:          input.Body.Quality,
+		Duration:         input.Body.Duration,
+		AspectRatio:      input.Body.AspectRatio,
+		ReferenceImages:  input.Body.ReferenceImages,
+		ReferenceVideo:   input.Body.ReferenceVideo,
+		ReferenceVideos:  input.Body.ReferenceVideos,
+		EditOperation:    input.Body.EditOperation,
+		MaskImage:        input.Body.MaskImage,
+		OutputCount:      input.Body.OutputCount,
+		ExpandDirection:  input.Body.ExpandDirection,
+		DeriveFromNodeID: input.Body.DeriveFromNodeID,
+		TrimRange:        input.Body.TrimRange,
+		CropRect:         input.Body.CropRect,
+		TargetTracks:     input.Body.TargetTracks,
+		OutputFormat:     input.Body.OutputFormat,
+		Parameters:       input.Body.Parameters,
+		ReferenceMode:    input.Body.ReferenceMode,
+		UserID:           userIDStr,
+		NodeID:           input.Body.NodeId,
+	}
+
+	// ─── Asynq durable path ────────────────────────────────────────
+	// When the task queue is wired up (REDIS_ADDR set + tasks worker
+	// running), we persist the full request and enqueue. The handler
+	// returns 'queued' immediately; the worker picks up and writes
+	// the outcome. Survives backend restart.
+	if h.tasks != nil && h.tasks.Enabled() && h.q != nil {
+		return h.enqueueGeneration(ctx, userID, userIDStr, req, input)
+	}
+
+	// ─── Legacy inline path ────────────────────────────────────────
 	// Concurrency cap: wait for a slot in the limiter; abort if client cancels.
+	// Only applied to the inline path — Asynq has its own bounded worker pool.
 	select {
 	case h.generateLimiter <- struct{}{}:
 		defer func() { <-h.generateLimiter }()
 	case <-ctx.Done():
 		return nil, huma.Error408RequestTimeout("Request canceled while waiting for a generation slot")
-	}
-
-	// Resolve current user; logging is best-effort and never fails the request.
-	var userID pgtype.UUID
-	if claims, ok := authn.ClaimsFromContext(ctx); ok {
-		_ = userID.Scan(claims.UserID)
 	}
 
 	// Best-effort: write a 'pending' log row before invoking the provider.
@@ -1106,42 +1396,12 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		}
 	}
 
-	// Pass the log ID so per-attempt rows in generation_attempts link back
-	// to this user-facing log entry (only when the log row was created OK).
 	var logIDStr string
 	if logID.Valid {
 		logIDStr = formatPgUUID(logID)
 	}
-	var userIDStr string
-	if claims, ok := authn.ClaimsFromContext(ctx); ok {
-		userIDStr = claims.UserID
-	}
-	result, err := h.svc.Generate(ctx, application.GenerateRequest{
-		ServiceType:      input.Body.ServiceType,
-		Model:            input.Body.Model,
-		Prompt:           input.Body.Prompt,
-		Size:             input.Body.Size,
-		Resolution:       input.Body.Resolution,
-		Quality:          input.Body.Quality,
-		Duration:         input.Body.Duration,
-		AspectRatio:      input.Body.AspectRatio,
-		ReferenceImages:  input.Body.ReferenceImages,
-		ReferenceVideo:   input.Body.ReferenceVideo,
-		ReferenceVideos:  input.Body.ReferenceVideos,
-		EditOperation:    input.Body.EditOperation,
-		MaskImage:        input.Body.MaskImage,
-		OutputCount:      input.Body.OutputCount,
-		ExpandDirection:  input.Body.ExpandDirection,
-		DeriveFromNodeID: input.Body.DeriveFromNodeID,
-		TrimRange:        input.Body.TrimRange,
-		CropRect:         input.Body.CropRect,
-		TargetTracks:     input.Body.TargetTracks,
-		OutputFormat:     input.Body.OutputFormat,
-		ReferenceMode:    input.Body.ReferenceMode,
-		GenerationLogID:  logIDStr,
-		UserID:           userIDStr,
-		NodeID:           input.Body.NodeId,
-	})
+	req.GenerationLogID = logIDStr
+	result, err := h.svc.Generate(ctx, req)
 
 	// NOTE: writing the final outcome to generation_logs is now owned by the
 	// detached goroutine inside service.Generate (see persistGenerationOutcome).
@@ -1157,6 +1417,105 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	out.Body.Data.GenerateResult = *result
 	if logID.Valid {
 		out.Body.Data.TaskID = formatPgUUID(logID)
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+// enqueueGeneration is the Asynq path of generate(). Steps:
+//
+//  1. Generate a server-side request_id UUID (frontend-supplied
+//     request_id support comes in P6).
+//  2. Marshal the GenerateRequest into JSONB and INSERT a 'queued' row.
+//  3. Enqueue an Asynq task carrying the log_id + request_id + a small
+//     routing header. The worker re-hydrates the full request from DB.
+//  4. Return {task_id: log_id} immediately. The frontend's existing
+//     polling/SSE machinery resumes from there — no client changes
+//     required for this phase.
+//
+// On any failure during the enqueue (DB write, Redis push) we surface
+// it as a 5xx; we deliberately don't fall back to the inline path here.
+// The inline path skipping its DB write would be silent data loss.
+func (h *Handler) enqueueGeneration(
+	ctx context.Context,
+	userID pgtype.UUID,
+	userIDStr string,
+	req application.GenerateRequest,
+	input *generateInput,
+) (*generateOutput, error) {
+	// 1. request_id — for now generated server-side. P6 will swap in a
+	// client-supplied one so retries are truly idempotent across the
+	// HTTP round-trip.
+	reqID := uuid.New()
+	var pgReqID pgtype.UUID
+	_ = pgReqID.Scan(reqID.String())
+
+	// 2. Persist queued row with full request payload.
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to encode generation request: " + err.Error())
+	}
+	row, err := h.q.InsertGenerationLogQueued(ctx, sqlc.InsertGenerationLogQueuedParams{
+		UserID:         userID,
+		NodeID:         input.Body.NodeId,
+		ServiceType:    input.Body.ServiceType,
+		Model:          input.Body.Model,
+		Prompt:         input.Body.Prompt,
+		RequestID:      pgReqID,
+		RequestPayload: payload,
+	})
+	if err != nil {
+		// Idempotency replay: if the same request_id raced in, return
+		// the existing row instead of a duplicate. (Server-generated
+		// UUIDs collide ~never, so this is defense-in-depth for P6.)
+		if errors.Is(err, pgx.ErrNoRows) {
+			row, err = h.q.GetGenerationLogByRequestID(ctx, pgReqID)
+		}
+		if err != nil {
+			return nil, huma.Error500InternalServerError("Failed to persist queued task: " + err.Error())
+		}
+	}
+	logIDStr := formatPgUUID(row.ID)
+
+	// 3. Hand off to Asynq.
+	asynqTaskID, err := h.tasks.Enqueue(ctx, TaskGenerationPayload{
+		LogID:       logIDStr,
+		RequestID:   reqID.String(),
+		UserID:      userIDStr,
+		ServiceType: input.Body.ServiceType,
+		Model:       input.Body.Model,
+		NodeID:      input.Body.NodeId,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to enqueue task: " + err.Error())
+	}
+	// Best-effort: stash the asynq task id on the log row for later
+	// cancel lookups. Failure here is non-fatal.
+	if asynqTaskID != "" {
+		_ = h.q.MarkGenerationLogAsynqTaskID(ctx, row.ID, asynqTaskID)
+	}
+
+	// 4. Return queued response. The Data.GenerateResult is empty —
+	// frontend's polling/SSE will fill it in once the worker writes
+	// the outcome.
+	out := &generateOutput{}
+	out.Body.Data.GenerateResult = application.GenerateResult{
+		Type:    "queued",
+		Content: "",
+	}
+	out.Body.Data.TaskID = logIDStr
+	if h.cache != nil {
+		h.cache.Set(ctx, taskCacheKey(logIDStr), TaskItem{
+			ID:          logIDStr,
+			NodeID:      input.Body.NodeId,
+			ServiceType: input.Body.ServiceType,
+			Model:       input.Body.Model,
+			Status:      "queued",
+			ResultURL:   "",
+			ErrorMsg:    "",
+			DurationMs:  0,
+			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		}, 15*time.Minute)
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil

@@ -116,6 +116,40 @@ export function getAdminStats(): Promise<AdminStats> {
   return apiClient.get<AdminStats>("/api/admin/stats");
 }
 
+export type AdminAlert = {
+  id: string;
+  provider_config_id?: string;
+  generation_log_id?: string;
+  provider_name?: string;
+  service_type: string;
+  model: string;
+  error_code: string;
+  error_message: string;
+  source: string;
+  severity: "low" | "medium" | "high";
+  status: "unread" | "read" | "resolved";
+  created_at: string;
+  last_seen_at: string;
+};
+
+export function getUnreadAlertCount(): Promise<{ count: number }> {
+  return apiClient.get<{ count: number }>("/api/admin/alerts/unread-count");
+}
+
+export function listAdminAlerts(status = "", limit = 20): Promise<AdminAlert[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: "0" });
+  if (status) params.set("status", status);
+  return apiClient.get<AdminAlert[]>(`/api/admin/alerts?${params.toString()}`);
+}
+
+export function markAdminAlertRead(id: string): Promise<{ ok: boolean }> {
+  return apiClient.post<{ ok: boolean }>(`/api/admin/alerts/${id}/read`);
+}
+
+export function markAllAdminAlertsRead(): Promise<{ ok: boolean }> {
+  return apiClient.post<{ ok: boolean }>("/api/admin/alerts/read-all");
+}
+
 // ─── Logs ───────────────────────────────────────────────────────────────────
 
 export type GenerationLog = {

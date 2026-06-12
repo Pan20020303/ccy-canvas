@@ -119,6 +119,7 @@ type ProviderConfig struct {
 	Vendor          string             `json:"vendor"`
 	Name            string             `json:"name"`
 	ApiSpec         string             `json:"api_spec"`
+	Protocol        string             `json:"protocol"`
 	BaseUrl         string             `json:"base_url"`
 	EncryptedApiKey string             `json:"encrypted_api_key"`
 	SubmitEndpoint  string             `json:"submit_endpoint"`
@@ -128,6 +129,8 @@ type ProviderConfig struct {
 	Priority        int32              `json:"priority"`
 	IsDefault       bool               `json:"is_default"`
 	Status          string             `json:"status"`
+	Capabilities    []string           `json:"capabilities"`
+	ParameterSchema []byte             `json:"parameter_schema"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	// Channel-health fields (migration 011_channel_health). Used by the
@@ -136,6 +139,7 @@ type ProviderConfig struct {
 	FailureCount         int32              `json:"failure_count"`
 	LastFailureAt        pgtype.Timestamptz `json:"last_failure_at"`
 	LastErrorMsg         string             `json:"last_error_msg"`
+	LastErrorCode        string             `json:"last_error_code"`
 	LastSuccessAt        pgtype.Timestamptz `json:"last_success_at"`
 	CooldownUntil        pgtype.Timestamptz `json:"cooldown_until"`
 	ConsecutiveCooldowns int32              `json:"consecutive_cooldowns"`

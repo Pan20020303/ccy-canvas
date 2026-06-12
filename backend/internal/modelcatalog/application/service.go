@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -88,16 +89,35 @@ type Repository interface {
 	// Generation log lifecycle — needed by the detached task runner so the
 	// goroutine can write its own outcome even after the client has hung up.
 	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32) error
+	CreateAdminAlert(ctx context.Context, alert domain.AdminAlert) error
+	ListAdminAlerts(ctx context.Context, status string, limit, offset int32) ([]domain.AdminAlert, error)
+	CountUnreadAdminAlerts(ctx context.Context) (int32, error)
+	MarkAdminAlertRead(ctx context.Context, id string) error
+	MarkAllAdminAlertsRead(ctx context.Context) error
+}
+
+type Cache interface {
+	Get(ctx context.Context, key string, dst any) bool
+	Set(ctx context.Context, key string, value any, ttl time.Duration)
+	Delete(ctx context.Context, keys ...string)
+	DeletePattern(ctx context.Context, pattern string)
 }
 
 // Service provides model catalog use cases.
 type Service struct {
 	repo          Repository
 	encryptionKey []byte
+	cache         Cache
 	// eventBus is optional — when set, the detached task goroutine
 	// publishes TaskEvent on completion so SSE-subscribed clients get
 	// realtime updates instead of waiting for the 8s recovery poller.
 	eventBus *TaskEventBus
+	// newAPI is optional. When .Configured() is true, dispatchToVendor
+	// routes text (and later image/video) through the NewAPI gateway
+	// instead of the per-ProviderConfig direct path. Empty NEWAPI_BASE_URL
+	// at boot leaves this nil and behavior is unchanged (legacy path).
+	// See docs/dev/2026-06-newapi-runbook.md.
+	newAPI *NewAPIClient
 }
 
 // NewService creates a new model catalog Service.
@@ -105,10 +125,96 @@ func NewService(repo Repository, encryptionKey []byte) *Service {
 	return &Service{repo: repo, encryptionKey: encryptionKey}
 }
 
+const (
+	providerConfigsCacheKey = "model_configs:list:global"
+	appProviderConfigsKey   = "model_configs:app:list"
+)
+
+func providerConfigCacheKey(id string) string {
+	return "model_config:" + id
+}
+
+func channelHealthCacheKey(id string) string {
+	return "channel_health:" + id
+}
+
+const unreadAlertsCacheKey = "alerts:unread_count:global"
+
+func generationTaskCacheKey(requestID string) string {
+	return "generation_task:" + requestID
+}
+
+func normalizeProviderConfig(pc *domain.ProviderConfig) {
+	pc.BaseURL = normalizeGatewayBaseURL(pc.BaseURL, pc.APISpec)
+	if pc.Protocol == "" {
+		switch strings.ToLower(pc.APISpec) {
+		case "ark":
+			pc.Protocol = "native"
+		case "newapi":
+			pc.Protocol = "newapi"
+		default:
+			pc.Protocol = "openai_compatible"
+		}
+	}
+	if len(pc.Capabilities) == 0 && pc.ServiceType != "" {
+		pc.Capabilities = []string{pc.ServiceType}
+	}
+	if pc.ModelList == nil {
+		pc.ModelList = []string{}
+	}
+}
+
+func normalizeGatewayBaseURL(baseURL, apiSpec string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.EqualFold(apiSpec, "ark") || strings.Contains(lower, "/v1") || strings.Contains(lower, "/v2") || strings.Contains(lower, "/v3") {
+		return trimmed
+	}
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return trimmed + "/v1"
+	}
+	return trimmed
+}
+
+func (s *Service) invalidateProviderConfigCache(ctx context.Context, ids ...string) {
+	if s.cache == nil {
+		return
+	}
+	s.cache.Delete(ctx, providerConfigsCacheKey, appProviderConfigsKey)
+	for _, id := range ids {
+		if id != "" {
+			s.cache.Delete(ctx, providerConfigCacheKey(id), channelHealthCacheKey(id))
+		}
+	}
+}
+
+func (s *Service) invalidateAlertCache(ctx context.Context) {
+	if s.cache != nil {
+		s.cache.Delete(ctx, unreadAlertsCacheKey)
+	}
+}
+
 // WithEventBus wires an event bus into the service so completion
 // events can be pushed. Returns the service for chaining.
 func (s *Service) WithEventBus(bus *TaskEventBus) *Service {
 	s.eventBus = bus
+	return s
+}
+
+func (s *Service) WithCache(cache Cache) *Service {
+	s.cache = cache
+	return s
+}
+
+// WithNewAPI wires an optional NewAPI gateway client. When the client is
+// Configured(), text generation requests are routed through it,
+// short-circuiting the legacy per-ProviderConfig dispatch. Returns the
+// service for chaining.
+func (s *Service) WithNewAPI(client *NewAPIClient) *Service {
+	s.newAPI = client
 	return s
 }
 
@@ -461,9 +567,18 @@ func (s *Service) ResolveModelEndpoints(ctx context.Context, model string) ([]Mo
 
 // ListProviderConfigs returns all provider configs for admin.
 func (s *Service) ListProviderConfigs(ctx context.Context) ([]domain.ProviderConfig, error) {
+	if s.cache != nil {
+		var cached []domain.ProviderConfig
+		if s.cache.Get(ctx, providerConfigsCacheKey, &cached) {
+			return cached, nil
+		}
+	}
 	configs, err := s.repo.ListProviderConfigs(ctx)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list provider configs", err)
+	}
+	if s.cache != nil {
+		s.cache.Set(ctx, providerConfigsCacheKey, configs, 45*time.Second)
 	}
 	return configs, nil
 }
@@ -472,7 +587,17 @@ func (s *Service) ListProviderConfigs(ctx context.Context) ([]domain.ProviderCon
 // Thin passthrough exposed so the admin handler can refresh a row after
 // mutating its health state.
 func (s *Service) GetProviderConfigByID(ctx context.Context, id string) (*domain.ProviderConfig, error) {
-	return s.repo.GetProviderConfigByID(ctx, id)
+	if s.cache != nil {
+		var cached domain.ProviderConfig
+		if s.cache.Get(ctx, providerConfigCacheKey(id), &cached) {
+			return &cached, nil
+		}
+	}
+	config, err := s.repo.GetProviderConfigByID(ctx, id)
+	if err == nil && config != nil && s.cache != nil {
+		s.cache.Set(ctx, providerConfigCacheKey(id), config, 45*time.Second)
+	}
+	return config, err
 }
 
 // CreateProviderConfig creates a new provider config entry.
@@ -491,10 +616,12 @@ func (s *Service) CreateProviderConfig(ctx context.Context, pc domain.ProviderCo
 	if pc.APISpec == "" {
 		pc.APISpec = "openai"
 	}
+	normalizeProviderConfig(&pc)
 	result, err := s.repo.CreateProviderConfig(ctx, pc)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to create provider config", err)
 	}
+	s.invalidateProviderConfigCache(ctx, result.ID)
 	return result, nil
 }
 
@@ -514,10 +641,12 @@ func (s *Service) UpdateProviderConfig(ctx context.Context, pc domain.ProviderCo
 	} else {
 		pc.EncryptedAPIKey = existing.EncryptedAPIKey
 	}
+	normalizeProviderConfig(&pc)
 	result, err := s.repo.UpdateProviderConfig(ctx, pc)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update provider config", err)
 	}
+	s.invalidateProviderConfigCache(ctx, result.ID)
 	return result, nil
 }
 
@@ -530,6 +659,7 @@ func (s *Service) DeleteProviderConfig(ctx context.Context, id string) error {
 	if err := s.repo.DeleteProviderConfig(ctx, id); err != nil {
 		return apperror.Wrap(apperror.CodeInternal, "Failed to delete provider config", err)
 	}
+	s.invalidateProviderConfigCache(ctx, id)
 	return nil
 }
 
@@ -548,14 +678,24 @@ func (s *Service) ToggleProviderConfigStatus(ctx context.Context, id string) (*d
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to toggle status", err)
 	}
+	s.invalidateProviderConfigCache(ctx, result.ID)
 	return result, nil
 }
 
 // ListAppProviderConfigs returns enabled provider configs for regular users.
 func (s *Service) ListAppProviderConfigs(ctx context.Context) ([]domain.AppProviderConfig, error) {
+	if s.cache != nil {
+		var cached []domain.AppProviderConfig
+		if s.cache.Get(ctx, appProviderConfigsKey, &cached) {
+			return cached, nil
+		}
+	}
 	configs, err := s.repo.ListEnabledProviderConfigs(ctx)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list provider configs", err)
+	}
+	if s.cache != nil {
+		s.cache.Set(ctx, appProviderConfigsKey, configs, 45*time.Second)
 	}
 	return configs, nil
 }
@@ -591,6 +731,7 @@ type GenerateRequest struct {
 	CropRect         *VideoCropRect
 	TargetTracks     []string
 	OutputFormat     string
+	Parameters       map[string]any
 	Duration         int    // video duration in seconds
 	AspectRatio      string // video aspect ratio: "16:9", "9:16", etc.
 	ReferenceImages  []string
@@ -646,6 +787,9 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 		if req.ServiceType != "" && c.ServiceType != req.ServiceType {
 			continue
 		}
+		if req.ServiceType != "" && !providerSupportsCapability(c, req.ServiceType) {
+			continue
+		}
 		serves := false
 		for _, m := range c.ModelList {
 			if m == req.Model {
@@ -673,10 +817,33 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
 }
 
+func providerSupportsCapability(c domain.ProviderConfig, serviceType string) bool {
+	if len(c.Capabilities) == 0 {
+		return true
+	}
+	for _, capability := range c.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), serviceType) {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchToVendor runs ONE attempt against the supplied channel by
 // routing to the existing vendor-specific helper. Centralizes the switch
 // so the fallback loop in Generate doesn't have to duplicate it.
 func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req GenerateRequest) (*GenerateResult, error) {
+	// NewAPI gateway fast path. When configured at boot, text generation
+	// bypasses the per-provider direct call and goes through the unified
+	// OpenAI-compatible endpoint. Channel-health bookkeeping (in
+	// recordChannelOutcome) still runs against the original candidate so
+	// the admin UI's per-vendor view stays meaningful during the
+	// transition — we'll collapse that to a single NewAPI health probe
+	// once image/video are also migrated.
+	if s.newAPI != nil && s.newAPI.Configured() && c.cfg.ServiceType == "text" && strings.TrimSpace(c.cfg.BaseURL) == "" {
+		return s.generateTextViaNewAPI(ctx, req)
+	}
+
 	switch c.cfg.ServiceType {
 	case "image":
 		return s.generateImage(ctx, c.cfg, c.baseURL, c.apiKey, req)
@@ -687,6 +854,28 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 	default:
 		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", c.cfg.ServiceType))
 	}
+}
+
+// generateTextViaNewAPI is the NewAPI-routed counterpart to
+// generateText. The legacy generateText posts directly to the provider's
+// {baseURL}/chat/completions; this one posts to the gateway's
+// /chat/completions instead — same schema, single auth token, no vendor
+// fan-out logic needed.
+func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
+	resp, err := s.newAPI.Chat(ctx, ChatRequest{
+		Model: req.Model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: req.Prompt},
+		},
+		MaxTokens: 2048,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateResult{
+		Type:    "text",
+		Content: resp.Choices[0].Message.Content,
+	}, nil
 }
 
 // Generate routes the request to a vendor. Image requests get automatic
@@ -789,6 +978,38 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 	}
 }
 
+// GenerateInline runs the same pipeline as Generate's inner goroutine
+// but synchronously, using the passed-in ctx for cancellation. Intended
+// for callers that have their own durable execution context — e.g. the
+// Asynq worker in /backend/internal/tasks. Returns when:
+//   - the upstream call succeeds and persistence completed, OR
+//   - the upstream call failed and the failure was persisted, OR
+//   - ctx was cancelled (worker shutdown / Asynq cancel)
+//
+// Unlike Generate, this method does NOT spawn a detached background
+// goroutine. The caller (Asynq) is itself the durable execution context;
+// any retry-on-error decision is owned by Asynq via its returned error.
+func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
+	candidates, err := s.buildCandidates(req)
+	if err != nil {
+		// No candidate is a permanent error (operator config), don't retry.
+		s.persistGenerationOutcome(req.GenerationLogID, nil, err, 0)
+		s.publishTaskEvent(req, nil, err, 0)
+		return nil, err
+	}
+	startedAt := time.Now()
+	result, runErr := s.runCandidateLoop(ctx, candidates, req)
+	if runErr == nil && result != nil && result.Type == "url" && result.Content != "" {
+		if cachedURL, cacheErr := PersistRemoteAsset(ctx, result.Content); cacheErr == nil {
+			result.Content = cachedURL
+		}
+	}
+	duration := time.Since(startedAt)
+	s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration)
+	s.publishTaskEvent(req, result, runErr, duration)
+	return result, runErr
+}
+
 // runCandidateLoop dispatches a single request to the chosen provider.
 // We no longer auto-switch channels on failure; the same provider should
 // keep handling the model until an operator changes the config.
@@ -827,6 +1048,9 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 		resultURL = result.Content
 	}
 	_ = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()))
+	if s.cache != nil {
+		s.cache.Delete(ctx, generationTaskCacheKey(logID))
+	}
 }
 
 // publishTaskEvent emits a TaskEvent to all SSE subscribers of the user
@@ -885,6 +1109,17 @@ func (s *Service) recordChannelOutcome(
 		} else {
 			s.MarkChannelFailure(ctx, c.cfg.ID, cat, errMsg)
 		}
+		code := errorCodeFromMessage(errMsg, httpStatus)
+		s.CreateAdminAlert(ctx, domain.AdminAlert{
+			ProviderConfigID: c.cfg.ID,
+			GenerationLogID:  req.GenerationLogID,
+			ServiceType:      c.cfg.ServiceType,
+			Model:            req.Model,
+			ErrorCode:        code,
+			ErrorMessage:     errMsg,
+			Source:           alertSourceForError(errMsg),
+			Severity:         alertSeverityForErrorCode(code),
+		})
 	} else {
 		s.MarkChannelSuccess(ctx, c.cfg.ID)
 	}
@@ -950,6 +1185,13 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "ark" {
 		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
+	schema := providerImageParameterSchema(pc, req.Model)
+	if isChatCompletionsImageSchema(schema) {
+		return s.generateImageViaChatCompletions(ctx, pc, baseURL, apiKey, req, schema)
+	}
+	if len(req.ReferenceImages) > 0 && isChatCompletionsReferenceImageSchema(schema) {
+		return s.generateImageViaChatCompletions(ctx, pc, baseURL, apiKey, req, schema)
+	}
 	// Image-to-image (ref + prompt) requires the multipart /images/edits endpoint —
 	// the standard /images/generations is text-only and silently ignores reference
 	// fields, which previously produced visually unrelated outputs.
@@ -969,7 +1211,7 @@ func requestedImageCount(req GenerateRequest) int {
 // generateImageVolcengine talks to Volcengine ark's /images/generations.
 // The endpoint URL matches OpenAI but the accepted payload fields are
 // different — passing OpenAI-only fields like `quality` / `background` /
-// `output_format` makes ark close the connection (manifests as EOF in Go).
+// `output_format` makes ark close the connection (manifesting as EOF in Go).
 // Reference images go in an `image` field (string or []string), not via a
 // separate multipart `/images/edits` endpoint.
 func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
@@ -978,14 +1220,9 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	submitPath := resolveImageGenPath(pc)
 
 	body := map[string]interface{}{
-		"model":                       req.Model,
-		"prompt":                      req.Prompt,
-		"size":                        size,
-		"stream":                      false,
-		"output_format":               "png",
-		"response_format":             "url",
-		"watermark":                   false,
-		"sequential_image_generation": "disabled",
+		"model":  req.Model,
+		"prompt": req.Prompt,
+		"size":   size,
 	}
 
 	// Resolve reference images to URLs (preferred by ark) or base64 data URIs.
@@ -1016,7 +1253,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -1111,8 +1348,27 @@ func buildVolcengineImageSizeFromRatio(ratio, quality string) string {
 	if height < 512 {
 		height = 512
 	}
+	width, height = ensureVolcengineMinimumImageArea(width, height)
 
 	return fmt.Sprintf("%dx%d", int(width), int(height))
+}
+
+func ensureVolcengineMinimumImageArea(width, height float64) (float64, float64) {
+	const minPixels = 3686400.0 // Ark rejects smaller custom pixel sizes.
+	if width <= 0 || height <= 0 || width*height >= minPixels {
+		return width, height
+	}
+	scale := math.Sqrt(minPixels / (width * height))
+	width = roundUpToMultiple(width*scale, 16)
+	height = roundUpToMultiple(height*scale, 16)
+	for width*height < minPixels {
+		if width <= height {
+			width += 16
+		} else {
+			height += 16
+		}
+	}
+	return width, height
 }
 
 func roundToMultiple(value, step float64) float64 {
@@ -1120,6 +1376,13 @@ func roundToMultiple(value, step float64) float64 {
 		return value
 	}
 	return math.Round(value/step) * step
+}
+
+func roundUpToMultiple(value, step float64) float64 {
+	if step <= 0 {
+		return value
+	}
+	return math.Ceil((value-1e-6)/step) * step
 }
 
 func imageGenerationTimeout() time.Duration {
@@ -1136,6 +1399,7 @@ func newProviderHTTPClient(timeout time.Duration) *http.Client {
 		KeepAlive: 30 * time.Second,
 	}).DialContext
 	transport.TLSHandshakeTimeout = providerTLSHandshakeTimeout
+	transport.DisableKeepAlives = true
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -1159,6 +1423,9 @@ func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *h
 		if attempt == providerRequestMaxAttempts || !isRetryableProviderNetworkError(err) {
 			break
 		}
+		if closer, ok := client.Transport.(interface{ CloseIdleConnections() }); ok {
+			closer.CloseIdleConnections()
+		}
 		delay := time.Duration(attempt*attempt) * time.Second
 		timer := time.NewTimer(delay)
 		select {
@@ -1175,6 +1442,13 @@ func isRetryableProviderNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && errors.Is(urlErr.Err, io.EOF) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
@@ -1183,8 +1457,19 @@ func isRetryableProviderNetworkError(err error) bool {
 	return strings.Contains(msg, "tls handshake timeout") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "eof") ||
 		strings.Contains(msg, "server closed") ||
 		strings.Contains(msg, "unexpected eof")
+}
+
+func providerRequestErrorMessage(err error) string {
+	if err == nil {
+		return "Provider request failed"
+	}
+	if isRetryableProviderNetworkError(err) {
+		return fmt.Sprintf("Provider request failed after %d attempts: upstream connection was closed or timed out (%v)", providerRequestMaxAttempts, err)
+	}
+	return fmt.Sprintf("Provider request failed: %v", err)
 }
 
 func videoGenerationTimeout() time.Duration {
@@ -1218,6 +1503,308 @@ func normalizeVolcengineImageQuality(quality string) string {
 	}
 }
 
+type providerParameterSchema struct {
+	AllowedParameters []string                           `json:"allowed_parameters"`
+	Defaults          map[string]interface{}             `json:"defaults"`
+	Models            map[string]providerParameterSchema `json:"models"`
+	ParameterAliases  map[string]string                  `json:"parameter_aliases"`
+	ModelRoutes       []providerModelRoute               `json:"model_routes"`
+	RequestFormat     string                             `json:"request_format"`
+	ReferenceFormat   string                             `json:"reference_request_format"`
+}
+
+type providerModelRoute struct {
+	Match map[string]interface{} `json:"match"`
+	Model string                 `json:"model"`
+}
+
+func inferImageParameterSchema(modelName string) providerParameterSchema {
+	model := strings.ToLower(strings.TrimSpace(modelName))
+	switch {
+	case strings.Contains(model, "gpt-image"):
+		return providerParameterSchema{
+			AllowedParameters: []string{"model", "prompt", "n", "size", "quality", "background", "output_format", "moderation"},
+			Defaults: map[string]interface{}{
+				"background":    "auto",
+				"output_format": "png",
+			},
+		}
+	case strings.Contains(model, "dall-e-3"):
+		return providerParameterSchema{
+			AllowedParameters: []string{"model", "prompt", "n", "size", "quality", "response_format"},
+			Defaults: map[string]interface{}{
+				"quality": "standard",
+			},
+		}
+	case strings.Contains(model, "dall-e-2"):
+		return providerParameterSchema{
+			AllowedParameters: []string{"model", "prompt", "n", "size", "response_format"},
+		}
+	default:
+		return providerParameterSchema{}
+	}
+}
+
+func providerImageParameterSchema(pc *domain.ProviderConfig, modelName string) providerParameterSchema {
+	fallback := inferImageParameterSchema(modelName)
+	if pc == nil || len(pc.ParameterSchema) == 0 || string(pc.ParameterSchema) == "{}" {
+		return fallback
+	}
+	var parsed providerParameterSchema
+	if err := json.Unmarshal(pc.ParameterSchema, &parsed); err != nil {
+		return fallback
+	}
+	if len(parsed.Models) > 0 {
+		if modelSchema, ok := parsed.Models[modelName]; ok {
+			parsed = modelSchema
+		} else {
+			lowerModel := strings.ToLower(strings.TrimSpace(modelName))
+			for key, modelSchema := range parsed.Models {
+				if strings.ToLower(strings.TrimSpace(key)) == lowerModel {
+					parsed = modelSchema
+					break
+				}
+			}
+		}
+	}
+	if len(parsed.AllowedParameters) == 0 {
+		parsed.AllowedParameters = fallback.AllowedParameters
+	}
+	if parsed.Defaults == nil {
+		parsed.Defaults = fallback.Defaults
+	}
+	return parsed
+}
+
+func isChatCompletionsImageSchema(schema providerParameterSchema) bool {
+	switch strings.ToLower(strings.TrimSpace(schema.RequestFormat)) {
+	case "chat_completions_image", "chat-image", "multimodal_chat_image":
+		return true
+	default:
+		return false
+	}
+}
+
+func isChatCompletionsReferenceImageSchema(schema providerParameterSchema) bool {
+	switch strings.ToLower(strings.TrimSpace(schema.ReferenceFormat)) {
+	case "chat_completions_image", "chat-image", "multimodal_chat_image":
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedParamSet(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		key := strings.TrimSpace(name)
+		if key != "" {
+			set[key] = true
+		}
+	}
+	return set
+}
+
+func allowParams(allowed map[string]bool, names ...string) map[string]bool {
+	if allowed == nil {
+		return nil
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			allowed[name] = true
+		}
+	}
+	return allowed
+}
+
+func mergeAllowedParameters(body map[string]interface{}, allowed map[string]bool, params map[string]any) {
+	for key, value := range params {
+		if key == "" || value == nil {
+			continue
+		}
+		if allowed != nil && !allowed[key] {
+			continue
+		}
+		body[key] = value
+	}
+}
+
+func setAllowedParameter(body map[string]interface{}, allowed map[string]bool, key string, value interface{}) {
+	key = strings.TrimSpace(key)
+	if key == "" || value == nil {
+		return
+	}
+	if text, ok := value.(string); ok {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		value = text
+	}
+	if allowed != nil && !allowed[key] {
+		return
+	}
+	body[key] = value
+}
+
+func imageResolutionForProvider(req GenerateRequest) string {
+	res := strings.ToUpper(strings.TrimSpace(req.Resolution))
+	if res == "" || res == "720P" {
+		switch normalizeOpenAIImageQuality(req.Quality) {
+		case "high":
+			return "4K"
+		case "medium":
+			return "2K"
+		case "low":
+			return "1K"
+		default:
+			return ""
+		}
+	}
+	res = strings.ReplaceAll(res, " ", "")
+	switch res {
+	case "1K", "2K", "4K":
+		return res
+	default:
+		return strings.ToUpper(strings.TrimSpace(req.Resolution))
+	}
+}
+
+func applyImageParameterAliases(body map[string]interface{}, allowed map[string]bool, schema providerParameterSchema, req GenerateRequest) {
+	aliases := schema.ParameterAliases
+	if len(aliases) == 0 {
+		return
+	}
+	if target := aliases["size"]; target != "" {
+		setAllowedParameter(body, allowed, target, mapAspectRatioToOpenAIImageSize(req.Size))
+	}
+	if target := aliases["aspect_ratio"]; target != "" {
+		ratio := strings.TrimSpace(req.Size)
+		if ratio == "" || strings.EqualFold(ratio, "auto") {
+			ratio = "1:1"
+		}
+		setAllowedParameter(body, allowed, target, ratio)
+	}
+	if target := aliases["resolution"]; target != "" {
+		setAllowedParameter(body, allowed, target, imageResolutionForProvider(req))
+	}
+	if target := aliases["quality"]; target != "" {
+		setAllowedParameter(body, allowed, target, normalizeOpenAIImageQuality(req.Quality))
+	}
+}
+
+func applyProviderModelRoutes(body map[string]interface{}, schema providerParameterSchema) {
+	if len(schema.ModelRoutes) == 0 {
+		return
+	}
+	for _, route := range schema.ModelRoutes {
+		if strings.TrimSpace(route.Model) == "" || len(route.Match) == 0 {
+			continue
+		}
+		matched := true
+		for key, want := range route.Match {
+			got, ok := body[key]
+			if !ok {
+				matched = false
+				break
+			}
+			if !strings.EqualFold(fmt.Sprint(got), fmt.Sprint(want)) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			body["model"] = route.Model
+			return
+		}
+	}
+}
+
+func pruneUnsupportedParameters(body map[string]interface{}, allowed map[string]bool) {
+	if allowed == nil {
+		return
+	}
+	for key := range body {
+		if !allowed[key] {
+			delete(body, key)
+		}
+	}
+}
+
+func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest, schema providerParameterSchema) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
+	submitPath := resolveImageGenPath(pc)
+	if pc != nil && strings.TrimSpace(pc.SubmitEndpoint) != "" {
+		submitPath = strings.TrimSpace(pc.SubmitEndpoint)
+	}
+	if strings.TrimSpace(submitPath) == "" || strings.Contains(strings.ToLower(submitPath), "/images/generations") || isChatCompletionsReferenceImageSchema(schema) {
+		submitPath = "/chat/completions"
+	}
+	allowed := allowParams(allowedParamSet(schema.AllowedParameters), "model", "messages", "stream")
+	body := map[string]interface{}{
+		"model":  req.Model,
+		"stream": false,
+	}
+	for key, value := range schema.Defaults {
+		if value != nil {
+			body[key] = value
+		}
+	}
+	applyImageParameterAliases(body, allowed, schema, req)
+	mergeAllowedParameters(body, allowed, req.Parameters)
+	applyProviderModelRoutes(body, schema)
+
+	content := []map[string]interface{}{
+		{"type": "text", "text": req.Prompt},
+	}
+	for i, raw := range req.ReferenceImages {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			continue
+		}
+		if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("ManjuAPI image reference #%d must be a public http(s) URL", i+1))
+		}
+		content = append(content, map[string]interface{}{
+			"type": "image_url",
+			"image_url": map[string]interface{}{
+				"url": ref,
+			},
+		})
+	}
+	body["messages"] = []map[string]interface{}{
+		{"role": "user", "content": content},
+	}
+	pruneUnsupportedParameters(body, allowed)
+	bodyJSON, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(imageGenerationTimeout())
+	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+	return parseChatImageGenerationResponse(respBody)
+}
+
 func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
 	size := mapAspectRatioToOpenAIImageSize(req.Size)
@@ -1225,15 +1812,27 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	submitPath := resolveImageGenPath(pc)
 	queryPath := resolveImageQueryPath(pc)
 
+	schema := providerImageParameterSchema(pc, req.Model)
+	allowed := allowedParamSet(schema.AllowedParameters)
 	body := map[string]interface{}{
-		"model":         req.Model,
-		"prompt":        req.Prompt,
-		"n":             requestedImageCount(req),
-		"size":          size,
-		"quality":       quality,
-		"background":    "auto",
-		"output_format": "png",
+		"model":  req.Model,
+		"prompt": req.Prompt,
+		"n":      requestedImageCount(req),
 	}
+	setAllowedParameter(body, allowed, "size", size)
+	setAllowedParameter(body, allowed, "quality", quality)
+	for key, value := range schema.Defaults {
+		if value != nil {
+			body[key] = value
+		}
+	}
+	if strings.TrimSpace(req.OutputFormat) != "" {
+		body["output_format"] = strings.TrimSpace(req.OutputFormat)
+	}
+	applyImageParameterAliases(body, allowed, schema, req)
+	mergeAllowedParameters(body, allowed, req.Parameters)
+	applyProviderModelRoutes(body, schema)
+	pruneUnsupportedParameters(body, allowed)
 	bodyJSON, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, submitPath), strings.NewReader(string(bodyJSON)))
@@ -1455,6 +2054,33 @@ func parseImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
 		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + result.Data[0].B64JSON}, nil
 	}
 	return nil, apperror.New(apperror.CodeInternal, "Provider returned an image entry with neither url nor b64_json")
+}
+
+var markdownImageURLPattern = regexp.MustCompile(`!\[[^\]]*\]\((https?://[^)\s]+)\)`)
+var plainImageURLPattern = regexp.MustCompile(`https?://[^\s)]+`)
+
+func parseChatImageGenerationResponse(respBody []byte) (*GenerateResult, error) {
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil || len(result.Choices) == 0 {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unexpected provider response: %s", string(respBody[:min(len(respBody), 400)])))
+	}
+	content := strings.TrimSpace(result.Choices[0].Message.Content)
+	if content == "" {
+		return nil, apperror.New(apperror.CodeInternal, "Provider returned empty image content")
+	}
+	if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
+		return &GenerateResult{Type: "url", Content: match[1]}, nil
+	}
+	if match := plainImageURLPattern.FindString(content); match != "" {
+		return &GenerateResult{Type: "url", Content: strings.TrimRight(match, ".,;")}, nil
+	}
+	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Provider response did not include an image URL: %s", content[:min(len(content), 400)]))
 }
 
 func extractImageTaskID(respBody []byte) string {

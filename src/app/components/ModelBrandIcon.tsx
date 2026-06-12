@@ -1,12 +1,84 @@
+import type { CSSProperties, ComponentType } from 'react';
+import Baidu from '@lobehub/icons/es/Baidu/components/Color';
+import Bfl from '@lobehub/icons/es/Bfl/components/Mono';
+import Claude from '@lobehub/icons/es/Claude/components/Color';
+import DeepSeek from '@lobehub/icons/es/DeepSeek/components/Color';
+import Doubao from '@lobehub/icons/es/Doubao/components/Color';
+import ElevenLabs from '@lobehub/icons/es/ElevenLabs/components/Mono';
+import Gemini from '@lobehub/icons/es/Gemini/components/Color';
+import Google from '@lobehub/icons/es/Google/components/Color';
+import Hailuo from '@lobehub/icons/es/Hailuo/components/Color';
+import Hunyuan from '@lobehub/icons/es/Hunyuan/components/Color';
+import Ideogram from '@lobehub/icons/es/Ideogram/components/Mono';
+import Kling from '@lobehub/icons/es/Kling/components/Color';
+import Luma from '@lobehub/icons/es/Luma/components/Color';
+import Minimax from '@lobehub/icons/es/Minimax/components/Color';
+import Moonshot from '@lobehub/icons/es/Moonshot/components/Mono';
+import OpenAI from '@lobehub/icons/es/OpenAI/components/Mono';
+import Qwen from '@lobehub/icons/es/Qwen/components/Color';
+import Recraft from '@lobehub/icons/es/Recraft/components/Mono';
+import Runway from '@lobehub/icons/es/Runway/components/Mono';
+import Stability from '@lobehub/icons/es/Stability/components/Color';
+import Stepfun from '@lobehub/icons/es/Stepfun/components/Color';
+import Suno from '@lobehub/icons/es/Suno/components/Mono';
+import Tencent from '@lobehub/icons/es/Tencent/components/Color';
+import Vidu from '@lobehub/icons/es/Vidu/components/Color';
+import Volcengine from '@lobehub/icons/es/Volcengine/components/Color';
+import Zhipu from '@lobehub/icons/es/Zhipu/components/Color';
+
 import { getModelBrand, type ModelBrandKind } from '../model-brands';
+
+type LobeIconComponent = ComponentType<{
+  className?: string;
+  size?: number | string;
+  style?: CSSProperties;
+}>;
+
+const LOBE_ICON_BY_KIND: Partial<Record<ModelBrandKind, LobeIconComponent>> = {
+  claude: Claude,
+  deepseek: DeepSeek,
+  doubao: Doubao,
+  elevenlabs: ElevenLabs,
+  flux: Bfl,
+  gemini: Gemini || Google,
+  gpt: OpenAI,
+  grok: undefined,
+  hailuo: Hailuo || Minimax,
+  hunyuan: Hunyuan || Tencent,
+  ideogram: Ideogram,
+  kling: Kling,
+  luma: Luma,
+  moonshot: Moonshot,
+  qwen: Qwen,
+  recraft: Recraft,
+  runway: Runway,
+  sora: OpenAI,
+  stability: Stability,
+  stepfun: Stepfun,
+  suno: Suno,
+  vidu: Vidu,
+  volcengine: Doubao || Volcengine,
+  zhipu: Zhipu,
+  ernie: Baidu,
+};
 
 /**
  * Small monogram SVG that visually identifies a model's vendor.
  * Used in the prompt-panel model dropdown, similar to a brand favicon.
  */
-export function ModelBrandIcon({ model, size = 18 }: { model: string; size?: number }) {
-  const brand = getModelBrand(model);
-  const half = size / 2;
+export function ModelBrandIcon({
+  model,
+  vendor,
+  providerName,
+  size = 18,
+}: {
+  model?: string;
+  vendor?: string;
+  providerName?: string;
+  size?: number;
+}) {
+  const brand = getModelBrand(model, vendor, providerName);
+  const OfficialIcon = LOBE_ICON_BY_KIND[brand.kind];
 
   return (
     <span
@@ -14,13 +86,15 @@ export function ModelBrandIcon({ model, size = 18 }: { model: string; size?: num
       style={{ width: size, height: size, background: 'rgba(255,255,255,0.04)' }}
       title={brand.vendor}
     >
-      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-        {renderShape(brand.kind, brand.color)}
-      </svg>
+      {OfficialIcon ? (
+        <OfficialIcon size={size} style={{ display: 'block', flex: 'none' }} />
+      ) : (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+          {renderShape(brand.kind, brand.color)}
+        </svg>
+      )}
     </span>
   );
-  // half intentionally referenced to silence unused-var lint if added later
-  void half;
 }
 
 function renderShape(kind: ModelBrandKind, color: string) {
@@ -132,6 +206,33 @@ function renderShape(kind: ModelBrandKind, color: string) {
         <>
           <path d="M5 14 Q5 9 10 9 L16 9 Q19 9 19 12 Q19 15 16 15 L10 15 Q5 15 5 14 Z" fill={color} />
           <circle cx="15" cy="12" r="0.9" fill="#0a0a0a" />
+        </>
+      );
+    case 'newapi':
+      return (
+        <>
+          <circle cx="12" cy="12" r="3.2" fill={color} />
+          <circle cx="6.5" cy="7" r="2" fill={color} opacity="0.72" />
+          <circle cx="17.5" cy="7" r="2" fill={color} opacity="0.72" />
+          <circle cx="12" cy="18.2" r="2" fill={color} opacity="0.72" />
+          <path d="M8.2 8.5 L10.1 10.2 M15.8 8.5 L13.9 10.2 M12 15.2 L12 16.2" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+        </>
+      );
+    case 'relaybases':
+      return (
+        <>
+          <path d="M5 8 L12 4 L19 8 L12 12 Z" fill={color} opacity="0.95" />
+          <path d="M5 12 L12 16 L19 12" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
+          <path d="M5 16 L12 20 L19 16" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" opacity="0.55" />
+        </>
+      );
+    case 'volcengine':
+      return (
+        <>
+          <circle cx="12" cy="12" r="7.5" fill={color} />
+          <path d="M7 16 L17 6" stroke="#0a0a0a" strokeWidth="2.2" strokeLinecap="round" opacity="0.9" />
+          <circle cx="14.8" cy="9.2" r="2.2" fill="#0a0a0a" opacity="0.92" />
+          <path d="M17.2 5.2 L20 2.8 M18.8 7.2 L21.5 5" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
         </>
       );
     case 'doubao':

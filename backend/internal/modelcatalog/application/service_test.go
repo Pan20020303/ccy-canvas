@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,54 @@ func verifyCachedAsset(t *testing.T, localURL string, want []byte) {
 	}
 }
 
+func TestApplyImageParameterAliasesForApifoxRelay(t *testing.T) {
+	schema := providerParameterSchema{
+		AllowedParameters: []string{"model", "prompt", "n", "aspect_ratio", "output_resolution"},
+		ParameterAliases: map[string]string{
+			"aspect_ratio": "aspect_ratio",
+			"resolution":   "output_resolution",
+		},
+	}
+	allowed := allowedParamSet(schema.AllowedParameters)
+	body := map[string]interface{}{
+		"model":  "gpt-image-2",
+		"prompt": "duck",
+		"n":      1,
+	}
+
+	applyImageParameterAliases(body, allowed, schema, GenerateRequest{
+		Size:       "16:9",
+		Resolution: "4K",
+	})
+	pruneUnsupportedParameters(body, allowed)
+
+	if got := body["aspect_ratio"]; got != "16:9" {
+		t.Fatalf("aspect_ratio = %v, want 16:9", got)
+	}
+	if got := body["output_resolution"]; got != "4K" {
+		t.Fatalf("output_resolution = %v, want 4K", got)
+	}
+	if _, ok := body["size"]; ok {
+		t.Fatalf("size should be pruned for Apifox relay body: %#v", body)
+	}
+}
+
+func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
+	body := map[string]interface{}{
+		"model":             "gemini-3.0-pro-image",
+		"output_resolution": "4K",
+	}
+	applyProviderModelRoutes(body, providerParameterSchema{
+		ModelRoutes: []providerModelRoute{
+			{Match: map[string]interface{}{"output_resolution": "4K"}, Model: "gemini-3.0-pro-image 4K"},
+		},
+	})
+
+	if got := body["model"]; got != "gemini-3.0-pro-image 4K" {
+		t.Fatalf("model = %v, want gemini-3.0-pro-image 4K", got)
+	}
+}
+
 type fakeRepository struct {
 	provider        *domain.RelayProvider
 	models          []domain.ModelDefinition
@@ -88,6 +137,9 @@ func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
 	}
 	if transport.TLSHandshakeTimeout != providerTLSHandshakeTimeout {
 		t.Fatalf("transport.TLSHandshakeTimeout = %s, want %s", transport.TLSHandshakeTimeout, providerTLSHandshakeTimeout)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("transport.DisableKeepAlives = false, want true to avoid stale provider connections")
 	}
 }
 
@@ -132,6 +184,44 @@ func TestDoProviderRequestWithRetryRetriesTransientNetworkError(t *testing.T) {
 	}
 
 	resp, err := doProviderRequestWithRetry(context.Background(), client, req, []byte(`{"ok":true}`))
+	if err != nil {
+		t.Fatalf("doProviderRequestWithRetry returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestDoProviderRequestWithRetryRetriesEOF(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, &url.Error{Op: "Post", URL: req.URL.String(), Err: io.EOF}
+			}
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != `{"prompt":"retry me"}` {
+				t.Fatalf("request body = %q", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test/v1/images/generations", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := doProviderRequestWithRetry(context.Background(), client, req, []byte(`{"prompt":"retry me"}`))
 	if err != nil {
 		t.Fatalf("doProviderRequestWithRetry returned error: %v", err)
 	}
@@ -311,6 +401,14 @@ func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, stri
 	return nil
 }
 func (r *fakeRepository) MarkChannelTimeout(context.Context, string) error { return nil }
+
+func (r *fakeRepository) CreateAdminAlert(context.Context, domain.AdminAlert) error { return nil }
+func (r *fakeRepository) ListAdminAlerts(context.Context, string, int32, int32) ([]domain.AdminAlert, error) {
+	return nil, nil
+}
+func (r *fakeRepository) CountUnreadAdminAlerts(context.Context) (int32, error) { return 0, nil }
+func (r *fakeRepository) MarkAdminAlertRead(context.Context, string) error      { return nil }
+func (r *fakeRepository) MarkAllAdminAlertsRead(context.Context) error          { return nil }
 
 func TestSyncModelsCountsOnlyNewDrafts(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
@@ -515,6 +613,142 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
+func TestGenerateImageViaChatCompletionsUsesMultimodalContent(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["model"] != "Nano Banana 2 4K" {
+			t.Fatalf("model = %v, want routed Nano Banana 2 4K", body["model"])
+		}
+		if body["output_resolution"] != "4K" {
+			t.Fatalf("output_resolution = %v, want 4K", body["output_resolution"])
+		}
+		messages, ok := body["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("messages = %#v, want one message", body["messages"])
+		}
+		msg := messages[0].(map[string]any)
+		content := msg["content"].([]any)
+		if len(content) != 3 {
+			t.Fatalf("content length = %d, want text + 2 image refs", len(content))
+		}
+		firstRef := content[1].(map[string]any)["image_url"].(map[string]any)["url"]
+		if firstRef != "https://example.com/a.png" {
+			t.Fatalf("first ref = %v", firstRef)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"![Generated Image](https://manjuapi.com/generated/example.png)"}}]}`))
+	}))
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"request_format":"chat_completions_image",
+		"allowed_parameters":["model","messages","stream","output_resolution"],
+		"parameter_aliases":{"resolution":"output_resolution"},
+		"defaults":{"stream":false,"output_resolution":"1K"},
+		"model_routes":[{"match":{"output_resolution":"4K"},"model":"Nano Banana 2 4K"}]
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-manju",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"Nano Banana 2", "Nano Banana 2 4K"},
+			SubmitEndpoint:  "/v1/chat/completions",
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType:     "image",
+		Model:           "Nano Banana 2",
+		Prompt:          "combine these references",
+		Resolution:      "4K",
+		ReferenceImages: []string{"https://example.com/a.png", "https://example.com/b.png"},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://manjuapi.com/generated/example.png" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
+func TestGenerateImageReferenceFormatUsesChatCompletionsOnlyForRefs(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, ok := body["prompt"]; ok {
+			t.Fatalf("prompt should not be sent to chat image endpoint")
+		}
+		messages := body["messages"].([]any)
+		content := messages[0].(map[string]any)["content"].([]any)
+		if content[1].(map[string]any)["type"] != "image_url" {
+			t.Fatalf("second content part = %#v, want image_url", content[1])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"https://example.com/generated.png"}}]}`))
+	}))
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"reference_request_format":"chat_completions_image",
+		"allowed_parameters":["model","prompt","n","aspect_ratio","output_resolution"],
+		"parameter_aliases":{"aspect_ratio":"aspect_ratio","resolution":"output_resolution"},
+		"defaults":{"aspect_ratio":"1:1","output_resolution":"1K"}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-manju-openai",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType:     "image",
+		Model:           "gpt-image-2",
+		Prompt:          "redesign this image",
+		Size:            "16:9",
+		Resolution:      "2K",
+		ReferenceImages: []string{"https://example.com/reference.png"},
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/generated.png" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
 func TestGenerateDoesNotFallbackToSecondProvider(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
@@ -716,6 +950,12 @@ func TestGenerateImageVolcengineMapsAspectRatioToSupportedSize(t *testing.T) {
 		if _, ok := body["quality"]; ok {
 			t.Fatalf("quality should not be sent to Volcengine image endpoint")
 		}
+		if _, ok := body["output_format"]; ok {
+			t.Fatalf("output_format should not be sent to Volcengine image endpoint")
+		}
+		if _, ok := body["response_format"]; ok {
+			t.Fatalf("response_format should not be sent to Volcengine image endpoint")
+		}
 		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/seedream.png"}]}`))
 	}))
 	defer server.Close()
@@ -760,6 +1000,12 @@ func TestMapAspectRatioToVolcengineSizeDefaultsByModel(t *testing.T) {
 	}
 	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "9:16", "medium"); got != "1728x3072" {
 		t.Fatalf("seedream 5 9:16 medium size = %q, want 1728x3072", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "16:9", "low"); got != "2560x1440" {
+		t.Fatalf("seedream 5 16:9 low size = %q, want 2560x1440", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "3:2", "low"); got != "2384x1568" {
+		t.Fatalf("seedream 5 3:2 low size = %q, want 2384x1568", got)
 	}
 }
 

@@ -143,7 +143,7 @@ export const LoginPage = () => {
             type="email"
             value={email}
             onChange={setEmail}
-            icon={<Mail className="h-[20px] w-[20px] text-white/45" strokeWidth={1.75} />}
+            icon={<Mail className="h-5 w-5 text-white/50" strokeWidth={1.75} />}
             placeholder={copy.mailPlaceholder}
             label={copy.email}
           />
@@ -151,23 +151,23 @@ export const LoginPage = () => {
             type={showPassword ? "text" : "password"}
             value={password}
             onChange={setPassword}
-            icon={<Lock className="h-[20px] w-[20px] text-white/45" strokeWidth={1.75} />}
+            icon={<Lock className="h-5 w-5 text-white/50" strokeWidth={1.75} />}
             placeholder={copy.passwordPlaceholder}
             label={copy.password}
             trailing={
               <button
                 type="button"
                 onClick={() => setShowPassword((value) => !value)}
-                className="text-white/38 transition hover:text-white/64"
+                className="text-white/42 transition hover:text-white/72"
                 aria-label={showPassword ? copy.hidePassword : copy.showPassword}
               >
-                {showPassword ? <Eye className="h-[20px] w-[20px]" strokeWidth={1.75} /> : <EyeOff className="h-[20px] w-[20px]" strokeWidth={1.75} />}
+                {showPassword ? <Eye className="h-5 w-5" strokeWidth={1.75} /> : <EyeOff className="h-5 w-5" strokeWidth={1.75} />}
               </button>
             }
           />
         </div>
 
-        <div className="mt-4 flex items-center justify-between gap-4 text-[14px] text-white/52">
+        <div className="mt-4 flex items-center justify-between gap-4 text-[14px] text-white/58">
           <label className="flex cursor-pointer items-center gap-3">
             <input
               type="checkbox"
@@ -177,31 +177,29 @@ export const LoginPage = () => {
             />
             <span>{copy.remember}</span>
           </label>
-          <button type="button" className="transition hover:text-white/80">
+          <button type="button" className="transition hover:text-white/86">
             {copy.forgot}
           </button>
         </div>
 
-        {error ? <p className="mt-3 text-sm text-[#ff8b61]">{error}</p> : null}
+        {error ? <p className="mt-3 text-sm text-[#ff9a74]">{error}</p> : null}
 
-        {/* CTA 按钮按 φ 比例:height 56 = text 16 × ~3.5;角半径 14 = 输入 12 × φ⁰·⁵.
-            阴影更含蓄,让透明背景能透出来. */}
         <button
           type="submit"
           data-auth-cta
           disabled={submitting}
-          className="group relative mt-6 flex h-[56px] w-full items-center justify-center overflow-hidden rounded-[14px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[16px] font-semibold tracking-[0.08em] text-white shadow-[0_14px_36px_rgba(255,92,31,0.24)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
+          className="group relative mt-6 flex h-[58px] w-full items-center justify-center overflow-hidden rounded-[14px] bg-[linear-gradient(90deg,#ff5b16_0%,#ff6a1f_55%,#ff4d08_100%)] text-[16px] font-semibold tracking-[0.08em] text-white shadow-[0_14px_36px_rgba(255,92,31,0.25)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
         >
-          <span className="absolute inset-0 bg-[radial-gradient(circle_at_84%_78%,rgba(255,233,201,0.4),transparent_14%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent_55%)] opacity-90" />
+          <span className="absolute inset-0 bg-[radial-gradient(circle_at_84%_78%,rgba(255,233,201,0.42),transparent_14%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent_55%)] opacity-90" />
           <span className="relative">{submitting ? copy.loading : copy.submit}</span>
           <ArrowUpRight className="absolute right-5 h-5 w-5 text-white" strokeWidth={2} />
           <span className="absolute -right-2 bottom-0 h-14 w-14 rotate-45 bg-[radial-gradient(circle,rgba(255,244,228,0.95)_0%,rgba(255,177,124,0.85)_18%,rgba(255,95,31,0.0)_72%)] opacity-95" />
         </button>
 
-        <div className="mt-9 flex items-center gap-5 text-[14px] text-white/40">
-          <div className="h-px flex-1 bg-white/12" />
+        <div className="mt-9 flex items-center gap-5 text-[14px] text-white/46">
+          <div className="h-px flex-1 bg-white/14" />
           <span>{copy.divider}</span>
-          <div className="h-px flex-1 bg-white/12" />
+          <div className="h-px flex-1 bg-white/14" />
         </div>
 
         <div className="mt-6 grid grid-cols-3 gap-3 sm:gap-3.5" data-auth-socials>
@@ -216,7 +214,7 @@ export const LoginPage = () => {
           </SocialButton>
         </div>
 
-        <p className="mt-7 text-center text-[14.5px] text-white/42">
+        <p className="mt-7 text-center text-[14.5px] text-white/48">
           {copy.registerHint}
           <Link to="/register" className="ml-2 font-medium text-[#ff661f] transition hover:text-[#ff8a53]">
             {copy.register}
@@ -238,12 +236,10 @@ function SocialButton({
     <button
       type="button"
       data-auth-social
-      /* 3 列 × 高 64 → 每个按钮 w/h ≈ φ,跟 CTA 内部 padding 节奏一致.
-         bg 透明度下调到 0.52/0.58 让卡片整体一致透出背景视频. */
-      className="flex h-[64px] items-center justify-center gap-2.5 rounded-[12px] border border-white/12 bg-[linear-gradient(180deg,rgba(17,20,28,0.52),rgba(11,14,20,0.58))] px-3 text-[14px] text-white/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition hover:border-white/24 hover:bg-white/[0.06]"
+      className="flex h-[76px] min-w-0 flex-col items-center justify-center gap-2 rounded-[12px] border border-white/12 bg-[linear-gradient(180deg,rgba(17,20,28,0.50),rgba(11,14,20,0.58))] px-3 text-[13.5px] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-white/24 hover:bg-white/[0.07]"
     >
       <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white">{children}</span>
-      <span>{label}</span>
+      <span className="max-w-full truncate">{label}</span>
     </button>
   );
 }

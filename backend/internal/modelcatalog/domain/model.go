@@ -86,22 +86,25 @@ type UserModel struct {
 // ProviderConfig represents a multi-vendor model configuration entry.
 // Each record maps to one row in the admin model config table.
 type ProviderConfig struct {
-	ID             string
-	ServiceType    string // text / image / video / audio
-	Vendor         string // OpenAI / Runway / Luma / 自定义
-	Name           string
-	APISpec        string // openai / custom
-	BaseURL        string
+	ID              string
+	ServiceType     string // text / image / video / audio
+	Vendor          string // OpenAI / Runway / Luma / 自定义
+	Name            string
+	APISpec         string // openai / custom
+	Protocol        string // openai_compatible / newapi / native
+	BaseURL         string
 	EncryptedAPIKey string
-	SubmitEndpoint string
-	QueryEndpoint  string
-	ModelList      []string
-	DefaultModel   string
-	Priority       int32
-	IsDefault      bool
-	Status         string // enabled / disabled
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	SubmitEndpoint  string
+	QueryEndpoint   string
+	ModelList       []string
+	DefaultModel    string
+	Priority        int32
+	IsDefault       bool
+	Status          string // enabled / disabled
+	Capabilities    []string
+	ParameterSchema json.RawMessage
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 	// Channel health (migration 011). FailureCount + LastFailureAt are
 	// updated on every error; CooldownUntil is set when the failure budget
 	// is exhausted (default 3), with the duration growing exponentially each
@@ -109,6 +112,7 @@ type ProviderConfig struct {
 	FailureCount         int32
 	LastFailureAt        *time.Time
 	LastErrorMsg         string
+	LastErrorCode        string
 	LastSuccessAt        *time.Time
 	CooldownUntil        *time.Time
 	ConsecutiveCooldowns int32
@@ -123,15 +127,31 @@ func (pc ProviderConfig) InCooldown(now time.Time) bool {
 // GenerationAttempt is one upstream HTTP call attempt. Multiple per
 // generation_log when cross-vendor fallback fires.
 type GenerationAttempt struct {
-	ID              string
-	GenerationLogID string
+	ID               string
+	GenerationLogID  string
 	ProviderConfigID string // empty when not associated with a configured provider
-	Vendor          string
-	AttemptNumber   int32
-	HTTPStatus      int32 // 0 = no HTTP response (network failure)
-	ErrorMsg        string
-	DurationMs      int32
-	CreatedAt       time.Time
+	Vendor           string
+	AttemptNumber    int32
+	HTTPStatus       int32 // 0 = no HTTP response (network failure)
+	ErrorMsg         string
+	DurationMs       int32
+	CreatedAt        time.Time
+}
+
+type AdminAlert struct {
+	ID               string
+	ProviderConfigID string
+	GenerationLogID  string
+	ServiceType      string
+	Model            string
+	ErrorCode        string
+	ErrorMessage     string
+	Source           string
+	Severity         string
+	Status           string
+	ProviderName     string
+	CreatedAt        time.Time
+	LastSeenAt       time.Time
 }
 
 // APIKeyHint returns a masked hint for the API key (e.g. "****abcd").
@@ -147,11 +167,12 @@ func (pc ProviderConfig) APIKeyHint() string {
 
 // AppProviderConfig is the trimmed view returned to regular users.
 type AppProviderConfig struct {
-	ID          string
-	ServiceType string
-	Vendor      string
-	Name        string
-	ModelList   []string
-	DefaultModel string
-	Priority    int32
+	ID              string
+	ServiceType     string
+	Vendor          string
+	Name            string
+	ModelList       []string
+	DefaultModel    string
+	Priority        int32
+	ParameterSchema json.RawMessage
 }

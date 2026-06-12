@@ -6,6 +6,7 @@ import { apiClient } from "./client";
 
 export type ServiceType = "text" | "image" | "video" | "audio";
 export type AdapterProfileID = "openai" | "ark" | "custom";
+export type GatewayProtocol = "openai_compatible" | "newapi" | "native";
 
 /** Admin view — encrypted API key never returned, only hint. */
 export type ProviderConfig = {
@@ -14,6 +15,7 @@ export type ProviderConfig = {
   vendor: string;
   name: string;
   api_spec: string;
+  protocol: GatewayProtocol;
   base_url: string;
   api_key_set: boolean;
   api_key_hint: string;
@@ -24,6 +26,8 @@ export type ProviderConfig = {
   priority: number;
   is_default: boolean;
   status: "enabled" | "disabled";
+  capabilities: ServiceType[];
+  parameter_schema?: ModelParameterSchema;
   created_at: string;
   updated_at: string;
   /** Channel-health snapshot (migration 011). Backend populates these so
@@ -31,6 +35,7 @@ export type ProviderConfig = {
   failure_count: number;
   last_failure_at?: string;
   last_error_msg?: string;
+  last_error_code?: string;
   last_success_at?: string;
   cooldown_until?: string;
   consecutive_cooldowns: number;
@@ -50,6 +55,9 @@ export type AppProviderConfig = {
   service_type: ServiceType;
   vendor: string;
   name: string;
+  protocol?: GatewayProtocol;
+  capabilities?: ServiceType[];
+  parameter_schema?: ModelParameterSchema;
   model_list: string[];
   default_model: string;
   priority: number;
@@ -61,6 +69,7 @@ export type ProviderConfigPayload = {
   vendor: string;
   name: string;
   api_spec?: string;
+  protocol?: GatewayProtocol;
   base_url: string;
   api_key?: string;
   submit_endpoint?: string;
@@ -70,6 +79,48 @@ export type ProviderConfigPayload = {
   priority?: number;
   is_default?: boolean;
   status?: "enabled" | "disabled";
+  capabilities?: ServiceType[];
+  parameter_schema?: ModelParameterSchema;
+};
+
+export type ModelParameterSchema = {
+  allowed_parameters?: string[];
+  defaults?: Record<string, unknown>;
+  models?: Record<string, ModelParameterSchema>;
+  parameter_aliases?: Record<string, string>;
+  parameterAliases?: Record<string, string>;
+  model_routes?: Array<{ match: Record<string, unknown>; model: string }>;
+  modelRoutes?: Array<{ match: Record<string, unknown>; model: string }>;
+  request_format?: string;
+  requestFormat?: string;
+  reference_request_format?: string;
+  referenceRequestFormat?: string;
+  quality_options?: string[];
+  qualityOptions?: string[];
+  size_options?: string[];
+  sizeOptions?: string[];
+  aspect_ratio_options?: string[];
+  aspectRatioOptions?: string[];
+  resolution_options?: string[];
+  resolutionOptions?: string[];
+  duration_options?: number[];
+  durationOptions?: number[];
+  output_format_options?: string[];
+  outputFormatOptions?: string[];
+  supports_quality?: boolean;
+  supportsQuality?: boolean;
+  supports_size?: boolean;
+  supportsSize?: boolean;
+  supports_aspect_ratio?: boolean;
+  supportsAspectRatio?: boolean;
+  supports_auto_aspect?: boolean;
+  supportsAutoAspect?: boolean;
+  supports_resolution?: boolean;
+  supportsResolution?: boolean;
+  supports_duration?: boolean;
+  supportsDuration?: boolean;
+  supports_output_format?: boolean;
+  supportsOutputFormat?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -81,9 +132,11 @@ export type VendorTemplate = {
   label: string;
   baseURL: string;
   apiSpec: AdapterProfileID;
+  protocol?: GatewayProtocol;
   models: string[];
   submitEndpoint?: string;
   queryEndpoint?: string;
+  parameterSchema?: ModelParameterSchema;
 };
 
 export function supportsCustomSubmitQueryEndpoints(apiSpec: string): boolean {
@@ -149,8 +202,194 @@ export function getEndpointPreview(
   return `提交 ${textSubmit}`;
 }
 
+const GPT_IMAGE_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "n", "size", "quality", "background", "output_format", "moderation"],
+  quality_options: ["Auto", "High", "Medium", "Low"],
+  size_options: ["auto", "1024x1024", "1536x1024", "1024x1536"],
+  output_format_options: ["png", "jpeg", "webp"],
+  supports_quality: true,
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_output_format: true,
+  defaults: {
+    quality: "Auto",
+    size: "auto",
+    background: "auto",
+    output_format: "png",
+  },
+};
+
+const APIFOX_IMAGE_RELAY_SCHEMA: ModelParameterSchema = {
+  reference_request_format: "chat_completions_image",
+  allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+  parameter_aliases: {
+    aspect_ratio: "aspect_ratio",
+    resolution: "output_resolution",
+  },
+  aspect_ratio_options: ["1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"],
+  resolution_options: ["1K", "2K", "4K"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  defaults: {
+    aspect_ratio: "1:1",
+    output_resolution: "1K",
+  },
+  models: {
+    "gpt-image-2": {
+      allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio", resolution: "output_resolution" },
+      aspect_ratio_options: ["1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"],
+      resolution_options: ["1K", "2K", "4K"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      defaults: { aspect_ratio: "1:1", output_resolution: "1K" },
+    },
+    "gemini-3.0-pro-image": {
+      allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio", resolution: "output_resolution" },
+      aspect_ratio_options: ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],
+      resolution_options: ["1K", "2K", "4K"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      defaults: { aspect_ratio: "1:1", output_resolution: "1K" },
+      model_routes: [{ match: { output_resolution: "4K" }, model: "gemini-3.0-pro-image 4K" }],
+    },
+    "gemini-3.0-pro-image 4K": {
+      allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio", resolution: "output_resolution" },
+      aspect_ratio_options: ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],
+      resolution_options: ["4K"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      defaults: { aspect_ratio: "1:1", output_resolution: "4K" },
+    },
+    "Nano Banana 2": {
+      allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio", resolution: "output_resolution" },
+      aspect_ratio_options: ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],
+      resolution_options: ["1K", "2K", "4K"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      defaults: { aspect_ratio: "1:1", output_resolution: "1K" },
+      model_routes: [{ match: { output_resolution: "4K" }, model: "Nano Banana 2 4K" }],
+    },
+    "Nano Banana 2 4K": {
+      allowed_parameters: ["model", "prompt", "n", "aspect_ratio", "output_resolution"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio", resolution: "output_resolution" },
+      aspect_ratio_options: ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"],
+      resolution_options: ["4K"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      defaults: { aspect_ratio: "1:1", output_resolution: "4K" },
+    },
+  },
+};
+
+const MANJU_CHAT_IMAGE_SCHEMA: ModelParameterSchema = {
+  request_format: "chat_completions_image",
+  allowed_parameters: ["model", "messages", "stream", "aspect_ratio", "output_resolution"],
+  parameter_aliases: {
+    aspect_ratio: "aspect_ratio",
+    resolution: "output_resolution",
+  },
+  aspect_ratio_options: ["1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"],
+  resolution_options: ["1K", "2K", "4K"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_resolution: true,
+  defaults: {
+    stream: false,
+    aspect_ratio: "auto",
+  },
+  models: {
+    "GPT Image 2": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "aspect_ratio"],
+      parameter_aliases: { aspect_ratio: "aspect_ratio" },
+      aspect_ratio_options: ["1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"],
+      supports_aspect_ratio: true,
+      supports_auto_aspect: true,
+      defaults: { stream: false, aspect_ratio: "auto" },
+    },
+    "gemini-2.5-flash-image": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "output_resolution"],
+      parameter_aliases: { resolution: "output_resolution" },
+      resolution_options: ["1K"],
+      supports_resolution: true,
+      defaults: { stream: false, output_resolution: "1K" },
+    },
+    "gemini-3.0-pro-image": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "output_resolution"],
+      parameter_aliases: { resolution: "output_resolution" },
+      resolution_options: ["1K", "2K", "4K"],
+      supports_resolution: true,
+      defaults: { stream: false, output_resolution: "1K" },
+      model_routes: [{ match: { output_resolution: "4K" }, model: "gemini-3.0-pro-image 4K" }],
+    },
+    "gemini-3.0-pro-image 4K": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "output_resolution"],
+      parameter_aliases: { resolution: "output_resolution" },
+      resolution_options: ["4K"],
+      supports_resolution: true,
+      defaults: { stream: false, output_resolution: "4K" },
+    },
+    "Nano Banana 2": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "output_resolution"],
+      parameter_aliases: { resolution: "output_resolution" },
+      resolution_options: ["1K", "2K", "4K"],
+      supports_resolution: true,
+      defaults: { stream: false, output_resolution: "1K" },
+      model_routes: [{ match: { output_resolution: "4K" }, model: "Nano Banana 2 4K" }],
+    },
+    "Nano Banana 2 4K": {
+      request_format: "chat_completions_image",
+      allowed_parameters: ["model", "messages", "stream", "output_resolution"],
+      parameter_aliases: { resolution: "output_resolution" },
+      resolution_options: ["4K"],
+      supports_resolution: true,
+      defaults: { stream: false, output_resolution: "4K" },
+    },
+  },
+};
+
+const OPENAI_IMAGE_SCHEMA: ModelParameterSchema = {
+  models: {
+    "gpt-image-1": GPT_IMAGE_SCHEMA,
+    "gpt-image-2": GPT_IMAGE_SCHEMA,
+    "dall-e-3": {
+      allowed_parameters: ["model", "prompt", "n", "size", "quality", "response_format"],
+      quality_options: ["standard", "hd"],
+      size_options: ["1024x1024", "1792x1024", "1024x1792"],
+      supports_quality: true,
+      supports_aspect_ratio: true,
+      supports_output_format: false,
+      defaults: { quality: "standard", size: "1024x1024" },
+    },
+    "dall-e-2": {
+      allowed_parameters: ["model", "prompt", "n", "size", "response_format"],
+      size_options: ["256x256", "512x512", "1024x1024"],
+      supports_aspect_ratio: true,
+      supports_output_format: false,
+      defaults: { size: "1024x1024" },
+    },
+  },
+};
+
 export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
   text: [
+    {
+      vendor: "NewAPI",
+      label: "NewAPI / 第三方中转站",
+      baseURL: "https://example-newapi.com/v1",
+      apiSpec: "openai",
+      protocol: "newapi",
+      models: ["gpt-4o-mini", "deepseek-chat", "qwen-plus"],
+    },
     // 国际
     {
       vendor: "OpenAI",
@@ -266,6 +505,48 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   image: [
+    {
+      vendor: "ManjuAPI",
+      label: "ManjuAPI / Chat 图片生成",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "custom",
+      protocol: "openai_compatible",
+      models: [
+        "GPT Image 2",
+        "gemini-2.5-flash-image",
+        "gemini-3.0-pro-image",
+        "gemini-3.0-pro-image 4K",
+        "Nano Banana 2",
+        "Nano Banana 2 4K",
+      ],
+      submitEndpoint: "/v1/chat/completions",
+      parameterSchema: MANJU_CHAT_IMAGE_SCHEMA,
+    },
+    {
+      vendor: "ManjuAPI",
+      label: "Apifox NewAPI 图像中转",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "openai",
+      protocol: "newapi",
+      models: [
+        "gpt-image-2",
+        "gemini-2.5-flash-image",
+        "gemini-3.0-pro-image",
+        "gemini-3.0-pro-image 4K",
+        "Nano Banana 2",
+        "Nano Banana 2 4K",
+      ],
+      parameterSchema: APIFOX_IMAGE_RELAY_SCHEMA,
+    },
+    {
+      vendor: "NewAPI",
+      label: "NewAPI / OpenAI-compatible 生图中转",
+      baseURL: "https://example-newapi.com/v1",
+      apiSpec: "openai",
+      protocol: "newapi",
+      models: ["gpt-image-1", "gpt-image-2"],
+      parameterSchema: GPT_IMAGE_SCHEMA,
+    },
     // 中转 / Relay
     {
       vendor: "RelayBases",
@@ -273,6 +554,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://image-2.relaybases.com",
       apiSpec: "openai",
       models: ["gpt-image-2"],
+      parameterSchema: GPT_IMAGE_SCHEMA,
     },
     // 国际
     {
@@ -281,6 +563,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://api.openai.com/v1",
       apiSpec: "openai",
       models: ["dall-e-3", "dall-e-2", "gpt-image-1"],
+      parameterSchema: OPENAI_IMAGE_SCHEMA,
     },
     {
       vendor: "Stability",
@@ -372,6 +655,16 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   video: [
+    {
+      vendor: "NewAPI",
+      label: "NewAPI / 视频中转站",
+      baseURL: "https://example-newapi.com/v1",
+      apiSpec: "custom",
+      protocol: "newapi",
+      models: ["sora-2", "sora-v3-pro"],
+      submitEndpoint: "/v1/videos",
+      queryEndpoint: "/v1/videos/{taskId}",
+    },
     // 国际
     {
       vendor: "OpenAI",
@@ -635,10 +928,11 @@ export type GeneratePayload = {
   crop_rect?: { x: number; y: number; width: number; height: number };
   target_tracks?: string[];
   output_format?: string;
+  parameters?: Record<string, unknown>;
 };
 
 export type GenerateResult = {
-  type: "text" | "url";
+  type: "text" | "url" | "queued";
   content: string;
   /** Generation log row id — present when the backend was able to
    *  persist a log row. Frontend stores this on the node so recovery

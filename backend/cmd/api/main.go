@@ -12,11 +12,8 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
-	skillsapp "ccy-canvas/backend/internal/skills/application"
-	skillshttp "ccy-canvas/backend/internal/skills/interfaces"
-	workspaceinfra "ccy-canvas/backend/internal/workspace/infrastructure"
-	workspacehttp "ccy-canvas/backend/internal/workspace/interfaces"
 	"ccy-canvas/backend/internal/platform/authn"
+	"ccy-canvas/backend/internal/platform/cache"
 	"ccy-canvas/backend/internal/platform/config"
 	"ccy-canvas/backend/internal/platform/database"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -24,6 +21,11 @@ import (
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
 	"ccy-canvas/backend/internal/shared/httpx"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
+	skillshttp "ccy-canvas/backend/internal/skills/interfaces"
+	"ccy-canvas/backend/internal/tasks"
+	workspaceinfra "ccy-canvas/backend/internal/workspace/infrastructure"
+	workspacehttp "ccy-canvas/backend/internal/workspace/interfaces"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -56,7 +58,38 @@ func main() {
 	catalogRepo := infrastructure.NewRepository(queries)
 	taskBus := application.NewTaskEventBus()
 	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).WithEventBus(taskBus)
-	catalogHandler := modelhttp.NewHandler(catalogService, queries)
+	var redisCache *cache.JSONCache
+	if cfg.RedisAddr != "" {
+		redisCache = cache.NewJSONCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, "ccy")
+		catalogService = catalogService.WithCache(redisCache)
+		log.Printf("[cache] Redis cache enabled: %s db=%d policy=%s", cfg.RedisAddr, cfg.RedisDB, cfg.ChannelPolicy)
+	}
+	// Optional NewAPI gateway. If NEWAPI_BASE_URL is empty the client is
+	// nil and Service falls back to the legacy per-ProviderConfig path
+	// — keeps the migration risk-free per Stage P1 in the runbook.
+	if cfg.NewAPIBaseURL != "" && cfg.NewAPIToken != "" {
+		newapiClient := application.NewNewAPIClient(cfg.NewAPIBaseURL, cfg.NewAPIToken, cfg.NewAPITimeout)
+		catalogService = catalogService.WithNewAPI(newapiClient)
+		log.Printf("[modelcatalog] NewAPI gateway enabled: %s (timeout=%ds)", cfg.NewAPIBaseURL, cfg.NewAPITimeout)
+	}
+	catalogHandler := modelhttp.NewHandler(catalogService, queries).WithCache(redisCache)
+
+	// Optional Asynq task queue. When REDIS_ADDR is set, the generation
+	// handler enqueues durable tasks instead of running inline. The
+	// worker server runs in a background goroutine. Empty REDIS_ADDR
+	// keeps the legacy detached-goroutine path (no behavior change).
+	if cfg.RedisAddr != "" {
+		taskQueue := tasks.NewQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		taskWorker := tasks.NewWorker(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, catalogService, queries)
+		catalogHandler = catalogHandler.WithTasks(taskQueueAdapter{q: taskQueue})
+		go func() {
+			log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
+			if err := taskWorker.Start(); err != nil {
+				log.Printf("[tasks] Asynq worker exited: %v", err)
+			}
+		}()
+		log.Printf("[tasks] Asynq queue enabled: %s db=%d", cfg.RedisAddr, cfg.RedisDB)
+	}
 
 	allowedOrigins := []string{
 		"http://localhost:5173",
@@ -130,4 +163,27 @@ func main() {
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// taskQueueAdapter bridges *tasks.Queue (concrete type, owns Redis
+// connection) to the modelhttp.TaskEnqueuer interface (narrow contract
+// the handler depends on). Defined here in main so the modelcatalog
+// package stays free of the tasks package import.
+type taskQueueAdapter struct {
+	q *tasks.Queue
+}
+
+func (a taskQueueAdapter) Enabled() bool {
+	return a.q != nil && a.q.Enabled()
+}
+
+func (a taskQueueAdapter) Enqueue(ctx context.Context, p modelhttp.TaskGenerationPayload) (string, error) {
+	return a.q.Enqueue(ctx, tasks.GenerationPayload{
+		LogID:       p.LogID,
+		RequestID:   p.RequestID,
+		UserID:      p.UserID,
+		ServiceType: p.ServiceType,
+		Model:       p.Model,
+		NodeID:      p.NodeID,
+	})
 }

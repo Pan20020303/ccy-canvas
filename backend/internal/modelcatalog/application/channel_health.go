@@ -35,6 +35,45 @@ func httpStatusFromError(err error) int {
 	return n
 }
 
+func errorCodeFromMessage(errMsg string, httpStatus int) string {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case httpStatus == 403 || strings.Contains(lower, "permission_error") || strings.Contains(lower, "forbidden"):
+		return "permission_error"
+	case httpStatus == 429 || strings.Contains(lower, "rate_limit") || strings.Contains(lower, "concurrency"):
+		return "rate_limit_error"
+	case httpStatus == 502 || httpStatus == 503 || strings.Contains(lower, "service_unavailable") || strings.Contains(lower, "overloaded"):
+		return "service_unavailable_error"
+	case httpStatus == 408 || strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return "timeout_error"
+	default:
+		return "upstream_error"
+	}
+}
+
+func alertSeverityForErrorCode(code string) string {
+	switch code {
+	case "permission_error":
+		return "high"
+	case "rate_limit_error", "service_unavailable_error", "timeout_error":
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func alertSourceForError(errMsg string) string {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "newapi"):
+		return "newapi_gateway"
+	case strings.Contains(lower, "no such host") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "timeout"):
+		return "network"
+	default:
+		return "upstream_provider"
+	}
+}
+
 // Channel-health policy.
 //
 // Each provider_config (= "channel") accumulates a consecutive-failure
@@ -218,6 +257,7 @@ func (s *Service) MarkChannelSuccess(ctx context.Context, providerID string) {
 		return
 	}
 	_ = s.repo.MarkChannelSuccess(ctx, providerID)
+	s.invalidateProviderConfigCache(ctx, providerID)
 }
 
 // MarkChannelFailure increments the failure counter and stores the latest
@@ -235,6 +275,8 @@ func (s *Service) MarkChannelFailure(ctx context.Context, providerID string, cat
 	if err != nil {
 		return
 	}
+	s.invalidateProviderConfigCache(ctx, providerID)
+	s.invalidateAlertCache(ctx)
 }
 
 // MarkChannelTimeout bumps the channel's timeout counter without touching
@@ -246,6 +288,64 @@ func (s *Service) MarkChannelTimeout(ctx context.Context, providerID string) {
 		return
 	}
 	_ = s.repo.MarkChannelTimeout(ctx, providerID)
+	s.invalidateProviderConfigCache(ctx, providerID)
+}
+
+func (s *Service) CreateAdminAlert(ctx context.Context, alert domain.AdminAlert) {
+	if alert.ErrorMessage == "" {
+		return
+	}
+	if alert.ErrorCode == "" {
+		alert.ErrorCode = errorCodeFromMessage(alert.ErrorMessage, 0)
+	}
+	if alert.Severity == "" {
+		alert.Severity = alertSeverityForErrorCode(alert.ErrorCode)
+	}
+	if alert.Source == "" {
+		alert.Source = alertSourceForError(alert.ErrorMessage)
+	}
+	if len(alert.ErrorMessage) > 500 {
+		alert.ErrorMessage = alert.ErrorMessage[:500]
+	}
+	_ = s.repo.CreateAdminAlert(ctx, alert)
+	s.invalidateAlertCache(ctx)
+}
+
+func (s *Service) ListAdminAlerts(ctx context.Context, status string, limit, offset int32) ([]domain.AdminAlert, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	return s.repo.ListAdminAlerts(ctx, status, limit, offset)
+}
+
+func (s *Service) CountUnreadAdminAlerts(ctx context.Context) (int32, error) {
+	if s.cache != nil {
+		var cached int32
+		if s.cache.Get(ctx, unreadAlertsCacheKey, &cached) {
+			return cached, nil
+		}
+	}
+	count, err := s.repo.CountUnreadAdminAlerts(ctx)
+	if err == nil && s.cache != nil {
+		s.cache.Set(ctx, unreadAlertsCacheKey, count, 20*time.Second)
+	}
+	return count, err
+}
+
+func (s *Service) MarkAdminAlertRead(ctx context.Context, id string) error {
+	err := s.repo.MarkAdminAlertRead(ctx, id)
+	if err == nil {
+		s.invalidateAlertCache(ctx)
+	}
+	return err
+}
+
+func (s *Service) MarkAllAdminAlertsRead(ctx context.Context) error {
+	err := s.repo.MarkAllAdminAlertsRead(ctx)
+	if err == nil {
+		s.invalidateAlertCache(ctx)
+	}
+	return err
 }
 
 // ResetChannelHealth clears all counters and cooldown on a channel. Wired
@@ -254,7 +354,11 @@ func (s *Service) ResetChannelHealth(ctx context.Context, providerID string) err
 	if providerID == "" {
 		return nil
 	}
-	return s.repo.ResetChannelHealth(ctx, providerID)
+	err := s.repo.ResetChannelHealth(ctx, providerID)
+	if err == nil {
+		s.invalidateProviderConfigCache(ctx, providerID)
+	}
+	return err
 }
 
 // ChannelTestReport is what TestChannelConnectivity returns. OK=true means
@@ -299,6 +403,15 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	if err != nil {
 		report.OK = false
 		report.ErrorMsg = err.Error()
+		s.CreateAdminAlert(ctx, domain.AdminAlert{
+			ProviderConfigID: cfg.ID,
+			ServiceType:      cfg.ServiceType,
+			Model:            cfg.DefaultModel,
+			ErrorCode:        errorCodeFromMessage(report.ErrorMsg, 0),
+			ErrorMessage:     report.ErrorMsg,
+			Source:           alertSourceForError(report.ErrorMsg),
+			Severity:         alertSeverityForErrorCode(errorCodeFromMessage(report.ErrorMsg, 0)),
+		})
 		return report, nil
 	}
 	defer resp.Body.Close()
@@ -308,6 +421,15 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	report.OK = resp.StatusCode < 500
 	if !report.OK {
 		report.ErrorMsg = "upstream " + resp.Status
+		s.CreateAdminAlert(ctx, domain.AdminAlert{
+			ProviderConfigID: cfg.ID,
+			ServiceType:      cfg.ServiceType,
+			Model:            cfg.DefaultModel,
+			ErrorCode:        errorCodeFromMessage(report.ErrorMsg, resp.StatusCode),
+			ErrorMessage:     report.ErrorMsg,
+			Source:           "upstream_provider",
+			Severity:         alertSeverityForErrorCode(errorCodeFromMessage(report.ErrorMsg, resp.StatusCode)),
+		})
 	}
 	return report, nil
 }
