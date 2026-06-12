@@ -640,10 +640,8 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
 function ensureTaskPollerStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   if (taskPollerTimer) return;
   taskPollerTimer = setInterval(() => {
-    // SSE-up mode: skip the poll — server pushes events in real time.
-    // The 8 s tick still fires (cheap) so we can resume polling without
-    // restarting if SSE drops mid-session.
-    if (sseOnline) return;
+    // Keep polling as a safety net even when SSE is connected. If a browser
+    // misses an event while the worker fails fast, the node still reconciles.
     void pollTrackedTasks(getStore, setStore);
   }, TASK_POLL_INTERVAL_MS);
 }
@@ -668,7 +666,6 @@ type TaskEventPayload = {
 
 let taskEventSource: EventSource | null = null;
 let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-let sseOnline = false;
 
 function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   // Reuse the poller's per-task application — they share semantics.
@@ -701,7 +698,6 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   }
 
   taskEventSource.onopen = () => {
-    sseOnline = true;
     if (sseReconnectTimer) {
       clearTimeout(sseReconnectTimer);
       sseReconnectTimer = null;
@@ -720,7 +716,6 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   };
 
   taskEventSource.onerror = () => {
-    sseOnline = false;
     // Browser EventSource auto-retries by default, but if the server
     // closed cleanly (4xx/auth) the connection goes back to CLOSED and
     // never reopens. Close + reopen with backoff to cover both cases.
@@ -911,6 +906,23 @@ function normalizeReferenceMediaForProvider(
     ...referenceMedia,
     imageUrls: referenceMedia.imageUrls.map((url) => resolveBackendAssetUrl(url, apiBaseUrl)),
   };
+}
+
+function findReferenceProviderForRequest(
+  providers: AppProviderConfig[],
+  serviceType: string,
+  model: string | undefined,
+  preferredVendor: string | undefined,
+): AppProviderConfig | null {
+  const matchingProviders = providers.filter((provider) =>
+    provider.service_type === serviceType
+    && (!model || provider.model_list.includes(model)),
+  );
+  const preferredProvider = matchingProviders.find((provider) => preferredVendor && provider.vendor === preferredVendor);
+  if (usesPublicHttpReferenceImages(preferredProvider)) {
+    return preferredProvider ?? null;
+  }
+  return matchingProviders.find(usesPublicHttpReferenceImages) ?? preferredProvider ?? matchingProviders[0] ?? null;
 }
 
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
@@ -1743,16 +1755,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ],
         }
       : collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
-    const activeProvider = state.backendModels.find((provider) =>
-      provider.service_type === serviceType
-      && provider.vendor === (genParams?.vendor ?? provider.vendor)
-      && provider.model_list.includes(payload.model ?? ''),
-    ) ?? state.backendModels.find((provider) =>
-      provider.service_type === serviceType
-      && provider.model_list.includes(payload.model ?? ''),
+    const referenceProvider = findReferenceProviderForRequest(
+      state.backendModels,
+      serviceType,
+      payload.model,
+      genParams?.vendor,
     );
     const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
-    const referenceMedia = normalizeReferenceMediaForProvider(rawReferenceMedia, activeProvider, apiBaseUrl);
+    const referenceMedia = normalizeReferenceMediaForProvider(rawReferenceMedia, referenceProvider, apiBaseUrl);
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
@@ -2093,7 +2103,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 // hits 'running' state. After a page reload, any node that was running
 // at refresh time gets picked up automatically on the first tick.
 ensureTaskPollerStarted(useStore.getState, useStore.setState as never);
-// Open the SSE stream so completion events arrive in real time. When
-// the stream is healthy the poller becomes a no-op (it short-circuits
-// on sseOnline). On disconnect the poller takes over within 8 s.
+// Open the SSE stream so completion events arrive in real time. The
+// poller still runs as a low-frequency reconciliation safety net.
 ensureTaskStreamStarted(useStore.getState, useStore.setState as never);

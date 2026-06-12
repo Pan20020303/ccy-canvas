@@ -179,7 +179,15 @@ export type AdminLogFilters = {
   model?: string;
 };
 
-export function listLogs(limit = 50, offset = 0, filters: AdminLogFilters = {}): Promise<GenerationLog[]> {
+function resolveAdminUrl(input: string) {
+  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+  if (/^https?:\/\//.test(input) || !apiBaseUrl) {
+    return input;
+  }
+  return `${apiBaseUrl}${input.startsWith("/") ? input : `/${input}`}`;
+}
+
+export async function listLogs(limit = 50, offset = 0, filters: AdminLogFilters = {}): Promise<LogsResponse> {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
@@ -195,5 +203,16 @@ export function listLogs(limit = 50, offset = 0, filters: AdminLogFilters = {}):
     params.set("model", filters.model.trim());
   }
 
-  return apiClient.get<GenerationLog[]>(`/api/admin/logs?${params.toString()}`);
+  const response = await fetch(resolveAdminUrl(`/api/admin/logs?${params.toString()}`), {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+  const body = await response.json() as Partial<LogsResponse> & { error?: { message?: string } };
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? "加载任务日志失败");
+  }
+  return {
+    data: Array.isArray(body.data) ? body.data : [],
+    total: typeof body.total === "number" ? body.total : Array.isArray(body.data) ? body.data.length : 0,
+  };
 }

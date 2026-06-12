@@ -500,6 +500,69 @@ describe("workspace control bar state", () => {
     }
   });
 
+  it("upgrades uploaded reference images when the preferred vendor is not the chat-image adapter", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://canvas.example.com");
+    try {
+      const { useStore } = await loadStore();
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: async () => JSON.stringify({
+          data: { type: "queued", task_id: "task-gemini-ref", status: "pending" },
+          request_id: "req-gemini-ref",
+        }),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      useStore.getState().setBackendModels([
+        {
+          id: "google-template",
+          service_type: "image",
+          vendor: "Google",
+          name: "Google Imagen",
+          protocol: "openai_compatible",
+          model_list: ["gemini-2.5-flash-image"],
+          default_model: "gemini-2.5-flash-image",
+          priority: 0,
+          parameter_schema: {},
+        },
+        {
+          id: "manju-adapter",
+          service_type: "image",
+          vendor: "ManjuAPI",
+          name: "ManjuAPI / Chat 图片生成",
+          protocol: "openai_compatible",
+          model_list: ["gemini-2.5-flash-image"],
+          default_model: "gemini-2.5-flash-image",
+          priority: 1,
+          parameter_schema: {
+            reference_request_format: "chat_completions_image",
+          },
+        },
+      ]);
+      useStore.getState().updateNodeGenerationParams("2", { vendor: "Google" });
+      useStore.getState().addNode({
+        id: "ref-image-gemini-upload",
+        type: "referenceImageNode",
+        position: { x: 0, y: 0 },
+        data: { url: "/uploads/2026-06/gemini-reference.png" },
+      } as never);
+      useStore.getState().onConnect({
+        source: "ref-image-gemini-upload",
+        target: "2",
+        sourceHandle: null,
+        targetHandle: null,
+      });
+
+      await useStore.getState().runNode("2", { prompt: "use upload", model: "gemini-2.5-flash-image" });
+
+      const [, init] = fetchMock.mock.calls[0];
+      expect(String(init.body)).toContain("\"reference_images\":[\"https://canvas.example.com/uploads/2026-06/gemini-reference.png\"]");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("uploads generated data urls so image nodes survive refresh", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

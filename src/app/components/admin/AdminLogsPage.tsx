@@ -26,6 +26,8 @@ import {
 } from "../ui/sheet";
 import { AdminShell } from "./AdminShell";
 
+const LOG_PAGE_SIZE = 100;
+
 const SERVICE_LABELS: Record<string, string> = {
   text: "文本生成",
   image: "图片生成",
@@ -250,7 +252,9 @@ function TaskDetailDrawer({
 export function AdminLogsPage() {
   const [logs, setLogs] = useState<GenerationLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [totalCount, setTotalCount] = useState(0);
   const [visible, setVisible] = useState<Record<ColumnKey, boolean>>(() => loadVisibility());
   const [statusFilter, setStatusFilter] = useState<"" | "pending" | "success" | "error">("");
   const [userFilter, setUserFilter] = useState("");
@@ -260,26 +264,35 @@ export function AdminLogsPage() {
   const deferredUserFilter = useDeferredValue(userFilter);
   const deferredModelFilter = useDeferredValue(modelFilter);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (offset = 0) => {
+    if (offset === 0) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
     setError("");
 
     try {
-      const nextLogs = await listLogs(100, 0, {
+      const result = await listLogs(LOG_PAGE_SIZE, offset, {
         status: statusFilter,
         user: deferredUserFilter,
         model: deferredModelFilter,
       });
-      setLogs(nextLogs);
+      setLogs((current) => (offset === 0 ? result.data : [...current, ...result.data]));
+      setTotalCount(result.total);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "加载任务日志失败");
     } finally {
-      setLoading(false);
+      if (offset === 0) {
+        setLoading(false);
+      } else {
+        setLoadingMore(false);
+      }
     }
   }, [deferredModelFilter, deferredUserFilter, statusFilter]);
 
   useEffect(() => {
-    void load();
+    void load(0);
   }, [load]);
 
   useEffect(() => {
@@ -296,7 +309,7 @@ export function AdminLogsPage() {
     }
 
     const timer = window.setInterval(() => {
-      void load();
+      void load(0);
     }, 8000);
 
     return () => window.clearInterval(timer);
@@ -369,7 +382,7 @@ export function AdminLogsPage() {
     >
       <div className="space-y-5">
         <div className="grid gap-4 md:grid-cols-4">
-          <MetricCard label="当前结果数" value={counts.total} />
+          <MetricCard label="日志总数" value={totalCount} />
           <MetricCard label="生成中" value={counts.pending} tone="pending" />
           <MetricCard label="成功任务" value={counts.success} tone="success" />
           <MetricCard label="失败任务" value={counts.error} tone="error" />
@@ -531,7 +544,21 @@ export function AdminLogsPage() {
 
           {!loading && !error && logs.length > 0 ? (
             <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-500">
-              当前展示 {logs.length} 条任务记录。
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span>当前加载 {logs.length} / {totalCount} 条任务记录。</span>
+                {logs.length < totalCount ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void load(logs.length)}
+                    disabled={loadingMore}
+                    className="h-8 border-white/10 text-neutral-300 hover:bg-white/5"
+                  >
+                    {loadingMore ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                    加载更多
+                  </Button>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
