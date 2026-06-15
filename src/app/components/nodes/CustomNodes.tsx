@@ -158,7 +158,7 @@ function NodeLoadingCenterBadge({ nodeId }: { nodeId: string }) {
   );
 
   const label = queuedAfterTimeout
-    ? (language === 'zh' ? '已加入队列，等待后台完成...' : 'Queued — waiting for backend...')
+    ? (language === 'zh' ? '已加入队列，正在查询状态（不会重复提交）...' : 'Queued — checking status, not resubmitting...')
     : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
 
   return (
@@ -183,7 +183,7 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
   }
 
   const label = queuedAfterTimeout
-    ? (language === 'zh' ? '已加入队列，等待后台完成...' : 'Queued — waiting for backend...')
+    ? (language === 'zh' ? '已加入队列，正在查询状态（不会重复提交）...' : 'Queued — checking status, not resubmitting...')
     : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
 
   return (
@@ -1708,6 +1708,7 @@ function NodeErrorBanner({ error }: { error: string }) {
     if (e.includes('quota')) return language === 'zh' ? '本地存储已满，画布已成功生成但未能保存到本地。' : 'Local storage full; generated, not saved locally.';
     if (e.includes('invalid token') || e.includes('unauthorized')) return language === 'zh' ? '模型授权失败，请联系管理员检查 API token。' : 'Model auth failed — contact admin.';
     if (e.includes('timeout') || e.includes('timed out')) return language === 'zh' ? '请求超时，请稍后重试。' : 'Request timed out — please retry.';
+    if (e.includes('queued task failed')) return language === 'zh' ? '队列任务失败，已停止生成，不会重复提交。' : 'Queued task failed; generation stopped and was not resubmitted.';
     if (e.includes('network')) return language === 'zh' ? '网络错误，请检查连接后重试。' : 'Network error — please retry.';
     if (e.includes('rate') && e.includes('limit')) return language === 'zh' ? '请求过于频繁，请稍后重试。' : 'Rate limited — please slow down.';
     if (e.includes('422') || e.includes('validation') || e.includes('minlength') || e.includes('required')) {

@@ -571,7 +571,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
           status: 'error',
           taskId: task.id,
           queuedAfterTimeout: false,
-          error: task.error_msg || 'Generation failed',
+          error: `Queued task failed: ${task.error_msg || 'Generation failed'}`,
         },
       };
     }),
