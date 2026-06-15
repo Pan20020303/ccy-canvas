@@ -1,7 +1,8 @@
-import { Suspense, forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Canvas, ThreeEvent, useThree } from '@react-three/fiber';
-import { CameraControls, Grid, TransformControls } from '@react-three/drei';
+import { Canvas, ThreeEvent, useFrame, useThree } from '@react-three/fiber';
+import { CameraControls, Grid, TransformControls, useGLTF } from '@react-three/drei';
+import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
   RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
@@ -45,13 +46,17 @@ type ActorTransform = {
   pose?: ActorPose;
 };
 
-/** 体型预设表 —— 5 种内置素体. assetId 用作 key. */
-const BODY_TYPES: Record<string, { label: string; defaultColor: string; widthMul: number; heightMul: number; headBoost: number }> = {
-  'mannequin-standard': { label: '标准素体', defaultColor: '#d6cdbf', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00 },
-  'mannequin-female':   { label: '女性素体', defaultColor: '#e0d4c4', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00 },
-  'mannequin-child':    { label: '儿童素体', defaultColor: '#dfc8b0', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18 },
-  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#c8bda8', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98 },
-  'mannequin-slim':     { label: '纤细素体', defaultColor: '#dad0c0', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00 },
+/** 体型预设表 —— 5 种内置素体. assetId 用作 key.
+ *
+ *  glbUrl: 如果 public/mannequins/ 下面放了对应的 GLB,会优先用真模型.
+ *  没有放就 fallback 到 procedural primitive 版本. 见
+ *  public/mannequins/README.md 介绍怎么获取 CC0 / 免费素材. */
+const BODY_TYPES: Record<string, { label: string; defaultColor: string; widthMul: number; heightMul: number; headBoost: number; glbUrl: string }> = {
+  'mannequin-standard': { label: '标准素体', defaultColor: '#d6cdbf', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00, glbUrl: '/mannequins/standard.glb' },
+  'mannequin-female':   { label: '女性素体', defaultColor: '#e0d4c4', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00, glbUrl: '/mannequins/female.glb' },
+  'mannequin-child':    { label: '儿童素体', defaultColor: '#dfc8b0', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18, glbUrl: '/mannequins/child.glb' },
+  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#c8bda8', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98, glbUrl: '/mannequins/sturdy.glb' },
+  'mannequin-slim':     { label: '纤细素体', defaultColor: '#dad0c0', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00, glbUrl: '/mannequins/slim.glb' },
 };
 const BODY_TYPE_IDS = Object.keys(BODY_TYPES);
 function bodyTypeOf(assetId: string) {
@@ -431,6 +436,147 @@ const Mannequin = forwardRef<THREE.Group, {
   );
 });
 
+/** ============================================================
+ *  SkinnedMannequin —— 真正的 GLB skinned mesh 版本
+ *  ============================================================
+ *  当 BODY_TYPES[assetId].glbUrl 对应的文件存在时,优先用这个 path:
+ *    - useGLTF 加载 (drei 会缓存 + 走 Suspense)
+ *    - SkeletonUtils.clone 让多 actor 共享同一份资源也能独立姿态
+ *    - findBone 按 Mixamo / Quaternius / Ready Player Me 常见命名 fuzzy
+ *      匹配, 不强求严格 bone name
+ *    - useFrame 每帧把 actor.pose 应用到对应的 bone.rotation
+ *
+ *  下面 BONE_NAME_PATTERNS 几个常见名空间都覆盖了, 一般主流 mannequin
+ *  rig 不用改就能用. 自定义 rig 加进去也只是加几个字符串. */
+
+const BONE_NAME_PATTERNS: Record<keyof Required<ActorPose>, string[]> = {
+  torso:     ['Spine', 'Spine1', 'Spine2', 'spine', 'mixamorigSpine'],
+  head:      ['Head', 'head', 'mixamorigHead'],
+  shoulderL: ['LeftArm', 'arm_L', 'arm.L', 'LeftShoulder', 'mixamorigLeftArm'],
+  shoulderR: ['RightArm', 'arm_R', 'arm.R', 'RightShoulder', 'mixamorigRightArm'],
+  elbowL:    ['LeftForeArm', 'forearm_L', 'forearm.L', 'mixamorigLeftForeArm'],
+  elbowR:    ['RightForeArm', 'forearm_R', 'forearm.R', 'mixamorigRightForeArm'],
+  hipL:      ['LeftUpLeg', 'upper_leg_L', 'upper_leg.L', 'thigh_L', 'thigh.L', 'mixamorigLeftUpLeg'],
+  hipR:      ['RightUpLeg', 'upper_leg_R', 'upper_leg.R', 'thigh_R', 'thigh.R', 'mixamorigRightUpLeg'],
+  kneeL:     ['LeftLeg', 'lower_leg_L', 'lower_leg.L', 'shin_L', 'shin.L', 'mixamorigLeftLeg'],
+  kneeR:     ['RightLeg', 'lower_leg_R', 'lower_leg.R', 'shin_R', 'shin.R', 'mixamorigRightLeg'],
+};
+
+function findBoneInScene(root: THREE.Object3D, candidates: string[]): THREE.Bone | null {
+  // pass 1: exact match
+  for (const name of candidates) {
+    let hit: THREE.Bone | null = null;
+    root.traverse((obj) => {
+      if (hit) return;
+      if ((obj as THREE.Bone).isBone && obj.name === name) hit = obj as THREE.Bone;
+    });
+    if (hit) return hit;
+  }
+  // pass 2: includes match (case-insensitive). Mixamo 喜欢加前缀 mixamorig 之类.
+  const lowered = candidates.map((c) => c.toLowerCase());
+  let hit: THREE.Bone | null = null;
+  root.traverse((obj) => {
+    if (hit) return;
+    if ((obj as THREE.Bone).isBone) {
+      const n = obj.name.toLowerCase();
+      for (const c of lowered) {
+        if (n.includes(c)) { hit = obj as THREE.Bone; return; }
+      }
+    }
+  });
+  return hit;
+}
+
+/** ErrorBoundary 包 SkinnedMannequin —— GLB 加载就算最后一步出问题
+ *  (网络中断 / 文件损坏 / glTF schema 不兼容), 也不让整个 overlay
+ *  whitescreen. 出错时静默回退到 procedural Mannequin. */
+class GLBErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(err: unknown) {
+    console.warn('[DirectorStage] GLB load failed, falling back to procedural mannequin:', err);
+  }
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children;
+  }
+}
+
+const SkinnedMannequin = forwardRef<THREE.Group, {
+  actor: ActorTransform;
+  selected: boolean;
+  onSelect: (id: string, obj: THREE.Object3D) => void;
+}>(function SkinnedMannequin({ actor, selected, onSelect }, ref) {
+  const bt = bodyTypeOf(actor.assetId);
+  // useGLTF 会 Suspense, 调用方需要在 <Suspense> 里包.
+  const { scene } = useGLTF(bt.glbUrl);
+  // 每个 actor 独立一份 clone, 避免共享 skeleton 一动全动.
+  const cloned = useMemo(() => cloneSkeleton(scene), [scene]);
+  const bones = useMemo(() => {
+    const map: Partial<Record<keyof ActorPose, THREE.Bone>> = {};
+    for (const key of Object.keys(BONE_NAME_PATTERNS) as Array<keyof Required<ActorPose>>) {
+      const bone = findBoneInScene(cloned, BONE_NAME_PATTERNS[key]);
+      if (bone) map[key] = bone;
+    }
+    return map;
+  }, [cloned]);
+
+  const groupRef = useRef<THREE.Group>(null!);
+  const setRef = useCallback((g: THREE.Group | null) => {
+    groupRef.current = g!;
+    if (typeof ref === 'function') ref(g);
+    else if (ref) (ref as React.MutableRefObject<THREE.Group | null>).current = g;
+  }, [ref]);
+
+  const handleClick = (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    if (groupRef.current) onSelect(actor.id, groupRef.current);
+  };
+
+  // 每帧把 actor.pose 应用到 bone.rotation. 注意:不同 rig 的 bone 本地
+  // 坐标系不一致, 这里直接 Euler 赋值, 用户用同一套滑杆就能微调.
+  useFrame(() => {
+    const p = { ...DEFAULT_POSE, ...(actor.pose ?? {}) };
+    for (const key of Object.keys(BONE_NAME_PATTERNS) as Array<keyof Required<ActorPose>>) {
+      const bone = bones[key];
+      const r = p[key];
+      if (bone && r) bone.rotation.set(r[0], r[1], r[2]);
+    }
+  });
+
+  const finalRotation: [number, number, number] = actor.rotation ?? [0, actor.rotationY, 0];
+  const finalScale: [number, number, number] = actor.scaleXYZ ?? [actor.scale, actor.scale, actor.scale];
+
+  return (
+    <group
+      ref={setRef}
+      position={actor.position}
+      rotation={finalRotation}
+      scale={[finalScale[0] * bt.widthMul, finalScale[1] * bt.heightMul, finalScale[2] * bt.widthMul]}
+      onClick={handleClick}
+    >
+      <primitive object={cloned} />
+
+      {/* 脚下指示圈 —— 跟 procedural 版同款, 选中态加粗 */}
+      <mesh position={[0, 0.001, 0]} rotation={[-PI / 2, 0, 0]}>
+        <ringGeometry args={selected ? [0.18, 0.24, 32] : [0.18, 0.21, 32]} />
+        <meshBasicMaterial
+          color={selected ? '#c4b5fd' : '#a78bfa'}
+          transparent
+          opacity={selected ? 0.85 : 0.4}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <Billboard text={actor.label} position={[0, 1.95, 0]} />
+    </group>
+  );
+});
+
 /** 文字浮标 —— 永远朝向相机. */
 function Billboard({ text, position }: { text: string; position: [number, number, number] }) {
   const texture = useMemo(() => {
@@ -613,6 +759,44 @@ export function DirectorStageOverlay() {
   // 设计参照 neowow:第一次点确认其实只是"锁定视角",第二次才出图.
   const [confirmStage, setConfirmStage] = useState<'idle' | 'armed' | 'capturing'>('idle');
   const armedTimerRef = useRef<number | null>(null);
+
+  // GLB 资产探测 —— 启动时 HEAD 一下 public/mannequins/*.glb, 命中的体型
+  // 走 SkinnedMannequin (真模型), 没命中的回落 procedural 版.
+  //
+  // 坑:Vite dev server 在 public/ 找不到文件时, **不返回 404, 而是返回
+  // index.html (SPA fallback)**, status 也是 200. 单看 r.ok 会误判.
+  // 修正:同时检查 content-type 不是 text/html, 再 GET 头 4 字节判 glTF
+  // magic ("glTF" = 0x676c5446). 双保险.
+  const [glbAvailable, setGlbAvailable] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const urls = Array.from(new Set(Object.values(BODY_TYPES).map((b) => b.glbUrl).filter(Boolean)));
+    let cancelled = false;
+    Promise.all(urls.map(async (url) => {
+      try {
+        // 1) HEAD —— 看 status + content-type.
+        const head = await fetch(url, { method: 'HEAD' });
+        if (!head.ok) return [url, false] as const;
+        const ct = (head.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('text/html')) return [url, false] as const;
+        // 2) GET 前 8 字节验 GLB magic. GLB 文件以 ASCII "glTF" 起头.
+        const probe = await fetch(url, { headers: { Range: 'bytes=0-7' } });
+        if (!probe.ok && probe.status !== 206) return [url, false] as const;
+        const buf = await probe.arrayBuffer();
+        const view = new DataView(buf);
+        // 0x676C5446 = ASCII "glTF" (big-endian read).
+        const isGLB = buf.byteLength >= 4 && view.getUint32(0, false) === 0x676C5446;
+        return [url, isGLB] as const;
+      } catch {
+        return [url, false] as const;
+      }
+    })).then((results) => {
+      if (cancelled) return;
+      const next: Record<string, boolean> = {};
+      for (const [url, ok] of results) next[url] = ok;
+      setGlbAvailable(next);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // refs
   const cameraControlsRef = useRef<any>(null);
@@ -1083,14 +1267,28 @@ export function DirectorStageOverlay() {
                 场景干净, 跟最终出图风格一致. 0.5 长度刚好够辨认 X/Y/Z
                 方向不喧宾夺主. */}
             {selection ? <axesHelper args={[0.5]} /> : null}
-            {actors.map((a) => (
-              <Mannequin
-                key={a.id}
-                actor={a}
-                selected={selection?.kind === 'actor' && selection.id === a.id}
-                onSelect={onSelectActor}
-              />
-            ))}
+            {actors.map((a) => {
+              const url = bodyTypeOf(a.assetId).glbUrl;
+              const haveGLB = url ? glbAvailable[url] === true : false;
+              const isSelected = selection?.kind === 'actor' && selection.id === a.id;
+              const procedural = (
+                <Mannequin
+                  key={a.id}
+                  actor={a}
+                  selected={isSelected}
+                  onSelect={onSelectActor}
+                />
+              );
+              return haveGLB ? (
+                <GLBErrorBoundary key={a.id} fallback={procedural}>
+                  <SkinnedMannequin
+                    actor={a}
+                    selected={isSelected}
+                    onSelect={onSelectActor}
+                  />
+                </GLBErrorBoundary>
+              ) : procedural;
+            })}
             {cameras.map((cam) => (
               <CameraMarker
                 key={cam.id}

@@ -614,6 +614,64 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
+func TestGenerateImageTextOnlyNormalizesConfiguredQualityOptions(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	var seenQualities []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		seenQualities = append(seenQualities, fmt.Sprint(body["quality"]))
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/custom-quality.png"}]}`))
+	}))
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"allowed_parameters": ["model", "prompt", "n", "size", "quality"],
+		"quality_options": ["standard/1k", "hd/2k", "4k/ultra/high"],
+		"defaults": {"quality": "hd/2k"}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-custom-quality",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"custom-image-model"},
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	for _, quality := range []string{"auto", "high"} {
+		if _, err := service.Generate(context.Background(), GenerateRequest{
+			ServiceType: "image",
+			Model:       "custom-image-model",
+			Prompt:      "draw quality variants",
+			Quality:     quality,
+		}); err != nil {
+			t.Fatalf("Generate quality %q returned error: %v", quality, err)
+		}
+	}
+
+	if len(seenQualities) != 2 {
+		t.Fatalf("seen qualities = %#v, want two requests", seenQualities)
+	}
+	if seenQualities[0] != "hd/2k" {
+		t.Fatalf("auto quality = %q, want hd/2k", seenQualities[0])
+	}
+	if seenQualities[1] != "4k/ultra/high" {
+		t.Fatalf("high quality = %q, want 4k/ultra/high", seenQualities[1])
+	}
+}
+
 func TestGenerateImageViaChatCompletionsUsesMultimodalContent(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

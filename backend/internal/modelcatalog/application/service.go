@@ -1517,6 +1517,7 @@ type providerParameterSchema struct {
 	ModelRoutes       []providerModelRoute               `json:"model_routes"`
 	RequestFormat     string                             `json:"request_format"`
 	ReferenceFormat   string                             `json:"reference_request_format"`
+	QualityOptions    []string                           `json:"quality_options"`
 }
 
 type providerModelRoute struct {
@@ -1680,6 +1681,51 @@ func imageResolutionForProvider(req GenerateRequest) string {
 	}
 }
 
+func normalizeProviderImageQuality(quality string, schema providerParameterSchema) string {
+	q := normalizeOpenAIImageQuality(quality)
+	if len(schema.QualityOptions) == 0 {
+		return q
+	}
+	options := make([]string, 0, len(schema.QualityOptions))
+	for _, option := range schema.QualityOptions {
+		option = strings.TrimSpace(option)
+		if option != "" {
+			options = append(options, option)
+		}
+	}
+	if len(options) == 0 {
+		return q
+	}
+	for _, option := range options {
+		if strings.EqualFold(option, q) {
+			return option
+		}
+	}
+	if q == "auto" {
+		if defaultQuality, ok := schema.Defaults["quality"].(string); ok {
+			for _, option := range options {
+				if strings.EqualFold(option, strings.TrimSpace(defaultQuality)) {
+					return option
+				}
+			}
+		}
+		return options[0]
+	}
+	matchers := map[string][]string{
+		"high":   {"high", "ultra", "4k"},
+		"medium": {"medium", "hd", "2k"},
+		"low":    {"low", "standard", "1k"},
+	}
+	for _, token := range matchers[q] {
+		for _, option := range options {
+			if strings.Contains(strings.ToLower(option), token) {
+				return option
+			}
+		}
+	}
+	return options[0]
+}
+
 func applyImageParameterAliases(body map[string]interface{}, allowed map[string]bool, schema providerParameterSchema, req GenerateRequest) {
 	aliases := schema.ParameterAliases
 	if len(aliases) == 0 {
@@ -1699,7 +1745,7 @@ func applyImageParameterAliases(body map[string]interface{}, allowed map[string]
 		setAllowedParameter(body, allowed, target, imageResolutionForProvider(req))
 	}
 	if target := aliases["quality"]; target != "" {
-		setAllowedParameter(body, allowed, target, normalizeOpenAIImageQuality(req.Quality))
+		setAllowedParameter(body, allowed, target, normalizeProviderImageQuality(req.Quality, schema))
 	}
 }
 
@@ -1817,24 +1863,24 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
 	size := mapAspectRatioToOpenAIImageSize(req.Size)
-	quality := normalizeOpenAIImageQuality(req.Quality)
 	submitPath := resolveImageGenPath(pc)
 	queryPath := resolveImageQueryPath(pc)
 
 	schema := providerImageParameterSchema(pc, req.Model)
+	quality := normalizeProviderImageQuality(req.Quality, schema)
 	allowed := allowedParamSet(schema.AllowedParameters)
 	body := map[string]interface{}{
 		"model":  req.Model,
 		"prompt": req.Prompt,
 		"n":      requestedImageCount(req),
 	}
-	setAllowedParameter(body, allowed, "size", size)
-	setAllowedParameter(body, allowed, "quality", quality)
 	for key, value := range schema.Defaults {
 		if value != nil {
 			body[key] = value
 		}
 	}
+	setAllowedParameter(body, allowed, "size", size)
+	setAllowedParameter(body, allowed, "quality", quality)
 	if strings.TrimSpace(req.OutputFormat) != "" {
 		body["output_format"] = strings.TrimSpace(req.OutputFormat)
 	}
