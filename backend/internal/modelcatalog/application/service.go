@@ -2231,6 +2231,9 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 			// Check for explicit failure.
 			var generic map[string]interface{}
 			if json.Unmarshal(body, &generic) == nil {
+				if status, _ := generic["status"].(string); status == "failed" || status == "error" {
+					return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Generation failed. Raw: %s", string(body[:min(len(body), 500)])))
+				}
 				if data, ok := generic["data"].(map[string]interface{}); ok {
 					if status, _ := data["status"].(string); status == "failed" || status == "error" {
 						return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Generation failed. Raw: %s", string(body[:min(len(body), 500)])))

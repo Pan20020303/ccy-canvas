@@ -970,6 +970,76 @@ func TestGenerateImageChatCompletionsPollsTaskURL(t *testing.T) {
 	}
 }
 
+func TestGenerateImageChatCompletionsStopsOnTopLevelTaskFailure(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	oldInitialDelay := imageTaskPollInitialDelay
+	oldInterval := imageTaskPollInterval
+	oldMaxAttempts := imageTaskPollMaxAttempts
+	imageTaskPollInitialDelay = time.Millisecond
+	imageTaskPollInterval = time.Millisecond
+	imageTaskPollMaxAttempts = 3
+	defer func() {
+		imageTaskPollInitialDelay = oldInitialDelay
+		imageTaskPollInterval = oldInterval
+		imageTaskPollMaxAttempts = oldMaxAttempts
+	}()
+
+	var pollHits atomic.Int32
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			_, _ = w.Write([]byte(fmt.Sprintf(
+				`{"task_id":"gemini-img-failed","status":"running","progress":0,"poll_url":"%s/api/tasks/gemini-img-failed"}`,
+				serverURL,
+			)))
+		case "/api/tasks/gemini-img-failed":
+			pollHits.Add(1)
+			_, _ = w.Write([]byte(`{"task_id":"gemini-img-failed","status":"failed","progress":0,"error":"provider rejected request"}`))
+		default:
+			t.Fatalf("unexpected path = %q", r.URL.Path)
+		}
+	}))
+	serverURL = server.URL
+	defer server.Close()
+
+	schema := json.RawMessage(`{
+		"request_format":"chat_completions_image",
+		"allowed_parameters":["model","messages","stream"],
+		"defaults":{"stream":false}
+	}`)
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-chat-task-failure",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"GPT Image 2"},
+			SubmitEndpoint:  "/v1/chat/completions",
+			ParameterSchema: schema,
+		}},
+	}
+	service := NewService(repo, key)
+
+	_, err = service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "GPT Image 2",
+		Prompt:      "redesign this image",
+	})
+	if err == nil {
+		t.Fatal("Generate returned nil error, want failed task error")
+	}
+	if pollHits.Load() != 1 {
+		t.Fatalf("pollHits = %d, want 1", pollHits.Load())
+	}
+}
+
 func TestGenerateDoesNotFallbackToSecondProvider(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

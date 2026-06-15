@@ -133,7 +133,10 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 	}
 	task := asynq.NewTask(TaskTypeGeneration, body,
 		asynq.Queue(queueNameForServiceType(p.ServiceType)),
-		asynq.MaxRetry(5),
+		// The model service persists success/error into generation_logs.
+		// Retrying a completed failed generation would call upstream again,
+		// causing duplicate requests/cost while the UI still shows one task.
+		asynq.MaxRetry(0),
 		asynq.Timeout(timeoutForServiceType(p.ServiceType)),
 		asynq.Retention(24*time.Hour),
 		// TaskID = RequestID: duplicate submits return ErrTaskIDConflict
