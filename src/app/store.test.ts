@@ -521,6 +521,56 @@ describe("workspace control bar state", () => {
     }
   });
 
+  it("keeps public COS reference image urls intact for chat-image providers", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.png" },
+        request_id: "req-cos-ref",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().setBackendModels([
+      {
+        id: "pc-manju-cos",
+        service_type: "image",
+        vendor: "ManjuAPI",
+        name: "ManjuAPI / Chat image generation",
+        protocol: "openai_compatible",
+        model_list: ["gemini-2.5-flash-image"],
+        default_model: "gemini-2.5-flash-image",
+        priority: 0,
+        parameter_schema: {
+          reference_request_format: "chat_completions_image",
+        },
+      },
+    ]);
+    useStore.getState().addNode({
+      id: "ref-image-cos",
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: {
+        url: "https://ccy-canvas-1334659054.cos.ap-beijing.myqcloud.com/ccy-canvas/uploads/2026-06/reference.png",
+      },
+    } as never);
+    useStore.getState().onConnect({
+      source: "ref-image-cos",
+      target: "2",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    await useStore.getState().runNode("2", { prompt: "use cos reference", model: "gemini-2.5-flash-image" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain(
+      "\"reference_images\":[\"https://ccy-canvas-1334659054.cos.ap-beijing.myqcloud.com/ccy-canvas/uploads/2026-06/reference.png\"]",
+    );
+  });
+
   it("blocks non-public reference images for chat-image providers", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({

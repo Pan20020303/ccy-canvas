@@ -863,11 +863,15 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
     }
 
     const data = (node.data ?? {}) as Record<string, unknown>;
-    // Prefer the backend-relative path (/uploads/...) so the backend can read
-    // the file from disk and convert it for external providers like Sora.
     const rawUrl = typeof data.url === 'string' ? data.url : '';
-    const uploadsPath = rawUrl.match(/\/uploads\/[^\s?#]+/)?.[0] ?? '';
-    const url = uploadsPath || getReferencePayloadValue(node.id, data);
+    const payloadValue = getReferencePayloadValue(node.id, data);
+    // Public object-storage URLs (COS/S3/etc.) must stay intact. Stripping them
+    // down to /uploads/... makes chat-image providers lose the reference.
+    const publicHttpUrl = isPublicHttpAssetUrl(rawUrl) ? rawUrl : '';
+    // For local/backend uploads, prefer the backend-relative path so the
+    // backend can read the file from disk and convert it for external providers.
+    const uploadsPath = publicHttpUrl ? '' : rawUrl.match(/\/uploads\/[^\s?#]+/)?.[0] ?? '';
+    const url = publicHttpUrl || uploadsPath || payloadValue;
     if (!url) {
       continue;
     }
