@@ -51,6 +51,7 @@ import {
 
 import clsx from 'clsx';
 import { useStore, type HistoryItem } from '../store';
+import { resolveApiUrl } from '../api/client';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
   getReferenceNodeTypeFromMimeType,
@@ -827,7 +828,7 @@ const InnerCanvas = () => {
 
       try {
         const referenceValuePromise = readFileAsDataUrl(file);
-        const resp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
+        const resp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
         if (!resp.ok) {
           const bodyText = await resp.text();
           addNode({

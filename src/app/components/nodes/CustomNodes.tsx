@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
+import { resolveApiUrl } from '../../api/client';
 import { resolveBackendAssetUrl } from '../../reference-media';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { ServiceType } from '../../model-config';
@@ -3102,7 +3103,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       const blob = await res.blob();
       const form = new FormData();
       form.append('file', blob, `capture-${mode}-${Date.now()}.png`);
-      const uploadResp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
+      const uploadResp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
       if (uploadResp.ok) {
         const json = await uploadResp.json();
         const rawUrl = json?.data?.url as string;
@@ -3608,7 +3609,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       const blob = await res.blob();
       const form = new FormData();
       form.append('file', blob, `capture-${mode}-${Date.now()}.png`);
-      const uploadResp = await fetch('/api/app/upload', { method: 'POST', body: form, credentials: 'include' });
+      const uploadResp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
       if (uploadResp.ok) {
         const json = await uploadResp.json();
         const rawUrl = json?.data?.url as string;

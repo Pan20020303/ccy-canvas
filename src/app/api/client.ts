@@ -39,7 +39,7 @@ export class ApiClientError extends Error {
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 
-function resolveUrl(input: string) {
+export function resolveApiUrl(input: string) {
   if (/^https?:\/\//.test(input) || !apiBaseUrl) {
     return input;
   }
@@ -55,14 +55,28 @@ function isApiEnvelope<T>(body: unknown): body is ApiEnvelope<T> {
 }
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(resolveUrl(input), {
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  const url = resolveApiUrl(input);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : "network error";
+    const hint = apiBaseUrl
+      ? `Cannot reach API at ${url}. Check PUBLIC_API_BASE/VITE_API_BASE_URL, CORS, and whether the backend is running.`
+      : `Cannot reach API at ${url}. Production must proxy /api/ to the backend, or set PUBLIC_API_BASE and rebuild the frontend.`;
+    throw new ApiClientError({
+      code: "NETWORK_ERROR",
+      message: `${hint} (${reason})`,
+      status: 0,
+    });
+  }
 
   const rawBody = await response.text();
   let body: ApiEnvelope<T> | ApiErrorEnvelope | null = null;

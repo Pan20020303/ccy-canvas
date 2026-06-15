@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, resolveApiUrl } from "./client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,7 +61,7 @@ export async function uploadFile(file: Blob, filename: string): Promise<UploadDa
   const form = new FormData();
   form.append("file", file, filename);
 
-  const response = await fetch("/api/app/upload", {
+  const response = await fetch(resolveApiUrl("/api/app/upload"), {
     method: "POST",
     body: form,
     credentials: "include",
