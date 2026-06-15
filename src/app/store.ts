@@ -25,7 +25,7 @@ import {
   type CanvasClipboardSelection,
 } from './canvas-clipboard';
 import { computeGroupBounds } from './group-routing';
-import { clearReferencePayloadValue, getReferencePayloadValue, isTransientBrowserMediaUrl, resolveBackendAssetUrl } from './reference-media';
+import { clearReferencePayloadValue, getReferencePayloadValue, isPublicHttpAssetUrl, isTransientBrowserMediaUrl, resolveBackendAssetUrl } from './reference-media';
 import { getModelTemplate } from './model-templates';
 import {
   REFERENCE_MODE_SPECS,
@@ -909,7 +909,9 @@ function normalizeReferenceMediaForProvider(
 
   return {
     ...referenceMedia,
-    imageUrls: referenceMedia.imageUrls.map((url) => resolveBackendAssetUrl(url, apiBaseUrl)),
+    imageUrls: referenceMedia.imageUrls
+      .map((url) => resolveBackendAssetUrl(url, apiBaseUrl))
+      .filter(isPublicHttpAssetUrl),
   };
 }
 

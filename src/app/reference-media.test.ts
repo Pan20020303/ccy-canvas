@@ -5,6 +5,7 @@ import {
   getReferencePayloadValue,
   getReferenceNodeTypeFromMimeType,
   isTransientBrowserMediaUrl,
+  isPublicHttpAssetUrl,
   resolveBackendAssetUrl,
   setReferencePayloadValue,
 } from "./reference-media";
@@ -41,6 +42,14 @@ describe("reference media helpers", () => {
     expect(isTransientBrowserMediaUrl("blob:http://localhost:5173/abc")).toBe(true);
     expect(isTransientBrowserMediaUrl("data:image/png;base64,abc")).toBe(true);
     expect(isTransientBrowserMediaUrl("/uploads/2026-06/example.png")).toBe(false);
+  });
+
+  it("detects provider-accessible public http urls", () => {
+    expect(isPublicHttpAssetUrl("https://ccy-canvas-1334659054.cos.ap-beijing.myqcloud.com/a.png")).toBe(true);
+    expect(isPublicHttpAssetUrl("/uploads/2026-06/example.png")).toBe(false);
+    expect(isPublicHttpAssetUrl("http://localhost:8080/uploads/example.png")).toBe(false);
+    expect(isPublicHttpAssetUrl("http://192.168.1.8/uploads/example.png")).toBe(false);
+    expect(isPublicHttpAssetUrl("data:image/png;base64,abc")).toBe(false);
   });
 
   it("prefers transient reference payload values over preview urls", () => {
