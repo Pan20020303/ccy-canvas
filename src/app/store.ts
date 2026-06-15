@@ -557,6 +557,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             status: 'done',
             taskId: task.id,
             queuedAfterTimeout: false,
+            error: undefined,
             ...(isUrl
               ? { url: task.result_url, output: task.result_url }
               : { content: task.result_url, output: task.result_url }),
@@ -1939,6 +1940,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                   : (serviceType === 'image' || serviceType === 'video' ? 'generated' : (node.data as Record<string, unknown> | undefined)?.sourceKind),
                 taskId: result.task_id,
                 queuedAfterTimeout: false,
+                error: undefined,
                 ...(result.type === 'url'
                   ? { url: persistedContent, output: persistedContent }
                   : { content: result.content, output: result.content }),

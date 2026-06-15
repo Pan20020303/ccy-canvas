@@ -449,6 +449,27 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).toContain("\"reference_images\":[\"https://example.com/reference.png\"]");
   });
 
+  it("clears stale node errors when generation succeeds", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.png" },
+        request_id: "req-clear-error",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().updateNodeData("2", { status: "error", error: "previous failure" });
+
+    await useStore.getState().runNode("2", { prompt: "recover", model: "gpt-image-2" });
+
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
+    expect((imageNode?.data as Record<string, unknown>)?.error).toBeUndefined();
+  });
+
   it("upgrades uploaded reference images to public urls for chat-image providers", async () => {
     vi.stubEnv("VITE_API_BASE_URL", "https://canvas.example.com");
     try {
