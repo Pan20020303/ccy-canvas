@@ -1059,7 +1059,17 @@ const PromptPanel = ({
       });
       return;
     }
-    runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel });
+    updateNodeData(nodeId, {
+      status: 'running',
+      error: undefined,
+      queuedAfterTimeout: false,
+    });
+    void Promise.resolve(runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel })).catch((err: unknown) => {
+      updateNodeData(nodeId, {
+        status: 'error',
+        error: err instanceof Error ? err.message : (language === 'zh' ? '生成请求提交失败。' : 'Failed to submit generation request.'),
+      });
+    });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
