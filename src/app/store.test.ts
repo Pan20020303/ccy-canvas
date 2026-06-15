@@ -521,7 +521,7 @@ describe("workspace control bar state", () => {
     }
   });
 
-  it("drops non-public reference images for chat-image providers", async () => {
+  it("blocks non-public reference images for chat-image providers", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -563,8 +563,10 @@ describe("workspace control bar state", () => {
 
     await useStore.getState().runNode("2", { prompt: "generate store", model: "gemini-2.5-flash-image" });
 
-    const [, init] = fetchMock.mock.calls[0];
-    expect(String(init.body)).not.toContain("reference_images");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("error");
+    expect((imageNode?.data as Record<string, unknown>)?.error).toContain("公网");
   });
 
   it("upgrades uploaded reference images when the preferred vendor is not the chat-image adapter", async () => {

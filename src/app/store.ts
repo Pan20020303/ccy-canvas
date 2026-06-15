@@ -1771,6 +1771,24 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     );
     const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
     const referenceMedia = normalizeReferenceMediaForProvider(rawReferenceMedia, referenceProvider, apiBaseUrl);
+    if (
+      serviceType === 'image'
+      && usesPublicHttpReferenceImages(referenceProvider)
+      && rawReferenceMedia.imageUrls.length > 0
+      && referenceMedia.imageUrls.length !== rawReferenceMedia.imageUrls.length
+    ) {
+      const language = get().language;
+      const error = language === 'zh'
+        ? '当前模型需要公网可访问的参考图。请重新上传图片到 COS，或移除本地/旧上传引用后再生成。'
+        : 'This model needs public reference image URLs. Re-upload the image to COS, or remove local/stale references before generating.';
+      set((snapshot) => ({
+        activeRun: null,
+        nodes: snapshot.nodes.map((node) => node.id === nodeId
+          ? { ...node, data: { ...node.data, status: 'error', error } }
+          : node),
+      }));
+      return;
+    }
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
