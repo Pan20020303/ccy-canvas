@@ -38,6 +38,18 @@ type Language = 'en' | 'zh';
 type Theme = 'dark' | 'light';
 
 export type HistoryMediaType = 'text' | 'image' | 'video' | 'audio';
+
+/** 节点生成历史的一个版本. 用户每跑一次生成,旧的 url 进 versions[0],
+ *  新的 url 提升为当前. 用户点 "主图" 按钮可以把任一历史版本提回当前. */
+export type NodeVersion = {
+  id: string;
+  url: string;
+  prompt?: string;
+  model?: string;
+  timestamp: number;
+  /** 视频独有:海报封面,用于缩略图(没有的话用 url 自身的第一帧或占位). */
+  thumbnail?: string;
+};
 export type HistoryAspectRatio = 'portrait' | 'square' | 'landscape' | 'text';
 
 export type HistoryItem = {
@@ -263,6 +275,10 @@ type AppState = {
   copySelectedNodes: () => void;
   pasteCopiedNodes: () => void;
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
+  /** 把指定版本调回成当前主图 —— 现在的 url 反过来进 versions[] 顶端,
+   *  选中的 version.url 提升为当前 url. 节点其他 metadata (prompt 等)
+   *  也一起切换,让面板里看到的提示词跟图对上. */
+  setActiveVersion: (nodeId: string, versionId: string) => void;
   updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
   runNode: (nodeId: string, payload: { prompt: string; model?: string }) => void;
   cancelNode: (nodeId: string) => void;
@@ -550,6 +566,29 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       if (node.id !== task.node_id) return node;
       const isUrl = task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio';
       if (task.status === 'success') {
+        // 把当前 url (如果有) 压进 versions 顶端, 把新 url 提为当前.
+        // 只对 image / video / audio 这种 url 型节点维护历史.
+        const prevData = (node.data ?? {}) as Record<string, unknown>;
+        let nextVersions: NodeVersion[] | undefined;
+        let nextActiveVersionId: string | undefined;
+        const nextTs = Date.now();
+        if (isUrl) {
+          const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
+          const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
+          if (prevUrl && prevUrl !== task.result_url) {
+            const snapshot: NodeVersion = {
+              id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
+              url: prevUrl,
+              prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : undefined,
+              model: typeof prevData.model === 'string' ? prevData.model as string : undefined,
+              timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
+            };
+            nextVersions = [snapshot, ...existing];
+          } else {
+            nextVersions = existing;
+          }
+          nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
+        }
         return {
           ...node,
           data: {
@@ -559,7 +598,13 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             queuedAfterTimeout: false,
             error: undefined,
             ...(isUrl
-              ? { url: task.result_url, output: task.result_url }
+              ? {
+                  url: task.result_url,
+                  output: task.result_url,
+                  versions: nextVersions,
+                  activeVersionId: nextActiveVersionId,
+                  activeVersionTimestamp: nextTs,
+                }
               : { content: task.result_url, output: task.result_url }),
           },
         };
@@ -744,14 +789,54 @@ function storageKey(name: string): string {
 /** Strip large inline payloads from a single node's data before persisting.
  *  Keeps the canvas snapshot small enough to fit in localStorage (5MB).
  *  Network-hosted URLs are kept; data URLs / base64 are dropped. */
+const MAX_PERSISTED_NODE_VERSIONS = 20;
+const MAX_PERSISTED_HISTORY_ITEMS = 100;
+const MAX_PERSISTED_SAVED_ASSETS = 80;
+
+function isHeavyMediaString(value: unknown): value is string {
+  return typeof value === 'string' && isTransientBrowserMediaUrl(value);
+}
+
+function stripHeavyMediaString(value: unknown): unknown {
+  return isHeavyMediaString(value) ? '' : value;
+}
+
+function stripHeavyFromVersion(version: NodeVersion): NodeVersion {
+  return {
+    ...version,
+    url: isHeavyMediaString(version.url) ? '' : version.url,
+    thumbnail: isHeavyMediaString(version.thumbnail) ? '' : version.thumbnail,
+  };
+}
+
+function stripHeavyFromGenerationParams(params: unknown): unknown {
+  if (!params || typeof params !== 'object') return params;
+  const out: Record<string, unknown> = { ...(params as Record<string, unknown>) };
+  if (Array.isArray(out.referenceImages)) {
+    out.referenceImages = out.referenceImages.map((url) => stripHeavyMediaString(url)).filter(Boolean);
+  }
+  if (Array.isArray(out.referenceVideos)) {
+    out.referenceVideos = out.referenceVideos.map((url) => stripHeavyMediaString(url)).filter(Boolean);
+  }
+  out.referenceVideo = stripHeavyMediaString(out.referenceVideo);
+  out.maskImage = stripHeavyMediaString(out.maskImage);
+  return out;
+}
+
 function stripHeavyFromNodeData(data: unknown): unknown {
   if (!data || typeof data !== 'object') return data;
   const out: Record<string, unknown> = { ...(data as Record<string, unknown>) };
-  for (const key of ['url', 'thumbnail', 'poster'] as const) {
-    const value = out[key];
-    if (typeof value === 'string' && isTransientBrowserMediaUrl(value)) {
-      out[key] = '';
-    }
+  for (const key of ['url', 'output', 'thumbnail', 'poster', 'referenceValue', 'maskImage'] as const) {
+    out[key] = stripHeavyMediaString(out[key]);
+  }
+  if (Array.isArray(out.versions)) {
+    out.versions = (out.versions as NodeVersion[])
+      .map(stripHeavyFromVersion)
+      .filter((version) => version.url)
+      .slice(0, MAX_PERSISTED_NODE_VERSIONS);
+  }
+  if (out.generationParams) {
+    out.generationParams = stripHeavyFromGenerationParams(out.generationParams);
   }
   return out;
 }
@@ -761,12 +846,12 @@ function stripHeavyFromNodes(nodes: Node[]): Node[] {
 }
 
 function stripHeavyFromHistory(history: HistoryItem[]): HistoryItem[] {
-  return history.map((item) => ({
+  return history.slice(0, MAX_PERSISTED_HISTORY_ITEMS).map((item) => ({
     ...item,
-    thumbnail: isTransientBrowserMediaUrl(item.thumbnail) ? '' : item.thumbnail,
+    thumbnail: isHeavyMediaString(item.thumbnail) ? '' : item.thumbnail,
     content: item.mediaType === 'text'
       ? item.content
-      : isTransientBrowserMediaUrl(item.content)
+      : isHeavyMediaString(item.content)
         ? ''
         : item.content,
   }));
@@ -812,10 +897,10 @@ function sanitizePersistedAppState<T extends {
       ? stripHeavyFromSpaceSnapshots(persistedState.spaceSnapshotsById)
       : persistedState.spaceSnapshotsById,
     savedAssets: Array.isArray(persistedState.savedAssets)
-      ? persistedState.savedAssets.map((asset) => ({
+      ? persistedState.savedAssets.slice(0, MAX_PERSISTED_SAVED_ASSETS).map((asset) => ({
           ...asset,
-          thumbnail: isTransientBrowserMediaUrl(asset.thumbnail) ? '' : asset.thumbnail,
-          url: isTransientBrowserMediaUrl(asset.url) ? '' : asset.url,
+          thumbnail: isHeavyMediaString(asset.thumbnail) ? '' : asset.thumbnail,
+          url: isHeavyMediaString(asset.url) ? '' : asset.url,
         }))
       : persistedState.savedAssets,
   };
@@ -825,9 +910,17 @@ let storageQuotaWarned = false;
 export const appStorage = {
   getItem: (name: string) => localStorage.getItem(storageKey(name)),
   setItem: (name: string, value: string) => {
+    const key = storageKey(name);
     try {
-      localStorage.setItem(storageKey(name), value);
+      localStorage.setItem(key, value);
     } catch (err) {
+      try {
+        localStorage.removeItem(key);
+        localStorage.setItem(key, value);
+        return;
+      } catch {
+        // Ignore and fall through to the one-time warning below.
+      }
       // Quota exceeded or storage disabled — log once, don't crash the app or pollute node.error.
       const detail = err instanceof Error ? err.message : String(err);
       if (!storageQuotaWarned) {
@@ -1701,6 +1794,42 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+  setActiveVersion: (nodeId, versionId) => set((state) => {
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((node) => {
+      if (node.id !== nodeId) return node;
+      const data = (node.data ?? {}) as Record<string, unknown>;
+      const versions = Array.isArray(data.versions) ? (data.versions as NodeVersion[]) : [];
+      const target = versions.find((v) => v.id === versionId);
+      if (!target) return node;
+      // 当前 url 退到 versions 顶,target 提为当前.
+      const currentUrl = typeof data.url === 'string' ? data.url : '';
+      const currentSnapshot: NodeVersion | null = currentUrl ? {
+        id: typeof data.activeVersionId === 'string' ? data.activeVersionId : `v-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        url: currentUrl,
+        prompt: typeof data.prompt === 'string' ? data.prompt : undefined,
+        model: typeof data.model === 'string' ? data.model : undefined,
+        timestamp: typeof data.activeVersionTimestamp === 'number' ? data.activeVersionTimestamp : Date.now(),
+      } : null;
+      const restVersions = versions.filter((v) => v.id !== versionId);
+      const nextVersions = currentSnapshot ? [currentSnapshot, ...restVersions] : restVersions;
+      return {
+        ...node,
+        data: {
+          ...data,
+          url: target.url,
+          output: target.url,
+          prompt: target.prompt ?? data.prompt,
+          model: target.model ?? data.model,
+          activeVersionId: target.id,
+          activeVersionTimestamp: target.timestamp,
+          versions: nextVersions,
+        },
+      };
+    });
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return { nodes, undoStack, projectStateById };
+  }),
   updateNodeData: (nodeId, patch) => set((state) => {
     const undoStack = pushUndoState(state);
     const nodes = state.nodes.map((node) => (
@@ -1957,24 +2086,58 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
       set((snapshot) => ({
         activeRun: null,
-        nodes: snapshot.nodes.map((node) => node.id === nodeId
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                status: 'done',
-                sourceKind: (currentNode?.data as Record<string, unknown> | undefined)?.derivedFromNodeId
-                  ? ((currentNode?.data as Record<string, unknown> | undefined)?.sourceKind ?? 'derived')
-                  : (serviceType === 'image' || serviceType === 'video' ? 'generated' : (node.data as Record<string, unknown> | undefined)?.sourceKind),
-                taskId: result.task_id,
-                queuedAfterTimeout: false,
-                error: undefined,
-                ...(result.type === 'url'
-                  ? { url: persistedContent, output: persistedContent }
-                  : { content: result.content, output: result.content }),
-              },
+        nodes: snapshot.nodes.map((node) => {
+          if (node.id !== nodeId) return node;
+          // 把旧 url 压进 versions[]、新 url 提升为当前. 跟
+          // applyTaskResultToNode 同样的语义,保证两条成功路径
+          // (同步路径 + SSE / 轮询恢复路径) 都维护历史.
+          const prevData = (node.data ?? {}) as Record<string, unknown>;
+          const isUrlResult = result.type === 'url';
+          let nextVersions: NodeVersion[] | undefined;
+          let nextActiveVersionId: string | undefined;
+          const nextTs = Date.now();
+          if (isUrlResult) {
+            const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
+            const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
+            if (prevUrl && prevUrl !== persistedContent) {
+              const snap: NodeVersion = {
+                id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
+                url: prevUrl,
+                prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : payload.prompt,
+                model: typeof prevData.model === 'string' ? prevData.model as string : payload.model,
+                timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
+              };
+              nextVersions = [snap, ...existing];
+            } else {
+              nextVersions = existing;
             }
-          : node),
+            nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
+          }
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: 'done',
+              sourceKind: (currentNode?.data as Record<string, unknown> | undefined)?.derivedFromNodeId
+                ? ((currentNode?.data as Record<string, unknown> | undefined)?.sourceKind ?? 'derived')
+                : (serviceType === 'image' || serviceType === 'video' ? 'generated' : (node.data as Record<string, unknown> | undefined)?.sourceKind),
+              taskId: result.task_id,
+              queuedAfterTimeout: false,
+              error: undefined,
+              ...(isUrlResult
+                ? {
+                    url: persistedContent,
+                    output: persistedContent,
+                    versions: nextVersions,
+                    activeVersionId: nextActiveVersionId,
+                    activeVersionTimestamp: nextTs,
+                    prompt: payload.prompt,
+                    model: payload.model,
+                  }
+                : { content: result.content, output: result.content }),
+            },
+          };
+        }),
       }));
       trackedTaskNodes.delete(nodeId);
 
@@ -2122,11 +2285,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     spaceMembers: state.spaceMembers,
     invitations: state.invitations,
     groups: state.groups,
-    savedAssets: state.savedAssets.map((asset) => ({
+    savedAssets: state.savedAssets.slice(0, MAX_PERSISTED_SAVED_ASSETS).map((asset) => ({
       ...asset,
       // Drop heavy inline thumbnails/urls; keep only network-hosted ones.
-      thumbnail: isTransientBrowserMediaUrl(asset.thumbnail) ? '' : asset.thumbnail,
-      url: isTransientBrowserMediaUrl(asset.url) ? '' : asset.url,
+      thumbnail: isHeavyMediaString(asset.thumbnail) ? '' : asset.thumbnail,
+      url: isHeavyMediaString(asset.url) ? '' : asset.url,
     })),
     shortcuts: state.shortcuts,
     isTaskQueueCollapsed: state.isTaskQueueCollapsed,

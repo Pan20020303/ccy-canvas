@@ -1705,7 +1705,14 @@ function NodeErrorBanner({ error }: { error: string }) {
   // Map common backend/browser errors to friendly summaries.
   const summary = (() => {
     const e = error.toLowerCase();
-    if (e.includes('quota')) return language === 'zh' ? '本地存储已满，画布已成功生成但未能保存到本地。' : 'Local storage full; generated, not saved locally.';
+    const looksLikeLocalStorageQuota =
+      e.includes('quotaexceeded')
+      || e.includes('localstorage')
+      || e.includes('local storage')
+      || e.includes('failed to execute') && e.includes('setitem')
+      || e.includes('dom exception') && e.includes('quota');
+    if (looksLikeLocalStorageQuota) return language === 'zh' ? '本地存储已满，画布已成功生成但未能保存到本地。' : 'Local storage full; generated, not saved locally.';
+    if (e.includes('quota')) return language === 'zh' ? '服务额度或配额不足，请联系管理员检查账户额度。' : 'Service quota exceeded — contact admin.';
     if (e.includes('invalid token') || e.includes('unauthorized')) return language === 'zh' ? '模型授权失败，请联系管理员检查 API token。' : 'Model auth failed — contact admin.';
     if (e.includes('timeout') || e.includes('timed out')) return language === 'zh' ? '请求超时，请稍后重试。' : 'Request timed out — please retry.';
     if (e.includes('queued task failed')) return language === 'zh' ? '队列任务失败，已停止生成，不会重复提交。' : 'Queued task failed; generation stopped and was not resubmitted.';
@@ -3557,6 +3564,14 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             onLoad={handleImageLoad}
             zh={language === 'zh'}
           />
+          <NodeVersionsBadge
+            nodeId={id}
+            activeUrl={data.url}
+            activePrompt={data.prompt}
+            activeModel={data.model}
+            versions={(data.versions ?? []) as NodeVersion[]}
+            mediaKind="image"
+          />
         </div>
       ) : (
         <MediaEmptyPlaceholder
@@ -3703,6 +3718,16 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
               <span className="text-[12px]">{language === 'zh' ? '输入提示词生成视频' : 'Enter a prompt to generate'}</span>
             </div>
           ) : null}
+          {data.url ? (
+            <NodeVersionsBadge
+              nodeId={id}
+              activeUrl={data.url}
+              activePrompt={data.prompt}
+              activeModel={data.model}
+              versions={(data.versions ?? []) as NodeVersion[]}
+              mediaKind="video"
+            />
+          ) : null}
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -3765,6 +3790,16 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
     >
       <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
         {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
+        {data.url ? (
+          <NodeVersionsBadge
+            nodeId={id}
+            activeUrl={data.url}
+            activePrompt={data.prompt}
+            activeModel={data.model}
+            versions={(data.versions ?? []) as NodeVersion[]}
+            mediaKind="image"
+          />
+        ) : null}
       </div>
     </BaseNode>
   );
@@ -4066,6 +4101,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
 import { AgentNode } from './AgentNode';
 import { StickyNoteNode } from './StickyNoteNode';
 import { DirectorStageNode } from './DirectorStageNode';
+import { NodeVersionsBadge } from './NodeVersions';
+import type { NodeVersion } from '../../store';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 
 export const nodeTypes = {

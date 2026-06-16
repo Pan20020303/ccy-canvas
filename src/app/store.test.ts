@@ -845,6 +845,42 @@ describe("workspace control bar state", () => {
     expect(rehydratedState.history.find((item) => item.id === "blob-history-image")?.thumbnail).toBe("");
   });
 
+  it("does not persist heavy inline media fields that can exceed browser storage quota", async () => {
+    const sharedStorage = createStorageMock();
+    const { useStore } = await loadStore(sharedStorage);
+    const inlineImage = "data:image/png;base64," + "x".repeat(1024);
+
+    useStore.getState().addNode({
+      id: "inline-heavy-image",
+      type: "imageNode",
+      position: { x: 24, y: 24 },
+      data: {
+        url: inlineImage,
+        output: inlineImage,
+        referenceValue: inlineImage,
+        generationParams: {
+          referenceImages: [inlineImage, "/uploads/2026-06/reference.png"],
+          maskImage: inlineImage,
+        },
+        versions: [
+          { id: "bad", url: inlineImage, timestamp: 1 },
+          { id: "good", url: "/uploads/2026-06/version.png", thumbnail: inlineImage, timestamp: 2 },
+        ],
+      },
+    } as never);
+
+    const persistedValues: string[] = [];
+    for (let index = 0; index < sharedStorage.length; index += 1) {
+      const key = sharedStorage.key(index);
+      if (key) persistedValues.push(sharedStorage.getItem(key) ?? "");
+    }
+    const persisted = persistedValues.join("\n");
+
+    expect(persisted).not.toContain(inlineImage);
+    expect(persisted).toContain("/uploads/2026-06/reference.png");
+    expect(persisted).toContain("/uploads/2026-06/version.png");
+  });
+
   it("strips inline image mentions when structured reference images are present", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({
