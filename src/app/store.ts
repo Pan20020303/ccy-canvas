@@ -16,7 +16,7 @@ import {
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
-import { batchTasksByNodeIds, getTask, type TaskItem } from './api/tasks';
+import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
@@ -244,6 +244,11 @@ type AppState = {
   // selected node to a shared edge; distribute spreads them evenly.
   alignSelectedNodes: (mode: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => void;
   distributeSelectedNodes: (axis: 'horizontal' | 'vertical') => void;
+  // Auto-arrange the whole canvas into a tidy left-to-right layered flow
+  // based on edges (sources on the left, derived nodes flow rightward).
+  // Disconnected nodes are packed into their own trailing column. Group
+  // rectangles are recomputed to wrap their members afterward.
+  tidyCanvas: () => void;
   // Lock toggles `data.locked` and ReactFlow's `draggable` per node so a
   // locked node can't be dragged/deleted accidentally. Pass an empty list
   // to toggle all currently selected nodes.
@@ -552,6 +557,16 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   }
   const targetData = targetNode.data as Record<string, unknown>;
   const currentStatus = targetData?.status;
+  const nodeTaskId = typeof targetData?.taskId === 'string' ? (targetData.taskId as string) : undefined;
+  // F4: stale-write guard. If the node is now bound to a *different* task
+  // id than this incoming result, the result belongs to a superseded run
+  // (e.g. the user re-ran the node while the old task was still finishing,
+  // and an SSE/poll event for the old task arrived late). Dropping it stops
+  // an old generation from clobbering the node's current one. We leave
+  // tracking intact — the current task is still in flight.
+  if (nodeTaskId && task.id && nodeTaskId !== task.id) {
+    return;
+  }
   const queuedAfterTimeout = targetData?.queuedAfterTimeout === true;
   const isSameQueuedTask = queuedAfterTimeout && (!targetData?.taskId || targetData.taskId === task.id);
   if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask) {
@@ -778,6 +793,81 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
       ensureTaskStreamStarted(getStore, setStore);
     }, 5000);
   };
+}
+
+// ─── Active-task hydration on load (F10) ─────────────────────────────────
+//
+// Frontend task tracking used to rely entirely on the persisted node
+// snapshot (status:'running' nodes re-tracked on reload). If localStorage
+// was cleared — or the user opened the app in a different browser — an
+// in-flight generation became orphaned: the result landed in the DB but the
+// UI never reconciled it. This asks the backend "what's still running for
+// me?" and re-binds each active task to its canvas node, so the existing
+// poller/SSE machinery picks it back up. Nodes that haven't loaded yet
+// (canvas snapshot arrives async) are re-applied via a short-lived store
+// subscription.
+let activeTasksHydrated = false;
+
+function applyActiveTasksToNodes(
+  tasks: TaskItem[],
+  getStore: () => AppState,
+  setStore: (updater: (state: AppState) => Partial<AppState>) => void,
+): Set<string> {
+  const appliedNodeIds = new Set<string>();
+  const nodes = getStore().nodes;
+  for (const task of tasks) {
+    const node = nodes.find((n) => n.id === task.node_id);
+    if (!node) continue; // node not loaded yet — caller retries on change
+    appliedNodeIds.add(task.node_id);
+    trackedTaskNodes.add(task.node_id);
+  }
+  if (appliedNodeIds.size === 0) return appliedNodeIds;
+  const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
+  setStore((state) => ({
+    nodes: state.nodes.map((node) => {
+      const task = taskByNode.get(node.id);
+      if (!task) return node;
+      const data = (node.data ?? {}) as Record<string, unknown>;
+      // Don't disturb a node that already finished or is already tracking
+      // this exact task.
+      if (data.status === 'running' && data.taskId === task.id) return node;
+      return {
+        ...node,
+        data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined },
+      };
+    }),
+  }));
+  return appliedNodeIds;
+}
+
+async function hydrateActiveTasks(
+  getStore: () => AppState,
+  setStore: (updater: (state: AppState) => Partial<AppState>) => void,
+) {
+  if (activeTasksHydrated) return;
+  activeTasksHydrated = true;
+  let tasks: TaskItem[];
+  try {
+    tasks = await listActiveTasks();
+  } catch {
+    return; // best-effort; the poller still covers locally-running nodes
+  }
+  if (!tasks || tasks.length === 0) return;
+
+  const pending = new Map(tasks.map((t) => [t.node_id, t]));
+  const applied = applyActiveTasksToNodes([...pending.values()], getStore, setStore);
+  for (const id of applied) pending.delete(id);
+  if (pending.size === 0) return;
+
+  // Some target nodes haven't loaded yet (canvas snapshot is async). Re-apply
+  // as the store changes, then give up after a bounded window.
+  const unsubscribe = useStore.subscribe(() => {
+    if (pending.size === 0) { unsubscribe(); return; }
+    const applied = applyActiveTasksToNodes([...pending.values()], getStore, setStore);
+    for (const id of applied) pending.delete(id);
+    if (pending.size === 0) unsubscribe();
+  });
+  setTimeout(() => unsubscribe(), 30000);
 }
 
 let storageUserId = '';
@@ -1794,6 +1884,101 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+  tidyCanvas: () => set((state) => {
+    if (state.nodes.length === 0) return {};
+    const undoStack = pushUndoState(state);
+
+    const COL_GAP = 130;   // horizontal gap between layers
+    const ROW_GAP = 64;    // vertical gap between nodes within a column
+    const NODE_W = 300;    // BaseNode fixed content width
+    const colStep = NODE_W + COL_GAP;
+
+    const nodeById = new Map(state.nodes.map((n) => [n.id, n]));
+    const heightOf = (id: string): number => {
+      const n = nodeById.get(id) as (Node & { measured?: { height?: number } }) | undefined;
+      return n?.measured?.height ?? n?.height ?? 220;
+    };
+
+    // Build incoming adjacency from edges (only between existing nodes).
+    const incoming = new Map<string, string[]>();
+    state.nodes.forEach((n) => incoming.set(n.id, []));
+    state.edges.forEach((e) => {
+      if (nodeById.has(e.source) && nodeById.has(e.target)) {
+        incoming.get(e.target)!.push(e.source);
+      }
+    });
+
+    // Longest-path layering: a node's column = max(column of predecessors)+1.
+    // Cycle-guarded so a stray loop can't recurse forever.
+    const layer = new Map<string, number>();
+    const visiting = new Set<string>();
+    const computeLayer = (id: string): number => {
+      const cached = layer.get(id);
+      if (cached !== undefined) return cached;
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      let l = 0;
+      for (const pred of incoming.get(id) ?? []) {
+        l = Math.max(l, computeLayer(pred) + 1);
+      }
+      visiting.delete(id);
+      layer.set(id, l);
+      return l;
+    };
+    state.nodes.forEach((n) => computeLayer(n.id));
+
+    // Group node ids by their column.
+    const byLayer = new Map<number, string[]>();
+    state.nodes.forEach((n) => {
+      const l = layer.get(n.id) ?? 0;
+      if (!byLayer.has(l)) byLayer.set(l, []);
+      byLayer.get(l)!.push(n.id);
+    });
+    const layerKeys = [...byLayer.keys()].sort((a, b) => a - b);
+
+    // Total stacked height per column, to vertically center each one.
+    const layerHeight = new Map<number, number>();
+    layerKeys.forEach((l) => {
+      const ids = byLayer.get(l)!;
+      const h = ids.reduce((sum, id) => sum + heightOf(id) + ROW_GAP, -ROW_GAP);
+      layerHeight.set(l, h);
+    });
+    const maxColHeight = Math.max(0, ...layerHeight.values());
+
+    // Assign new positions. Keep each column's existing vertical order so
+    // the layout doesn't scramble what the user already arranged.
+    const newPos = new Map<string, { x: number; y: number }>();
+    layerKeys.forEach((l) => {
+      const ids = byLayer.get(l)!;
+      ids.sort((a, b) => (nodeById.get(a)!.position.y) - (nodeById.get(b)!.position.y));
+      const x = l * colStep;
+      let y = (maxColHeight - layerHeight.get(l)!) / 2;
+      ids.forEach((id) => {
+        newPos.set(id, { x, y });
+        y += heightOf(id) + ROW_GAP;
+      });
+    });
+
+    const nodes = state.nodes.map((n) => ({ ...n, position: newPos.get(n.id) ?? n.position }));
+
+    // Recompute each group rectangle to wrap its (newly laid out) members.
+    const nodesAfter = new Map(nodes.map((n) => [n.id, n]));
+    const groups = state.groups.map((group) => {
+      const members = group.nodeIds.map((id) => nodesAfter.get(id)).filter(Boolean) as Node[];
+      if (members.length === 0) return group;
+      const bounds = computeGroupBounds(members);
+      return { ...group, position: { x: bounds.x, y: bounds.y }, width: bounds.width, height: bounds.height };
+    });
+
+    const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
+    return {
+      nodes,
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
   setActiveVersion: (nodeId, versionId) => set((state) => {
     const undoStack = pushUndoState(state);
     const nodes = state.nodes.map((node) => {
@@ -1878,6 +2063,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
+    // Concurrency guard (F6): if a generation is already in flight for this
+    // node, drop the duplicate submit. runAborters[nodeId] is set
+    // synchronously below (before the first await), so a rapid double-click
+    // or React StrictMode double-invoke can't slip two requests through.
+    if (runAborters[nodeId]) return;
     const state = get();
     // Determine service type from the node type.
     const currentNode = state.nodes.find((n) => n.id === nodeId);
@@ -2024,6 +2214,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     runAborters[nodeId] = aborter;
     const timeout = setTimeout(() => aborter.abort(), generationTimeoutMs);
 
+    // Stable idempotency key for this submit (F6). Survives the whole
+    // runNode call; if apiClient retries the POST under the hood, the same
+    // request_id reaches the backend and dedupes to one task / one bill.
+    const requestId = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID()
+      : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     // Make sure the recovery poller is running. Idempotent — first call
     // wires up the interval, subsequent calls are no-ops.
     ensureTaskPollerStarted(get, set as never);
@@ -2032,6 +2229,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const result = await apiGenerate({
         node_id: nodeId,
+        request_id: requestId,
         provider_config_id: referenceProvider?.id,
         service_type: serviceType,
         model: payload.model ?? '',
@@ -2306,3 +2504,7 @@ ensureTaskPollerStarted(useStore.getState, useStore.setState as never);
 // Open the SSE stream so completion events arrive in real time. The
 // poller still runs as a low-frequency reconciliation safety net.
 ensureTaskStreamStarted(useStore.getState, useStore.setState as never);
+// Re-bind any server-side in-flight tasks to their nodes (F10), covering
+// localStorage wipes / a different browser where the persisted node
+// snapshot no longer reflects what's actually running.
+void hydrateActiveTasks(useStore.getState, useStore.setState as never);

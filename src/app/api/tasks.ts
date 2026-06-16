@@ -24,3 +24,10 @@ export function batchTasksByNodeIds(nodeIds: string[]): Promise<TaskItem[]> {
   if (nodeIds.length === 0) return Promise.resolve([]);
   return apiClient.post<TaskItem[]>("/api/app/tasks/batch", { node_ids: nodeIds });
 }
+
+/** The current user's still-in-flight generations (queued/running/...).
+ *  Called on app load to re-hydrate task tracking so a generation survives
+ *  a localStorage wipe or a switch to a different browser (F10). */
+export function listActiveTasks(): Promise<TaskItem[]> {
+  return apiClient.get<TaskItem[]>("/api/app/tasks/active");
+}

@@ -16,11 +16,11 @@ import {
   Bot as BotIcon,
   ClipboardPaste,
   Download,
-  Expand,
   FolderHeart,
   Grid3X3,
   Image as ImageIcon,
   Layers3,
+  LayoutGrid,
   Map,
   Music,
   Pencil,
@@ -269,6 +269,7 @@ const InnerCanvas = () => {
   const moveGroup = useStore((state) => state.moveGroup);
   const alignSelectedNodes = useStore((state) => state.alignSelectedNodes);
   const distributeSelectedNodes = useStore((state) => state.distributeSelectedNodes);
+  const tidyCanvas = useStore((state) => state.tidyCanvas);
   const toggleNodeLock = useStore((state) => state.toggleNodeLock);
   const bringNodeForward = useStore((state) => state.bringNodeForward);
   const sendNodeBackward = useStore((state) => state.sendNodeBackward);
@@ -1566,10 +1567,15 @@ const InnerCanvas = () => {
           </ControlButton>
           <ControlButton
             active={false}
-            label={language === 'zh' ? '适应画布' : 'Fit canvas'}
-            onClick={() => void fitView({ padding: 0.18, duration: 300 })}
+            label={language === 'zh' ? '整理画布' : 'Tidy canvas'}
+            onClick={() => {
+              tidyCanvas();
+              // Fit after the layout commits so the freshly-arranged graph
+              // is framed nicely.
+              setTimeout(() => void fitView({ padding: 0.15, duration: 400 }), 60);
+            }}
           >
-            <Expand className="h-4 w-4" />
+            <LayoutGrid className="h-4 w-4" />
           </ControlButton>
         </div>
       </div>

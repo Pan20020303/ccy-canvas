@@ -907,6 +907,10 @@ export function listAppProviderConfigs(): Promise<AppProviderConfig[]> {
 
 export type GeneratePayload = {
   node_id?: string;
+  /** Client-generated idempotency key (UUID). Two submits carrying the
+   *  same request_id collapse to a single queued task / upstream call,
+   *  so a network retry or double-click never double-bills. */
+  request_id?: string;
   provider_config_id?: string;
   service_type: string;
   model: string;

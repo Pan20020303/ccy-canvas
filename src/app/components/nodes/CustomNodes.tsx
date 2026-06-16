@@ -2048,7 +2048,10 @@ async function splitImageIntoTiles(sourceUrl: string, rows: number, cols: number
       tiles.push(await canvasToDataUrl(canvas));
     }
   }
-  return tiles;
+  // Also return the per-tile pixel dimensions so the caller can lay the
+  // slice nodes out on a non-overlapping grid (node width is fixed at
+  // 300px; height follows the tile aspect ratio).
+  return { tiles, tileW: Math.round(tileW), tileH: Math.round(tileH) };
 }
 
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
@@ -2231,19 +2234,44 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const handleSplit = async (value: string) => {
     if (!sourceUrl || !sourceNode) return;
     const { rows, cols } = parseGridValue(value);
-    const tiles = await splitImageIntoTiles(sourceUrl, rows, cols);
+    const { tiles, tileW, tileH } = await splitImageIntoTiles(sourceUrl, rows, cols);
     const base = sourceNode.position ?? { x: 0, y: 0 };
+
+    // Lay the slices out on a non-overlapping grid. Reference image nodes
+    // render at a fixed 300px content width (BaseNode's w-[300px]); the
+    // displayed image height follows the tile aspect ratio, plus a chrome
+    // allowance for the title row + borders. Grid step = node size + gap
+    // so adjacent slices never stack on top of each other (the old code
+    // used a flat 110px step, far smaller than the 300px node width).
+    const NODE_W = 300;
+    const CHROME_H = 56;               // title row + paddings around the image
+    const GAP = 32;
+    const tileAspect = tileH > 0 && tileW > 0 ? tileH / tileW : 1;
+    const imageDisplayH = NODE_W * tileAspect;
+    const nodeDisplayH = imageDisplayH + CHROME_H;
+    const xStep = NODE_W + GAP;
+    const yStep = nodeDisplayH + GAP;
+
+    // Start the grid to the right of the source node, vertically centered
+    // on it so the slice cluster reads as one block next to the original.
+    const startX = base.x + NODE_W + 80;
+    const startY = base.y - ((rows - 1) * yStep) / 2;
+
     const createdIds: string[] = [];
     tiles.forEach((tile, index) => {
       const id = `img-slice-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 5)}`;
       createdIds.push(id);
+      const col = index % cols;
+      const row = Math.floor(index / cols);
       addNode({
         id,
         type: 'referenceImageNode',
-        position: { x: base.x + 320 + (index % cols) * 110, y: base.y + Math.floor(index / cols) * 110 },
+        position: { x: startX + col * xStep, y: startY + row * yStep },
         data: {
           url: tile,
           status: 'done',
+          mediaWidth: tileW,
+          mediaHeight: tileH,
           sourceName: language === 'zh' ? `切片 ${index + 1}` : `Slice ${index + 1}`,
           sourceKind: 'derived',
           sourceNodeId,

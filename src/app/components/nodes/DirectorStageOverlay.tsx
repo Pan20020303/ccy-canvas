@@ -70,6 +70,9 @@ type CameraSpec = {
   lookAt: [number, number, number];
   fov: number;
   aspect: AspectRatio;
+  /** "应用视图到此机位"时拍下的快照. 每个机位只保留一份,
+   *  下次再 apply 直接覆盖. 显示在右下角面板里. */
+  previewImage?: string;
 };
 
 type SelectionKind = 'actor' | 'camera';
@@ -109,64 +112,143 @@ const DEFAULT_CAMERA: CameraSpec = {
 
 const ASPECT_RATIOS: AspectRatio[] = ['16:9', '9:16', '1:1', '4:3', '21:9'];
 
-/** 姿势预设 —— 用 Math.PI 表达的关节欧拉角. 不追求 100% 解剖学正确,只追求
- *  "一眼能看出是哪个姿势". 用户可以再用滑杆微调. */
+/** "16:9" → "16 / 9" 给 CSS aspect-ratio 用. */
+function aspectRatioToCss(ar: AspectRatio): string {
+  const [w, h] = ar.split(':');
+  return `${w} / ${h}`;
+}
+
+/** 姿势预设 —— 用 Math.PI 表达的关节欧拉角.
+ *
+ *  ★ 重要标定 ★
+ *  -------------
+ *  Mixamo X Bot 的 **bind pose 是 T-pose** (双臂水平外伸),不是自然站立.
+ *  我们的预设以"自然站立 = 双臂自然下垂"作 baseline,所以:
+ *    - 'T型' 预设 = 全 0(就是 bind pose,不动)
+ *    - 所有其他预设(站立 / 行走 / 坐姿 / ...) 都要先把双臂"扣"到身侧,
+ *      再叠加动作. ARMS_DOWN_L / ARMS_DOWN_R 是这两块基线.
+ *
+ *  规则:
+ *    1. 宁可"动作小一点"也不让网格穿过身体(防穿模).
+ *       用户嫌不够大可以切到「微调」Tab 用滑杆放大.
+ *    2. 所有 shoulder Z 数值都是相对身侧(±)的角位移,不直接用 ±PI/2.
+ *    3. 肘 / 髋 / 膝的 X 旋转方向跟 Mixamo 局部坐标对齐:
+ *         elbow.x > 0  → 前臂折回去(屈肘)
+ *         hip.x   < 0  → 大腿往身前抬(屈髋)
+ *         knee.x  > 0  → 小腿往后折(屈膝)
+ *
+ *  procedural 回落素体的 bind pose 是 arms-down,在它上面套这些值会有
+ *  视觉偏差 —— 但 procedural 现在只是"GLB 缺失时的应急显示",不是主要
+ *  目标体.
+ */
 const PI = Math.PI;
+const ARMS_DOWN_L: [number, number, number] = [0, 0, -1.4];  // ≈ -80°, 左臂从 T-pose 收到身侧
+const ARMS_DOWN_R: [number, number, number] = [0, 0,  1.4];  // 镜像
+
 const POSE_PRESETS: Record<string, ActorPose> = {
-  '站立': DEFAULT_POSE,
-  'T型': { ...DEFAULT_POSE, shoulderL: [0, 0, PI / 2], shoulderR: [0, 0, -PI / 2] },
+  // 'T型' = bind pose, 双臂水平外伸
+  'T型': DEFAULT_POSE,
+
+  // 'L 站立': 自然站立, 双臂垂在身侧
+  '站立': {
+    ...DEFAULT_POSE,
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: ARMS_DOWN_R,
+  },
+
+  // 行走: 步伐 + 自然摆臂. 全部数值都从 arms-down baseline 起算.
   '行走': {
     ...DEFAULT_POSE,
-    shoulderL: [PI / 5, 0, 0], shoulderR: [-PI / 5, 0, 0],
-    hipL: [-PI / 6, 0, 0], hipR: [PI / 6, 0, 0],
-    kneeL: [PI / 12, 0, 0], kneeR: [0, 0, 0],
+    shoulderL: [PI / 7, 0, ARMS_DOWN_L[2]],   // 左臂往后摆一点
+    shoulderR: [-PI / 7, 0, ARMS_DOWN_R[2]],  // 右臂往前摆一点
+    hipL: [-PI / 10, 0, 0],                   // 左腿迈前
+    hipR: [PI / 10, 0, 0],                    // 右腿在后
+    kneeL: [PI / 14, 0, 0],
   },
+
+  // 跑步: 大幅摆臂 + 大步幅 + 微前倾. 肘部弯曲跑步姿态.
   '跑步': {
     ...DEFAULT_POSE,
     torso: [PI / 14, 0, 0],
-    shoulderL: [PI / 2.2, 0, 0], shoulderR: [-PI / 2.2, 0, 0],
-    elbowL: [PI / 2, 0, 0], elbowR: [PI / 2, 0, 0],
-    hipL: [-PI / 4, 0, 0], hipR: [PI / 3, 0, 0],
-    kneeL: [PI / 3, 0, 0], kneeR: [PI / 6, 0, 0],
+    shoulderL: [PI / 3, 0, ARMS_DOWN_L[2]],
+    shoulderR: [-PI / 3, 0, ARMS_DOWN_R[2]],
+    elbowL: [PI / 2, 0, 0],
+    elbowR: [PI / 2, 0, 0],
+    hipL: [-PI / 4, 0, 0],
+    hipR: [PI / 5, 0, 0],
+    kneeL: [PI / 3, 0, 0],
+    kneeR: [PI / 7, 0, 0],
   },
+
+  // 坐姿: 髋屈 90°, 膝屈 90°, 双臂垂在身侧
   '坐姿': {
     ...DEFAULT_POSE,
-    hipL: [-PI / 2, 0, 0], hipR: [-PI / 2, 0, 0],
-    kneeL: [PI / 2, 0, 0], kneeR: [PI / 2, 0, 0],
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: ARMS_DOWN_R,
+    hipL: [-PI / 2, 0, 0],
+    hipR: [-PI / 2, 0, 0],
+    kneeL: [PI / 2, 0, 0],
+    kneeR: [PI / 2, 0, 0],
   },
+
+  // 蹲下: 深蹲, 躯干前倾配重, 双臂略前伸保持平衡
   '蹲下': {
     ...DEFAULT_POSE,
-    hipL: [-PI / 1.5, 0, 0], hipR: [-PI / 1.5, 0, 0],
-    kneeL: [PI / 1.2, 0, 0], kneeR: [PI / 1.2, 0, 0],
+    shoulderL: [PI / 5, 0, ARMS_DOWN_L[2] * 0.92],
+    shoulderR: [-PI / 5, 0, ARMS_DOWN_R[2] * 0.92],
     torso: [PI / 6, 0, 0],
+    hipL: [-PI / 1.5, 0, 0],
+    hipR: [-PI / 1.5, 0, 0],
+    kneeL: [PI / 1.2, 0, 0],
+    kneeR: [PI / 1.2, 0, 0],
   },
+
+  // 招手: 左臂保持下垂, 右臂抬到耳边稍弯
   '招手': {
     ...DEFAULT_POSE,
-    shoulderR: [0, 0, -PI * 0.85],
-    elbowR: [0, 0, -PI / 4],
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: [0, 0, -PI / 2.2],      // 右臂从 T-pose 反向旋转, 抬到斜上方
+    elbowR: [0, 0, -PI / 3.5],         // 前臂折向头
   },
+  // 举手: 左臂下垂, 右臂直直伸向天空 (从 T-pose 再多一档 ~70°)
   '举手': {
     ...DEFAULT_POSE,
-    shoulderR: [0, 0, -PI],
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: [0, 0, -PI / 1.4],   // ≈ -128°: 从 T-pose 沿头顶方向旋转
   },
+
+  // 叉腰: 双手按在髋上, 上臂略向外抬, 肘大幅屈, 手腕落到髋骨
   '叉腰': {
     ...DEFAULT_POSE,
-    shoulderL: [0, 0, PI / 3], shoulderR: [0, 0, -PI / 3],
-    elbowL: [0, -PI / 2.3, 0], elbowR: [0, PI / 2.3, 0],
+    shoulderL: [PI / 12, 0, ARMS_DOWN_L[2] + PI / 8],  // 略外抬留出肘空间
+    shoulderR: [PI / 12, 0, ARMS_DOWN_R[2] - PI / 8],
+    elbowL: [PI / 2.2, 0, 0],  // 屈肘往身前折
+    elbowR: [PI / 2.2, 0, 0],
   },
+
+  // 思考: 左臂下垂, 右肘屈起手扶下巴, 头微歪
   '思考': {
     ...DEFAULT_POSE,
-    shoulderR: [0, 0, -PI * 0.45], elbowR: [0, 0, -PI * 0.6],
-    head: [PI / 14, PI / 14, 0],
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: [PI / 4, 0, ARMS_DOWN_R[2] * 0.7],  // 右上臂略前 + 略外抬
+    elbowR: [PI / 1.6, 0, 0],                      // 大角度屈肘, 手到下巴
+    head: [PI / 16, PI / 16, PI / 22],             // 微点头 + 微歪头
   },
+
+  // 拍照: 双臂前举, 双肘屈 ~60° 模拟端相机
   '拍照': {
     ...DEFAULT_POSE,
-    shoulderL: [PI / 2.5, 0, PI / 8], shoulderR: [PI / 2.5, 0, -PI / 8],
-    elbowL: [PI / 3, 0, 0], elbowR: [PI / 3, 0, 0],
+    shoulderL: [PI / 2.4, 0, ARMS_DOWN_L[2] + PI / 7],   // 前举 + 向中收
+    shoulderR: [PI / 2.4, 0, ARMS_DOWN_R[2] - PI / 7],
+    elbowL: [PI / 3, 0, 0],
+    elbowR: [PI / 3, 0, 0],
   },
+
+  // 指向: 左臂下垂, 右臂前伸指向远处 (肩前举 + 略外展)
   '指向': {
     ...DEFAULT_POSE,
-    shoulderR: [-PI / 5, 0, -PI / 2.5],
+    shoulderL: ARMS_DOWN_L,
+    shoulderR: [PI / 2.2, 0, ARMS_DOWN_R[2] * 0.5],   // 抬到接近水平指前
   },
 };
 
@@ -921,10 +1003,15 @@ export function DirectorStageOverlay() {
     const tgt = new THREE.Vector3();
     cc.getPosition(pos);
     cc.getTarget(tgt);
+    // 同步抓一张当前主视口的快照,替换这个机位旧的 previewImage.
+    // captureRef 在 r3f 内部 (CaptureBridge) 已经把 toDataURL 装好,
+    // 在这里同步调一次就行.
+    const preview = captureRef.current?.() ?? undefined;
     setCameras((prev) => prev.map((c) => c.id === cameraId ? {
       ...c,
       position: [pos.x, pos.y, pos.z],
       lookAt: [tgt.x, tgt.y, tgt.z],
+      previewImage: preview || c.previewImage,
     } : c));
     setPresetFlash({ camId: cameraId });
     setTimeout(() => setPresetFlash(null), 1200);
@@ -951,6 +1038,8 @@ export function DirectorStageOverlay() {
     cc.getTarget(tgt);
     const nextIndex = cameras.length + 1;
     const id = `cam-${Date.now()}`;
+    // 新建机位时也抓一张预览, 跟 applyViewToCamera 一致.
+    const preview = captureRef.current?.() ?? undefined;
     const cam: CameraSpec = {
       id,
       label: `机位${nextIndex}`,
@@ -958,6 +1047,7 @@ export function DirectorStageOverlay() {
       lookAt: [tgt.x, tgt.y, tgt.z],
       fov: 50,
       aspect: '16:9',
+      previewImage: preview,
     };
     setCameras((prev) => [...prev, cam]);
     setActiveCameraId(id);
@@ -1472,6 +1562,31 @@ export function DirectorStageOverlay() {
               );
             })}
           </div>
+          {/* 活跃机位的预览快照 —— 「应用视图到此机位」时刚抓的那张.
+              一个机位只保留一份 previewImage,新 apply 直接覆盖. */}
+          {activeCamera ? (
+            <div className="overflow-hidden rounded border border-white/10 bg-black/60">
+              <div
+                className="relative w-full bg-black"
+                style={{ aspectRatio: aspectRatioToCss(activeCamera.aspect) }}
+              >
+                {activeCamera.previewImage ? (
+                  <img
+                    src={activeCamera.previewImage}
+                    alt={`${activeCamera.label} preview`}
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center px-2 text-center text-[10px] text-white/35">
+                    {language === 'zh' ? '点「应用到机位」抓取预览' : 'Click "Apply" to capture preview'}
+                  </div>
+                )}
+                <span className="absolute left-1 top-1 rounded bg-black/55 px-1.5 py-px text-[9px] font-medium text-white/80 backdrop-blur-sm">
+                  {activeCamera.label}
+                </span>
+              </div>
+            </div>
+          ) : null}
           {/* 活跃机位的参数. */}
           {activeCamera ? (
             <div className="flex flex-col gap-1.5 border-t border-white/[0.06] pt-2">
