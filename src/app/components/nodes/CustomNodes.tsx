@@ -1412,7 +1412,7 @@ const PromptPanel = ({
     <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
         <Dropdown
-          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} size={14} />}
+          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
           value={activeModel}
           options={availableModels}
           onChange={handleModelChange}
@@ -1425,7 +1425,7 @@ const PromptPanel = ({
               ?? optTemplate?.durationOptions?.[0];
             return (
               <div className="flex w-full items-center gap-2">
-                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} size={18} />
+                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
                 <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>

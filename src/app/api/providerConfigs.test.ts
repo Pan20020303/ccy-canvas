@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   getEndpointPreview,
+  previewProviderConfigTSImport,
   supportsCustomSubmitQueryEndpoints,
 } from "./providerConfigs";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("supportsCustomSubmitQueryEndpoints", () => {
   it("only allows custom profiles to configure submit/query endpoints", () => {
@@ -47,6 +52,41 @@ describe("getEndpointPreview", () => {
   it("shows Ark video task endpoints", () => {
     expect(getEndpointPreview("video", "ark")).toBe(
       "提交 /contents/generations/tasks · 查询 /contents/generations/tasks/{taskId}",
+    );
+  });
+});
+
+describe("previewProviderConfigTSImport", () => {
+  it("posts TS code to the admin preview endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            service_type: "image",
+            vendor: "Demo",
+            name: "Demo TS",
+            api_spec: "custom",
+            protocol: "openai_compatible",
+            base_url: "https://example.com/v1",
+            model_list: ["demo-image"],
+            icon: { key: "openai" },
+          },
+          request_id: "req_test",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const preview = await previewProviderConfigTSImport("export const vendor = {}");
+
+    expect(preview.icon?.key).toBe("openai");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/provider-configs/import-ts/preview",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ code: "export const vendor = {}" }),
+      }),
     );
   });
 });

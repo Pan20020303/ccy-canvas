@@ -13,7 +13,9 @@ package application
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,6 +161,23 @@ func generationTaskCacheKey(requestID string) string {
 
 func normalizeProviderConfig(pc *domain.ProviderConfig) {
 	pc.BaseURL = normalizeGatewayBaseURL(pc.BaseURL, pc.APISpec)
+	pc.AdapterRuntime = strings.ToLower(strings.TrimSpace(pc.AdapterRuntime))
+	if pc.AdapterRuntime == "" {
+		pc.AdapterRuntime = "go"
+	}
+	if pc.AdapterRuntime != "ts" {
+		pc.AdapterRuntime = "go"
+		pc.AdapterCode = ""
+		pc.AdapterChecksum = ""
+	} else {
+		pc.AdapterCode = strings.TrimSpace(pc.AdapterCode)
+		if pc.AdapterCode != "" {
+			sum := sha256.Sum256([]byte(pc.AdapterCode))
+			pc.AdapterChecksum = hex.EncodeToString(sum[:])
+		}
+	}
+	pc.IconKey = sanitizeProviderIconKey(pc.IconKey)
+	pc.IconURL = sanitizeProviderIconURL(pc.IconURL)
 	if pc.Protocol == "" {
 		switch strings.ToLower(pc.APISpec) {
 		case "ark":
@@ -175,6 +194,37 @@ func normalizeProviderConfig(pc *domain.ProviderConfig) {
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}
 	}
+}
+
+func sanitizeProviderIconKey(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.TrimPrefix(v, "brand:")
+	v = strings.TrimPrefix(v, "lobe:")
+	v = strings.ReplaceAll(v, "_", "-")
+	if v == "" {
+		return ""
+	}
+	if regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`).MatchString(v) {
+		return v
+	}
+	return ""
+}
+
+func sanitizeProviderIconURL(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	lower := strings.ToLower(v)
+	if strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "data:image/png;base64,") ||
+		strings.HasPrefix(lower, "data:image/jpeg;base64,") ||
+		strings.HasPrefix(lower, "data:image/jpg;base64,") ||
+		strings.HasPrefix(lower, "data:image/webp;base64,") ||
+		strings.HasPrefix(lower, "data:image/svg+xml;base64,") {
+		return v
+	}
+	return ""
 }
 
 func normalizeGatewayBaseURL(baseURL, apiSpec string) string {
@@ -630,6 +680,9 @@ func (s *Service) CreateProviderConfig(ctx context.Context, pc domain.ProviderCo
 		pc.APISpec = "openai"
 	}
 	normalizeProviderConfig(&pc)
+	if pc.AdapterRuntime == "ts" && pc.AdapterCode == "" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "TS adapter code is required")
+	}
 	result, err := s.repo.CreateProviderConfig(ctx, pc)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to create provider config", err)
@@ -654,7 +707,15 @@ func (s *Service) UpdateProviderConfig(ctx context.Context, pc domain.ProviderCo
 	} else {
 		pc.EncryptedAPIKey = existing.EncryptedAPIKey
 	}
+	if strings.TrimSpace(pc.AdapterRuntime) == "" {
+		pc.AdapterRuntime = existing.AdapterRuntime
+		pc.AdapterCode = existing.AdapterCode
+		pc.AdapterChecksum = existing.AdapterChecksum
+	}
 	normalizeProviderConfig(&pc)
+	if pc.AdapterRuntime == "ts" && pc.AdapterCode == "" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "TS adapter code is required")
+	}
 	result, err := s.repo.UpdateProviderConfig(ctx, pc)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update provider config", err)
@@ -863,6 +924,9 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 	// once image/video are also migrated.
 	if s.newAPI != nil && s.newAPI.Configured() && c.cfg.ServiceType == "text" && strings.TrimSpace(c.cfg.BaseURL) == "" {
 		return s.generateTextViaNewAPI(ctx, req)
+	}
+	if isTSProvider(c.cfg) {
+		return s.runTSProvider(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	}
 
 	switch c.cfg.ServiceType {

@@ -7,6 +7,12 @@ import { apiClient } from "./client";
 export type ServiceType = "text" | "image" | "video" | "audio";
 export type AdapterProfileID = "openai" | "ark" | "custom";
 export type GatewayProtocol = "openai_compatible" | "newapi" | "native";
+export type AdapterRuntime = "go" | "ts";
+
+export type ProviderIcon = {
+  key?: string;
+  url?: string;
+};
 
 /** Admin view — encrypted API key never returned, only hint. */
 export type ProviderConfig = {
@@ -28,6 +34,11 @@ export type ProviderConfig = {
   status: "enabled" | "disabled";
   capabilities: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  adapter_runtime: AdapterRuntime;
+  adapter_code?: string;
+  adapter_checksum?: string;
+  icon_key?: string;
+  icon_url?: string;
   created_at: string;
   updated_at: string;
   /** Channel-health snapshot (migration 011). Backend populates these so
@@ -58,6 +69,8 @@ export type AppProviderConfig = {
   protocol?: GatewayProtocol;
   capabilities?: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  icon_key?: string;
+  icon_url?: string;
   model_list: string[];
   default_model: string;
   priority: number;
@@ -81,6 +94,27 @@ export type ProviderConfigPayload = {
   status?: "enabled" | "disabled";
   capabilities?: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  adapter_runtime?: AdapterRuntime;
+  adapter_code?: string;
+  icon_key?: string;
+  icon_url?: string;
+};
+
+export type ProviderConfigTSImportPreview = {
+  id?: string;
+  service_type: ServiceType;
+  vendor: string;
+  name: string;
+  api_spec: string;
+  protocol: GatewayProtocol;
+  base_url: string;
+  submit_endpoint?: string;
+  query_endpoint?: string;
+  model_list: string[];
+  default_model?: string;
+  capabilities?: ServiceType[];
+  parameter_schema?: ModelParameterSchema;
+  icon?: ProviderIcon;
 };
 
 export type ModelParameterSchema = {
@@ -851,6 +885,15 @@ export function createProviderConfig(
   payload: ProviderConfigPayload,
 ): Promise<ProviderConfig> {
   return apiClient.post<ProviderConfig>("/api/admin/provider-configs", payload);
+}
+
+export function previewProviderConfigTSImport(
+  code: string,
+): Promise<ProviderConfigTSImportPreview> {
+  return apiClient.post<ProviderConfigTSImportPreview>(
+    "/api/admin/provider-configs/import-ts/preview",
+    { code },
+  );
 }
 
 export function updateProviderConfig(

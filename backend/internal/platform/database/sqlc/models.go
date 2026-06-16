@@ -131,6 +131,11 @@ type ProviderConfig struct {
 	Status          string             `json:"status"`
 	Capabilities    []string           `json:"capabilities"`
 	ParameterSchema []byte             `json:"parameter_schema"`
+	AdapterRuntime  string             `json:"adapter_runtime"`
+	AdapterCode     string             `json:"adapter_code"`
+	AdapterChecksum string             `json:"adapter_checksum"`
+	IconKey         string             `json:"icon_key"`
+	IconUrl         string             `json:"icon_url"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	// Channel-health fields (migration 011_channel_health). Used by the

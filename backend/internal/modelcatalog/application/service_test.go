@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -102,6 +103,95 @@ func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
 
 	if got := body["model"]; got != "gemini-3.0-pro-image 4K" {
 		t.Fatalf("model = %v, want gemini-3.0-pro-image 4K", got)
+	}
+}
+
+func requireNodeForTSProviderRunner(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required for TS provider runner tests")
+	}
+}
+
+const sampleTSProviderCode = `
+type Req = { prompt: string; model: string };
+export const vendor = {
+  id: "sample-ts-image",
+  serviceType: "image",
+  vendor: "SampleVendor",
+  name: "Sample TS Image",
+  apiSpec: "custom",
+  protocol: "openai_compatible",
+  baseURL: "https://provider.example/v1",
+  submitEndpoint: "/images/generations",
+  icon: { key: "OpenAI", url: "data:image/png;base64,AAAA" },
+  models: [{ model: "sample-image-1" }],
+  defaultModel: "sample-image-1",
+  parameterSchema: { quality_options: ["standard", "hd"] },
+};
+
+export async function imageRequest(input: Req, ctx: { apiKey: string; baseURL: string }) {
+  if (ctx.apiKey !== "secret-key") throw new Error("api key was not injected");
+  if (ctx.baseURL !== "https://provider.example/v1") throw new Error("base URL was not injected");
+  return { url: "https://cdn.example/generated.png" };
+}
+`
+
+func TestPreviewProviderPluginParsesTSMetadataAndIcons(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+
+	preview, err := service.PreviewProviderPlugin(context.Background(), sampleTSProviderCode)
+	if err != nil {
+		t.Fatalf("PreviewProviderPlugin returned error: %v", err)
+	}
+	if preview.Name != "Sample TS Image" {
+		t.Fatalf("Name = %q, want Sample TS Image", preview.Name)
+	}
+	if preview.ServiceType != "image" {
+		t.Fatalf("ServiceType = %q, want image", preview.ServiceType)
+	}
+	if got := preview.ModelList; len(got) != 1 || got[0] != "sample-image-1" {
+		t.Fatalf("ModelList = %#v, want sample-image-1", got)
+	}
+	if preview.Icon.Key != "openai" {
+		t.Fatalf("Icon.Key = %q, want openai", preview.Icon.Key)
+	}
+	if preview.Icon.URL == "" {
+		t.Fatal("Icon.URL should be preserved")
+	}
+	if !strings.Contains(string(preview.ParameterSchema), "quality_options") {
+		t.Fatalf("ParameterSchema = %s, want quality_options", preview.ParameterSchema)
+	}
+}
+
+func TestDispatchToVendorUsesTSProviderRunner(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+	pc := &domain.ProviderConfig{
+		ID:             "provider-ts",
+		ServiceType:    "image",
+		Vendor:         "SampleVendor",
+		Name:           "Sample TS Image",
+		BaseURL:        "https://provider.example/v1",
+		AdapterRuntime: "ts",
+		AdapterCode:    sampleTSProviderCode,
+	}
+
+	result, err := service.dispatchToVendor(context.Background(), candidateChannel{
+		cfg:     pc,
+		baseURL: "https://provider.example/v1",
+		apiKey:  "secret-key",
+	}, GenerateRequest{
+		ServiceType: "image",
+		Model:       "sample-image-1",
+		Prompt:      "make an image",
+	})
+	if err != nil {
+		t.Fatalf("dispatchToVendor returned error: %v", err)
+	}
+	if result.Type != "url" || result.Content != "https://cdn.example/generated.png" {
+		t.Fatalf("result = %#v, want generated URL", result)
 	}
 }
 

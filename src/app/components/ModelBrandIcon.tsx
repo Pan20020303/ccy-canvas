@@ -1,4 +1,4 @@
-import type { CSSProperties, ComponentType } from 'react';
+import { useEffect, useState, type CSSProperties, type ComponentType } from 'react';
 import Baidu from '@lobehub/icons/es/Baidu/components/Color';
 import Bfl from '@lobehub/icons/es/Bfl/components/Mono';
 import Claude from '@lobehub/icons/es/Claude/components/Color';
@@ -62,6 +62,14 @@ const LOBE_ICON_BY_KIND: Partial<Record<ModelBrandKind, LobeIconComponent>> = {
   ernie: Baidu,
 };
 
+const VALID_ICON_KINDS = new Set<ModelBrandKind>([
+  'midjourney', 'qwen', 'sora', 'runway', 'suno', 'seedance', 'gpt', 'flux',
+  'kling', 'hailuo', 'gemini', 'claude', 'deepseek', 'doubao', 'newapi',
+  'relaybases', 'volcengine', 'ernie', 'zhipu', 'hunyuan', 'moonshot', 'grok',
+  'stepfun', 'elevenlabs', 'luma', 'pika', 'vidu', 'recraft', 'ideogram',
+  'stability', 'generic',
+]);
+
 /**
  * Small monogram SVG that visually identifies a model's vendor.
  * Used in the prompt-panel model dropdown, similar to a brand favicon.
@@ -70,31 +78,85 @@ export function ModelBrandIcon({
   model,
   vendor,
   providerName,
+  iconKey,
+  iconUrl,
   size = 18,
 }: {
   model?: string;
   vendor?: string;
   providerName?: string;
+  iconKey?: string;
+  iconUrl?: string;
   size?: number;
 }) {
+  const [urlFailed, setUrlFailed] = useState(false);
+  useEffect(() => {
+    setUrlFailed(false);
+  }, [iconUrl]);
+
   const brand = getModelBrand(model, vendor, providerName);
-  const OfficialIcon = LOBE_ICON_BY_KIND[brand.kind];
+  const explicitKind = normalizeIconKey(iconKey);
+  const kind = explicitKind ?? brand.kind;
+  const OfficialIcon = LOBE_ICON_BY_KIND[kind];
+  const safeIconUrl = isSafeIconURL(iconUrl) ? iconUrl : "";
 
   return (
     <span
       className="inline-flex shrink-0 items-center justify-center rounded-md"
       style={{ width: size, height: size, background: 'rgba(255,255,255,0.04)' }}
-      title={brand.vendor}
+      title={providerName || vendor || brand.vendor}
     >
-      {OfficialIcon ? (
+      {safeIconUrl && !urlFailed ? (
+        <img
+          src={safeIconUrl}
+          alt=""
+          width={size}
+          height={size}
+          className="block rounded-md object-cover"
+          style={{ width: size, height: size }}
+          onError={() => setUrlFailed(true)}
+        />
+      ) : OfficialIcon ? (
         <OfficialIcon size={size} style={{ display: 'block', flex: 'none' }} />
       ) : (
         <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-          {renderShape(brand.kind, brand.color)}
+          {renderShape(kind, brand.color)}
         </svg>
       )}
     </span>
   );
+}
+
+function normalizeIconKey(value?: string): ModelBrandKind | null {
+  const key = (value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^brand:/, "")
+    .replace(/^lobe:/, "")
+    .replace(/_/g, "-");
+  const aliases: Record<string, ModelBrandKind> = {
+    openai: 'gpt',
+    dall: 'gpt',
+    dalle: 'gpt',
+    "dall-e": 'gpt',
+    google: 'gemini',
+    imagen: 'gemini',
+    bfl: 'flux',
+    "black-forest-labs": 'flux',
+    minimax: 'hailuo',
+    tencent: 'hunyuan',
+    baidu: 'ernie',
+    manjuapi: 'gpt',
+  };
+  const normalized = aliases[key] ?? key;
+  return VALID_ICON_KINDS.has(normalized as ModelBrandKind)
+    ? (normalized as ModelBrandKind)
+    : null;
+}
+
+function isSafeIconURL(value?: string): value is string {
+  if (!value) return false;
+  return /^(https?:\/\/|data:image\/(?:png|jpe?g|webp|svg\+xml);base64,)/i.test(value.trim());
 }
 
 function renderShape(kind: ModelBrandKind, color: string) {

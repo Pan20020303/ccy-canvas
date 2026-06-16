@@ -1,29 +1,36 @@
 -- name: ListProviderConfigs :many
-SELECT id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+SELECT id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url,
+       created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns
 FROM provider_configs
 ORDER BY service_type, priority ASC, created_at ASC;
 
 -- name: GetProviderConfigByID :one
-SELECT id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+SELECT id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url,
+       created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns
 FROM provider_configs
 WHERE id = $1;
 
 -- name: CreateProviderConfig :one
-INSERT INTO provider_configs (service_type, vendor, name, api_spec, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+INSERT INTO provider_configs (service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
+       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status,
+       capabilities, parameter_schema, adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+RETURNING id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url,
+       created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns;
 
 -- name: UpdateProviderConfig :one
@@ -32,31 +39,42 @@ SET service_type     = $2,
     vendor           = $3,
     name             = $4,
     api_spec         = $5,
-    base_url         = $6,
-    encrypted_api_key = $7,
-    submit_endpoint  = $8,
-    query_endpoint   = $9,
-    model_list       = $10,
-    default_model    = $11,
-    priority         = $12,
-    is_default       = $13,
-    status           = $14,
+    protocol         = $6,
+    base_url         = $7,
+    encrypted_api_key = $8,
+    submit_endpoint  = $9,
+    query_endpoint   = $10,
+    model_list       = $11,
+    default_model    = $12,
+    priority         = $13,
+    is_default       = $14,
+    status           = $15,
+    capabilities     = $16,
+    parameter_schema = $17,
+    adapter_runtime  = $18,
+    adapter_code     = $19,
+    adapter_checksum = $20,
+    icon_key         = $21,
+    icon_url         = $22,
     updated_at       = now()
 WHERE id = $1
-RETURNING id, service_type, vendor, name, api_spec, base_url, encrypted_api_key,
+RETURNING id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url,
+       created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns;
 
 -- name: DeleteProviderConfig :exec
 DELETE FROM provider_configs WHERE id = $1;
 
 -- name: ListEnabledProviderConfigs :many
-SELECT id, service_type, vendor, name, api_spec, base_url,
+SELECT id, service_type, vendor, name, api_spec, protocol, base_url,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, created_at, updated_at,
-       failure_count, last_failure_at, last_error_msg, last_success_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       icon_key, icon_url, created_at, updated_at,
+       failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns
 FROM provider_configs
 WHERE status = 'enabled'

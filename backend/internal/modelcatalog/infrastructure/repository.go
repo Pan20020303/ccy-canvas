@@ -112,6 +112,11 @@ func toProviderConfig(p sqlc.ProviderConfig) domain.ProviderConfig {
 		Status:          p.Status,
 		Capabilities:    p.Capabilities,
 		ParameterSchema: rawJSON(p.ParameterSchema),
+		AdapterRuntime:  p.AdapterRuntime,
+		AdapterCode:     p.AdapterCode,
+		AdapterChecksum: p.AdapterChecksum,
+		IconKey:         p.IconKey,
+		IconURL:         p.IconUrl,
 		CreatedAt:       p.CreatedAt.Time,
 		UpdatedAt:       p.UpdatedAt.Time,
 		// Channel health (migration 011).
@@ -162,6 +167,8 @@ func toAppProviderConfig(p sqlc.ListEnabledProviderConfigsRow) domain.AppProvide
 		DefaultModel:    p.DefaultModel,
 		Priority:        p.Priority,
 		ParameterSchema: rawJSON(p.ParameterSchema),
+		IconKey:         p.IconKey,
+		IconURL:         p.IconUrl,
 	}
 }
 
@@ -413,6 +420,11 @@ func (r *Repository) CreateProviderConfig(ctx context.Context, pc domain.Provide
 		Status:          pc.Status,
 		Capabilities:    pc.Capabilities,
 		ParameterSchema: []byte(rawJSON(pc.ParameterSchema)),
+		AdapterRuntime:  pc.AdapterRuntime,
+		AdapterCode:     pc.AdapterCode,
+		AdapterChecksum: pc.AdapterChecksum,
+		IconKey:         pc.IconKey,
+		IconUrl:         pc.IconURL,
 	})
 	if err != nil {
 		return nil, err
@@ -444,6 +456,11 @@ func (r *Repository) UpdateProviderConfig(ctx context.Context, pc domain.Provide
 		Status:          pc.Status,
 		Capabilities:    pc.Capabilities,
 		ParameterSchema: []byte(rawJSON(pc.ParameterSchema)),
+		AdapterRuntime:  pc.AdapterRuntime,
+		AdapterCode:     pc.AdapterCode,
+		AdapterChecksum: pc.AdapterChecksum,
+		IconKey:         pc.IconKey,
+		IconUrl:         pc.IconURL,
 	})
 	if err != nil {
 		return nil, err

@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, X, Zap } from "lucide-react";
+import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, X, Zap } from "lucide-react";
 
-import type { GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
+import type { AdapterRuntime, GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
 import {
   createProviderConfig,
   deleteProviderConfig,
   getEndpointPreview,
   listProviderConfigs,
+  previewProviderConfigTSImport,
   resetChannelHealth,
   supportsCustomSubmitQueryEndpoints,
   testChannelConnectivity,
@@ -61,6 +62,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const [vendor, setVendor] = useState("");
   const [apiSpec, setApiSpec] = useState("openai");
   const [protocol, setProtocol] = useState<GatewayProtocol>("openai_compatible");
+  const [adapterRuntime, setAdapterRuntime] = useState<AdapterRuntime>("go");
+  const [adapterCode, setAdapterCode] = useState("");
+  const [iconKey, setIconKey] = useState("");
+  const [iconUrl, setIconUrl] = useState("");
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -72,6 +77,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const [isDefault, setIsDefault] = useState(false);
   const [parameterSchemaText, setParameterSchemaText] = useState("{}");
   const [saving, setSaving] = useState(false);
+  const [previewingTS, setPreviewingTS] = useState(false);
   const [error, setError] = useState("");
 
   const templates = VENDOR_TEMPLATES[serviceType] ?? [];
@@ -85,6 +91,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       setVendor(config.vendor);
       setApiSpec(config.api_spec || "openai");
       setProtocol(config.protocol || "openai_compatible");
+      setAdapterRuntime(config.adapter_runtime || "go");
+      setAdapterCode(config.adapter_code || "");
+      setIconKey(config.icon_key || "");
+      setIconUrl(config.icon_url || "");
       setName(config.name);
       setBaseUrl(config.base_url);
       setApiKey("");
@@ -100,6 +110,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       setVendor("");
       setApiSpec("openai");
       setProtocol("openai_compatible");
+      setAdapterRuntime("go");
+      setAdapterCode("");
+      setIconKey("");
+      setIconUrl("");
       setName("");
       setBaseUrl("");
       setApiKey("");
@@ -120,6 +134,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
     setBaseUrl(tpl.baseURL);
     setApiSpec(tpl.apiSpec);
     setProtocol(tpl.protocol || "openai_compatible");
+    setAdapterRuntime("go");
+    setAdapterCode("");
+    setIconKey("");
+    setIconUrl("");
     setModelListText(tpl.models.join("\n"));
     setDefaultModel(tpl.models[0] ?? "");
     setSubmitEndpoint(tpl.submitEndpoint ?? "");
@@ -127,14 +145,49 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
     setParameterSchemaText(JSON.stringify(tpl.parameterSchema ?? {}, null, 2));
   };
 
+  const handlePreviewTSImport = async () => {
+    if (!adapterCode.trim()) {
+      setError("Please paste TS adapter code first.");
+      return;
+    }
+    setPreviewingTS(true);
+    setError("");
+    try {
+      const preview = await previewProviderConfigTSImport(adapterCode);
+      setAdapterRuntime("ts");
+      setServiceType(preview.service_type);
+      setVendor(preview.vendor || "Custom");
+      setName(preview.name || preview.vendor || "TS Provider");
+      setApiSpec(preview.api_spec || "custom");
+      setProtocol(preview.protocol || "openai_compatible");
+      setBaseUrl(preview.base_url || "");
+      setSubmitEndpoint(preview.submit_endpoint || "");
+      setQueryEndpoint(preview.query_endpoint || "");
+      setModelListText((preview.model_list ?? []).join("\n"));
+      setDefaultModel(preview.default_model || preview.model_list?.[0] || "");
+      setParameterSchemaText(JSON.stringify(preview.parameter_schema ?? {}, null, 2));
+      setIconKey(preview.icon?.key || "");
+      setIconUrl(preview.icon?.url || "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse TS adapter.");
+    } finally {
+      setPreviewingTS(false);
+    }
+  };
+
   const handleSave = async () => {
     const modelList = normalizeModelList(modelListText);
-    if (!name.trim() || !baseUrl.trim()) {
+    if (!name.trim() || (adapterRuntime !== "ts" && !baseUrl.trim())) {
       setError("名称和 Base URL 不能为空");
       return;
     }
     if (modelList.length === 0) {
       setError("至少填写一个模型名称");
+      return;
+    }
+
+    if (adapterRuntime === "ts" && !adapterCode.trim()) {
+      setError("TS adapter code is required.");
       return;
     }
 
@@ -164,6 +217,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       is_default: isDefault,
       capabilities: serviceCapabilities(serviceType),
       parameter_schema: parameterSchema,
+      adapter_runtime: adapterRuntime,
+      adapter_code: adapterRuntime === "ts" ? adapterCode : "",
+      icon_key: iconKey.trim() || undefined,
+      icon_url: iconUrl.trim() || undefined,
     };
     if (config) {
       payload.status = config.status;
@@ -222,9 +279,42 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             </div>
           </Field>
 
+          <Field label="TS Provider Adapter">
+            <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 text-xs text-neutral-400">
+                  <FileCode2 className="h-4 w-4 text-[#ff9b68]" />
+                  Paste a Toonflow-style TS provider, then parse it into this form.
+                </span>
+                <Button type="button" variant="secondary" onClick={handlePreviewTSImport} disabled={previewingTS || !adapterCode.trim()}>
+                  {previewingTS ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Parse TS
+                </Button>
+              </div>
+              <textarea
+                value={adapterCode}
+                onChange={(event) => {
+                  setAdapterCode(event.target.value);
+                  if (event.target.value.trim()) setAdapterRuntime("ts");
+                }}
+                spellCheck={false}
+                placeholder="export const vendor = { ... }; export async function imageRequest(input, ctx) { ... }"
+                className={`${FIELD_INPUT} min-h-36 resize-y py-3 font-mono text-xs`}
+              />
+            </div>
+          </Field>
+
           <div className="grid grid-cols-2 gap-3">
             <Field label="厂商"><input value={vendor} onChange={(event) => setVendor(event.target.value)} className={FIELD_INPUT} /></Field>
             <Field label="显示名称"><input value={name} onChange={(event) => setName(event.target.value)} className={FIELD_INPUT} /></Field>
+          </div>
+
+          <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
+            <Field label="Icon Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
+            <Field label="Icon URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
+            <div className="pb-3">
+              <ModelBrandIcon model={defaultModel || modelListText.split(/\n/)[0]} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -243,6 +333,13 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
               </select>
             </Field>
           </div>
+
+          <Field label="运行时">
+            <select value={adapterRuntime} onChange={(event) => setAdapterRuntime(event.target.value as AdapterRuntime)} className={FIELD_SELECT}>
+              <option value="go">Go built-in adapter</option>
+              <option value="ts">TypeScript adapter</option>
+            </select>
+          </Field>
 
           <Field label="Base URL">
             <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example-newapi.com/v1" className={FIELD_INPUT} />
@@ -464,7 +561,7 @@ export function AdminModelCatalogPage() {
                     <td className="px-4 py-3"><Badge className={SERVICE_BADGE_STYLES[config.service_type]}>{SERVICE_LABELS[config.service_type]}</Badge></td>
                     <td className="px-4 py-3 text-neutral-300">
                       <span className="inline-flex items-center gap-2">
-                        <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} size={20} />
+                        <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={20} />
                         <span>{config.vendor}</span>
                       </span>
                     </td>
@@ -477,7 +574,7 @@ export function AdminModelCatalogPage() {
                     <td className="px-4 py-3 font-mono text-xs text-neutral-400">{config.protocol || "openai_compatible"}</td>
                     <td className="px-4 py-3 font-mono text-xs text-neutral-400">
                       <span className="inline-flex items-center gap-2">
-                        <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} size={18} />
+                        <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
                         <span>{config.default_model || "-"}</span>
                       </span>
                     </td>
