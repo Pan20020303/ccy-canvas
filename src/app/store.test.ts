@@ -676,6 +676,7 @@ describe("workspace control bar state", () => {
       await useStore.getState().runNode("2", { prompt: "use upload", model: "gemini-2.5-flash-image" });
 
       const [, init] = fetchMock.mock.calls[0];
+      expect(String(init.body)).toContain("\"provider_config_id\":\"manju-adapter\"");
       expect(String(init.body)).toContain("\"reference_images\":[\"https://canvas.example.com/uploads/2026-06/gemini-reference.png\"]");
     } finally {
       vi.unstubAllEnvs();

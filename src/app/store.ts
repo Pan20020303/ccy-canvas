@@ -925,16 +925,20 @@ function findReferenceProviderForRequest(
   serviceType: string,
   model: string | undefined,
   preferredVendor: string | undefined,
+  hasReferenceImages = false,
 ): AppProviderConfig | null {
   const matchingProviders = providers.filter((provider) =>
     provider.service_type === serviceType
     && (!model || provider.model_list.includes(model)),
   );
   const preferredProvider = matchingProviders.find((provider) => preferredVendor && provider.vendor === preferredVendor);
-  if (usesPublicHttpReferenceImages(preferredProvider)) {
-    return preferredProvider ?? null;
+  if (hasReferenceImages) {
+    if (usesPublicHttpReferenceImages(preferredProvider)) {
+      return preferredProvider ?? null;
+    }
+    return matchingProviders.find(usesPublicHttpReferenceImages) ?? preferredProvider ?? matchingProviders[0] ?? null;
   }
-  return matchingProviders.find(usesPublicHttpReferenceImages) ?? preferredProvider ?? matchingProviders[0] ?? null;
+  return preferredProvider ?? matchingProviders[0] ?? null;
 }
 
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
@@ -1772,6 +1776,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       serviceType,
       payload.model,
       genParams?.vendor,
+      rawReferenceMedia.imageUrls.length > 0,
     );
     const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
     const referenceMedia = normalizeReferenceMediaForProvider(rawReferenceMedia, referenceProvider, apiBaseUrl);
@@ -1898,6 +1903,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const result = await apiGenerate({
         node_id: nodeId,
+        provider_config_id: referenceProvider?.id,
         service_type: serviceType,
         model: payload.model ?? '',
         prompt: resolvedPrompt,

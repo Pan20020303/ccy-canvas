@@ -1104,6 +1104,64 @@ func TestGenerateDoesNotFallbackToSecondProvider(t *testing.T) {
 	}
 }
 
+func TestGenerateUsesRequestedProviderConfigID(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unexpected first provider hit: %s", r.URL.Path)
+	}))
+	defer firstServer.Close()
+
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("second provider path = %q, want /images/generations", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/selected-provider.png"}]}`))
+	}))
+	defer secondServer.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{
+			{
+				ID:              "plain-provider",
+				ServiceType:     "image",
+				Status:          "enabled",
+				BaseURL:         firstServer.URL,
+				EncryptedAPIKey: encryptedKey,
+				ModelList:       []string{"same-model"},
+				APISpec:         "openai",
+			},
+			{
+				ID:              "selected-provider",
+				ServiceType:     "image",
+				Status:          "enabled",
+				BaseURL:         secondServer.URL,
+				EncryptedAPIKey: encryptedKey,
+				ModelList:       []string{"same-model"},
+				APISpec:         "openai",
+			},
+		},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType:      "image",
+		ProviderConfigID: "selected-provider",
+		Model:            "same-model",
+		Prompt:           "draw",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if result.Content != "https://example.com/selected-provider.png" {
+		t.Fatalf("result.Content = %q", result.Content)
+	}
+}
+
 func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

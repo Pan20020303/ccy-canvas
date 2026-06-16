@@ -1132,6 +1132,7 @@ type listAppProviderConfigsOutput struct {
 type generateInput struct {
 	Body struct {
 		NodeId           string                      `json:"node_id" doc:"Canvas node id (for log correlation)"`
+		ProviderConfigID string                      `json:"provider_config_id,omitempty" doc:"Exact provider config id selected by frontend"`
 		ServiceType      string                      `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
 		Model            string                      `json:"model" minLength:"1" doc:"Model name"`
 		Prompt           string                      `json:"prompt" minLength:"1" doc:"User prompt"`
@@ -1331,6 +1332,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	// into request_payload JSONB) and legacy inline path.
 	req := application.GenerateRequest{
 		ServiceType:      input.Body.ServiceType,
+		ProviderConfigID: input.Body.ProviderConfigID,
 		Model:            input.Body.Model,
 		Prompt:           input.Body.Prompt,
 		Size:             input.Body.Size,

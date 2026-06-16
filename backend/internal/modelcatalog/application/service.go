@@ -723,6 +723,7 @@ type VideoCropRect struct {
 
 type GenerateRequest struct {
 	ServiceType      string // image / text / video / audio
+	ProviderConfigID string // optional exact provider_config id selected by frontend
 	Model            string // e.g. "gpt-image-2"
 	Prompt           string
 	Size             string // ratio like "1:1", "16:9", "auto"
@@ -787,6 +788,9 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 	}
 	for i := range configs {
 		c := configs[i]
+		if req.ProviderConfigID != "" && c.ID != req.ProviderConfigID {
+			continue
+		}
 		if c.Status != "enabled" {
 			continue
 		}
@@ -1192,6 +1196,12 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
 	schema := providerImageParameterSchema(pc, req.Model)
+	if len(req.ReferenceImages) > 0 && ResolveProfile(pc).ID == "custom" && !isChatCompletionsReferenceImageSchema(schema) {
+		editPath := strings.ToLower(strings.TrimSpace(resolveImageEditPath(pc)))
+		if !strings.Contains(editPath, "edit") {
+			return nil, apperror.New(apperror.CodeInvalidInput, "Reference images were provided, but the selected provider is configured for text-to-image only. Configure a chat-image or image-edit endpoint.")
+		}
+	}
 	if isChatCompletionsImageSchema(schema) {
 		return s.generateImageViaChatCompletions(ctx, pc, baseURL, apiKey, req, schema)
 	}
