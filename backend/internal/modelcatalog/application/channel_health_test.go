@@ -201,8 +201,14 @@ func (r *healthFakeRepo) InsertGenerationAttempt(_ context.Context, _ domain.Gen
 func (r *healthFakeRepo) ListGenerationAttemptsByLog(_ context.Context, _ string) ([]domain.GenerationAttempt, error) {
 	panic("nope")
 }
-func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _ string, _ int32) error {
+func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _ string, _ int32, _ bool) error {
 	panic("nope")
+}
+func (r *healthFakeRepo) ListStaleActiveGenerations(_ context.Context, _ time.Time) ([]domain.StaleGeneration, error) {
+	return nil, nil
+}
+func (r *healthFakeRepo) MarkGenerationTimedOut(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
 }
 func (r *healthFakeRepo) CreateAdminAlert(_ context.Context, _ domain.AdminAlert) error {
 	panic("nope")

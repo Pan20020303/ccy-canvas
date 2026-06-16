@@ -518,7 +518,7 @@ func (r *Repository) MarkChannelTimeout(ctx context.Context, providerID string) 
 	return r.q.MarkChannelTimeout(ctx, pgID)
 }
 
-func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32) error {
+func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32, cacheHit bool) error {
 	pgID, err := parsePgUUID(logID)
 	if err != nil {
 		return err
@@ -529,7 +529,39 @@ func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, statu
 		ResultUrl:  resultURL,
 		ErrorMsg:   errMsg,
 		DurationMs: durationMs,
+		CacheHit:   cacheHit,
 	})
+}
+
+func (r *Repository) ListStaleActiveGenerations(ctx context.Context, olderThan time.Time) ([]domain.StaleGeneration, error) {
+	rows, err := r.q.ListStaleActiveGenerations(ctx, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.StaleGeneration, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.StaleGeneration{
+			ID:          uuidStr(row.ID),
+			UserID:      uuidStr(row.UserID),
+			NodeID:      row.NodeID,
+			ServiceType: row.ServiceType,
+			Status:      row.Status,
+			CreatedAt:   row.CreatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+func (r *Repository) MarkGenerationTimedOut(ctx context.Context, logID, errMsg string) (bool, error) {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return false, err
+	}
+	n, err := r.q.MarkGenerationLogTimedOut(ctx, pgID, errMsg)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (r *Repository) InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error {

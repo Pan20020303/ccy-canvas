@@ -242,7 +242,8 @@ UPDATE generation_logs
 SET status = $2,
     result_url = $3,
     error_msg = $4,
-    duration_ms = $5
+    duration_ms = $5,
+    cache_hit = $6
 WHERE id = $1
 `
 
@@ -252,6 +253,7 @@ type UpdateGenerationLogResultParams struct {
 	ResultUrl  string      `json:"result_url"`
 	ErrorMsg   string      `json:"error_msg"`
 	DurationMs int32       `json:"duration_ms"`
+	CacheHit   bool        `json:"cache_hit"`
 }
 
 func (q *Queries) UpdateGenerationLogResult(ctx context.Context, arg UpdateGenerationLogResultParams) error {
@@ -261,6 +263,7 @@ func (q *Queries) UpdateGenerationLogResult(ctx context.Context, arg UpdateGener
 		arg.ResultUrl,
 		arg.ErrorMsg,
 		arg.DurationMs,
+		arg.CacheHit,
 	)
 	return err
 }

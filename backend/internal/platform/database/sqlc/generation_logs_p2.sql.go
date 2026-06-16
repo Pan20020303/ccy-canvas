@@ -12,6 +12,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -159,6 +160,67 @@ type ListActiveGenerationsForUserRow struct {
 	Status      string             `json:"status"`
 	AsynqTaskID string             `json:"asynq_task_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// ─── Reaper (F3): find + fail stale active tasks ──────────────────────
+
+type StaleActiveGenerationRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	NodeID      string             `json:"node_id"`
+	ServiceType string             `json:"service_type"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+const listStaleActiveGenerations = `
+SELECT id, user_id, node_id, service_type, status, created_at
+FROM generation_logs
+WHERE status IN ('pending', 'queued', 'running', 'retrying')
+  AND created_at < $1
+ORDER BY created_at ASC
+LIMIT 500
+`
+
+// ListStaleActiveGenerations returns active rows older than the cutoff.
+// The caller applies the precise per-service-type runtime budget; this
+// query just uses the smallest budget as a cheap pre-filter.
+func (q *Queries) ListStaleActiveGenerations(ctx context.Context, olderThan time.Time) ([]StaleActiveGenerationRow, error) {
+	var ts pgtype.Timestamptz
+	ts.Time = olderThan
+	ts.Valid = true
+	rows, err := q.db.Query(ctx, listStaleActiveGenerations, ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StaleActiveGenerationRow{}
+	for rows.Next() {
+		var i StaleActiveGenerationRow
+		if err := rows.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Status, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
+const markGenerationLogTimedOut = `
+UPDATE generation_logs
+SET status = 'error', error_msg = $2
+WHERE id = $1 AND status IN ('pending', 'queued', 'running', 'retrying')
+`
+
+// MarkGenerationLogTimedOut flips a still-active row to 'error'. The status
+// guard makes it a no-op (0 rows) if the task actually completed between
+// the reaper's SELECT and this UPDATE, so a real success is never
+// clobbered. Returns the number of rows affected.
+func (q *Queries) MarkGenerationLogTimedOut(ctx context.Context, id pgtype.UUID, errMsg string) (int64, error) {
+	tag, err := q.db.Exec(ctx, markGenerationLogTimedOut, id, errMsg)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 const listActiveGenerationsForUser = `

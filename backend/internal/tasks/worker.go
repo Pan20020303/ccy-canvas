@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -154,21 +155,39 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		log.Printf("[tasks] mark running failed for %s: %v", p.LogID, err)
 	}
 
-	// Hand off to the model catalog. GenerateInline runs the upstream
-	// call synchronously using this ctx, then writes the outcome to
-	// generation_logs and publishes the SSE event.
+	// Hand off to the model catalog. GenerateInline runs the upstream call
+	// synchronously using this ctx. On *success* it persists the result and
+	// publishes the SSE event itself; on *failure* it persists nothing and
+	// returns the error, leaving the terminal-vs-retry decision to us.
+	startedAt := time.Now()
 	_, runErr := w.svc.GenerateInline(ctx, req)
 	if runErr == nil {
 		return nil
 	}
+	duration := time.Since(startedAt)
 
 	// Classify error: 4xx-ish "user fixed input wrong" errors are
-	// permanent — no point burning retries on them. Anything else
-	// (network, 5xx upstream, transient) gets Asynq's retry backoff.
+	// permanent — no point burning retries on them. Persist the terminal
+	// error now and short-circuit retries.
 	if isPermanentError(runErr) {
 		log.Printf("[tasks] permanent failure for log %s: %v", p.LogID, runErr)
+		w.svc.FinalizeFailure(req, runErr, duration)
 		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
 	}
+
+	// Transient failure (network, 5xx upstream, lease loss). If retries are
+	// exhausted, persist the terminal error now — no later attempt will.
+	// Otherwise leave the row 'running' and return the error so Asynq
+	// retries after backoff; the node keeps spinning instead of flashing
+	// to 'error' and back.
+	retried, _ := asynq.GetRetryCount(ctx)
+	maxRetry, _ := asynq.GetMaxRetry(ctx)
+	if maxRetry > 0 && retried >= maxRetry {
+		log.Printf("[tasks] transient failure exhausted retries for log %s: %v", p.LogID, runErr)
+		w.svc.FinalizeFailure(req, runErr, duration)
+		return runErr
+	}
+	log.Printf("[tasks] transient failure for log %s (attempt %d/%d), will retry: %v", p.LogID, retried+1, maxRetry, runErr)
 	return runErr
 }
 

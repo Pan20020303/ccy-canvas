@@ -176,3 +176,16 @@ type AppProviderConfig struct {
 	Priority        int32
 	ParameterSchema json.RawMessage
 }
+
+// StaleGeneration is a generation_logs row stuck in an active state past
+// its runtime budget. Surfaced to the reaper (F3) so abandoned tasks —
+// from an OOM-killed worker or a crashed legacy goroutine — get marked
+// failed and the UI stops spinning forever.
+type StaleGeneration struct {
+	ID          string
+	UserID      string
+	NodeID      string
+	ServiceType string
+	Status      string
+	CreatedAt   time.Time
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -456,6 +457,15 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:        []string{"App", "Generation"},
 		Security:    userSecurity,
 	}, h.batchTasksByNodeIDs)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-active-tasks",
+		Method:      http.MethodGet,
+		Path:        "/api/app/tasks/active",
+		Summary:     "List the current user's in-flight generation tasks (for reconnect hydration)",
+		Tags:        []string{"App", "Generation"},
+		Security:    userSecurity,
+	}, h.listActiveTasks)
 }
 
 // --- Admin: Provider handlers ---
@@ -1132,6 +1142,7 @@ type listAppProviderConfigsOutput struct {
 type generateInput struct {
 	Body struct {
 		NodeId           string                      `json:"node_id" doc:"Canvas node id (for log correlation)"`
+		RequestID        string                      `json:"request_id,omitempty" doc:"Client-generated idempotency key (UUID)"`
 		ProviderConfigID string                      `json:"provider_config_id,omitempty" doc:"Exact provider config id selected by frontend"`
 		ServiceType      string                      `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
 		Model            string                      `json:"model" minLength:"1" doc:"Model name"`
@@ -1283,6 +1294,47 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	return out, nil
 }
 
+// listActiveTasks returns every generation_logs row for the current user
+// still in an active state (queued/running/pending/retrying). The frontend
+// calls this on load to re-hydrate its in-flight task tracking (F10) so a
+// generation survives a localStorage wipe / different browser — tracking no
+// longer depends solely on the persisted node snapshot.
+func (h *Handler) listActiveTasks(ctx context.Context, _ *struct{}) (*batchTasksOutput, error) {
+	out := &batchTasksOutput{}
+	out.Body.Data = []TaskItem{}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	if h.q == nil {
+		return out, nil
+	}
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	if !userID.Valid {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	rows, err := h.q.ListActiveGenerationsForUser(ctx, userID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	out.Body.Data = make([]TaskItem, 0, len(rows))
+	for _, row := range rows {
+		createdAt := ""
+		if row.CreatedAt.Valid {
+			createdAt = row.CreatedAt.Time.UTC().Format(time.RFC3339)
+		}
+		out.Body.Data = append(out.Body.Data, TaskItem{
+			ID:          formatPgUUID(row.ID),
+			NodeID:      row.NodeID,
+			ServiceType: row.ServiceType,
+			Model:       row.Model,
+			Status:      row.Status,
+			CreatedAt:   createdAt,
+		})
+	}
+	return out, nil
+}
+
 func (h *Handler) batchTasksByNodeIDs(ctx context.Context, input *batchTasksInput) (*batchTasksOutput, error) {
 	out := &batchTasksOutput{}
 	out.Body.Data = []TaskItem{}
@@ -1356,6 +1408,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceMode:    input.Body.ReferenceMode,
 		UserID:           userIDStr,
 		NodeID:           input.Body.NodeId,
+		RequestID:        input.Body.RequestID,
 	}
 
 	// ─── Asynq durable path ────────────────────────────────────────
@@ -1445,10 +1498,16 @@ func (h *Handler) enqueueGeneration(
 	req application.GenerateRequest,
 	input *generateInput,
 ) (*generateOutput, error) {
-	// 1. request_id — for now generated server-side. P6 will swap in a
-	// client-supplied one so retries are truly idempotent across the
-	// HTTP round-trip.
+	// 1. request_id — prefer the client-supplied idempotency key (F6) so a
+	// retried POST / double-click collapses to one task. Fall back to a
+	// server-generated UUID when the client didn't send one (or sent a
+	// malformed value) so older clients keep working.
 	reqID := uuid.New()
+	if cid := strings.TrimSpace(req.RequestID); cid != "" {
+		if parsed, perr := uuid.Parse(cid); perr == nil {
+			reqID = parsed
+		}
+	}
 	var pgReqID pgtype.UUID
 	_ = pgReqID.Scan(reqID.String())
 

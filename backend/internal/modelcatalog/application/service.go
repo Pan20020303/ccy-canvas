@@ -21,6 +21,7 @@ import (
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"math"
 	"mime/multipart"
 	"net"
@@ -94,7 +95,13 @@ type Repository interface {
 
 	// Generation log lifecycle — needed by the detached task runner so the
 	// goroutine can write its own outcome even after the client has hung up.
-	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32) error
+	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32, cacheHit bool) error
+
+	// Reaper (F3): find active rows older than the cutoff, and mark a single
+	// still-active row as timed-out. MarkGenerationTimedOut returns false
+	// when the guarded UPDATE matched no row (task already finished).
+	ListStaleActiveGenerations(ctx context.Context, olderThan time.Time) ([]domain.StaleGeneration, error)
+	MarkGenerationTimedOut(ctx context.Context, logID, errMsg string) (bool, error)
 	CreateAdminAlert(ctx context.Context, alert domain.AdminAlert) error
 	ListAdminAlerts(ctx context.Context, status string, limit, offset int32) ([]domain.AdminAlert, error)
 	CountUnreadAdminAlerts(ctx context.Context) (int32, error)
@@ -759,6 +766,10 @@ type GenerateRequest struct {
 	// on TaskEvent so SSE clients can correlate the push back to the
 	// right node without an extra DB lookup.
 	NodeID string
+	// RequestID is the client-supplied idempotency key (F6). When set, the
+	// enqueue path uses it as both the generation_logs.request_id unique key
+	// and the Asynq TaskID, so a duplicate submit dedupes to one task.
+	RequestID string
 }
 
 // GenerateResult carries the generation result.
@@ -960,9 +971,13 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		// failure the original URL is kept. Skipped for inline-text
 		// results (no URL to download) and for already-cached / data:
 		// URLs. See PersistRemoteAsset for the full skip rules.
+		cacheHit := true
 		if runErr == nil && result != nil && result.Type == "url" && result.Content != "" {
 			if cachedURL, cacheErr := PersistRemoteAsset(detachedCtx, result.Content); cacheErr == nil {
 				result.Content = cachedURL
+			} else {
+				cacheHit = false
+				log.Printf("[modelcatalog] WARNING asset cache failed for log %s, keeping ephemeral URL (may expire): %v", req.GenerationLogID, cacheErr)
 			}
 		}
 
@@ -970,10 +985,11 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		// now the handler may have already returned to the client by the
 		// time we finish — so the goroutine owns the lifecycle write.
 		duration := time.Since(startedAt)
-		s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration)
-
-		// Push to SSE subscribers (no-op if no eventBus or no userID).
-		s.publishTaskEvent(req, result, runErr, duration)
+		// Gate the SSE push on a durable write (F8) so we never emit an
+		// event that disagrees with the persisted source of truth.
+		if perr := s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration, cacheHit); perr == nil {
+			s.publishTaskEvent(req, result, runErr, duration)
+		}
 
 		doneCh <- genResult{result: result, err: runErr}
 	}()
@@ -999,25 +1015,121 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 // Unlike Generate, this method does NOT spawn a detached background
 // goroutine. The caller (Asynq) is itself the durable execution context;
 // any retry-on-error decision is owned by Asynq via its returned error.
+//
+// Persistence contract (F1+F2): GenerateInline persists + publishes only
+// the *terminal success* outcome. It deliberately does NOT persist or
+// publish on failure — that decision belongs to the caller, which knows
+// whether the failure is permanent or will be retried. A transient
+// failure that Asynq will retry must leave the log row as-is ('running')
+// and emit no SSE 'error', otherwise the node flashes to error and then
+// flips back on a later successful retry. The worker calls FinalizeFailure
+// once it decides the failure is terminal (permanent, or retries
+// exhausted).
 func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	candidates, err := s.buildCandidates(req)
 	if err != nil {
-		// No candidate is a permanent error (operator config), don't retry.
-		s.persistGenerationOutcome(req.GenerationLogID, nil, err, 0)
-		s.publishTaskEvent(req, nil, err, 0)
+		// Operator-config error (no candidate). Permanent — but leave the
+		// terminal write to the caller so all failure persistence flows
+		// through one path.
 		return nil, err
 	}
 	startedAt := time.Now()
 	result, runErr := s.runCandidateLoop(ctx, candidates, req)
-	if runErr == nil && result != nil && result.Type == "url" && result.Content != "" {
+	if runErr != nil {
+		return result, runErr
+	}
+	cacheHit := true
+	if result != nil && result.Type == "url" && result.Content != "" {
 		if cachedURL, cacheErr := PersistRemoteAsset(ctx, result.Content); cacheErr == nil {
 			result.Content = cachedURL
+		} else {
+			// F9: caching failed — we're keeping the provider's signed URL,
+			// which will 404 once it expires. Record cache_hit=false and log
+			// loudly so this asset rot is queryable + visible to ops.
+			cacheHit = false
+			log.Printf("[modelcatalog] WARNING asset cache failed for log %s, keeping ephemeral URL (may expire): %v", req.GenerationLogID, cacheErr)
 		}
 	}
 	duration := time.Since(startedAt)
-	s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration)
-	s.publishTaskEvent(req, result, runErr, duration)
-	return result, runErr
+	// Gate the SSE push on a durable write (F8): if the DB write fails after
+	// a retry, don't publish 'success' — the recovery poller will reconcile
+	// from the real DB state once the reaper/next write settles it, avoiding
+	// an event that contradicts the source of truth.
+	if perr := s.persistGenerationOutcome(req.GenerationLogID, result, nil, duration, cacheHit); perr == nil {
+		s.publishTaskEvent(req, result, nil, duration)
+	}
+	return result, nil
+}
+
+// FinalizeFailure writes a terminal failure to generation_logs and pushes
+// the error to the user's SSE subscribers. The Asynq worker calls this
+// once it has decided the failure will not be retried — either because the
+// error is permanent (bad input, auth) or because the retry budget is
+// exhausted. Keeping this out of GenerateInline lets transient failures be
+// retried silently without flashing the node to 'error' first.
+func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.Duration) {
+	// Gate SSE on a durable write (F8). If the write fails, the reaper /
+	// recovery poller still surfaces the terminal state from the DB.
+	if perr := s.persistGenerationOutcome(req.GenerationLogID, nil, err, duration, false); perr == nil {
+		s.publishTaskEvent(req, nil, err, duration)
+	}
+}
+
+// reaperFloor is the smallest per-type runtime budget; the reaper's DB
+// pre-filter uses it so we never scan rows that can't possibly be stale.
+const reaperFloor = 5 * time.Minute
+
+// ReapStaleGenerations is the final backstop (F3) for tasks whose executor
+// vanished without writing an outcome — an OOM-killed Asynq worker, a
+// crashed legacy inline goroutine, or a persist write that failed twice.
+// Such rows would otherwise sit 'running' forever and spin the node's UI
+// indefinitely. It marks each abandoned row 'error' (guarded so a genuine
+// late success is never clobbered) and pushes the terminal error over SSE.
+// Returns the number of rows reaped. Safe to call on a timer regardless of
+// whether the Asynq queue is enabled.
+func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
+	if s.repo == nil {
+		return 0, nil
+	}
+	rows, err := s.repo.ListStaleActiveGenerations(ctx, time.Now().Add(-reaperFloor))
+	if err != nil {
+		return 0, err
+	}
+	reaped := 0
+	for _, row := range rows {
+		// Generous budget so a task legitimately mid-retry (Asynq retries
+		// up to 5x with backoff) isn't reaped early: 2x the single-attempt
+		// runtime cap plus a 30-minute grace.
+		budget := 2*maxRuntimeForType(row.ServiceType) + 30*time.Minute
+		age := time.Since(row.CreatedAt)
+		if age < budget {
+			continue
+		}
+		msg := fmt.Sprintf("task abandoned: stuck in %q for %s with no result (executor lost)", row.Status, age.Round(time.Second))
+		updated, merr := s.repo.MarkGenerationTimedOut(ctx, row.ID, msg)
+		if merr != nil {
+			log.Printf("[modelcatalog] reaper failed to mark log %s: %v", row.ID, merr)
+			continue
+		}
+		if !updated {
+			continue // task finished between SELECT and UPDATE — leave it
+		}
+		reaped++
+		if s.cache != nil {
+			s.cache.Delete(ctx, generationTaskCacheKey(row.ID))
+		}
+		// Notify the UI so the node flips from spinning to error.
+		s.publishTaskEvent(GenerateRequest{
+			GenerationLogID: row.ID,
+			UserID:          row.UserID,
+			NodeID:          row.NodeID,
+			ServiceType:     row.ServiceType,
+		}, nil, errors.New(msg), age)
+	}
+	if reaped > 0 {
+		log.Printf("[modelcatalog] reaper marked %d stale generation(s) as error", reaped)
+	}
+	return reaped, nil
 }
 
 // runCandidateLoop dispatches a single request to the chosen provider.
@@ -1038,15 +1150,18 @@ func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateCh
 // persistGenerationOutcome writes the final status/result/error to the
 // generation_logs row. Uses a fresh background context with a small
 // budget so the write succeeds even when the detached ctx has expired
-// from its own maxRuntime cap. Best-effort: a write failure is logged
-// implicitly via the silent error return — the channel-attempt audit
-// trail still records the underlying upstream outcome.
-func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult, err error, duration time.Duration) {
+// from its own maxRuntime cap.
+//
+// F8: a write failure used to be swallowed silently, which left the row
+// stuck at 'running' while an SSE 'success' still went out — a split-brain
+// between the event and the source of truth. We now retry the write once
+// and report the final error to callers, so the SSE publish can be gated
+// on a durable write. The stale-task reaper (F3) is the final backstop if
+// both attempts fail.
+func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult, err error, duration time.Duration, cacheHit bool) error {
 	if logID == "" || s.repo == nil {
-		return
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	status := "success"
 	errMsg := ""
@@ -1057,10 +1172,21 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 	} else if result != nil {
 		resultURL = result.Content
 	}
-	_ = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()))
-	if s.cache != nil {
-		s.cache.Delete(ctx, generationTaskCacheKey(logID))
+
+	var writeErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		writeErr = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()), cacheHit)
+		if s.cache != nil {
+			s.cache.Delete(ctx, generationTaskCacheKey(logID))
+		}
+		cancel()
+		if writeErr == nil {
+			return nil
+		}
+		log.Printf("[modelcatalog] persist outcome failed for log %s (attempt %d/2, status=%s): %v", logID, attempt, status, writeErr)
 	}
+	return writeErr
 }
 
 // publishTaskEvent emits a TaskEvent to all SSE subscribers of the user

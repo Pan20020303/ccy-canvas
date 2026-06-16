@@ -398,8 +398,14 @@ func (r *fakeRepository) InsertGenerationAttempt(context.Context, domain.Generat
 func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([]domain.GenerationAttempt, error) {
 	return nil, nil
 }
-func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, string, string, string, int32) error {
+func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, string, string, string, int32, bool) error {
 	return nil
+}
+func (r *fakeRepository) ListStaleActiveGenerations(context.Context, time.Time) ([]domain.StaleGeneration, error) {
+	return nil, nil
+}
+func (r *fakeRepository) MarkGenerationTimedOut(context.Context, string, string) (bool, error) {
+	return false, nil
 }
 func (r *fakeRepository) MarkChannelTimeout(context.Context, string) error { return nil }
 

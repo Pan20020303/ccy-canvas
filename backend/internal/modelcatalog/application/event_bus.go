@@ -1,6 +1,9 @@
 package application
 
 import (
+	"context"
+	"encoding/json"
+	"log"
 	"sync"
 )
 
@@ -23,17 +26,50 @@ type TaskEvent struct {
 // publish from anywhere.
 //
 // Constraints / trade-offs:
-//   - In-process only. Multi-instance deployments need an external bus
-//     (Redis pub/sub, NATS) to fan events across pods. Out of scope for
-//     the MVP — see plan's "Open Considerations".
 //   - Per-subscriber buffer of 16. If a slow consumer fills up, the
 //     publisher drops the oldest queued event for that subscriber
 //     rather than blocking other consumers. The dropped event is still
 //     persisted in generation_logs, so the recovery poller (Stage 2)
 //     remains the final safety net.
+//   - Cross-process fan-out is handled by an optional EventTransport
+//     (Redis Pub/Sub) — see below. Without one, delivery is in-process
+//     only and multi-replica deployments must rely on the recovery poller.
+//
+// EventTransport is an optional cross-process fan-out for task events
+// (F7). The in-process bus only reaches SSE subscribers attached to the
+// same backend process; with multiple replicas the worker that finishes a
+// task may live in a different process than the one holding the user's SSE
+// connection. A transport (Redis Pub/Sub in production) bridges the gap:
+// Publish writes to a shared channel and every replica's Subscribe loop
+// delivers to its own local subscribers. Kept as an interface so this
+// package stays free of any Redis dependency — main wires the concrete
+// implementation.
+type EventTransport interface {
+	// Publish broadcasts payload to all replicas subscribed to channel.
+	Publish(ctx context.Context, channel string, payload []byte) error
+	// Subscribe returns a stream of payloads published to channel. The
+	// returned channel is closed when ctx is done.
+	Subscribe(ctx context.Context, channel string) (<-chan []byte, error)
+}
+
+// busEnvelope is the wire format carried over the transport: it pairs the
+// target user with the event so each replica can route to the right local
+// subscribers.
+type busEnvelope struct {
+	UserID string    `json:"user_id"`
+	Event  TaskEvent `json:"event"`
+}
+
+const taskEventChannel = "ccy:task-events"
+
 type TaskEventBus struct {
 	mu   sync.RWMutex
 	subs map[string]map[*Subscriber]struct{} // userID → set of subscribers
+
+	// transport is nil for single-process deployments (direct local
+	// delivery). When set, Publish routes through it and a StartBridge
+	// goroutine feeds remote events back into local delivery.
+	transport EventTransport
 }
 
 type Subscriber struct {
@@ -80,12 +116,75 @@ func (b *TaskEventBus) Subscribe(userID string) (*Subscriber, func()) {
 	return sub, unsubscribe
 }
 
-// Publish delivers the event to every active subscriber of the given
-// user. Non-blocking: if a subscriber's buffer is full we drop the
-// oldest queued event and enqueue this one (newest-wins). A no-op when
-// the user has no live subscribers (most common case — SSE only opens
-// after the user logs into the app).
+// WithTransport attaches a cross-process transport (F7). Returns the bus
+// for chaining. Call StartBridge afterwards to begin consuming remote
+// events. Safe to skip entirely for single-process deployments.
+func (b *TaskEventBus) WithTransport(t EventTransport) *TaskEventBus {
+	b.transport = t
+	return b
+}
+
+// StartBridge consumes task events published by other replicas and feeds
+// them into local delivery. Blocks until ctx is done; run it in a
+// goroutine. A no-op (returns immediately) when no transport is wired.
+func (b *TaskEventBus) StartBridge(ctx context.Context) {
+	if b.transport == nil {
+		return
+	}
+	stream, err := b.transport.Subscribe(ctx, taskEventChannel)
+	if err != nil {
+		log.Printf("[events] failed to subscribe task-event transport: %v", err)
+		return
+	}
+	log.Printf("[events] cross-process task-event bridge started")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case payload, ok := <-stream:
+			if !ok {
+				return
+			}
+			var env busEnvelope
+			if err := json.Unmarshal(payload, &env); err != nil {
+				continue
+			}
+			b.deliverLocal(env.UserID, env.Event)
+		}
+	}
+}
+
+// Publish delivers the event to subscribers of the given user. With a
+// transport wired (multi-replica), it broadcasts over the transport and
+// every replica — including this one — delivers via its StartBridge loop,
+// so there's exactly one delivery path and no local/remote double-send.
+// Without a transport it delivers directly in-process.
 func (b *TaskEventBus) Publish(userID string, event TaskEvent) {
+	if userID == "" {
+		return
+	}
+	if b.transport != nil {
+		payload, err := json.Marshal(busEnvelope{UserID: userID, Event: event})
+		if err != nil {
+			return
+		}
+		if perr := b.transport.Publish(context.Background(), taskEventChannel, payload); perr != nil {
+			// Transport hiccup: fall back to local delivery so a
+			// same-process subscriber still gets it (the recovery poller
+			// covers cross-process gaps).
+			log.Printf("[events] transport publish failed, delivering locally: %v", perr)
+			b.deliverLocal(userID, event)
+		}
+		return
+	}
+	b.deliverLocal(userID, event)
+}
+
+// deliverLocal fans an event out to the in-process subscribers of a user.
+// Non-blocking: if a subscriber's buffer is full we drop the oldest queued
+// event and enqueue this one (newest-wins). A no-op when the user has no
+// live subscribers in this process.
+func (b *TaskEventBus) deliverLocal(userID string, event TaskEvent) {
 	if userID == "" {
 		return
 	}

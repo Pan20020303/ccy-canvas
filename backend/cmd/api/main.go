@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	creditinfra "ccy-canvas/backend/internal/credits/infrastructure"
 	identityapp "ccy-canvas/backend/internal/identity/application"
@@ -17,6 +18,7 @@ import (
 	"ccy-canvas/backend/internal/platform/config"
 	"ccy-canvas/backend/internal/platform/database"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
+	"ccy-canvas/backend/internal/platform/events"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
@@ -57,6 +59,15 @@ func main() {
 	// Model Catalog
 	catalogRepo := infrastructure.NewRepository(queries)
 	taskBus := application.NewTaskEventBus()
+	// F7: with Redis available, fan task-completion events across replicas
+	// so the SSE stream works even when the finishing worker and the
+	// client's SSE connection live in different backend processes. Without
+	// Redis the bus delivers in-process (single-replica) — unchanged.
+	if cfg.RedisAddr != "" {
+		transport := events.NewRedisTransport(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		taskBus = taskBus.WithTransport(transport)
+		go taskBus.StartBridge(context.Background())
+	}
 	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).WithEventBus(taskBus)
 	var redisCache *cache.JSONCache
 	if cfg.RedisAddr != "" {
@@ -89,6 +100,14 @@ func main() {
 			}
 		}()
 		log.Printf("[tasks] Asynq queue enabled: %s db=%d", cfg.RedisAddr, cfg.RedisDB)
+	} else {
+		// F5: without Redis the generation path falls back to a detached
+		// in-process goroutine. It does NOT survive a backend crash/restart
+		// — an in-flight task is lost (the reaper will later mark its row
+		// 'error' so the UI doesn't hang, but the result is gone). Production
+		// deployments should set REDIS_ADDR to get durable, restart-safe
+		// task delivery.
+		log.Printf("[tasks] WARNING REDIS_ADDR not set — using legacy in-process generation (no durability across restarts). Set REDIS_ADDR in production.")
 	}
 
 	allowedOrigins := []string{
@@ -158,6 +177,23 @@ func main() {
 	// Task-completion SSE stream — same chi-direct rationale as above.
 	taskStreamRouter := modelhttp.NewTaskStreamRouter(taskBus, sessionManager)
 	taskStreamRouter.RegisterChi(router)
+
+	// Stale-task reaper (F3). Runs regardless of REDIS so the legacy inline
+	// path is covered too: any generation_logs row stuck active past its
+	// runtime budget (OOM-killed worker, crashed goroutine, double-failed
+	// persist) gets marked 'error' and the node stops spinning. Cheap
+	// indexed query; ticks every minute.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if _, err := catalogService.ReapStaleGenerations(rctx); err != nil {
+				log.Printf("[tasks] reaper tick failed: %v", err)
+			}
+			cancel()
+		}
+	}()
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {

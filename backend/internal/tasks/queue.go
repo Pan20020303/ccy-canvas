@@ -23,6 +23,7 @@ package tasks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -133,10 +134,14 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 	}
 	task := asynq.NewTask(TaskTypeGeneration, body,
 		asynq.Queue(queueNameForServiceType(p.ServiceType)),
-		// The model service persists success/error into generation_logs.
-		// Retrying a completed failed generation would call upstream again,
-		// causing duplicate requests/cost while the UI still shows one task.
-		asynq.MaxRetry(0),
+		// Retry transient failures (network blip, upstream 5xx, lease loss
+		// after an OOM/kill). The worker only persists a terminal 'error'
+		// + SSE event once the failure is permanent OR retries are
+		// exhausted (see worker.handleGeneration), so a retried transient
+		// failure never flashes the node to 'error' and never double-bills
+		// a *successful* generation. Permanent failures short-circuit via
+		// asynq.SkipRetry, so they don't burn the retry budget.
+		asynq.MaxRetry(5),
 		asynq.Timeout(timeoutForServiceType(p.ServiceType)),
 		asynq.Retention(24*time.Hour),
 		// TaskID = RequestID: duplicate submits return ErrTaskIDConflict
@@ -145,6 +150,13 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 	)
 	info, err := q.client.EnqueueContext(ctx, task)
 	if err != nil {
+		// Idempotency (F6): a duplicate request_id means this exact submit
+		// is already queued / in flight. Treat it as success and return the
+		// existing task id (which equals RequestID, since TaskID=RequestID)
+		// rather than surfacing a 5xx for a harmless retry / double-click.
+		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
+			return p.RequestID, nil
+		}
 		return "", err
 	}
 	return info.ID, nil
