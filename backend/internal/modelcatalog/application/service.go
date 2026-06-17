@@ -2374,7 +2374,15 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 	if strings.TrimSpace(queryPath) != "" {
 		pollURLs = append(pollURLs, resolveProviderURL(baseURL, strings.ReplaceAll(queryPath, "{taskId}", taskID)))
 	}
+	// Fallback patterns when the response didn't carry a usable poll_url.
+	// Manju/NewAPI serves task status at {host}/api/tasks/{id} (note: /api,
+	// not the /v1 generation prefix), so derive the host root too.
+	hostRoot := baseURL
+	if i := strings.Index(hostRoot, "/v1"); i > 0 {
+		hostRoot = hostRoot[:i]
+	}
 	pollURLs = append(pollURLs,
+		strings.TrimRight(hostRoot, "/")+"/api/tasks/"+taskID,
 		baseURL+"/tasks/"+taskID,
 		baseURL+"/images/generations/"+taskID,
 		baseURL+"/async/tasks/"+taskID,
@@ -2460,7 +2468,11 @@ func (s *Service) tryExtractImageFromPollResponse(body []byte) *GenerateResult {
 	// done; if not, it's still in progress and the caller keeps polling.
 	// Search recursively (depth 5) for nested shapes like result.images[0].url
 	// and data[0].url.
-	for _, key := range []string{"image_url", "result_url", "download_url", "detail_url", "url"} {
+	// Order matters: prefer the most specific final-image fields. Manju/NewAPI
+	// completed tasks put the image in `result_url` or `final_url` (the latter
+	// was previously missing). `detail_url` is a detail *page*, not an image,
+	// so it's intentionally excluded.
+	for _, key := range []string{"result_url", "final_url", "download_url", "image_url", "url"} {
 		url := findStringField(generic, key, 5)
 		if url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
 			return &GenerateResult{Type: "url", Content: url}

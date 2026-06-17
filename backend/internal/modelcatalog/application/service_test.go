@@ -322,6 +322,7 @@ func TestTryExtractImageFromPollResponse(t *testing.T) {
 		want string // "" means nil (still in progress)
 	}{
 		{"result_url present", `{"status":"success","result_url":"https://manjuapi.com/generated/x.png"}`, "https://manjuapi.com/generated/x.png"},
+		{"final_url only", `{"status":"success","result_url":"","download_url":"","final_url":"https://manjuapi.com/generated/final.png"}`, "https://manjuapi.com/generated/final.png"},
 		{"data array url", `{"data":[{"url":"https://manjuapi.com/generated/y.png"}]}`, "https://manjuapi.com/generated/y.png"},
 		{"content markdown", `{"choices":[{"message":{"content":"![img](https://manjuapi.com/generated/z.png)"}}]}`, "https://manjuapi.com/generated/z.png"},
 		{"still processing, no url", `{"status":"processing","progress":40}`, ""},
