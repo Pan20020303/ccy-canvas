@@ -120,6 +120,14 @@ export type ProviderConfigTSImportPreview = {
 export type ModelParameterSchema = {
   allowed_parameters?: string[];
   defaults?: Record<string, unknown>;
+  vendor_id?: string;
+  vendor_version?: string;
+  vendor_author?: string;
+  vendor_description?: string;
+  vendor_inputs?: unknown[];
+  vendor_input_values?: Record<string, unknown>;
+  vendor_models?: unknown[];
+  vendor_all_models?: unknown[];
   models?: Record<string, ModelParameterSchema>;
   parameter_aliases?: Record<string, string>;
   parameterAliases?: Record<string, string>;

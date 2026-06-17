@@ -146,16 +146,16 @@ export default function ProviderCodeEditorModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/72 px-5 backdrop-blur-sm">
-      <div className="flex h-[78vh] w-full max-w-[1344px] flex-col rounded-lg bg-white text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]">
+      <div className="flex h-[78vh] w-full max-w-[1344px] flex-col rounded-2xl border border-white/[0.08] bg-[#111111] text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]">
         <header className="flex items-start justify-between px-7 pb-4 pt-7">
           <div>
             <h3 className="text-base font-semibold">{title}</h3>
             <p className="mt-5 flex items-center gap-2 text-xs text-neutral-500">
-              <span className="grid h-4 w-4 place-items-center rounded-full border border-neutral-400 text-[10px]">i</span>
+              <span className="grid h-4 w-4 place-items-center rounded-full border border-white/[0.18] text-[10px]">i</span>
               {description}
             </p>
           </div>
-          <button className="rounded-full p-1 text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900" onClick={onClose}>
+          <button className="rounded-full p-1 text-neutral-500 transition hover:bg-white/[0.08] hover:text-white" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </header>
@@ -164,7 +164,7 @@ export default function ProviderCodeEditorModal({
           <button
             type="button"
             onClick={() => setDraft(initialCode)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-neutral-700 transition hover:bg-neutral-100"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-neutral-400 transition hover:bg-white/[0.08] hover:text-white"
           >
             <Undo2 className="h-3.5 w-3.5" />
             重置
@@ -173,14 +173,14 @@ export default function ProviderCodeEditorModal({
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-orange-200 px-3 text-xs text-[#ff6a1f] transition hover:bg-orange-50"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.045] px-3 text-xs text-neutral-200 transition hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white"
           >
             <Upload className="h-3.5 w-3.5" />
             导入文件
           </button>
         </div>
 
-        <div className="mx-7 min-h-0 flex-1 overflow-hidden rounded-lg border border-[#e5e5e5] bg-[#1e1e1e]">
+        <div className="mx-7 min-h-0 flex-1 overflow-hidden rounded-lg border border-white/[0.08] bg-[#1e1e1e]">
           <Editor
             value={draft}
             language="typescript"
@@ -193,17 +193,17 @@ export default function ProviderCodeEditorModal({
           />
         </div>
 
-        {error ? <div className="mx-7 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
+        {error ? <div className="mx-7 mt-3 rounded-lg border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</div> : null}
 
         <footer className="flex items-center justify-end gap-3 px-7 py-5">
-          <button type="button" onClick={onClose} className="h-9 rounded bg-neutral-100 px-5 text-sm text-neutral-700 transition hover:bg-neutral-200">
+          <button type="button" onClick={onClose} className="h-9 rounded border border-white/[0.08] bg-white/[0.045] px-5 text-sm text-neutral-200 transition hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white">
             取消
           </button>
           <button
             type="button"
             onClick={() => onConfirm(draft)}
             disabled={saving}
-            className="inline-flex h-9 items-center rounded bg-[#ff6a1f] px-5 text-sm font-medium text-white transition hover:bg-[#f05f16] disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex h-9 items-center rounded border border-white/[0.10] bg-white/[0.075] px-5 text-sm font-medium text-white transition hover:border-white/[0.18] hover:bg-white/[0.12] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             确认

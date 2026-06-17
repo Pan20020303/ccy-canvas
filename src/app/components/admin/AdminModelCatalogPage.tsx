@@ -121,6 +121,269 @@ const SETTINGS_MENU: SettingsMenuItem[] = [
   { key: "logout", label: "退出登录", icon: LogOut, disabled: true },
 ];
 
+type VendorModelDefinition = {
+  name: string;
+  modelName: string;
+  type: ServiceType;
+  think?: boolean;
+  mode?: Array<string | string[]>;
+  audio?: "optional" | false | true;
+  durationResolutionMap?: Array<{ duration: number[]; resolution: string[] }>;
+};
+
+type ModelEditorDraft = {
+  name: string;
+  modelName: string;
+  type: ServiceType;
+  think: boolean;
+  imageModes: string[];
+  videoModes: string[];
+  mixedMode: string[];
+  mixedModeCount: Record<string, number>;
+  audio: "optional" | false | true;
+  durationResolutionMap: Array<{ duration: string; resolution: string }>;
+  isDefault: boolean;
+};
+
+type ModelEditorState = {
+  config: ProviderConfig;
+  originalModelName?: string;
+  draft: ModelEditorDraft;
+};
+
+type ModelTestResult = {
+  configName: string;
+  modelName: string;
+  type: ServiceType;
+  ok: boolean;
+  httpStatus: number;
+  latencyMs: number;
+  errorMsg?: string;
+};
+
+const MODEL_TYPE_OPTIONS: Array<{ value: ServiceType; label: string }> = [
+  { value: "text", label: "文本模型" },
+  { value: "image", label: "图片模型" },
+  { value: "video", label: "视频模型" },
+  { value: "audio", label: "音频模型" },
+];
+
+const IMAGE_MODE_OPTIONS = [
+  { value: "text", label: "文生图" },
+  { value: "singleImage", label: "单图" },
+  { value: "multiReference", label: "多参考" },
+];
+
+const VIDEO_MODE_OPTIONS = [
+  { value: "singleImage", label: "单图" },
+  { value: "startEndRequired", label: "首尾帧" },
+  { value: "endFrameOptional", label: "尾帧可选" },
+  { value: "startFrameOptional", label: "首帧可选" },
+  { value: "text", label: "文生视频" },
+  { value: "multiReference", label: "多参考" },
+];
+
+const REFERENCE_MODE_OPTIONS = [
+  { value: "videoReference", label: "视频参考" },
+  { value: "imageReference", label: "图片参考" },
+  { value: "audioReference", label: "音频参考" },
+];
+
+const MODE_LABELS: Record<string, string> = {
+  text: "文生",
+  singleImage: "单图",
+  multiReference: "多参考",
+  startEndRequired: "首尾帧",
+  endFrameOptional: "尾帧可选",
+  startFrameOptional: "首帧可选",
+  videoReference: "视频参考",
+  imageReference: "图片参考",
+  audioReference: "音频参考",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cleanString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function modelTypeFromValue(value: unknown, fallback: ServiceType): ServiceType {
+  const type = cleanString(value).toLowerCase();
+  if (type === "tts") return "audio";
+  return type === "text" || type === "image" || type === "video" || type === "audio" ? type : fallback;
+}
+
+function normalizeModeList(value: unknown): Array<string | string[]> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (Array.isArray(item)) return item.map((inner) => cleanString(inner)).filter(Boolean);
+      return cleanString(item);
+    })
+    .filter((item): item is string | string[] => (Array.isArray(item) ? item.length > 0 : Boolean(item)));
+}
+
+function normalizeDurationResolutionMap(value: unknown): VendorModelDefinition["durationResolutionMap"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!isRecord(row)) return null;
+      const duration = Array.isArray(row.duration)
+        ? row.duration.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0)
+        : [];
+      const resolution = Array.isArray(row.resolution)
+        ? row.resolution.map((item) => cleanString(item)).filter(Boolean)
+        : [];
+      return duration.length || resolution.length ? { duration, resolution } : null;
+    })
+    .filter((item): item is { duration: number[]; resolution: string[] } => Boolean(item));
+}
+
+function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackName = ""): VendorModelDefinition | null {
+  if (typeof raw === "string") {
+    const modelName = raw.trim();
+    return modelName ? { name: modelName, modelName, type: fallbackType } : null;
+  }
+  if (!isRecord(raw)) return null;
+  const modelName = cleanString(raw.modelName) || cleanString(raw.model_name) || cleanString(raw.model) || cleanString(raw.id) || cleanString(raw.name);
+  if (!modelName) return null;
+  const type = modelTypeFromValue(raw.type, fallbackType);
+  const mode = normalizeModeList(raw.mode);
+  return {
+    name: cleanString(raw.name) || fallbackName || modelName,
+    modelName,
+    type,
+    think: Boolean(raw.think),
+    mode: mode.length ? mode : undefined,
+    audio: raw.audio === true || raw.audio === false || raw.audio === "optional" ? raw.audio : undefined,
+    durationResolutionMap: normalizeDurationResolutionMap(raw.durationResolutionMap ?? raw.duration_resolution_map),
+  };
+}
+
+function getVendorModels(config: ProviderConfig): VendorModelDefinition[] {
+  const schema = config.parameter_schema ?? {};
+  const rawModels = Array.isArray(schema.vendor_models)
+    ? schema.vendor_models
+    : Array.isArray(schema.vendor_all_models)
+      ? schema.vendor_all_models
+      : [];
+  const seen = new Set<string>();
+  const models: VendorModelDefinition[] = [];
+  rawModels.forEach((raw) => {
+    const model = normalizeVendorModel(raw, config.service_type);
+    if (model && !seen.has(model.modelName)) {
+      seen.add(model.modelName);
+      models.push(model);
+    }
+  });
+  config.model_list.forEach((modelName) => {
+    if (!seen.has(modelName)) {
+      seen.add(modelName);
+      models.push({ name: modelName, modelName, type: config.service_type });
+    }
+  });
+  return models;
+}
+
+function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition): ModelEditorDraft {
+  const source: VendorModelDefinition = model ?? {
+    name: "",
+    modelName: "",
+    type: config.service_type,
+    mode: config.service_type === "image" ? ["text"] : config.service_type === "video" ? ["text"] : [],
+    audio: "optional",
+  };
+  const mode = source.mode ?? [];
+  const flatModes: string[] = [];
+  const mixedMode: string[] = [];
+  const mixedModeCount: Record<string, number> = {};
+  mode.forEach((item) => {
+    if (Array.isArray(item)) {
+      item.forEach((ref) => {
+        const match = String(ref).match(/^(videoReference|imageReference|audioReference):(\d+)$/);
+        if (match) {
+          mixedMode.push(match[1]);
+          mixedModeCount[match[1]] = Number(match[2]) || 1;
+        }
+      });
+    } else {
+      flatModes.push(item);
+    }
+  });
+  const type = source.type;
+  return {
+    name: source.name,
+    modelName: source.modelName,
+    type,
+    think: Boolean(source.think),
+    imageModes: type === "image" ? flatModes : [],
+    videoModes: type === "video" ? (mixedMode.length ? [...flatModes, "multiReference"] : flatModes) : [],
+    mixedMode,
+    mixedModeCount,
+    audio: source.audio ?? "optional",
+    durationResolutionMap: source.durationResolutionMap?.length
+      ? source.durationResolutionMap.map((row) => ({
+          duration: row.duration.join(", "),
+          resolution: row.resolution.join(", "),
+        }))
+      : [{ duration: "", resolution: "" }],
+    isDefault: Boolean(source.modelName && source.modelName === config.default_model),
+  };
+}
+
+function buildModelFromDraft(draft: ModelEditorDraft): VendorModelDefinition | null {
+  const name = draft.name.trim();
+  const modelName = draft.modelName.trim();
+  if (!name || !modelName) return null;
+  if (draft.type === "text") {
+    return { name, modelName, type: "text", think: draft.think };
+  }
+  if (draft.type === "image") {
+    return { name, modelName, type: "image", mode: draft.imageModes.length ? draft.imageModes : ["text"] };
+  }
+  if (draft.type === "video") {
+    const mode = draft.videoModes.filter((item) => item !== "multiReference");
+    const mixed = draft.mixedMode.map((item) => `${item}:${draft.mixedModeCount[item] || 1}`);
+    const durationResolutionMap = draft.durationResolutionMap
+      .map((row) => ({
+        duration: row.duration.split(/[,，\s]+/).map(Number).filter((item) => Number.isFinite(item) && item > 0),
+        resolution: row.resolution.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean),
+      }))
+      .filter((row) => row.duration.length || row.resolution.length);
+    return {
+      name,
+      modelName,
+      type: "video",
+      mode: mixed.length ? [...mode, mixed] : mode.length ? mode : ["text"],
+      audio: draft.audio,
+      durationResolutionMap: durationResolutionMap.length ? durationResolutionMap : [{ duration: [5], resolution: ["720p"] }],
+    };
+  }
+  return { name, modelName, type: "audio" };
+}
+
+function modelTags(model: VendorModelDefinition, config: ProviderConfig) {
+  const tags = [SERVICE_LABELS[model.type] ?? SERVICE_LABELS[config.service_type]];
+  if (config.default_model === model.modelName) tags.push("默认模型");
+  if (model.type === "text" && model.think) tags.push("深度思考");
+  (model.mode ?? []).forEach((mode) => {
+    if (Array.isArray(mode)) {
+      mode.forEach((item) => {
+        const match = item.match(/^(videoReference|imageReference|audioReference):(\d+)$/);
+        tags.push(match ? `${MODE_LABELS[match[1]] ?? match[1]} ×${match[2]}` : item);
+      });
+    } else {
+      tags.push(MODE_LABELS[mode] ?? mode);
+    }
+  });
+  if (!model.mode?.length && model.type === "image") tags.push("图片 ×9");
+  if (!model.mode?.length && model.type === "video") tags.push("视频 ×3");
+  if (model.type === "audio") tags.push("音频 ×3");
+  return tags;
+}
+
 type AgentEditorDraft = {
   name: string;
   description: string;
@@ -610,6 +873,11 @@ export function AdminModelCatalogPage() {
   const [codeEditingConfig, setCodeEditingConfig] = useState<ProviderConfig | null>(null);
   const [codeSaving, setCodeSaving] = useState(false);
   const [codeError, setCodeError] = useState("");
+  const [modelEditor, setModelEditor] = useState<ModelEditorState | null>(null);
+  const [modelSaving, setModelSaving] = useState(false);
+  const [modelEditorError, setModelEditorError] = useState("");
+  const [testingModelKey, setTestingModelKey] = useState<string | null>(null);
+  const [modelTestResult, setModelTestResult] = useState<ModelTestResult | null>(null);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKey>("model-service");
 
   const loadConfigs = async () => {
@@ -637,6 +905,7 @@ export function AdminModelCatalogPage() {
 
   const enabledCount = configs.filter((item) => item.status === "enabled").length;
   const selectedConfig = filtered.find((config) => config.id === selectedId) ?? filtered[0] ?? null;
+  const selectedConfigModels = selectedConfig ? getVendorModels(selectedConfig) : [];
   const availableTextModels = useMemo(() => {
     const seen = new Set<string>();
     const models: string[] = [];
@@ -692,14 +961,25 @@ export function AdminModelCatalogPage() {
     }
   };
 
-  const handleTestConnectivity = async (config: ProviderConfig) => {
-    setTestingId(config.id);
+  const handleTestConnectivity = async (config: ProviderConfig, model?: VendorModelDefinition) => {
+    const modelKey = model ? `${config.id}:${model.modelName}` : null;
+    if (modelKey) setTestingModelKey(modelKey);
+    else setTestingId(config.id);
     try {
       const result = await testChannelConnectivity(config.id);
-      alert(result.ok ? `连接成功：HTTP ${result.http_status || "OK"}，${result.latency_ms}ms` : `连接失败：${result.error_msg || result.http_status}`);
+      setModelTestResult({
+        configName: config.name,
+        modelName: model?.modelName ?? config.default_model ?? config.model_list[0] ?? config.name,
+        type: model?.type ?? config.service_type,
+        ok: result.ok,
+        httpStatus: result.http_status,
+        latencyMs: result.latency_ms,
+        errorMsg: result.error_msg,
+      });
       await loadConfigs();
     } finally {
-      setTestingId(null);
+      if (modelKey) setTestingModelKey(null);
+      else setTestingId(null);
     }
   };
 
@@ -768,14 +1048,83 @@ export function AdminModelCatalogPage() {
     }
   };
 
-  const handleDeleteModel = async (config: ProviderConfig, model: string) => {
-    const nextModels = (config.model_list ?? []).filter((item) => item !== model);
-    if (nextModels.length === config.model_list.length) return;
-    replaceConfig(await updateProviderConfig(config.id, {
+  const saveModelsForConfig = async (config: ProviderConfig, models: VendorModelDefinition[], defaultModel?: string) => {
+    const modelList = models.map((item) => item.modelName).filter(Boolean);
+    const parameterSchema = {
+      ...(config.parameter_schema ?? {}),
+      vendor_models: models,
+      vendor_all_models: models,
+    };
+    const capabilities = Array.from(new Set<ServiceType>([config.service_type, ...models.map((item) => item.type)]));
+    const updated = await updateProviderConfig(config.id, {
       ...providerPayloadFromConfig(config),
-      model_list: nextModels,
-      default_model: config.default_model === model ? nextModels[0] || "" : config.default_model,
-    }));
+      model_list: modelList,
+      default_model: defaultModel ?? (modelList.includes(config.default_model) ? config.default_model : modelList[0] || ""),
+      capabilities,
+      parameter_schema: parameterSchema,
+    });
+    replaceConfig(updated);
+    return updated;
+  };
+
+  const openAddModel = (config: ProviderConfig) => {
+    setModelEditorError("");
+    setModelEditor({
+      config,
+      draft: createModelDraft(config),
+    });
+  };
+
+  const openEditModel = (config: ProviderConfig, model: VendorModelDefinition) => {
+    setModelEditorError("");
+    setModelEditor({
+      config,
+      originalModelName: model.modelName,
+      draft: createModelDraft(config, model),
+    });
+  };
+
+  const handleSaveModel = async () => {
+    if (!modelEditor) return;
+    const model = buildModelFromDraft(modelEditor.draft);
+    if (!model) {
+      setModelEditorError("请填写显示名称和模型 ID");
+      return;
+    }
+    const models = getVendorModels(modelEditor.config);
+    const duplicate = models.some((item) => item.modelName === model.modelName && item.modelName !== modelEditor.originalModelName);
+    if (duplicate) {
+      setModelEditorError("模型 ID 已存在");
+      return;
+    }
+    const nextModels = modelEditor.originalModelName
+      ? models.map((item) => (item.modelName === modelEditor.originalModelName ? model : item))
+      : [...models, model];
+    const defaultModel = modelEditor.draft.isDefault || modelEditor.config.default_model === modelEditor.originalModelName
+      ? model.modelName
+      : modelEditor.config.default_model || nextModels[0]?.modelName || "";
+    setModelSaving(true);
+    setModelEditorError("");
+    try {
+      await saveModelsForConfig(modelEditor.config, nextModels, defaultModel);
+      setModelEditor(null);
+    } catch (err) {
+      setModelEditorError(err instanceof Error ? err.message : "模型保存失败");
+    } finally {
+      setModelSaving(false);
+    }
+  };
+
+  const handleDeleteModel = async (config: ProviderConfig, model: VendorModelDefinition) => {
+    if (!confirm(`确认删除模型「${model.name || model.modelName}」？`)) return;
+    const models = getVendorModels(config);
+    if (!models.some((item) => item.modelName === model.modelName)) return;
+    const nextModels = models.filter((item) => item.modelName !== model.modelName);
+    await saveModelsForConfig(
+      config,
+      nextModels,
+      config.default_model === model.modelName ? nextModels[0]?.modelName || "" : config.default_model,
+    );
   };
 
   return (
@@ -824,20 +1173,38 @@ export function AdminModelCatalogPage() {
                   <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">暂无供应商</div>
                 ) : (
                   filtered.map((config) => (
-                    <button
+                    <div
                       key={config.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => setSelectedId(config.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") setSelectedId(config.id);
+                      }}
                       className={[
-                        "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
+                        "flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
                         selectedConfig?.id === config.id ? "border-white/[0.14] bg-white/[0.08] text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
                       ].join(" ")}
                     >
                       <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
                       <span className="min-w-0 flex-1 truncate">{config.vendor || config.name}</span>
                       <span
+                        role="switch"
+                        aria-checked={config.status === "enabled"}
+                        tabIndex={0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleToggle(config);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleToggle(config);
+                          }
+                        }}
                         className={[
-                          "relative h-5 w-9 rounded-full transition",
+                          "relative h-5 w-9 shrink-0 rounded-full transition",
                           config.status === "enabled" ? "bg-emerald-500/70" : "bg-neutral-700",
                         ].join(" ")}
                       >
@@ -848,7 +1215,7 @@ export function AdminModelCatalogPage() {
                           ].join(" ")}
                         />
                       </span>
-                    </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -886,30 +1253,40 @@ export function AdminModelCatalogPage() {
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-y-auto py-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <h4 className="text-sm font-semibold text-neutral-100">模型设置</h4>
+                      <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => openAddModel(selectedConfig)}>
+                        <Plus className="mr-1 h-4 w-4" />
+                        手动添加
+                      </Button>
+                    </div>
                     <div className="space-y-3">
-                      {selectedConfig.model_list.length === 0 ? (
+                      {selectedConfigModels.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
                       ) : (
-                        selectedConfig.model_list.map((model) => (
-                          <div key={model} className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]">
+                        selectedConfigModels.map((model) => (
+                          <div key={model.modelName} className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]">
                             <div className="flex items-start justify-between gap-4">
                               <div className="min-w-0">
                                 <div className="flex items-center gap-3">
-                                  <ModelBrandIcon model={model} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={22} />
-                                  <h4 className="truncate text-base font-semibold text-neutral-100">{model}</h4>
+                                  <ModelBrandIcon model={model.modelName} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={22} />
+                                  <h4 className="truncate text-base font-semibold text-neutral-100">{model.name || model.modelName}</h4>
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  <span className={SETTINGS_BADGE}>{SERVICE_LABELS[selectedConfig.service_type]}</span>
-                                  {selectedConfig.default_model === model ? <span className={SETTINGS_BADGE}>默认模型</span> : null}
-                                  {selectedConfig.service_type === "image" ? <span className={SETTINGS_BADGE}>图片 ×9</span> : null}
-                                  {selectedConfig.service_type === "video" ? <span className={SETTINGS_BADGE}>视频 ×3</span> : null}
-                                  {selectedConfig.service_type === "audio" ? <span className={SETTINGS_BADGE}>音频 ×3</span> : null}
+                                  {modelTags(model, selectedConfig).map((tag) => <span key={tag} className={SETTINGS_BADGE}>{tag}</span>)}
                                 </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-3 text-xs">
-                                <button type="button" onClick={() => handleTestConnectivity(selectedConfig)} className="font-medium text-neutral-400 transition hover:text-white">测试</button>
-                                <button type="button" onClick={() => openEdit(selectedConfig)} className="font-medium text-neutral-400 transition hover:text-white">编辑</button>
-                                <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="font-medium text-red-500 transition hover:text-red-600">删除</button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTestConnectivity(selectedConfig, model)}
+                                  disabled={testingModelKey === `${selectedConfig.id}:${model.modelName}`}
+                                  className="font-medium text-neutral-400 transition hover:text-white disabled:cursor-wait disabled:opacity-60"
+                                >
+                                  {testingModelKey === `${selectedConfig.id}:${model.modelName}` ? "测试中" : "测试"}
+                                </button>
+                                <button type="button" onClick={() => openEditModel(selectedConfig, model)} className="font-medium text-neutral-400 transition hover:text-white">编辑</button>
+                                <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="font-medium text-red-500 transition hover:text-red-400">删除</button>
                               </div>
                             </div>
                           </div>
@@ -1037,6 +1414,21 @@ export function AdminModelCatalogPage() {
       </div>
 
       <ConfigModal config={editing} open={configModalOpen} onClose={() => setConfigModalOpen(false)} onSaved={loadConfigs} />
+      {modelEditor ? (
+        <ModelEditorModal
+          editor={modelEditor}
+          saving={modelSaving}
+          error={modelEditorError}
+          onChange={(draft) => setModelEditor((prev) => (prev ? { ...prev, draft } : prev))}
+          onClose={() => {
+            if (!modelSaving) setModelEditor(null);
+          }}
+          onSave={handleSaveModel}
+        />
+      ) : null}
+      {modelTestResult ? (
+        <ModelTestResultModal result={modelTestResult} onClose={() => setModelTestResult(null)} />
+      ) : null}
       {codeEditingConfig ? (
         <Suspense fallback={<ProviderCodeEditorFallback />}>
           <ProviderCodeEditorModal
@@ -1054,6 +1446,228 @@ export function AdminModelCatalogPage() {
         </Suspense>
       ) : null}
     </AdminShell>
+  );
+}
+
+function toggleArrayValue(values: string[], value: string) {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+}
+
+function ModelEditorModal({
+  editor,
+  saving,
+  error,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  editor: ModelEditorState;
+  saving: boolean;
+  error: string;
+  onChange: (draft: ModelEditorDraft) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const draft = editor.draft;
+  const update = (patch: Partial<ModelEditorDraft>) => onChange({ ...draft, ...patch });
+  const setType = (type: ServiceType) => {
+    update({
+      type,
+      imageModes: type === "image" ? (draft.imageModes.length ? draft.imageModes : ["text"]) : draft.imageModes,
+      videoModes: type === "video" ? (draft.videoModes.length ? draft.videoModes : ["text"]) : draft.videoModes,
+    });
+  };
+
+  return (
+    <CenterModal title={editor.originalModelName ? "编辑模型" : "添加模型"} onClose={onClose} widthClass="max-w-[760px]">
+      <div className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <SettingsField label="显示名称">
+            <input value={draft.name} onChange={(event) => update({ name: event.target.value })} className={SETTINGS_INPUT} placeholder="如：GPT Image 2" />
+          </SettingsField>
+          <SettingsField label="模型 ID">
+            <input value={draft.modelName} onChange={(event) => update({ modelName: event.target.value })} className={SETTINGS_INPUT} placeholder="如：gpt-image-2" />
+          </SettingsField>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <SettingsField label="模型类型">
+            <select value={draft.type} onChange={(event) => setType(event.target.value as ServiceType)} className={SETTINGS_SELECT}>
+              {MODEL_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </SettingsField>
+          <label className="mt-6 flex items-center gap-2 text-sm text-neutral-300">
+            <input type="checkbox" checked={draft.isDefault} onChange={(event) => update({ isDefault: event.target.checked })} className="accent-neutral-300" />
+            设为默认模型
+          </label>
+        </div>
+
+        {draft.type === "text" ? (
+          <label className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-sm text-neutral-300">
+            <input type="checkbox" checked={draft.think} onChange={(event) => update({ think: event.target.checked })} className="accent-neutral-300" />
+            支持深度思考
+          </label>
+        ) : null}
+
+        {draft.type === "image" ? (
+          <SettingsField label="图片模式">
+            <div className="flex flex-wrap gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+              {IMAGE_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => update({ imageModes: toggleArrayValue(draft.imageModes, option.value) })}
+                  className={[
+                    "rounded-full border px-3 py-1 text-xs transition",
+                    draft.imageModes.includes(option.value) ? "border-white/[0.18] bg-white/[0.10] text-white" : "border-white/[0.08] bg-white/[0.045] text-neutral-400 hover:border-white/[0.16] hover:text-neutral-100",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </SettingsField>
+        ) : null}
+
+        {draft.type === "video" ? (
+          <div className="space-y-4">
+            <SettingsField label="视频模式">
+              <div className="flex flex-wrap gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+                {VIDEO_MODE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => update({ videoModes: toggleArrayValue(draft.videoModes, option.value) })}
+                    className={[
+                      "rounded-full border px-3 py-1 text-xs transition",
+                      draft.videoModes.includes(option.value) ? "border-white/[0.18] bg-white/[0.10] text-white" : "border-white/[0.08] bg-white/[0.045] text-neutral-400 hover:border-white/[0.16] hover:text-neutral-100",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </SettingsField>
+
+            {draft.videoModes.includes("multiReference") ? (
+              <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+                <p className="mb-3 text-xs font-medium text-neutral-500">多参考数量</p>
+                <div className="flex flex-wrap gap-3">
+                  {REFERENCE_MODE_OPTIONS.map((option) => {
+                    const checked = draft.mixedMode.includes(option.value);
+                    return (
+                      <label key={option.value} className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-black/20 px-3 py-2 text-xs text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => update({ mixedMode: toggleArrayValue(draft.mixedMode, option.value) })}
+                          className="accent-neutral-300"
+                        />
+                        {option.label}
+                        {checked ? (
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            value={draft.mixedModeCount[option.value] ?? 1}
+                            onChange={(event) => update({ mixedModeCount: { ...draft.mixedModeCount, [option.value]: Number(event.target.value) || 1 } })}
+                            className="h-7 w-16 rounded border border-white/[0.08] bg-white/[0.045] px-2 text-neutral-100 outline-none"
+                          />
+                        ) : null}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            <SettingsField label="音频输出">
+              <select value={String(draft.audio)} onChange={(event) => update({ audio: event.target.value === "true" ? true : event.target.value === "false" ? false : "optional" })} className={SETTINGS_SELECT}>
+                <option value="optional">音频可选</option>
+                <option value="true">仅音频</option>
+                <option value="false">无音频</option>
+              </select>
+            </SettingsField>
+
+            <SettingsField label="时长 / 分辨率">
+              <div className="space-y-2 rounded-lg border border-white/[0.08] bg-white/[0.035] p-3">
+                {draft.durationResolutionMap.map((row, index) => (
+                  <div key={index} className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+                    <input
+                      value={row.duration}
+                      onChange={(event) => {
+                        const rows = [...draft.durationResolutionMap];
+                        rows[index] = { ...row, duration: event.target.value };
+                        update({ durationResolutionMap: rows });
+                      }}
+                      className={SETTINGS_INPUT}
+                      placeholder="时长，如 5, 10"
+                    />
+                    <input
+                      value={row.resolution}
+                      onChange={(event) => {
+                        const rows = [...draft.durationResolutionMap];
+                        rows[index] = { ...row, resolution: event.target.value };
+                        update({ durationResolutionMap: rows });
+                      }}
+                      className={SETTINGS_INPUT}
+                      placeholder="分辨率，如 720p, 1080p"
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className={SETTINGS_PANEL_BUTTON}
+                      disabled={draft.durationResolutionMap.length <= 1}
+                      onClick={() => update({ durationResolutionMap: draft.durationResolutionMap.filter((_, rowIndex) => rowIndex !== index) })}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className={`w-full ${SETTINGS_PANEL_BUTTON}`}
+                  onClick={() => update({ durationResolutionMap: [...draft.durationResolutionMap, { duration: "", resolution: "" }] })}
+                >
+                  <Plus className="mr-1 h-4 w-4" />
+                  添加时长分辨率
+                </Button>
+              </div>
+            </SettingsField>
+          </div>
+        ) : null}
+
+        {error ? <div className="rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+      </div>
+      <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
+    </CenterModal>
+  );
+}
+
+function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; onClose: () => void }) {
+  return (
+    <CenterModal title={`测试结果 - ${result.modelName}`} onClose={onClose} widthClass="max-w-[560px]">
+      <div className="space-y-4">
+        <div className={[
+          "rounded-xl border px-4 py-4",
+          result.ok ? "border-emerald-400/20 bg-emerald-500/10" : "border-rose-400/25 bg-rose-500/10",
+        ].join(" ")}>
+          <p className={["text-sm font-semibold", result.ok ? "text-emerald-200" : "text-rose-200"].join(" ")}>
+            {result.ok ? "连接可用" : "连接失败"}
+          </p>
+          <p className="mt-2 text-xs leading-6 text-neutral-400">
+            供应商：{result.configName} · 类型：{SERVICE_LABELS[result.type]} · HTTP：{result.httpStatus || "-"} · 耗时：{result.latencyMs}ms
+          </p>
+          {result.errorMsg ? <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-black/35 p-3 text-xs text-rose-100">{result.errorMsg}</pre> : null}
+        </div>
+        <div className="flex justify-end">
+          <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={onClose}>关闭</Button>
+        </div>
+      </div>
+    </CenterModal>
   );
 }
 
