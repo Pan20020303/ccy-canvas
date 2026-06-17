@@ -34,6 +34,7 @@ import {
   Minus,
   Copy as CopyIcon,
   Highlighter,
+  RotateCcw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -1863,7 +1864,17 @@ type ImageActionKind = 'panorama' | 'angles' | 'lighting' | 'grid-compose' | 'en
 type ImageActionDraft = {
   prompt: string;
   anglePreset?: string;
+  angleYaw?: number;
+  anglePitch?: number;
+  angleZoom?: number;
+  anglePromptEnabled?: boolean;
   lightingPreset?: string;
+  lightingView?: 'transparent' | 'front';
+  lightingBrightness?: number;
+  lightingColor?: string;
+  lightingKeyLight?: string;
+  lightingSmart?: boolean;
+  lightingRim?: boolean;
   gridPreset?: string;
   expandDirection?: string;
   outputCount?: number;
@@ -1873,10 +1884,27 @@ type ImageActionDraft = {
   splitCols?: number;
 };
 
+type ImageActionSession = {
+  action: ImageActionKind;
+  draft: ImageActionDraft;
+  open: boolean;
+  compareOpen: boolean;
+};
+
 const ANGLE_PRESETS = [
   { id: 'front-side-back', labelZh: '正侧背', labelEn: 'Front / Side / Back', prompt: '输出正面、侧面、背面三视图，保持主体一致，背景简洁。', outputs: 3 },
   { id: 'top-front-side', labelZh: '俯视/平视/仰视', labelEn: 'Top / Eye / Low', prompt: '输出俯视、平视、仰视三种机位，保持主体一致，构图统一。', outputs: 3 },
   { id: 'three-view', labelZh: '三视图', labelEn: 'Three-view', prompt: '输出三视图表现，主体一致，角度清晰。', outputs: 3 },
+];
+
+const ANGLE_EDITOR_PRESETS = [
+  { id: 'custom', labelZh: '自定义', labelEn: 'Custom', yaw: 0, pitch: 0, zoom: 50 },
+  { id: 'eye-level', labelZh: '鱼眼视角', labelEn: 'Fisheye', yaw: -18, pitch: 8, zoom: 35 },
+  { id: 'tilted', labelZh: '倾斜视角', labelEn: 'Tilted', yaw: 22, pitch: -12, zoom: 55 },
+  { id: 'front', labelZh: '正面俯拍', labelEn: 'Front top', yaw: 0, pitch: 28, zoom: 48 },
+  { id: 'front-low', labelZh: '正面仰拍', labelEn: 'Front low', yaw: 0, pitch: -24, zoom: 48 },
+  { id: 'panorama-top', labelZh: '全景俯拍', labelEn: 'Pan top', yaw: 0, pitch: 42, zoom: 22 },
+  { id: 'back', labelZh: '背面视角', labelEn: 'Back', yaw: 180, pitch: 0, zoom: 50 },
 ];
 
 const LIGHTING_PRESETS = [
@@ -1884,6 +1912,15 @@ const LIGHTING_PRESETS = [
   { id: 'side-light', labelZh: '侧光', labelEn: 'Side light', prompt: '保持主体不变，改为侧光照明，增强体积感与阴影层次。' },
   { id: 'rim-light', labelZh: '逆光 / 轮廓光', labelEn: 'Back / rim light', prompt: '保持主体不变，改为逆光与轮廓光，突出边缘高光。' },
   { id: 'soft-light', labelZh: '柔光', labelEn: 'Soft light', prompt: '保持主体不变，改为柔和漫射光，减少硬阴影，画面更通透。' },
+];
+
+const LIGHTING_KEY_LIGHTS = [
+  { id: 'left', labelZh: '左侧', labelEn: 'Left' },
+  { id: 'top', labelZh: '顶部', labelEn: 'Top' },
+  { id: 'right', labelZh: '右侧', labelEn: 'Right' },
+  { id: 'front', labelZh: '前方', labelEn: 'Front' },
+  { id: 'bottom', labelZh: '底部', labelEn: 'Bottom' },
+  { id: 'back', labelZh: '后方', labelEn: 'Back' },
 ];
 
 const GRID_COMPOSE_PRESETS = [
@@ -1894,6 +1931,33 @@ const GRID_COMPOSE_PRESETS = [
 ];
 
 const GRID_SPLIT_PRESETS = GRID_COMPOSE_PRESETS;
+
+function buildAngleEditorPrompt(draft: ImageActionDraft, language: string) {
+  const yaw = Math.round(draft.angleYaw ?? 0);
+  const pitch = Math.round(draft.anglePitch ?? 0);
+  const zoom = Math.round(draft.angleZoom ?? 50);
+  const preset = ANGLE_EDITOR_PRESETS.find((item) => item.id === draft.anglePreset);
+  const presetLabel = preset ? (language === 'zh' ? preset.labelZh : preset.labelEn) : draft.anglePreset;
+  const parameterPrompt = language === 'zh'
+    ? `按多角度编辑参数生成：视角预设=${presetLabel ?? '自定义'}，水平环绕=${yaw}°，垂直俯仰=${pitch}°，景别缩放=${zoom}%。保持主体身份、服装、比例和材质一致，输出干净的多角度/三视图参考图。`
+    : `Generate with angle-editor parameters: preset=${presetLabel ?? 'Custom'}, yaw=${yaw}deg, pitch=${pitch}deg, framing zoom=${zoom}%. Keep identity, outfit, proportions, and material consistent; output a clean multi-angle/three-view reference sheet.`;
+  return draft.anglePromptEnabled === false
+    ? parameterPrompt
+    : `${draft.prompt}\n${parameterPrompt}`.trim();
+}
+
+function buildLightingEditorPrompt(draft: ImageActionDraft, language: string) {
+  const brightness = Math.round(draft.lightingBrightness ?? 50);
+  const keyLight = LIGHTING_KEY_LIGHTS.find((item) => item.id === draft.lightingKeyLight);
+  const keyLightLabel = keyLight ? (language === 'zh' ? keyLight.labelZh : keyLight.labelEn) : draft.lightingKeyLight;
+  const view = draft.lightingView === 'front'
+    ? (language === 'zh' ? '正面' : 'front')
+    : (language === 'zh' ? '透视' : 'transparent');
+  const parameterPrompt = language === 'zh'
+    ? `按打光编辑参数调整：预览模式=${view}，亮度=${brightness}%，主光源=${keyLightLabel ?? '前方'}，色温/颜色=${draft.lightingColor ?? '#ffffff'}，智能模式=${draft.lightingSmart ? '开启' : '关闭'}，轮廓光=${draft.lightingRim ? '开启' : '关闭'}。保持主体、构图、服装和背景布局不变，只改变光照、阴影、质感和氛围。`
+    : `Apply lighting-editor parameters: preview=${view}, brightness=${brightness}%, key light=${keyLightLabel ?? 'Front'}, color=${draft.lightingColor ?? '#ffffff'}, smart mode=${draft.lightingSmart ? 'on' : 'off'}, rim light=${draft.lightingRim ? 'on' : 'off'}. Keep subject, composition, outfit, and background layout unchanged; only adjust light, shadow, material, and mood.`;
+  return `${draft.prompt}\n${parameterPrompt}`.trim();
+}
 
 const VIDEO_EDIT_PRESETS = [
   { id: 'scene-preserve', labelZh: '保留主体', labelEn: 'Preserve subject', prompt: '保持主体和构图基本不变，只处理视频编辑目标。' },
@@ -2099,6 +2163,306 @@ async function splitImageIntoTiles(sourceUrl: string, rows: number, cols: number
   return { tiles, tileW: Math.round(tileW), tileH: Math.round(tileH) };
 }
 
+function MiniSwitch({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={clsx(
+        'relative h-4 w-8 rounded-full border transition',
+        checked ? 'border-cyan-300/50 bg-cyan-400/40' : 'border-white/12 bg-white/12',
+      )}
+    >
+      <span
+        className={clsx(
+          'absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white shadow transition-transform',
+          checked ? 'translate-x-[14px]' : 'translate-x-[2px]',
+        )}
+      />
+    </button>
+  );
+}
+
+function ActionRange({
+  label,
+  value,
+  min,
+  max,
+  suffix,
+  rightLabel,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  suffix?: string;
+  rightLabel?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="grid grid-cols-[88px_1fr_48px] items-center gap-3 text-xs text-neutral-300">
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-1.5 w-full accent-cyan-300"
+      />
+      <span className="text-right text-neutral-100">{rightLabel ?? `${Math.round(value)}${suffix ?? ''}`}</span>
+    </div>
+  );
+}
+
+function AngleActionEditor({
+  session,
+  setSession,
+  sourceUrl,
+  language,
+}: {
+  session: ImageActionSession;
+  setSession: (session: ImageActionSession) => void;
+  sourceUrl: string;
+  language: string;
+}) {
+  const draft = session.draft;
+  const yaw = draft.angleYaw ?? 0;
+  const pitch = draft.anglePitch ?? 0;
+  const zoom = draft.angleZoom ?? 50;
+  const selectedPreset = ANGLE_EDITOR_PRESETS.some((preset) => preset.id === draft.anglePreset) ? draft.anglePreset : 'custom';
+  const updateDraft = (patch: Partial<ImageActionDraft>) => setSession({ ...session, draft: { ...draft, ...patch } });
+  const frameScale = 0.72 + (zoom / 100) * 0.38;
+  const frameX = clampNumber((yaw / 180) * 54, -54, 54);
+  const frameY = clampNumber((-pitch / 60) * 42, -42, 42);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {ANGLE_EDITOR_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            onClick={() => updateDraft({
+              anglePreset: preset.id,
+              angleYaw: preset.yaw,
+              anglePitch: preset.pitch,
+              angleZoom: preset.zoom,
+            })}
+            className={clsx(
+              'rounded-xl border px-3 py-1.5 text-xs transition',
+              selectedPreset === preset.id
+                ? 'border-cyan-300/45 bg-cyan-400/15 text-cyan-50 shadow-[0_0_24px_rgba(34,211,238,0.12)]'
+                : 'border-white/10 bg-white/[0.04] text-neutral-300 hover:border-white/20 hover:bg-white/[0.08]',
+            )}
+          >
+            {language === 'zh' ? preset.labelZh : preset.labelEn}
+          </button>
+        ))}
+      </div>
+      <div className="grid gap-5 md:grid-cols-[240px_1fr]">
+        <div className="relative flex h-60 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-950/90">
+          <div className="absolute h-44 w-44 rounded-full border border-white/20" />
+          <div className="absolute h-44 w-28 rounded-[999px] border border-white/14" />
+          <div className="absolute h-28 w-44 rounded-[999px] border border-white/12" />
+          <div className="absolute h-px w-44 bg-white/16" />
+          <div className="absolute h-44 w-px bg-white/16" />
+          <button
+            type="button"
+            onClick={() => updateDraft({ angleYaw: clampNumber(yaw - 15, -180, 180) })}
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={() => updateDraft({ angleYaw: clampNumber(yaw + 15, -180, 180) })}
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            onClick={() => updateDraft({ anglePitch: clampNumber(pitch + 8, -60, 60) })}
+            className="absolute top-3 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
+          >
+            ⌃
+          </button>
+          <button
+            type="button"
+            onClick={() => updateDraft({ anglePitch: clampNumber(pitch - 8, -60, 60) })}
+            className="absolute bottom-3 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
+          >
+            ⌄
+          </button>
+          <div
+            className="relative h-24 w-20 overflow-hidden rounded-xl border border-white/25 bg-black/35 shadow-[0_18px_45px_rgba(0,0,0,0.4)] transition-transform duration-200"
+            style={{ transform: `translate(${frameX}px, ${frameY}px) scale(${frameScale}) rotateY(${yaw / 7}deg) rotateX(${pitch / 8}deg)` }}
+          >
+            <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+          </div>
+        </div>
+        <div className="space-y-5 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+          <ActionRange
+            label={language === 'zh' ? '水平环绕' : 'Yaw'}
+            value={yaw}
+            min={-180}
+            max={180}
+            suffix="°"
+            onChange={(value) => updateDraft({ angleYaw: value, anglePreset: 'custom' })}
+          />
+          <ActionRange
+            label={language === 'zh' ? '垂直俯仰' : 'Pitch'}
+            value={pitch}
+            min={-60}
+            max={60}
+            suffix="°"
+            onChange={(value) => updateDraft({ anglePitch: value, anglePreset: 'custom' })}
+          />
+          <ActionRange
+            label={language === 'zh' ? '景别缩放' : 'Framing'}
+            value={zoom}
+            min={0}
+            max={100}
+            rightLabel={zoom < 34 ? (language === 'zh' ? '全景' : 'Wide') : zoom > 66 ? (language === 'zh' ? '近景' : 'Close') : (language === 'zh' ? '中景' : 'Medium')}
+            onChange={(value) => updateDraft({ angleZoom: value, anglePreset: 'custom' })}
+          />
+          <div className="flex items-center gap-3 text-xs text-neutral-300">
+            <span>{language === 'zh' ? '提示词' : 'Prompt'}</span>
+            <MiniSwitch checked={draft.anglePromptEnabled !== false} onChange={(checked) => updateDraft({ anglePromptEnabled: checked })} />
+          </div>
+          {draft.anglePromptEnabled !== false ? (
+            <Textarea
+              value={draft.prompt}
+              onChange={(event) => updateDraft({ prompt: event.target.value })}
+              className="min-h-[92px] border-white/10 bg-black/20 text-sm"
+              placeholder={language === 'zh' ? '补充多角度生成要求' : 'Add extra angle instructions'}
+            />
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LightingActionEditor({
+  session,
+  setSession,
+  sourceUrl,
+  language,
+}: {
+  session: ImageActionSession;
+  setSession: (session: ImageActionSession) => void;
+  sourceUrl: string;
+  language: string;
+}) {
+  const draft = session.draft;
+  const updateDraft = (patch: Partial<ImageActionDraft>) => setSession({ ...session, draft: { ...draft, ...patch } });
+  const brightness = draft.lightingBrightness ?? 50;
+  const keyLight = draft.lightingKeyLight ?? 'front';
+  const lightDotClass = {
+    left: 'left-4 top-1/2 -translate-y-1/2',
+    top: 'left-1/2 top-4 -translate-x-1/2',
+    right: 'right-4 top-1/2 -translate-y-1/2',
+    front: 'left-1/2 bottom-4 -translate-x-1/2',
+    bottom: 'left-1/2 bottom-4 -translate-x-1/2',
+    back: 'left-1/2 top-4 -translate-x-1/2',
+  }[keyLight] ?? 'left-1/2 bottom-4 -translate-x-1/2';
+
+  return (
+    <div className="grid gap-5 md:grid-cols-[240px_1fr]">
+      <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1 text-xs">
+          {(['transparent', 'front'] as const).map((view) => (
+            <button
+              key={view}
+              type="button"
+              onClick={() => updateDraft({ lightingView: view })}
+              className={clsx(
+                'rounded-lg px-3 py-2 transition',
+                (draft.lightingView ?? 'transparent') === view ? 'bg-white/12 text-white shadow' : 'text-neutral-400 hover:text-white',
+              )}
+            >
+              {view === 'transparent'
+                ? (language === 'zh' ? '透视' : 'Perspective')
+                : (language === 'zh' ? '正面' : 'Front')}
+            </button>
+          ))}
+        </div>
+        <div className="relative flex h-48 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-200/10 to-slate-950">
+          <div className="absolute h-40 w-40 rounded-full border border-white/18 bg-[radial-gradient(circle_at_35%_25%,rgba(255,255,255,0.35),rgba(148,163,184,0.13)_42%,rgba(15,23,42,0.45)_100%)]" />
+          <div className="absolute h-40 w-px bg-white/10" />
+          <div className="absolute h-px w-40 bg-white/10" />
+          <span className={clsx('absolute h-3.5 w-3.5 rounded-full border border-white/50 bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]', lightDotClass)} />
+          <div className="relative h-24 w-20 -rotate-6 overflow-hidden rounded-lg border border-white/20 bg-black/35 opacity-80 shadow-xl">
+            <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="flex items-center justify-between text-xs text-neutral-300">
+          <span>{language === 'zh' ? '全局' : 'Global'}</span>
+          <label className="flex items-center gap-2">
+            <span>{language === 'zh' ? '智能模式' : 'Smart mode'}</span>
+            <MiniSwitch checked={Boolean(draft.lightingSmart)} onChange={(checked) => updateDraft({ lightingSmart: checked })} />
+          </label>
+        </div>
+        <ActionRange
+          label={language === 'zh' ? '亮度' : 'Brightness'}
+          value={brightness}
+          min={0}
+          max={100}
+          rightLabel={`${brightness}%`}
+          onChange={(value) => updateDraft({ lightingBrightness: value })}
+        />
+        <div className="grid grid-cols-[88px_1fr] items-center gap-3 text-xs text-neutral-300">
+          <span>{language === 'zh' ? '颜色' : 'Color'}</span>
+          <div className="flex items-center gap-3">
+            <input
+              type="color"
+              value={draft.lightingColor ?? '#ffffff'}
+              onChange={(event) => updateDraft({ lightingColor: event.target.value })}
+              className="h-8 w-16 rounded-lg border border-white/10 bg-transparent"
+            />
+            <span className="font-mono text-neutral-400">{draft.lightingColor ?? '#ffffff'}</span>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="text-xs text-neutral-300">{language === 'zh' ? '主光源' : 'Key light'}</div>
+          <div className="grid grid-cols-3 gap-2">
+            {LIGHTING_KEY_LIGHTS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => updateDraft({ lightingKeyLight: item.id })}
+                className={clsx(
+                  'rounded-xl border px-3 py-2 text-xs transition',
+                  keyLight === item.id
+                    ? 'border-cyan-300/45 bg-cyan-400/15 text-cyan-50'
+                    : 'border-white/10 bg-black/18 text-neutral-300 hover:bg-white/[0.08]',
+                )}
+              >
+                {language === 'zh' ? item.labelZh : item.labelEn}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-neutral-300">
+          <span>{language === 'zh' ? '轮廓光' : 'Rim light'}</span>
+          <MiniSwitch checked={Boolean(draft.lightingRim)} onChange={(checked) => updateDraft({ lightingRim: checked })} />
+        </div>
+        <Textarea
+          value={draft.prompt}
+          onChange={(event) => updateDraft({ prompt: event.target.value })}
+          className="min-h-[86px] border-white/10 bg-black/20 text-sm"
+          placeholder={language === 'zh' ? '补充打光要求' : 'Add extra lighting instructions'}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
   const nodes = useStore((state) => state.nodes);
@@ -2109,12 +2473,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
   const sourceUrl = String(sourceData.url ?? '');
-  const [session, setSession] = useState<{
-    action: ImageActionKind;
-    draft: ImageActionDraft;
-    open: boolean;
-    compareOpen: boolean;
-  } | null>(null);
+  const [session, setSession] = useState<ImageActionSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const latestDerived = useMemo(
@@ -2172,8 +2531,20 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       compareOpen: false,
       draft: {
         prompt: basePrompt,
-        outputCount: action === 'angles' ? 3 : 1,
+        outputCount: 1,
         expandDirection: action === 'panorama' ? 'horizontal' : 'both',
+        anglePreset: action === 'angles' ? 'custom' : undefined,
+        angleYaw: 0,
+        anglePitch: 0,
+        angleZoom: 50,
+        anglePromptEnabled: false,
+        lightingPreset: action === 'lighting' ? 'studio-key' : undefined,
+        lightingView: 'transparent',
+        lightingBrightness: 50,
+        lightingColor: '#ffffff',
+        lightingKeyLight: 'front',
+        lightingSmart: false,
+        lightingRim: false,
         ...draft,
       },
     });
@@ -2257,19 +2628,21 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           outputCount: 1,
         });
       } else if (session.action === 'angles') {
-        const outputs = Math.max(1, draft.outputCount ?? 3);
         const angleLabel = draft.anglePreset ?? 'three-view';
-        const anglePrompt = `${draft.prompt} ${angleLabel}`;
-        for (let index = 0; index < outputs; index += 1) {
-          // Stagger each derived node slightly so multi-output sets are readable.
-          // The backend can still collapse to one output if the provider ignores n.
-          await spawnDerivedNode({
-            prompt: anglePrompt,
-            outputCount: 1,
-            referenceImages: [sourceUrl],
-            anglePreset: draft.anglePreset,
-          });
-        }
+        const anglePrompt = `${buildAngleEditorPrompt(draft, language)} ${angleLabel}`;
+        await spawnDerivedNode({
+          prompt: anglePrompt,
+          outputCount: 1,
+          referenceImages: [sourceUrl],
+          anglePreset: draft.anglePreset,
+        });
+      } else if (session.action === 'lighting') {
+        await spawnDerivedNode({
+          prompt: buildLightingEditorPrompt(draft, language),
+          outputCount: 1,
+          referenceImages: [sourceUrl],
+          lightingPreset: draft.lightingPreset,
+        });
       } else {
         await spawnDerivedNode({
           prompt: draft.prompt,
@@ -2344,6 +2717,43 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   if (!sourceNode || !['imageNode', 'referenceImageNode', 'panoramaNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
 
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
+  const isPrecisionEditor = session?.action === 'angles' || session?.action === 'lighting';
+  const dialogTitle = session?.action === 'angles'
+    ? (language === 'zh' ? '多角度编辑器' : 'Multi-angle editor')
+    : session?.action === 'lighting'
+      ? (language === 'zh' ? '打光效果' : 'Lighting editor')
+      : sourceTitle;
+  const resetEditorDraft = () => {
+    if (!session) return;
+    if (session.action === 'angles') {
+      setSession({
+        ...session,
+        draft: {
+          ...session.draft,
+          anglePreset: 'custom',
+          angleYaw: 0,
+          anglePitch: 0,
+          angleZoom: 50,
+          anglePromptEnabled: false,
+        },
+      });
+      return;
+    }
+    if (session.action === 'lighting') {
+      setSession({
+        ...session,
+        draft: {
+          ...session.draft,
+          lightingView: 'transparent',
+          lightingBrightness: 50,
+          lightingColor: '#ffffff',
+          lightingKeyLight: 'front',
+          lightingSmart: false,
+          lightingRim: false,
+        },
+      });
+    }
+  };
 
   return (
     <>
@@ -2364,7 +2774,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             {ANGLE_PRESETS.map((preset) => (
               <DropdownMenuItem
                 key={preset.id}
-                onClick={() => openDraft('angles', { anglePreset: preset.id, prompt: preset.prompt, outputCount: preset.outputs })}
+                onClick={() => openDraft('angles', { anglePreset: 'custom', prompt: preset.prompt, outputCount: 1, anglePromptEnabled: true })}
               >
                 <div className="flex w-full items-center justify-between gap-3">
                   <span>{language === 'zh' ? preset.labelZh : preset.labelEn}</span>
@@ -2386,7 +2796,14 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             {LIGHTING_PRESETS.map((preset) => (
               <DropdownMenuItem
                 key={preset.id}
-                onClick={() => openDraft('lighting', { lightingPreset: preset.id, prompt: preset.prompt })}
+                onClick={() => openDraft('lighting', {
+                  lightingPreset: preset.id,
+                  prompt: preset.prompt,
+                  lightingKeyLight: preset.id === 'side-light' ? 'left' : preset.id === 'rim-light' ? 'back' : 'front',
+                  lightingBrightness: preset.id === 'soft-light' ? 62 : 50,
+                  lightingSmart: preset.id === 'soft-light',
+                  lightingRim: preset.id === 'rim-light',
+                })}
               >
                 {language === 'zh' ? preset.labelZh : preset.labelEn}
               </DropdownMenuItem>
@@ -2454,65 +2871,70 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       </div>
 
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) closeSession(); }}>
-        <DialogContent className="max-w-3xl border-white/10 bg-[#111318] text-neutral-100">
+        <DialogContent className={clsx(
+          'border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)]',
+          isPrecisionEditor ? 'max-w-4xl' : 'max-w-3xl',
+        )}>
           <DialogHeader>
-            <DialogTitle>{sourceTitle}</DialogTitle>
+            <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
           {session ? (
-            <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
-              <div className="space-y-3">
-                <Textarea
-                  value={session.draft.prompt}
-                  onChange={(event) => setSession({ ...session, draft: { ...session.draft, prompt: event.target.value } })}
-                  className="min-h-[160px] border-white/10 bg-white/[0.03] text-sm"
-                  placeholder={language === 'zh' ? '输入二次创作提示词' : 'Enter the derivation prompt'}
-                />
-                {session.action === 'angles' ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400">{language === 'zh' ? '输出数量' : 'Outputs'}</span>
-                    <select
-                      value={session.draft.outputCount ?? 3}
-                      onChange={(event) => setSession({ ...session, draft: { ...session.draft, outputCount: Number(event.target.value) } })}
-                      className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
-                    >
-                      <option value={1}>1</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </div>
-                ) : null}
-                {session.action === 'panorama' ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400">{language === 'zh' ? '扩展方向' : 'Direction'}</span>
-                    <select
-                      value={session.draft.expandDirection ?? 'horizontal'}
-                      onChange={(event) => setSession({ ...session, draft: { ...session.draft, expandDirection: event.target.value } })}
-                      className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
-                    >
-                      <option value="horizontal">{language === 'zh' ? '横向扩展' : 'Horizontal'}</option>
-                      <option value="vertical">{language === 'zh' ? '纵向扩展' : 'Vertical'}</option>
-                    </select>
-                  </div>
-                ) : null}
-              </div>
-              <div className="space-y-3">
-                <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
-                  {latestDerivedUrl ? (
-                    <img src={latestDerivedUrl} alt="" className="h-48 w-full object-cover" />
-                  ) : (
-                    <img src={sourceUrl} alt="" className="h-48 w-full object-cover" />
-                  )}
+            session.action === 'angles' ? (
+              <AngleActionEditor session={session} setSession={setSession} sourceUrl={sourceUrl} language={language} />
+            ) : session.action === 'lighting' ? (
+              <LightingActionEditor session={session} setSession={setSession} sourceUrl={sourceUrl} language={language} />
+            ) : (
+              <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+                <div className="space-y-3">
+                  <Textarea
+                    value={session.draft.prompt}
+                    onChange={(event) => setSession({ ...session, draft: { ...session.draft, prompt: event.target.value } })}
+                    className="min-h-[160px] border-white/10 bg-white/[0.03] text-sm"
+                    placeholder={language === 'zh' ? '输入二次创作提示词' : 'Enter the derivation prompt'}
+                  />
+                  {session.action === 'panorama' ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-neutral-400">{language === 'zh' ? '扩展方向' : 'Direction'}</span>
+                      <select
+                        value={session.draft.expandDirection ?? 'horizontal'}
+                        onChange={(event) => setSession({ ...session, draft: { ...session.draft, expandDirection: event.target.value } })}
+                        className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
+                      >
+                        <option value="horizontal">{language === 'zh' ? '横向扩展' : 'Horizontal'}</option>
+                        <option value="vertical">{language === 'zh' ? '纵向扩展' : 'Vertical'}</option>
+                      </select>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="text-xs text-neutral-400">
-                  {language === 'zh' ? '将保留原图并生成派生新节点。' : 'The original image will stay; a derived node will be created.'}
+                <div className="space-y-3">
+                  <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
+                    {latestDerivedUrl ? (
+                      <ResilientImage src={latestDerivedUrl} alt="" className="h-48 w-full object-cover" zh={language === 'zh'} />
+                    ) : (
+                      <ResilientImage src={sourceUrl} alt="" className="h-48 w-full object-cover" zh={language === 'zh'} />
+                    )}
+                  </div>
+                  <div className="text-xs text-neutral-400">
+                    {language === 'zh' ? '将保留原图并生成派生新节点。' : 'The original image will stay; a derived node will be created.'}
+                  </div>
                 </div>
               </div>
-            </div>
+            )
           ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
-            <Button onClick={() => void handleGenerate()} disabled={busy}>
-              {busy ? (language === 'zh' ? '生成中…' : 'Working…') : (language === 'zh' ? '开始生成' : 'Generate')}
-            </Button>
+          <DialogFooter className={clsx(isPrecisionEditor && 'items-center justify-between sm:justify-between')}>
+            {isPrecisionEditor ? (
+              <Button variant="ghost" onClick={resetEditorDraft} className="mr-auto text-neutral-300 hover:bg-white/[0.08] hover:text-white">
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {language === 'zh' ? '重置参数' : 'Reset'}
+              </Button>
+            ) : null}
+            <div className="flex items-center gap-2">
+              {isPrecisionEditor ? <span className="text-xs text-neutral-400">1</span> : null}
+              <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
+              <Button onClick={() => void handleGenerate()} disabled={busy}>
+                {busy ? (language === 'zh' ? '生成中...' : 'Working...') : (language === 'zh' ? '开始生成' : 'Generate')}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
