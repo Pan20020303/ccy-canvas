@@ -41,6 +41,7 @@ import { useStore } from '../../store';
 import { resolveApiUrl } from '../../api/client';
 import { resolveBackendAssetUrl } from '../../reference-media';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
+import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
 import {
@@ -217,6 +218,7 @@ const Dropdown = ({
   options,
   onChange,
   align = 'left',
+  side = 'top',
   renderOption,
   menuMinWidth,
 }: {
@@ -225,6 +227,7 @@ const Dropdown = ({
   options: string[];
   onChange: (v: string) => void;
   align?: 'left' | 'right';
+  side?: 'top' | 'bottom';
   /** Optional custom renderer for each option row (gets the raw option + selected state). */
   renderOption?: (option: string, selected: boolean) => React.ReactNode;
   /** Override the popup min-width — model dropdown needs more room for icons + duration. */
@@ -248,7 +251,7 @@ const Dropdown = ({
             className={clsx(
               'absolute z-20 mb-1 mt-1 rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-2xl backdrop-blur-xl',
               align === 'right' ? 'right-0' : 'left-0',
-              'bottom-full',
+              side === 'top' ? 'bottom-full' : 'top-full',
             )}
             style={{ minWidth: menuMinWidth ?? 140 }}
           >
@@ -1863,6 +1866,7 @@ type ImageActionKind = 'panorama' | 'angles' | 'lighting' | 'grid-compose' | 'en
 
 type ImageActionDraft = {
   prompt: string;
+  model?: string;
   anglePreset?: string;
   angleYaw?: number;
   anglePitch?: number;
@@ -2216,6 +2220,139 @@ function ActionRange({
   );
 }
 
+function PanoramaActionEditor({
+  session,
+  setSession,
+  sourceUrl,
+  language,
+  modelOptions,
+  providerConfigs,
+}: {
+  session: ImageActionSession;
+  setSession: (session: ImageActionSession) => void;
+  sourceUrl: string;
+  language: string;
+  modelOptions: string[];
+  providerConfigs: AppProviderConfig[];
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const sweepRef = useRef<HTMLDivElement>(null);
+  const draft = session.draft;
+  const selectedModel = draft.model || modelOptions[0] || 'gpt-image-2';
+  const options = modelOptions.length > 0 ? modelOptions : [selectedModel];
+  const activeConfig = providerConfigs.find((config) => config.model_list.includes(selectedModel)) ?? null;
+  const updateDraft = (patch: Partial<ImageActionDraft>) => setSession({ ...session, draft: { ...draft, ...patch } });
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const mm = gsap.matchMedia();
+    mm.add({ reduceMotion: '(prefers-reduced-motion: reduce)' }, (context) => {
+      const reduceMotion = Boolean(context.conditions?.reduceMotion);
+      const items = root.querySelectorAll('[data-panorama-animate]');
+      if (reduceMotion) {
+        gsap.set(items, { autoAlpha: 1, y: 0, scale: 1 });
+        return;
+      }
+      const entrance = gsap.fromTo(
+        items,
+        { autoAlpha: 0, y: 14, scale: 0.98 },
+        { autoAlpha: 1, y: 0, scale: 1, duration: 0.42, ease: 'power2.out', stagger: 0.06, overwrite: 'auto' },
+      );
+      const sweep = sweepRef.current
+        ? gsap.fromTo(sweepRef.current, { xPercent: 0 }, { xPercent: -50, duration: 12, ease: 'none', repeat: -1 })
+        : null;
+      return () => {
+        entrance.kill();
+        sweep?.kill();
+      };
+    });
+    return () => mm.revert();
+  }, []);
+
+  return (
+    <div ref={rootRef} className="space-y-4">
+      <div data-panorama-animate className="relative h-48 overflow-hidden rounded-3xl border border-white/10 bg-[#0c1118] shadow-inner">
+        <div ref={sweepRef} className="absolute inset-y-0 left-0 flex w-[200%] will-change-transform">
+          <ResilientImage src={sourceUrl} alt="" className="h-full w-1/2 object-cover" zh={language === 'zh'} />
+          <ResilientImage src={sourceUrl} alt="" className="h-full w-1/2 object-cover" zh={language === 'zh'} />
+        </div>
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(2,6,23,0.58),transparent_24%,transparent_76%,rgba(2,6,23,0.58))]" />
+        <div className="absolute left-4 top-4 rounded-full border border-cyan-300/25 bg-cyan-400/12 px-3 py-1 text-xs text-cyan-100 backdrop-blur">
+          {language === 'zh' ? '2:1 等距柱状投影' : '2:1 equirectangular'}
+        </div>
+        <div className="absolute bottom-4 right-4 rounded-2xl border border-white/10 bg-black/45 px-3 py-2 text-xs text-neutral-200 backdrop-blur">
+          {language === 'zh' ? '生成后可进入拖动预览' : 'Drag preview after generation'}
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-[1fr_260px]">
+        <div data-panorama-animate className="space-y-2">
+          <label className="text-xs text-neutral-400">{language === 'zh' ? '全景提示词' : 'Panorama prompt'}</label>
+          <Textarea
+            value={draft.prompt}
+            onChange={(event) => updateDraft({ prompt: event.target.value })}
+            className="min-h-[132px] border-white/10 bg-white/[0.035] text-sm"
+            placeholder={language === 'zh' ? '描述需要补全的 360 环境、光线和主体保持要求' : 'Describe the 360 environment, lighting, and preservation requirements'}
+          />
+        </div>
+        <div data-panorama-animate className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+          <div className="space-y-2">
+            <div className="text-xs text-neutral-400">{language === 'zh' ? '生成模型' : 'Model'}</div>
+            <div className="rounded-xl border border-white/10 bg-black/20 px-1 py-1">
+              <Dropdown
+                label={<ModelBrandIcon model={selectedModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={16} />}
+                value={selectedModel}
+                options={options}
+                onChange={(model) => updateDraft({ model })}
+                side="bottom"
+                menuMinWidth={260}
+                renderOption={(option, selected) => {
+                  const optionConfig = providerConfigs.find((config) => config.model_list.includes(option)) ?? null;
+                  return (
+                    <div className="flex w-full items-center gap-2">
+                      <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
+                      <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
+                    </div>
+                  );
+                }}
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="text-xs text-neutral-400">{language === 'zh' ? '扩展方向' : 'Expand direction'}</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: 'horizontal', zh: '横向扩展', en: 'Horizontal' },
+                { id: 'vertical', zh: '纵向扩展', en: 'Vertical' },
+              ].map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => updateDraft({ expandDirection: item.id })}
+                  className={clsx(
+                    'rounded-xl border px-3 py-2 text-xs transition',
+                    (draft.expandDirection ?? 'horizontal') === item.id
+                      ? 'border-cyan-300/45 bg-cyan-400/15 text-cyan-50'
+                      : 'border-white/10 bg-black/18 text-neutral-300 hover:bg-white/[0.08]',
+                  )}
+                >
+                  {language === 'zh' ? item.zh : item.en}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-black/18 p-3 text-xs leading-relaxed text-neutral-400">
+            {language === 'zh'
+              ? '会保留原图主体风格，并补全左右衔接的全景环境。推荐选择支持图生图/参考图的图片模型。'
+              : 'Keeps the source style and completes a seamless panorama. Prefer image models that support references.'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AngleActionEditor({
   session,
   setSession,
@@ -2465,6 +2602,7 @@ function LightingActionEditor({
 
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
+  const backendModels = useStore((state) => state.backendModels);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
@@ -2473,6 +2611,21 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
   const sourceUrl = String(sourceData.url ?? '');
+  const sourceParams = (sourceData.generationParams as Record<string, unknown> | undefined) ?? {};
+  const imageProviderConfigs = useMemo(
+    () => backendModels.filter((config) => config.service_type === 'image'),
+    [backendModels],
+  );
+  const imageModelOptions = useMemo(
+    () => imageProviderConfigs
+      .flatMap((config) => config.model_list)
+      .filter((value, index, values) => values.indexOf(value) === index),
+    [imageProviderConfigs],
+  );
+  const sourceModel = typeof sourceParams.model === 'string' && sourceParams.model ? sourceParams.model : '';
+  const defaultImageModel = imageModelOptions.includes(sourceModel)
+    ? sourceModel
+    : imageModelOptions[0] || sourceModel || 'gpt-image-2';
   const [session, setSession] = useState<ImageActionSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
@@ -2531,6 +2684,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       compareOpen: false,
       draft: {
         prompt: basePrompt,
+        model: action === 'panorama' ? defaultImageModel : undefined,
         outputCount: 1,
         expandDirection: action === 'panorama' ? 'horizontal' : 'both',
         anglePreset: action === 'angles' ? 'custom' : undefined,
@@ -2552,6 +2706,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
 
   const spawnDerivedNode = useCallback(async (payload: {
     prompt: string;
+    model?: string;
     outputCount?: number;
     referenceImages?: string[];
     maskImage?: string;
@@ -2565,7 +2720,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     const base = sourceNode.position ?? { x: 0, y: 0 };
     const derivedId = `img-derive-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const sourceParams = (sourceData.generationParams as Record<string, unknown> | undefined) ?? {};
-    const model = typeof sourceParams.model === 'string' && sourceParams.model ? sourceParams.model : 'gpt-image-2';
+    const model = payload.model || (typeof sourceParams.model === 'string' && sourceParams.model ? sourceParams.model : 'gpt-image-2');
     const isPanoramaAction = payload.editOperation === 'panorama' || session?.action === 'panorama';
     const referenceImages = payload.referenceImages ?? (sourceUrl ? [sourceUrl] : undefined);
     addNode({
@@ -2612,6 +2767,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         const panorama = await buildPanoramaReference(sourceUrl, '2:1');
         await spawnDerivedNode({
           prompt: draft.prompt,
+          model: draft.model,
           referenceImages: panorama.referenceImages,
           maskImage: panorama.maskImage,
           editOperation: 'panorama',
@@ -2717,14 +2873,30 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   if (!sourceNode || !['imageNode', 'referenceImageNode', 'panoramaNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
 
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
-  const isPrecisionEditor = session?.action === 'angles' || session?.action === 'lighting';
-  const dialogTitle = session?.action === 'angles'
+  const isPrecisionEditor = session?.action === 'panorama' || session?.action === 'angles' || session?.action === 'lighting';
+  const dialogTitle = session?.action === 'panorama'
+    ? (language === 'zh' ? '全景图生成' : 'Panorama generation')
+    : session?.action === 'angles'
     ? (language === 'zh' ? '多角度编辑器' : 'Multi-angle editor')
     : session?.action === 'lighting'
       ? (language === 'zh' ? '打光效果' : 'Lighting editor')
       : sourceTitle;
   const resetEditorDraft = () => {
     if (!session) return;
+    if (session.action === 'panorama') {
+      setSession({
+        ...session,
+        draft: {
+          ...session.draft,
+          prompt: language === 'zh'
+            ? '生成 2:1 等距柱状投影 360 全景图，左右可无缝衔接，补全环境细节并保持主体风格一致。'
+            : 'Generate a 2:1 equirectangular 360 panorama with seamless left-right continuity, expanded environment details, and consistent subject style.',
+          model: defaultImageModel,
+          expandDirection: 'horizontal',
+        },
+      });
+      return;
+    }
     if (session.action === 'angles') {
       setSession({
         ...session,
@@ -2879,7 +3051,16 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
           {session ? (
-            session.action === 'angles' ? (
+            session.action === 'panorama' ? (
+              <PanoramaActionEditor
+                session={session}
+                setSession={setSession}
+                sourceUrl={sourceUrl}
+                language={language}
+                modelOptions={imageModelOptions}
+                providerConfigs={imageProviderConfigs}
+              />
+            ) : session.action === 'angles' ? (
               <AngleActionEditor session={session} setSession={setSession} sourceUrl={sourceUrl} language={language} />
             ) : session.action === 'lighting' ? (
               <LightingActionEditor session={session} setSession={setSession} sourceUrl={sourceUrl} language={language} />
@@ -2892,19 +3073,6 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
                     className="min-h-[160px] border-white/10 bg-white/[0.03] text-sm"
                     placeholder={language === 'zh' ? '输入二次创作提示词' : 'Enter the derivation prompt'}
                   />
-                  {session.action === 'panorama' ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-neutral-400">{language === 'zh' ? '扩展方向' : 'Direction'}</span>
-                      <select
-                        value={session.draft.expandDirection ?? 'horizontal'}
-                        onChange={(event) => setSession({ ...session, draft: { ...session.draft, expandDirection: event.target.value } })}
-                        className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-sm"
-                      >
-                        <option value="horizontal">{language === 'zh' ? '横向扩展' : 'Horizontal'}</option>
-                        <option value="vertical">{language === 'zh' ? '纵向扩展' : 'Vertical'}</option>
-                      </select>
-                    </div>
-                  ) : null}
                 </div>
                 <div className="space-y-3">
                   <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
