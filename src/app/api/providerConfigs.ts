@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { ApiClientError, apiClient } from "./client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,6 +59,24 @@ export type ChannelTestResult = {
   latency_ms: number;
   error_msg?: string;
 };
+
+function normalizeChannelTestResultPayload(value: unknown): ChannelTestResult | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const candidate = record.data && typeof record.data === "object"
+    ? record.data as Record<string, unknown>
+    : record;
+  if (typeof candidate.ok !== "boolean") return null;
+  const httpStatus = Number(candidate.http_status ?? candidate.httpStatus ?? 0);
+  const latencyMs = Number(candidate.latency_ms ?? candidate.latencyMs ?? 0);
+  const errorMsg = candidate.error_msg ?? candidate.errorMsg;
+  return {
+    ok: candidate.ok,
+    http_status: Number.isFinite(httpStatus) ? httpStatus : 0,
+    latency_ms: Number.isFinite(latencyMs) ? latencyMs : 0,
+    error_msg: typeof errorMsg === "string" ? errorMsg : undefined,
+  };
+}
 
 /** User app view — minimal info. */
 export type AppProviderConfig = {
@@ -929,12 +947,24 @@ export function resetChannelHealth(id: string): Promise<ProviderConfig> {
 
 /** POST /api/admin/provider-configs/:id/test — probes the upstream relay
  *  to verify credentials + network path. Doesn't consume model quota. */
-export function testChannelConnectivity(
+export async function testChannelConnectivity(
   id: string,
 ): Promise<ChannelTestResult> {
-  return apiClient.post<ChannelTestResult>(
-    `/api/admin/provider-configs/${id}/test`,
-  );
+  try {
+    return await apiClient.post<ChannelTestResult>(
+      `/api/admin/provider-configs/${id}/test`,
+    );
+  } catch (err) {
+    if (err instanceof ApiClientError && err.code === "UNEXPECTED_RESPONSE" && err.rawBody) {
+      try {
+        const normalized = normalizeChannelTestResultPayload(JSON.parse(err.rawBody));
+        if (normalized) return normalized;
+      } catch {
+        // Fall through to the original API client error.
+      }
+    }
+    throw err;
+  }
 }
 
 export function toggleProviderConfigStatus(

@@ -4,6 +4,7 @@ import {
   getEndpointPreview,
   previewProviderConfigTSImport,
   supportsCustomSubmitQueryEndpoints,
+  testChannelConnectivity,
 } from "./providerConfigs";
 
 afterEach(() => {
@@ -88,5 +89,30 @@ describe("previewProviderConfigTSImport", () => {
         body: JSON.stringify({ code: "export const vendor = {}" }),
       }),
     );
+  });
+});
+
+describe("testChannelConnectivity", () => {
+  it("accepts the Huma raw success body returned by the backend test endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          $schema: "http://127.0.0.1:8800/schemas/TestChannelOutputBody.json",
+          ok: true,
+          http_status: 200,
+          latency_ms: 54,
+          request_id: "req_test",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(testChannelConnectivity("provider-1")).resolves.toEqual({
+      ok: true,
+      http_status: 200,
+      latency_ms: 54,
+      error_msg: undefined,
+    });
   });
 });

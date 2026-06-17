@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { gsap } from "gsap";
 import {
   Bot,
   BrainCircuit,
@@ -94,6 +95,10 @@ const SETTINGS_PANEL_BUTTON =
   "border-white/[0.08] bg-white/[0.045] text-neutral-200 hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white";
 const SETTINGS_PRIMARY_BUTTON =
   "border border-white/[0.10] bg-white/[0.075] text-white hover:border-white/[0.18] hover:bg-white/[0.12]";
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
 
 type SettingsPanelKey = "model-service" | "agent-config" | "prompt-manage" | "skill-management" | "memory-config";
 type SettingsMenuItem = {
@@ -862,6 +867,52 @@ function ActionIconButton({
   );
 }
 
+function AnimatedProviderSwitch({ checked, label, onToggle }: { checked: boolean; label: string; onToggle: () => void }) {
+  const trackRef = useRef<HTMLButtonElement>(null);
+  const knobRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!trackRef.current || !knobRef.current) return;
+    const duration = prefersReducedMotion() ? 0 : 0.24;
+    gsap.to(knobRef.current, {
+      x: checked ? 16 : 0,
+      duration,
+      ease: "power3.out",
+      overwrite: "auto",
+    });
+    gsap.to(trackRef.current, {
+      backgroundColor: checked ? "rgba(16, 185, 129, 0.72)" : "rgba(64, 64, 64, 0.95)",
+      boxShadow: checked ? "0 0 0 1px rgba(16,185,129,0.16), 0 0 18px rgba(16,185,129,0.18)" : "0 0 0 1px rgba(255,255,255,0.04)",
+      duration,
+      ease: "power2.out",
+      overwrite: "auto",
+    });
+  }, [checked]);
+
+  return (
+    <button
+      type="button"
+      ref={trackRef}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (!prefersReducedMotion() && trackRef.current && knobRef.current) {
+          gsap.fromTo(trackRef.current, { scale: 0.96 }, { scale: 1, duration: 0.22, ease: "back.out(2)", overwrite: "auto" });
+          gsap.fromTo(knobRef.current, { scale: 0.82 }, { scale: 1, duration: 0.24, ease: "back.out(2.2)", overwrite: "auto" });
+        }
+        onToggle();
+      }}
+      onKeyDown={(event) => event.stopPropagation()}
+      className="relative h-5 w-9 shrink-0 select-none rounded-full bg-neutral-700 outline-none transition-[filter] hover:brightness-110 focus-visible:ring-2 focus-visible:ring-white/30"
+    >
+      <span ref={knobRef} className="pointer-events-none absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-[0_3px_10px_rgba(0,0,0,0.28)]" />
+    </button>
+  );
+}
+
 export function AdminModelCatalogPage() {
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1200,44 +1251,23 @@ export function AdminModelCatalogPage() {
                       key={config.id}
                       role="button"
                       tabIndex={0}
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => setSelectedId(config.id)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") setSelectedId(config.id);
                       }}
                       className={[
-                        "flex w-full cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
+                        "flex w-full cursor-pointer select-none items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
                         selectedConfig?.id === config.id ? "border-white/[0.14] bg-white/[0.08] text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
                       ].join(" ")}
                     >
                       <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
                       <span className="min-w-0 flex-1 truncate">{config.vendor || config.name}</span>
-                      <span
-                        role="switch"
-                        aria-checked={config.status === "enabled"}
-                        tabIndex={0}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void handleToggle(config);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            void handleToggle(config);
-                          }
-                        }}
-                        className={[
-                          "relative h-5 w-9 shrink-0 rounded-full transition",
-                          config.status === "enabled" ? "bg-emerald-500/70" : "bg-neutral-700",
-                        ].join(" ")}
-                      >
-                        <span
-                          className={[
-                            "absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition",
-                            config.status === "enabled" ? "left-[18px]" : "left-0.5",
-                          ].join(" ")}
-                        />
-                      </span>
+                      <AnimatedProviderSwitch
+                        checked={config.status === "enabled"}
+                        label={`${config.vendor || config.name} ${config.status === "enabled" ? "禁用" : "启用"}`}
+                        onToggle={() => void handleToggle(config)}
+                      />
                     </div>
                   ))
                 )}
@@ -1673,10 +1703,32 @@ function ModelEditorModal({
 function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; onClose: () => void }) {
   const loading = result.status === "loading";
   const success = result.status === "success";
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!cardRef.current) return;
+    const duration = prefersReducedMotion() ? 0 : 0.24;
+    const ctx = gsap.context(() => {
+      gsap.fromTo(
+        cardRef.current,
+        { autoAlpha: 0, y: 6, scale: 0.985 },
+        { autoAlpha: 1, y: 0, scale: 1, duration, ease: "power2.out", overwrite: "auto" },
+      );
+      if (!loading && !success) {
+        gsap.fromTo(
+          cardRef.current,
+          { x: -5 },
+          { x: 0, duration: prefersReducedMotion() ? 0 : 0.4, ease: "elastic.out(1, 0.55)", overwrite: "auto" },
+        );
+      }
+    }, cardRef);
+    return () => ctx.revert();
+  }, [loading, result.errorMsg, result.httpStatus, result.status, success]);
+
   return (
     <CenterModal title={`测试结果 - ${result.modelName}`} onClose={onClose} widthClass="max-w-[560px]">
       <div className="space-y-4">
-        <div className={[
+        <div ref={cardRef} className={[
           "rounded-xl border px-4 py-4",
           loading ? "border-white/[0.10] bg-white/[0.045]" : success ? "border-emerald-400/20 bg-emerald-500/10" : "border-rose-400/25 bg-rose-500/10",
         ].join(" ")}>
@@ -1688,7 +1740,7 @@ function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; on
             供应商：{result.configName} · 类型：{SERVICE_LABELS[result.type]}
             {loading ? " · 正在验证供应商连通性和凭据路径" : ` · HTTP：${result.httpStatus || "-"} · 耗时：${result.latencyMs}ms`}
           </p>
-          {result.errorMsg ? <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-black/35 p-3 text-xs text-rose-100">{result.errorMsg}</pre> : null}
+          {result.errorMsg ? <pre className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-black/35 p-3 text-xs text-rose-100 [overflow-wrap:anywhere]">{result.errorMsg}</pre> : null}
         </div>
         <div className="flex justify-end">
           <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={onClose}>关闭</Button>
@@ -2465,10 +2517,27 @@ function CenterModal({
   children: React.ReactNode;
   widthClass?: string;
 }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!overlayRef.current || !panelRef.current) return;
+    const duration = prefersReducedMotion() ? 0 : 0.26;
+    const ctx = gsap.context(() => {
+      gsap.fromTo(overlayRef.current, { autoAlpha: 0 }, { autoAlpha: 1, duration: duration * 0.7, ease: "power1.out" });
+      gsap.fromTo(
+        panelRef.current,
+        { autoAlpha: 0, y: 14, scale: 0.975, filter: "blur(8px)" },
+        { autoAlpha: 1, y: 0, scale: 1, filter: "blur(0px)", duration, ease: "power3.out" },
+      );
+    }, panelRef);
+    return () => ctx.revert();
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 px-4 py-[8vh] backdrop-blur-sm">
+    <div ref={overlayRef} className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 px-4 py-[8vh] backdrop-blur-sm">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="关闭弹窗" onClick={onClose} />
-      <section className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#111111] p-5 text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]`}>
+      <section ref={panelRef} className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-x-hidden overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#111111] p-5 text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]`}>
         <div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3">
           <h3 className="text-base font-semibold">{title}</h3>
           <button type="button" onClick={onClose} className="rounded-full p-1.5 text-neutral-500 transition hover:bg-white/[0.08] hover:text-white">
