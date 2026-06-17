@@ -175,13 +175,14 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
 	}
 
-	// Request-level timeout on a synchronous, non-idempotent media
-	// generation (image/video/audio): the upstream may have already
-	// produced the result, which for a sync call is unrecoverable. Retrying
-	// would re-generate and re-charge while still not returning the original
-	// image. Treat as terminal — do NOT retry.
-	if isMediaGeneration(p.ServiceType) && modelapp.IsRequestDeadlineTimeout(runErr) {
-		log.Printf("[tasks] media generation timed out for log %s (no retry, upstream may have produced an unrecoverable result): %v", p.LogID, runErr)
+	// Timeout on a non-idempotent media generation (image/video/audio): the
+	// upstream task may still be running (Manju async tasks finish in
+	// minutes) or already done. Retrying would submit a brand-new gateway
+	// task — duplicate generation + double charge — while never recovering
+	// the original. Covers both a request-level deadline and an exhausted
+	// async-poll window. Treat as terminal — do NOT retry.
+	if isMediaGeneration(p.ServiceType) && isGenerationTimeout(runErr) {
+		log.Printf("[tasks] media generation timed out for log %s (no retry, upstream task may still be running): %v", p.LogID, runErr)
 		w.svc.FinalizeFailure(req, errTimeoutNoRetry(runErr), duration)
 		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
 	}
@@ -213,6 +214,23 @@ func isMediaGeneration(serviceType string) bool {
 	default:
 		return false
 	}
+}
+
+// isGenerationTimeout reports whether err is any kind of generation timeout
+// that means "the upstream task may still be running" — a request-level
+// deadline, or an exhausted async-poll window. For media generation these
+// must not be retried (a retry submits a new gateway task = duplicate).
+func isGenerationTimeout(err error) bool {
+	if modelapp.IsRequestDeadlineTimeout(err) {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timed out after polling") ||
+		strings.Contains(msg, "image generation timed out") ||
+		strings.Contains(msg, "generation timed out")
 }
 
 // errTimeoutNoRetry wraps a timeout error with a user-facing message that

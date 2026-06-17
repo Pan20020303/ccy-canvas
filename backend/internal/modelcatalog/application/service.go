@@ -52,7 +52,11 @@ const (
 var (
 	imageTaskPollInitialDelay = 10 * time.Second
 	imageTaskPollInterval     = 5 * time.Second
-	imageTaskPollMaxAttempts  = 30
+	// Manju/NewAPI image tasks (gpt-image-2 etc.) finish in ~2-5 min. Poll
+	// long enough to cover that: 10s + 120*5s ≈ 610s, aligned with the
+	// image generation budget. Too few attempts would time out before the
+	// gateway finishes and make the user re-submit.
+	imageTaskPollMaxAttempts = 120
 )
 
 // Repository is the persistence port for the model catalog.
@@ -2019,9 +2023,20 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	if readErr != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
 	}
+	// Synchronous result first: if the gateway already put the image in the
+	// chat response (content markdown or data[].url), use it directly.
+	if result, perr := parseChatImageGenerationResponse(respBody); perr == nil {
+		return result, nil
+	}
+	// Otherwise this is an async task stub (Manju 图生图 returns an empty
+	// chat.completion with the task id in `id`/`task_id`). Poll until the
+	// image is ready instead of failing fast — the gateway finishes in
+	// ~2-5 min, and failing here just makes the user re-submit (duplicate
+	// generation + double charge).
 	if taskID := extractImageTaskID(respBody); taskID != "" {
 		return s.pollImageTask(ctx, baseURL, apiKey, resolveImageQueryPath(pc), taskID, extractImageTaskPollURL(respBody))
 	}
+	// Neither a usable image nor a task id — surface the raw response.
 	return parseChatImageGenerationResponse(respBody)
 }
 
@@ -2315,8 +2330,22 @@ func extractImageTaskID(respBody []byte) string {
 	if err := json.Unmarshal(respBody, &taskCheck); err != nil {
 		return ""
 	}
-	if id, ok := taskCheck["task_id"].(string); ok && id != "" {
-		return id
+	if id, ok := taskCheck["task_id"].(string); ok && strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	// Manju/NewAPI chat-image async stub: when 图生图 (POST /chat/completions)
+	// is still processing, the gateway returns a chat.completion with empty
+	// content and the task id embedded in the top-level `id`, e.g.
+	// "chatcmpl-gemini-img-XXXX". The task-query endpoint
+	// (GET /v1/tasks/{task_id}) expects the bare id, so strip the chatcmpl-
+	// prefix. Gated on an "-img-" segment so a normal text chat.completion
+	// id ("chatcmpl-abc123") is never mistaken for an image task.
+	if id, ok := taskCheck["id"].(string); ok {
+		id = strings.TrimSpace(id)
+		bare := strings.TrimPrefix(id, "chatcmpl-")
+		if strings.Contains(bare, "-img-") || strings.HasPrefix(bare, "img-") {
+			return bare
+		}
 	}
 	return ""
 }
@@ -2425,26 +2454,26 @@ func (s *Service) tryExtractImageFromPollResponse(body []byte) *GenerateResult {
 		return nil
 	}
 
-	// Check if status indicates completion — status can be at top level or under "data".
-	status := ""
-	if s2, ok := generic["status"].(string); ok {
-		status = s2
-	}
-	if data, ok := generic["data"].(map[string]interface{}); ok {
-		if s2, ok := data["status"].(string); ok {
-			status = s2
-		}
-	}
-	status = strings.ToLower(status)
-	if status != "" && status != "completed" && status != "succeeded" && status != "success" {
-		return nil // still in progress
-	}
-
-	// Search for image URL recursively — increase depth to 5 to handle nested result.images[0].url
+	// Completion is signalled by the presence of a final image URL — not by
+	// a status string (gateways disagree on the exact value, and Manju may
+	// even return Chinese statuses). If a usable URL is present the task is
+	// done; if not, it's still in progress and the caller keeps polling.
+	// Search recursively (depth 5) for nested shapes like result.images[0].url
+	// and data[0].url.
 	for _, key := range []string{"image_url", "result_url", "download_url", "detail_url", "url"} {
 		url := findStringField(generic, key, 5)
 		if url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
 			return &GenerateResult{Type: "url", Content: url}
+		}
+	}
+	// Manju 图生图 poll response carries the image as markdown inside
+	// choices[0].message.content: "![](https://manjuapi.com/generated/x.png)".
+	if content := findStringField(generic, "content", 5); content != "" {
+		if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
+			return &GenerateResult{Type: "url", Content: match[1]}
+		}
+		if match := plainImageURLPattern.FindString(content); match != "" {
+			return &GenerateResult{Type: "url", Content: strings.TrimRight(match, ".,;")}
 		}
 	}
 	b64 := findStringField(generic, "b64_json", 5)

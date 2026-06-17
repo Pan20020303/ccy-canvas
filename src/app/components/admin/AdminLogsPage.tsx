@@ -162,6 +162,47 @@ function MetricCard({
   );
 }
 
+function ResultPreview({ url, serviceType }: { url: string; serviceType: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <p className="text-sm text-neutral-400">
+        预览加载失败（链接可能已过期或跨域受限），可点下方链接在新标签页打开。
+      </p>
+    );
+  }
+
+  if (serviceType === "video") {
+    return (
+      <video
+        src={url}
+        controls
+        preload="metadata"
+        onError={() => setFailed(true)}
+        className="max-h-[360px] w-full rounded-2xl border border-white/[0.06] bg-black object-contain"
+      />
+    );
+  }
+
+  if (serviceType === "audio") {
+    return <audio src={url} controls onError={() => setFailed(true)} className="w-full" />;
+  }
+
+  // image (and any url-bearing default): show the actual picture.
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="block">
+      <img
+        src={url}
+        alt="生成结果预览"
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="max-h-[360px] w-full rounded-2xl border border-white/[0.06] bg-black object-contain"
+      />
+    </a>
+  );
+}
+
 function DetailItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4">
@@ -226,17 +267,20 @@ function TaskDetailDrawer({
               ) : null}
 
               <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.03] p-4">
-                <p className="text-[11px] uppercase tracking-[0.18em] text-neutral-500">结果链接</p>
+                <p className="text-[11px] uppercase tracking-[0.18em] text-neutral-500">结果预览</p>
                 {log.result_url ? (
-                  <a
-                    href={log.result_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-3 inline-flex items-center gap-2 text-sm text-cyan-300 transition hover:text-cyan-200"
-                  >
-                    打开生成结果
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
+                  <div className="mt-3 space-y-3">
+                    <ResultPreview url={log.result_url} serviceType={log.service_type} />
+                    <a
+                      href={log.result_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm text-cyan-300 transition hover:text-cyan-200"
+                    >
+                      在新标签页打开
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
                 ) : (
                   <p className="mt-3 text-sm text-neutral-400">当前暂无结果链接。</p>
                 )}

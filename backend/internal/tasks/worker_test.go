@@ -39,6 +39,26 @@ func TestMediaTimeoutIsTerminal(t *testing.T) {
 	}
 }
 
+func TestIsGenerationTimeout(t *testing.T) {
+	cases := map[string]bool{
+		"Image generation timed out after polling":                                        true,
+		"generation timed out":                                                            true,
+		`Post "x": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`: true,
+		"Provider returned empty image content":                                           false,
+		"Provider HTTP 502: server overloaded":                                            false,
+		"":                                                                                false,
+	}
+	for msg, want := range cases {
+		var err error
+		if msg != "" {
+			err = errors.New(msg)
+		}
+		if got := isGenerationTimeout(err); got != want {
+			t.Errorf("isGenerationTimeout(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
 func TestErrTimeoutNoRetryWrapsOriginal(t *testing.T) {
 	orig := context.DeadlineExceeded
 	wrapped := errTimeoutNoRetry(orig)

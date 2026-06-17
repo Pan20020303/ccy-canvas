@@ -292,6 +292,57 @@ func TestDoProviderRequestWithRetryDoesNotRetryRequestDeadline(t *testing.T) {
 	}
 }
 
+func TestExtractImageTaskIDDetectsManjuChatStub(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"explicit task_id", `{"task_id":"gemini-img-abc","status":"pending"}`, "gemini-img-abc"},
+		{"manju chat stub id", `{"id":"chatcmpl-gemini-img-3640bd623c99","object":"chat.completion","choices":[{"message":{"content":""},"finish_reason":null}]}`, "gemini-img-3640bd623c99"},
+		{"plain img prefix", `{"id":"img-12345"}`, "img-12345"},
+		{"normal text chat completion is not a task", `{"id":"chatcmpl-abc123","choices":[{"message":{"content":"hi"}}]}`, ""},
+		{"no id", `{"choices":[]}`, ""},
+		{"garbage", `not json`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractImageTaskID([]byte(tc.body)); got != tc.want {
+				t.Fatalf("extractImageTaskID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTryExtractImageFromPollResponse(t *testing.T) {
+	svc := &Service{}
+	cases := []struct {
+		name string
+		body string
+		want string // "" means nil (still in progress)
+	}{
+		{"result_url present", `{"status":"success","result_url":"https://manjuapi.com/generated/x.png"}`, "https://manjuapi.com/generated/x.png"},
+		{"data array url", `{"data":[{"url":"https://manjuapi.com/generated/y.png"}]}`, "https://manjuapi.com/generated/y.png"},
+		{"content markdown", `{"choices":[{"message":{"content":"![img](https://manjuapi.com/generated/z.png)"}}]}`, "https://manjuapi.com/generated/z.png"},
+		{"still processing, no url", `{"status":"processing","progress":40}`, ""},
+		{"chinese status but url present is done", `{"status":"进行中","result_url":"https://manjuapi.com/generated/done.png"}`, "https://manjuapi.com/generated/done.png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := svc.tryExtractImageFromPollResponse([]byte(tc.body))
+			if tc.want == "" {
+				if got != nil {
+					t.Fatalf("expected nil (in progress), got %+v", got)
+				}
+				return
+			}
+			if got == nil || got.Content != tc.want {
+				t.Fatalf("got %+v, want url %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) {
 	root := t.TempDir()
 	uploadsDir := filepath.Join(root, "uploads", "2026-06")
