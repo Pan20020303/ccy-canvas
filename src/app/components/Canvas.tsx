@@ -257,6 +257,7 @@ const InnerCanvas = () => {
   } = useStore();
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
+  const canvasHydrated = useStore((state) => state.canvasHydrated);
   const language = useStore((state) => state.language);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const setConnectionDragging = useStore((state) => state.setConnectionDragging);
@@ -653,6 +654,11 @@ const InnerCanvas = () => {
   const dirtyRef = useRef(false);
   useEffect(() => {
     if (!activeBackendProjectId) return;
+    // Data-loss guard: never auto-save before the backend canvas has loaded.
+    // On refresh the store first rehydrates the heavy-media-stripped
+    // localStorage canvas; saving that back would overwrite the full backend
+    // snapshot. canvasHydrated flips true only once the real canvas is loaded.
+    if (!canvasHydrated) return;
     dirtyRef.current = true;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
@@ -661,7 +667,7 @@ const InnerCanvas = () => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [nodes, edges, activeBackendProjectId, saveCanvasToBackend]);
+  }, [nodes, edges, activeBackendProjectId, canvasHydrated, saveCanvasToBackend]);
 
   /** Flush pending save synchronously on tab close / hard refresh, so users
    *  don't lose the last 0-2 seconds of work that the debounce hasn't yet

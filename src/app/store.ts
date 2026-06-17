@@ -226,6 +226,12 @@ type AppState = {
   backendProjects: BackendProject[];
   activeBackendProjectId: string | null;
   backendSyncing: boolean;
+  /** True only after the active project's canvas has been successfully
+   *  loaded from (or confirmed empty on) the backend. The auto-save gate:
+   *  we must NOT auto-save until this is true, otherwise a refresh could
+   *  write the heavy-media-stripped localStorage canvas back over the full
+   *  backend snapshot before the real canvas finishes loading (data loss). */
+  canvasHydrated: boolean;
   loadBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
   switchBackendProject: (id: string) => Promise<void>;
@@ -1399,6 +1405,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   backendProjects: [],
   activeBackendProjectId: null,
   backendSyncing: false,
+  canvasHydrated: false,
 
   loadBackendProjects: async () => {
     set({ backendSyncing: true });
@@ -1406,7 +1413,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const projects = await listProjects();
       if (projects.length === 0) return;
       const first = projects[0];
-      set({ backendProjects: projects, activeBackendProjectId: first.id });
+      // IMPORTANT: do NOT set activeBackendProjectId yet. Auto-save is gated
+      // on canvasHydrated, but we still keep the project id assignment until
+      // after the canvas resolves so the whole "active project" state flips
+      // atomically and the heavy-stripped localStorage canvas can never be
+      // saved back over the real backend snapshot mid-load.
+      set({ backendProjects: projects });
       // Load canvas for the first/active project.
       try {
         const canvas = await getCanvas(first.id);
@@ -1429,13 +1441,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             nodes,
             edges,
             activeProjectId: first.id,
+            activeBackendProjectId: first.id,
+            canvasHydrated: true, // backend canvas is now the source of truth → auto-save is safe
             projectStateById,
             undoStack: [],
             copiedCanvasSelection: null,
           };
         });
       } catch {
-        // Canvas not yet saved — keep local state.
+        // Canvas fetch failed (network / auth / 5xx). Leave activeBackendProjectId
+        // unset and canvasHydrated false so auto-save stays OFF — we must not
+        // overwrite the un-fetched backend snapshot with the stripped local one.
       }
     } catch {
       // Not authenticated or network error — silently continue with local state.
@@ -1451,6 +1467,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         backendProjects: [project, ...state.backendProjects],
         activeBackendProjectId: project.id,
         activeProjectId: project.id,
+        canvasHydrated: true, // freshly created empty project — safe to auto-save
         nodes: [],
         edges: [],
         groups: [],
@@ -1477,7 +1494,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         // Non-fatal — continue switching.
       }
     }
-    set({ activeBackendProjectId: id, backendSyncing: true });
+    // Switching: disable auto-save until the target canvas has loaded, so a
+    // 2s auto-save can't write the outgoing/stale nodes into the new project.
+    set({ activeBackendProjectId: id, canvasHydrated: false, backendSyncing: true });
     try {
       const canvas = await getCanvas(id);
       const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
@@ -1496,13 +1515,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         undoStack: [],
         copiedCanvasSelection: null,
         activeProjectId: id,
+        canvasHydrated: true,
         projectStateById: {
           ...state.projectStateById,
           [id]: createCanvasSnapshot(nodes, edges, []),
         },
       }));
     } catch {
-      // Canvas not yet saved — load empty canvas.
+      // Canvas fetch failed (network / auth / 5xx) — NOT a new empty project
+      // (those resolve with an empty canvas). Show an empty canvas but keep
+      // auto-save OFF (canvasHydrated stays false) so we don't overwrite the
+      // un-fetched backend snapshot.
       set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
     } finally {
       set({ backendSyncing: false });
@@ -1510,8 +1533,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   },
 
   saveCanvasToBackend: async (options) => {
-    const { activeBackendProjectId, nodes, edges } = get();
+    const { activeBackendProjectId, canvasHydrated, nodes, edges } = get();
     if (!activeBackendProjectId) return;
+    // Defense-in-depth: never persist before the backend canvas has loaded,
+    // so a refresh can't write the heavy-stripped localStorage canvas over
+    // the full backend snapshot. (Switching projects saves the *outgoing*
+    // canvas via saveCanvas() directly, which is intentionally not gated.)
+    if (!canvasHydrated) return;
     // Strip transient runtime status before persisting so reloads don't show stale running state.
     const cleanNodes = nodes.map((n) => {
       const d = n.data as Record<string, unknown> | undefined;
