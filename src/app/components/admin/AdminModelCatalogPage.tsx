@@ -1,6 +1,33 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, X, Zap } from "lucide-react";
+import {
+  Bot,
+  BrainCircuit,
+  Database,
+  FileCode2,
+  FileText,
+  FolderOpen,
+  Globe2,
+  Languages,
+  Loader2,
+  LogOut,
+  Monitor,
+  Pencil,
+  Plus,
+  Power,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  UserCog,
+  WandSparkles,
+  X,
+  Zap,
+} from "lucide-react";
 
+import { toAdminErrorSummary } from "../../api/errors";
 import type { AdapterRuntime, GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
 import {
   createProviderConfig,
@@ -15,7 +42,20 @@ import {
   updateProviderConfig,
   VENDOR_TEMPLATES,
 } from "../../api/providerConfigs";
+import {
+  adminCreateAgent,
+  adminCreateSkill,
+  adminListAgents,
+  adminListSkills,
+  adminUpdateAgent,
+  adminUpdateSkill,
+  type Agent,
+  type AgentUpsert,
+  type Skill,
+  type SkillUpsert,
+} from "../../api/skills";
 import { normalizeModelList } from "../../model-config";
+import { getSkillCommandName, getSkillTemplateBody, isPromptTemplateSkill } from "../settings/skill-agent-presenters";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ModelBrandIcon } from "../ModelBrandIcon";
@@ -46,6 +86,66 @@ const STATUS_LABEL: Record<ProviderConfig["status"], string> = {
 const FIELD_INPUT =
   "w-full rounded-md border border-black/10 bg-white px-3 py-2.5 text-sm text-neutral-950 outline-none transition placeholder:text-neutral-400 focus:border-[#ff6a1f]/65 focus:ring-2 focus:ring-[#ff6a1f]/10";
 const FIELD_SELECT = `${FIELD_INPUT} appearance-none`;
+
+type SettingsPanelKey = "model-service" | "agent-config" | "prompt-manage" | "skill-management" | "memory-config";
+type SettingsMenuItem = {
+  key: SettingsPanelKey | "ui" | "language" | "login" | "database" | "files" | "other" | "request" | "developer" | "update" | "logout";
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  disabled?: boolean;
+};
+
+const SETTINGS_MENU: SettingsMenuItem[] = [
+  { key: "ui", label: "界面设置", icon: Settings2, disabled: true },
+  { key: "language", label: "语言设置", icon: Languages, disabled: true },
+  { key: "model-service", label: "模型服务", icon: Monitor },
+  { key: "agent-config", label: "Agent配置", icon: UserCog },
+  { key: "prompt-manage", label: "提示词管理", icon: FileText },
+  { key: "skill-management", label: "Skills技能管理", icon: WandSparkles },
+  { key: "memory-config", label: "Agent记忆配置", icon: BrainCircuit },
+  { key: "login", label: "登录配置", icon: ShieldCheck, disabled: true },
+  { key: "database", label: "数据库操作", icon: Database, disabled: true },
+  { key: "files", label: "文件管理", icon: FolderOpen, disabled: true },
+  { key: "other", label: "其他配置", icon: Settings2, disabled: true },
+  { key: "request", label: "请求地址", icon: Globe2, disabled: true },
+  { key: "developer", label: "开发者选项", icon: FileCode2, disabled: true },
+  { key: "update", label: "检查更新", icon: RefreshCw, disabled: true },
+  { key: "logout", label: "退出登录", icon: LogOut, disabled: true },
+];
+
+type AgentEditorDraft = {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  model: string;
+  skillIds: string[];
+  canvasTools: boolean;
+  enabled: boolean;
+  strategy: AgentUpsert["strategy"];
+};
+
+type MemoryConfigForm = {
+  messagesPerSummary: number;
+  shortTermLimit: number;
+  summaryMaxLength: number;
+  summaryLimit: number;
+  ragLimit: number;
+  deepRetrieveSummaryLimit: number;
+  modelOnnxFile: string;
+  modelDtype: string;
+};
+
+const MEMORY_CONFIG_KEY = "ccy-admin-agent-memory-config";
+const DEFAULT_MEMORY_CONFIG: MemoryConfigForm = {
+  messagesPerSummary: 3,
+  shortTermLimit: 5,
+  summaryMaxLength: 500,
+  summaryLimit: 10,
+  ragLimit: 3,
+  deepRetrieveSummaryLimit: 5,
+  modelOnnxFile: "all-MiniLM-L6-v2/onnx/model_fp16.onnx",
+  modelDtype: "fp16",
+};
 
 function ProviderCodeEditorFallback() {
   return (
@@ -493,6 +593,7 @@ export function AdminModelCatalogPage() {
   const [codeEditingConfig, setCodeEditingConfig] = useState<ProviderConfig | null>(null);
   const [codeSaving, setCodeSaving] = useState(false);
   const [codeError, setCodeError] = useState("");
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKey>("model-service");
 
   const loadConfigs = async () => {
     setLoading(true);
@@ -519,6 +620,23 @@ export function AdminModelCatalogPage() {
 
   const enabledCount = configs.filter((item) => item.status === "enabled").length;
   const selectedConfig = filtered.find((config) => config.id === selectedId) ?? filtered[0] ?? null;
+  const availableTextModels = useMemo(() => {
+    const seen = new Set<string>();
+    const models: string[] = [];
+    configs
+      .filter((config) => config.service_type === "text" && config.status === "enabled")
+      .sort((a, b) => a.priority - b.priority)
+      .forEach((config) => {
+        config.model_list.forEach((model) => {
+          const clean = model.trim();
+          if (clean && !seen.has(clean)) {
+            seen.add(clean);
+            models.push(clean);
+          }
+        });
+      });
+    return models;
+  }, [configs]);
 
   useEffect(() => {
     if (!filtered.length) {
@@ -671,7 +789,12 @@ export function AdminModelCatalogPage() {
         </section>
 
         <section className="overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#f7f3ed] text-[#1f1f1f] shadow-2xl shadow-black/35">
-          <div className="grid min-h-[560px] grid-cols-[260px_1fr]">
+          <div className="grid min-h-[680px] grid-cols-[250px_1fr]">
+            <SettingsSidebar activeKey={settingsPanel} onSelect={setSettingsPanel} />
+
+            <div className="min-w-0 bg-white p-5">
+              {settingsPanel === "model-service" ? (
+                <div data-testid="settings-panel-model-service" className="grid min-h-[620px] grid-cols-[260px_1fr] overflow-hidden rounded-lg border border-black/10">
             <aside className="border-r border-black/10 bg-white/75 p-4">
               <Button onClick={openCreate} className="mb-3 h-10 w-full rounded-md bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
                 <Plus className="mr-2 h-4 w-4" />
@@ -802,6 +925,25 @@ export function AdminModelCatalogPage() {
                 <div className="grid h-full place-items-center rounded-xl border border-dashed border-black/15 bg-neutral-50 text-sm text-neutral-500">选择或新增一个供应商</div>
               )}
             </div>
+                </div>
+              ) : null}
+
+              {settingsPanel === "agent-config" ? (
+                <AdminAgentConfigPanel availableModels={availableTextModels} />
+              ) : null}
+
+              {settingsPanel === "prompt-manage" ? (
+                <PromptManagePanel />
+              ) : null}
+
+              {settingsPanel === "skill-management" ? (
+                <SkillManagementPanel />
+              ) : null}
+
+              {settingsPanel === "memory-config" ? (
+                <MemoryConfigPanel />
+              ) : null}
+            </div>
           </div>
         </section>
 
@@ -896,6 +1038,824 @@ export function AdminModelCatalogPage() {
       ) : null}
     </AdminShell>
   );
+}
+
+function SettingsSidebar({ activeKey, onSelect }: { activeKey: SettingsPanelKey; onSelect: (key: SettingsPanelKey) => void }) {
+  return (
+    <aside className="border-r border-black/10 bg-[#fbfaf8] px-7 py-7">
+      <h2 className="mb-6 text-lg font-semibold text-neutral-950">模原力设置</h2>
+      <nav className="space-y-1">
+        {SETTINGS_MENU.map((item) => {
+          const Icon = item.icon;
+          const active = item.key === activeKey;
+          const canSelect = !item.disabled;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              disabled={!canSelect}
+              onClick={() => {
+                if (canSelect) onSelect(item.key as SettingsPanelKey);
+              }}
+              className={[
+                "flex h-10 w-full items-center gap-3 rounded px-3 text-left text-sm transition",
+                active ? "bg-[#ff6a1f] font-medium text-white shadow-sm" : "text-neutral-700 hover:bg-[#fff3ea] hover:text-[#ff6a1f]",
+                !canSelect ? "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-neutral-700" : "",
+              ].join(" ")}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="truncate">{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}
+
+function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] }) {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState<"ordinary" | "advanced">("ordinary");
+  const [editor, setEditor] = useState<{ agent: Agent | null; draft: AgentEditorDraft } | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [nextAgents, nextSkills] = await Promise.all([adminListAgents(), adminListSkills()]);
+      setAgents(nextAgents);
+      setSkills(nextSkills);
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const promptSkills = useMemo(() => skills.filter(isPromptTemplateSkill), [skills]);
+  const models = availableModels.length ? availableModels : ["gpt-4.1-mini"];
+  const visibleAgents = tab === "ordinary" ? agents.filter((agent) => agent.strategy !== "scripted") : agents;
+
+  const openEditor = (agent: Agent | null) => {
+    setError("");
+    setEditor({
+      agent,
+      draft: agent
+        ? {
+          name: agent.name,
+          description: agent.description,
+          systemPrompt: agent.system_prompt,
+          model: agent.model || models[0],
+          skillIds: agent.skill_ids,
+          canvasTools: agent.canvas_tools,
+          enabled: agent.enabled,
+          strategy: agent.strategy,
+        }
+        : {
+          name: "新智能体",
+          description: "参考当前画布、上下文和可调用技能完成任务。",
+          systemPrompt: "你是 CCY Canvas 中的创作型智能体。优先理解当前画布节点、用户输入和绑定技能，再给出可执行的下一步。",
+          model: models[0],
+          skillIds: [],
+          canvasTools: true,
+          enabled: true,
+          strategy: "reactive",
+        },
+    });
+  };
+
+  const saveEditor = async () => {
+    if (!editor) return;
+    if (!editor.draft.name.trim() || !editor.draft.systemPrompt.trim() || !editor.draft.model.trim()) {
+      setError("请填写 Agent 名称、模型和系统提示词。");
+      return;
+    }
+    const payload: AgentUpsert = {
+      name: editor.draft.name.trim(),
+      description: editor.draft.description.trim(),
+      avatar: editor.agent?.avatar || "",
+      system_prompt: editor.draft.systemPrompt.trim(),
+      model: editor.draft.model.trim(),
+      skill_ids: editor.draft.skillIds,
+      canvas_tools: editor.draft.canvasTools,
+      strategy: editor.draft.strategy,
+      enabled: editor.draft.enabled,
+    };
+    setSaving(true);
+    setError("");
+    try {
+      if (editor.agent) await adminUpdateAgent(editor.agent.id, payload);
+      else await adminCreateAgent(payload);
+      setEditor(null);
+      await load();
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section data-testid="settings-panel-agent-config" className="flex h-full min-h-[620px] flex-col">
+      <div className="rounded-lg bg-gradient-to-r from-orange-50 to-white px-5 py-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-full bg-[#ff6a1f]/10 text-[#ff6a1f]">
+              <Bot className="h-5 w-5" />
+            </span>
+            <div>
+              <h3 className="text-lg font-semibold text-neutral-950">Agent配置</h3>
+              <p className="mt-1 text-sm text-neutral-600">给不同创作角色指定模型、系统提示词和可调用 Skills。</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading}>
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+              刷新
+            </Button>
+            <Button type="button" onClick={() => openEditor(null)} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+              <Plus className="mr-2 h-4 w-4" />
+              新增 Agent
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+
+      <div className="mt-4 flex gap-2 border-b border-black/10">
+        {[
+          ["ordinary", "普通"] as const,
+          ["advanced", "高级"] as const,
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setTab(value)}
+            className={[
+              "border-b-2 px-4 py-2 text-sm transition",
+              tab === value ? "border-[#ff6a1f] font-medium text-[#ff6a1f]" : "border-transparent text-neutral-500 hover:text-neutral-950",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {loading ? (
+          <div className="col-span-full rounded-lg border border-black/10 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
+        ) : visibleAgents.length === 0 ? (
+          <button
+            type="button"
+            onClick={() => openEditor(null)}
+            className="col-span-full rounded-lg border border-dashed border-black/15 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50"
+          >
+            暂无 Agent，点击创建一个可配置的创作角色。
+          </button>
+        ) : (
+          visibleAgents.map((agent) => (
+            <button
+              key={agent.id}
+              type="button"
+              onClick={() => openEditor(agent)}
+              className="rounded-lg border border-black/10 bg-white p-4 text-left shadow-sm transition hover:border-[#ff6a1f]/35 hover:shadow-md"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-neutral-100 text-neutral-700">
+                    <Bot className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <h4 className="truncate text-sm font-semibold text-neutral-950">{agent.name}</h4>
+                    <p className="mt-1 truncate text-xs text-neutral-500">{agent.description || "暂无描述"}</p>
+                  </div>
+                </div>
+                <span className={agent.enabled ? "rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700" : "rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500"}>
+                  {agent.enabled ? "已启用" : "未启用"}
+                </span>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{agent.model || "未配置模型"}</span>
+                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">Skills ×{agent.skill_ids.length}</span>
+                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{agent.canvas_tools ? "画布工具" : "纯对话"}</span>
+              </div>
+              {tab === "advanced" ? (
+                <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{agent.system_prompt}</p>
+              ) : null}
+            </button>
+          ))
+        )}
+      </div>
+
+      {editor ? (
+        <AgentConfigModal
+          editor={editor}
+          models={models}
+          skills={promptSkills}
+          saving={saving}
+          onChange={(draft) => setEditor((current) => (current ? { ...current, draft } : current))}
+          onClose={() => {
+            if (!saving) setEditor(null);
+          }}
+          onSave={() => void saveEditor()}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function PromptManagePanel() {
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [editor, setEditor] = useState<{
+    skill: Skill | null;
+    name: string;
+    commandName: string;
+    modelHint: string;
+    content: string;
+  } | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setSkills(await adminListSkills());
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const prompts = skills.filter(isPromptTemplateSkill);
+
+  const openEditor = (skill: Skill | null) => {
+    const spec = (skill?.spec ?? {}) as Record<string, unknown>;
+    setEditor({
+      skill,
+      name: skill?.name || "新提示词模板",
+      commandName: skill ? getSkillCommandName(skill) : "/new-prompt",
+      modelHint: typeof spec.model_hint === "string" ? spec.model_hint : "",
+      content: skill ? getSkillTemplateBody(skill) : "请基于当前画布上下文，输出清晰、可执行的创作建议。",
+    });
+  };
+
+  const savePrompt = async () => {
+    if (!editor) return;
+    if (!editor.name.trim() || !editor.content.trim()) {
+      setError("请填写提示词名称和内容。");
+      return;
+    }
+    const spec = {
+      ...(editor.skill?.spec ?? {}),
+      slash_command: editor.commandName.trim().replace(/^\/+/, ""),
+      content_md: editor.content,
+      user_template: editor.content,
+      model_hint: editor.modelHint,
+      trigger_mode: "slash",
+    };
+    const payload: SkillUpsert = editor.skill
+      ? skillToUpsert(editor.skill, { name: editor.name.trim(), kind: "prompt", spec })
+      : {
+        name: editor.name.trim(),
+        description: "后台提示词模板",
+        category: "prompt",
+        icon: "file-text",
+        kind: "prompt",
+        spec,
+        input_schema: {},
+        output_schema: {},
+        enabled: true,
+      };
+    setSaving(true);
+    setError("");
+    try {
+      if (editor.skill) await adminUpdateSkill(editor.skill.id, payload);
+      else await adminCreateSkill(payload);
+      setEditor(null);
+      await load();
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section data-testid="settings-panel-prompt-manage" className="flex h-full min-h-[620px] flex-col">
+      <PanelHeader
+        icon={<FileText className="h-5 w-5" />}
+        title="提示词管理"
+        description="以 Toonflow 卡片方式管理可被 Agent 或 Slash 命令调用的提示词模板。"
+        action={<Button onClick={() => openEditor(null)} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]"><Plus className="mr-2 h-4 w-4" />新增提示词</Button>}
+      />
+      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        {loading ? (
+          <div className="col-span-full rounded-lg border border-black/10 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500">提示词加载中...</div>
+        ) : prompts.length === 0 ? (
+          <button
+            type="button"
+            onClick={() => openEditor(null)}
+            className="col-span-full rounded-lg border border-dashed border-black/15 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50"
+          >
+            暂无提示词模板，点击创建一个。
+          </button>
+        ) : (
+          prompts.map((skill) => (
+            <button
+              key={skill.id}
+              type="button"
+              onClick={() => openEditor(skill)}
+              className="rounded-lg border border-black/10 bg-white p-4 text-left shadow-sm transition hover:border-[#ff6a1f]/35 hover:shadow-md"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-semibold text-neutral-950">{skill.name}</h4>
+                  <p className="mt-1 text-xs text-neutral-500">{getSkillCommandName(skill)} · {skill.category || "prompt"}</p>
+                </div>
+                <Badge className="border-orange-200 bg-orange-50 text-[#ff6a1f]">prompt</Badge>
+              </div>
+              <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-600">{getSkillTemplateBody(skill) || skill.description || "暂无提示词内容"}</p>
+            </button>
+          ))
+        )}
+      </div>
+      {editor ? (
+        <PromptEditorModal
+          editor={editor}
+          saving={saving}
+          onChange={setEditor}
+          onClose={() => {
+            if (!saving) setEditor(null);
+          }}
+          onSave={() => void savePrompt()}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function SkillManagementPanel() {
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const next = await adminListSkills();
+      setSkills(next);
+      setActiveId((current) => current && next.some((skill) => skill.id === current) ? current : next[0]?.id ?? null);
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const filtered = skills.filter((skill) => {
+    const q = keyword.trim().toLowerCase();
+    if (!q) return true;
+    return [skill.name, skill.category, skill.kind, skill.description].some((value) => value.toLowerCase().includes(q));
+  });
+  const active = filtered.find((skill) => skill.id === activeId) ?? filtered[0] ?? null;
+
+  const saveSpec = async () => {
+    if (!active || draft === null) return;
+    setSaving(true);
+    setError("");
+    try {
+      const parsed = JSON.parse(draft || "{}");
+      await adminUpdateSkill(active.id, skillToUpsert(active, { spec: parsed }));
+      setDraft(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof SyntaxError ? `JSON 格式错误：${err.message}` : toAdminErrorSummary(err, "zh"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section data-testid="settings-panel-skill-management" className="flex h-full min-h-[620px] flex-col">
+      <PanelHeader
+        icon={<Sparkles className="h-5 w-5" />}
+        title="Skills技能管理"
+        description="按 Toonflow 的左树右预览方式查看技能，支持搜索和编辑 Skill spec。"
+        action={<Button variant="secondary" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}刷新</Button>}
+      />
+      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      <div className="mt-4 grid min-h-0 flex-1 gap-3 lg:grid-cols-[300px_1fr]">
+        <aside className="flex min-h-0 flex-col rounded-lg border border-black/10 p-3">
+          <input
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            placeholder="搜索 Skill"
+            className="h-10 rounded-md border border-black/10 bg-white px-3 text-sm outline-none transition focus:border-[#ff6a1f]/60"
+          />
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+            {loading ? (
+              <div className="px-3 py-8 text-center text-sm text-neutral-500">加载中...</div>
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-8 text-center text-sm text-neutral-500">暂无 Skill</div>
+            ) : (
+              filtered.map((skill) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  onClick={() => setActiveId(skill.id)}
+                  className={[
+                    "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition",
+                    active?.id === skill.id ? "bg-[#ff6a1f] text-white" : "text-neutral-700 hover:bg-orange-50 hover:text-[#ff6a1f]",
+                  ].join(" ")}
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{skill.name}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </aside>
+        <div className="flex min-h-0 flex-col rounded-lg border border-black/10">
+          {active ? (
+            <>
+              <div className="flex items-center justify-between border-b border-black/10 px-4 py-3">
+                <div>
+                  <h4 className="text-sm font-semibold text-neutral-950">{active.name}</h4>
+                  <p className="mt-1 text-xs text-neutral-500">{active.kind} · {active.category || "未分类"} · {active.enabled ? "已启用" : "未启用"}</p>
+                </div>
+                <Button type="button" variant="secondary" onClick={() => setDraft(JSON.stringify(active.spec ?? {}, null, 2))}>
+                  <Pencil className="mr-2 h-4 w-4" />
+                  编辑
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mb-4 rounded-lg bg-neutral-50 p-4 text-sm leading-6 text-neutral-700">
+                  {active.description || "暂无描述。"}
+                </div>
+                <pre className="whitespace-pre-wrap rounded-lg bg-[#191919] p-4 text-xs leading-5 text-neutral-100">
+                  {JSON.stringify(active.spec ?? {}, null, 2)}
+                </pre>
+              </div>
+            </>
+          ) : (
+            <div className="grid h-full place-items-center text-sm text-neutral-500">选择左侧 Skill 查看内容</div>
+          )}
+        </div>
+      </div>
+      {draft !== null && active ? (
+        <SkillSpecEditorModal
+          title={`编辑 ${active.name}`}
+          draft={draft}
+          saving={saving}
+          onChange={setDraft}
+          onClose={() => {
+            if (!saving) setDraft(null);
+          }}
+          onSave={() => void saveSpec()}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function MemoryConfigPanel() {
+  const [form, setForm] = useState<MemoryConfigForm>(DEFAULT_MEMORY_CONFIG);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(MEMORY_CONFIG_KEY);
+      if (raw) setForm({ ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) });
+    } catch {
+      setForm(DEFAULT_MEMORY_CONFIG);
+    }
+  }, []);
+
+  const save = (next = form) => {
+    window.localStorage.setItem(MEMORY_CONFIG_KEY, JSON.stringify(next));
+    setNotice("配置已保存到本地后台设置草案。");
+  };
+
+  const restore = () => {
+    setForm(DEFAULT_MEMORY_CONFIG);
+    save(DEFAULT_MEMORY_CONFIG);
+  };
+
+  const clear = () => {
+    window.localStorage.removeItem(MEMORY_CONFIG_KEY);
+    setNotice("本地记忆配置草案已清空，后端会话记忆不会被删除。");
+  };
+
+  return (
+    <section data-testid="settings-panel-memory-config" className="flex h-full min-h-[620px] flex-col">
+      <PanelHeader
+        icon={<BrainCircuit className="h-5 w-5" />}
+        title="Agent记忆配置"
+        description="参考 Toonflow 的记忆参数页，先沉淀本项目 Agent 记忆策略的后台配置入口。"
+      />
+      <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
+        当前项目还没有 Toonflow 同名的服务端记忆配置接口；这里会保存后台本地草案，后续接入后端即可直接复用这些字段。
+      </div>
+      {notice ? <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div> : null}
+      <div className="mt-4 space-y-4">
+        <div className="rounded-lg border border-black/10 p-4">
+          <h4 className="text-sm font-semibold text-neutral-950">向量模型配置</h4>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <Field label="模型文件路径">
+              <input
+                value={form.modelOnnxFile}
+                onChange={(event) => setForm({ ...form, modelOnnxFile: event.target.value })}
+                className={FIELD_INPUT}
+              />
+              <p className="mt-2 text-xs text-neutral-500">data/models/{form.modelOnnxFile}</p>
+            </Field>
+            <Field label="量化类型">
+              <select value={form.modelDtype} onChange={(event) => setForm({ ...form, modelDtype: event.target.value })} className={FIELD_SELECT}>
+                {["fp16", "auto", "fp32", "q8", "int8", "uint8", "q4", "bnb4", "q4f16"].map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+        <div className="rounded-lg border border-black/10 p-4">
+          <h4 className="text-sm font-semibold text-neutral-950">记忆参数</h4>
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <MemoryNumberField label="多少条消息触发摘要" value={form.messagesPerSummary} onChange={(value) => setForm({ ...form, messagesPerSummary: value })} />
+            <MemoryNumberField label="短期记忆条数" value={form.shortTermLimit} onChange={(value) => setForm({ ...form, shortTermLimit: value })} />
+            <MemoryNumberField label="摘要最大长度" value={form.summaryMaxLength} onChange={(value) => setForm({ ...form, summaryMaxLength: value })} />
+            <MemoryNumberField label="摘要召回数量" value={form.summaryLimit} onChange={(value) => setForm({ ...form, summaryLimit: value })} />
+            <MemoryNumberField label="RAG 召回数量" value={form.ragLimit} onChange={(value) => setForm({ ...form, ragLimit: value })} />
+            <MemoryNumberField label="深度检索摘要数" value={form.deepRetrieveSummaryLimit} onChange={(value) => setForm({ ...form, deepRetrieveSummaryLimit: value })} />
+          </div>
+        </div>
+      </div>
+      <div className="mt-auto flex justify-end gap-3 border-t border-black/10 pt-4">
+        <Button type="button" variant="secondary" onClick={clear}>清空本地配置</Button>
+        <Button type="button" variant="secondary" onClick={restore}>恢复默认</Button>
+        <Button type="button" onClick={() => save()} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">保存配置</Button>
+      </div>
+    </section>
+  );
+}
+
+function PanelHeader({
+  icon,
+  title,
+  description,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#ff6a1f]/10 text-[#ff6a1f]">{icon}</span>
+        <div className="min-w-0">
+          <h3 className="text-lg font-semibold text-neutral-950">{title}</h3>
+          <p className="mt-1 text-sm text-neutral-500">{description}</p>
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function AgentConfigModal({
+  editor,
+  models,
+  skills,
+  saving,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  editor: { agent: Agent | null; draft: AgentEditorDraft };
+  models: string[];
+  skills: Skill[];
+  saving: boolean;
+  onChange: (draft: AgentEditorDraft) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const { draft } = editor;
+  const toggleSkill = (id: string) => {
+    const set = new Set(draft.skillIds);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    onChange({ ...draft, skillIds: Array.from(set) });
+  };
+
+  return (
+    <CenterModal title={editor.agent ? `${editor.agent.name} 模型配置` : "新增 Agent"} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Agent 名称"><input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className={FIELD_INPUT} /></Field>
+          <Field label="选择模型">
+            {models.length ? (
+              <select value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={FIELD_SELECT}>
+                {models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
+            ) : (
+              <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={FIELD_INPUT} />
+            )}
+          </Field>
+        </div>
+        <Field label="描述"><textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className={`${FIELD_INPUT} resize-none`} /></Field>
+        <Field label="系统提示词"><textarea value={draft.systemPrompt} onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })} rows={7} className={`${FIELD_INPUT} resize-y font-mono text-xs`} /></Field>
+        <Field label="可调用 Skills">
+          <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto rounded-md border border-black/10 bg-neutral-50 p-3">
+            {skills.length === 0 ? <span className="text-xs text-neutral-500">暂无提示词型 Skill。</span> : null}
+            {skills.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                onClick={() => toggleSkill(skill.id)}
+                className={[
+                  "rounded-full border px-3 py-1 text-xs transition",
+                  draft.skillIds.includes(skill.id) ? "border-[#ff6a1f] bg-orange-50 text-[#ff6a1f]" : "border-black/10 bg-white text-neutral-600 hover:border-[#ff6a1f]/40",
+                ].join(" ")}
+              >
+                {getSkillCommandName(skill)}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
+            <input type="checkbox" checked={draft.canvasTools} onChange={(event) => onChange({ ...draft, canvasTools: event.target.checked })} className="accent-[#ff6a1f]" />
+            允许画布工具
+          </label>
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
+            <input type="checkbox" checked={draft.enabled} onChange={(event) => onChange({ ...draft, enabled: event.target.checked })} className="accent-[#ff6a1f]" />
+            启用
+          </label>
+          <Field label="策略">
+            <select value={draft.strategy} onChange={(event) => onChange({ ...draft, strategy: event.target.value as AgentUpsert["strategy"] })} className={FIELD_SELECT}>
+              <option value="reactive">reactive</option>
+              <option value="scripted">scripted</option>
+            </select>
+          </Field>
+        </div>
+      </div>
+      <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
+    </CenterModal>
+  );
+}
+
+function PromptEditorModal({
+  editor,
+  saving,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  editor: { skill: Skill | null; name: string; commandName: string; modelHint: string; content: string };
+  saving: boolean;
+  onChange: (editor: { skill: Skill | null; name: string; commandName: string; modelHint: string; content: string }) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <CenterModal title="提示词编辑器" onClose={onClose} widthClass="max-w-[980px]">
+      <div className="grid gap-3 md:grid-cols-3">
+        <Field label="名称"><input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={FIELD_INPUT} /></Field>
+        <Field label="Slash 命令"><input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={FIELD_INPUT} /></Field>
+        <Field label="模型提示"><input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={FIELD_INPUT} /></Field>
+      </div>
+      <div className="mt-4">
+        <Field label="Markdown 提示词">
+          <textarea
+            value={editor.content}
+            onChange={(event) => onChange({ ...editor, content: event.target.value })}
+            rows={18}
+            className={`${FIELD_INPUT} resize-y font-mono text-xs leading-5`}
+          />
+        </Field>
+      </div>
+      <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
+    </CenterModal>
+  );
+}
+
+function SkillSpecEditorModal({
+  title,
+  draft,
+  saving,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  title: string;
+  draft: string;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <CenterModal title={title} onClose={onClose} widthClass="max-w-[900px]">
+      <textarea
+        value={draft}
+        onChange={(event) => onChange(event.target.value)}
+        spellCheck={false}
+        rows={22}
+        className="w-full rounded-md border border-black/10 bg-[#1e1e1e] px-4 py-3 font-mono text-xs leading-5 text-neutral-100 outline-none focus:border-[#ff6a1f]/60"
+      />
+      <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
+    </CenterModal>
+  );
+}
+
+function CenterModal({
+  title,
+  onClose,
+  children,
+  widthClass = "max-w-[640px]",
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  widthClass?: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 px-4 py-[8vh] backdrop-blur-sm">
+      <button type="button" className="absolute inset-0 cursor-default" aria-label="关闭弹窗" onClick={onClose} />
+      <section className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-y-auto rounded-lg bg-white p-5 text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]`}>
+        <div className="mb-4 flex items-center justify-between border-b border-black/10 pb-3">
+          <h3 className="text-base font-semibold">{title}</h3>
+          <button type="button" onClick={onClose} className="rounded-full p-1.5 text-neutral-500 transition hover:bg-black/5 hover:text-neutral-950">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function ModalFooter({ saving, onClose, onSave }: { saving: boolean; onClose: () => void; onSave: () => void }) {
+  return (
+    <div className="mt-5 flex justify-end gap-3 border-t border-black/10 pt-4">
+      <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>取消</Button>
+      <Button type="button" onClick={onSave} disabled={saving} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+        {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+        保存
+      </Button>
+    </div>
+  );
+}
+
+function MemoryNumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <Field label={label}>
+      <input value={value} onChange={(event) => onChange(Number(event.target.value) || 0)} type="number" min={0} className={FIELD_INPUT} />
+    </Field>
+  );
+}
+
+function skillToUpsert(skill: Skill, overrides: Partial<SkillUpsert> = {}): SkillUpsert {
+  return {
+    name: skill.name,
+    description: skill.description,
+    category: skill.category,
+    icon: skill.icon,
+    kind: skill.kind,
+    spec: skill.spec ?? {},
+    input_schema: skill.input_schema ?? {},
+    output_schema: skill.output_schema ?? {},
+    enabled: skill.enabled,
+    ...overrides,
+  };
 }
 
 function StatCard({ label, value }: { label: string; value: number }) {

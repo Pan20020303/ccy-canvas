@@ -28,6 +28,8 @@ function stubAdminApis() {
       const url = String(input);
       if (url.includes("/api/admin/alerts/unread-count")) return apiResponse({ count: 0 });
       if (url.includes("/api/admin/alerts?")) return apiResponse([]);
+      if (url.endsWith("/api/admin/agents")) return apiResponse([]);
+      if (url.endsWith("/api/admin/skills")) return apiResponse([]);
       if (url.endsWith("/api/admin/provider-configs")) return apiResponse([]);
       return apiResponse({});
     }),
@@ -77,5 +79,35 @@ describe("AdminModelCatalogPage provider config editor", () => {
 
     expect(rendered.host.querySelector("[data-testid='provider-config-modal']")).not.toBeNull();
     expect(rendered.host.querySelector("[data-testid='provider-config-drawer']")).toBeNull();
+  });
+
+  it("switches Toonflow-style settings sections for agents prompts skills and memory", async () => {
+    stubAdminApis();
+    const rendered = await renderPage();
+    root = rendered.root;
+
+    expect(rendered.host.querySelector("[data-testid='settings-panel-model-service']")).not.toBeNull();
+
+    const clickMenu = async (label: string) => {
+      const button = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+        item.textContent?.includes(label),
+      );
+      expect(button, `missing menu item ${label}`).not.toBeNull();
+      await act(async () => {
+        button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    };
+
+    await clickMenu("Agent配置");
+    expect(rendered.host.querySelector("[data-testid='settings-panel-agent-config']")).not.toBeNull();
+
+    await clickMenu("提示词管理");
+    expect(rendered.host.querySelector("[data-testid='settings-panel-prompt-manage']")).not.toBeNull();
+
+    await clickMenu("Skills技能管理");
+    expect(rendered.host.querySelector("[data-testid='settings-panel-skill-management']")).not.toBeNull();
+
+    await clickMenu("Agent记忆配置");
+    expect(rendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
   });
 });
