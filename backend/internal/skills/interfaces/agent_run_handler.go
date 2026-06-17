@@ -19,8 +19,8 @@ import (
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/session"
-	skillsapp "ccy-canvas/backend/internal/skills/application"
 	"ccy-canvas/backend/internal/shared/httpx"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 )
 
 // AgentRunRouter wires the SSE endpoint into a chi router. We don't use huma
@@ -61,7 +61,10 @@ type agentRunRequest struct {
 	// Recent conversation context for the selected agent. Kept for backward
 	// compat with the old API shape; server-side history is the source of
 	// truth now and overrides this if non-empty.
-	History []agentRunHistoryTurn `json:"history"`
+	History     []agentRunHistoryTurn `json:"history"`
+	ProjectID   string                `json:"project_id,omitempty"`
+	WorkspaceID string                `json:"workspace_id,omitempty"`
+	TaskContext json.RawMessage       `json:"task_context,omitempty"`
 }
 
 type agentRunHistoryTurn struct {
@@ -107,7 +110,9 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// 3) Resolve every upstream provider that can serve the agent's model.
 	// When more than one vendor declares the same model, ChatStreamMulti will
 	// fall back across them on transient errors.
-	resolved, err := rt.catalogSvc.ResolveModelEndpoints(r.Context(), agent.Model)
+	route := rt.resolveAgentRoute(r.Context(), agent)
+	catalogModel := skillsapp.ResolveCatalogModelName(route)
+	resolved, err := rt.catalogSvc.ResolveModelEndpoints(r.Context(), catalogModel)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -159,6 +164,8 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	boundSkills := skillsapp.LoadBoundSkills(r.Context(), rt.q, agent.SkillIDs)
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
+	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
+	tools = append(tools, skillsapp.BuildCreatorSuiteSubAgentTools(rt.q, rt.executor, agent)...)
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
 	if invokedSkill != "" {
 		emitter.Emit("thought", map[string]string{
@@ -178,7 +185,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
 		SystemPrompt: agent.SystemPrompt,
-		Model:        agent.Model,
+		Model:        catalogModel,
 		UserMessage:  resolvedMessage,
 		History:      toRunHistoryFromMessages(historyMessages),
 		Tools:        tools,
@@ -226,6 +233,27 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (rt *AgentRunRouter) resolveAgentRoute(ctx context.Context, agent sqlc.Agent) skillsapp.AgentRouteConfig {
+	exact := skillsapp.AgentRouteConfigFromRow(agent)
+	if agent.ParentDeployKey == "" {
+		return exact
+	}
+	mode := skillsapp.AgentUseModeSimple
+	if setting, err := rt.q.GetAgentSetting(ctx, skillsapp.AgentUseModeSettingKey); err == nil {
+		var payload struct {
+			Mode int32 `json:"mode"`
+		}
+		if err := json.Unmarshal(setting.Value, &payload); err == nil && payload.Mode == skillsapp.AgentUseModeAdvanced {
+			mode = skillsapp.AgentUseModeAdvanced
+		}
+	}
+	parentRoute := skillsapp.AgentRouteConfig{}
+	if parent, err := rt.q.GetAgentByDeployKey(ctx, agent.ParentDeployKey); err == nil {
+		parentRoute = skillsapp.AgentRouteConfigFromRow(parent)
+	}
+	return skillsapp.ResolveCreatorSuiteRoute(mode, exact, parentRoute)
+}
+
 // truncateForTitle keeps the auto-derived conversation title short so the
 // switcher UI doesn't blow out the dropdown width.
 func truncateForTitle(s string) string {
@@ -253,9 +281,9 @@ func toRunHistoryFromMessages(messages []sqlc.AgentConversationMessage) []skills
 }
 
 // ensureAgentConversation resolves which thread this run belongs to. Priority:
-//   1. explicit conversation_id from the request body (user picked one)
-//   2. the most recently updated thread for (user, agent)
-//   3. brand-new thread (first ever run)
+//  1. explicit conversation_id from the request body (user picked one)
+//  2. the most recently updated thread for (user, agent)
+//  3. brand-new thread (first ever run)
 func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent, conversationID string) (sqlc.AgentConversation, error) {
 	if conversationID != "" {
 		cid, err := parseUUID(conversationID)

@@ -37,7 +37,7 @@ export type ProviderCodeEditorModalProps = {
   onConfirm: (code: string) => void;
 };
 
-const TOONFLOW_MONACO_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
+const CREATOR_SUITE_MONACO_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
   fontSize: 14,
   automaticLayout: true,
   tabSize: 2,
@@ -73,7 +73,7 @@ const TOONFLOW_MONACO_OPTIONS: monaco.editor.IStandaloneEditorConstructionOption
 };
 
 const handleMonacoBeforeMount: BeforeMount = (monacoInstance) => {
-  monacoInstance.editor.defineTheme("toonflow-vs-dark", {
+  monacoInstance.editor.defineTheme("creator-suite-vs-dark", {
     base: "vs-dark",
     inherit: true,
     rules: [
@@ -184,11 +184,11 @@ export default function ProviderCodeEditorModal({
           <Editor
             value={draft}
             language="typescript"
-            theme="toonflow-vs-dark"
+            theme="creator-suite-vs-dark"
             beforeMount={handleMonacoBeforeMount}
             onMount={handleEditorMount}
             onChange={(value) => setDraft(value ?? "")}
-            options={TOONFLOW_MONACO_OPTIONS}
+            options={CREATOR_SUITE_MONACO_OPTIONS}
             loading={<div className="grid h-full place-items-center bg-[#1e1e1e] text-sm text-neutral-400">加载代码编辑器...</div>}
           />
         </div>

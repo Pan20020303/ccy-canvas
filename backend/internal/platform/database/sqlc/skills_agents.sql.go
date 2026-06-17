@@ -160,24 +160,33 @@ func (q *Queries) DeleteSkill(ctx context.Context, id pgtype.UUID) error {
 // ────────────────────────── Agent model ──────────────────────────
 
 type Agent struct {
-	ID           pgtype.UUID        `json:"id"`
-	Scope        string             `json:"scope"`
-	OwnerID      pgtype.UUID        `json:"owner_id"`
-	Name         string             `json:"name"`
-	Description  string             `json:"description"`
-	Avatar       string             `json:"avatar"`
-	SystemPrompt string             `json:"system_prompt"`
-	Model        string             `json:"model"`
-	SkillIDs     []pgtype.UUID      `json:"skill_ids"`
-	CanvasTools  bool               `json:"canvas_tools"`
-	Strategy     string             `json:"strategy"`
-	Enabled      bool               `json:"enabled"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	ID              pgtype.UUID        `json:"id"`
+	Scope           string             `json:"scope"`
+	OwnerID         pgtype.UUID        `json:"owner_id"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description"`
+	Avatar          string             `json:"avatar"`
+	SystemPrompt    string             `json:"system_prompt"`
+	Model           string             `json:"model"`
+	SkillIDs        []pgtype.UUID      `json:"skill_ids"`
+	CanvasTools     bool               `json:"canvas_tools"`
+	Strategy        string             `json:"strategy"`
+	Enabled         bool               `json:"enabled"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	DeployKey       string             `json:"deploy_key"`
+	ParentDeployKey string             `json:"parent_deploy_key"`
+	ModelName       string             `json:"model_name"`
+	ProviderID      string             `json:"provider_id"`
+	Temperature     float64            `json:"temperature"`
+	MaxOutputTokens int32              `json:"max_output_tokens"`
+	Runtime         string             `json:"runtime"`
+	Metadata        []byte             `json:"metadata"`
 }
 
 const listVisibleAgents = `-- name: ListVisibleAgents :many
-SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at
+SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+       COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
 FROM agents
 WHERE enabled = TRUE
   AND (scope = 'global' OR (scope = 'personal' AND owner_id = $1))
@@ -193,7 +202,7 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, ownerID pgtype.UUID) ([
 	items := []Agent{}
 	for rows.Next() {
 		var i Agent
-		if err := rows.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -202,7 +211,8 @@ func (q *Queries) ListVisibleAgents(ctx context.Context, ownerID pgtype.UUID) ([
 }
 
 const listAllAgents = `-- name: ListAllAgents :many
-SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at
+SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+       COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
 FROM agents
 ORDER BY scope ASC, created_at DESC
 `
@@ -216,7 +226,7 @@ func (q *Queries) ListAllAgents(ctx context.Context) ([]Agent, error) {
 	items := []Agent{}
 	for rows.Next() {
 		var i Agent
-		if err := rows.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -225,74 +235,114 @@ func (q *Queries) ListAllAgents(ctx context.Context) ([]Agent, error) {
 }
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at
+SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+       COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
 FROM agents WHERE id = $1
 `
 
 func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
 	row := q.db.QueryRow(ctx, getAgent, id)
 	var i Agent
-	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt)
+	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata)
+	return i, err
+}
+
+const getAgentByDeployKey = `-- name: GetAgentByDeployKey :one
+SELECT id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+       COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
+FROM agents WHERE deploy_key = $1
+`
+
+func (q *Queries) GetAgentByDeployKey(ctx context.Context, deployKey string) (Agent, error) {
+	row := q.db.QueryRow(ctx, getAgentByDeployKey, deployKey)
+	var i Agent
+	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata)
 	return i, err
 }
 
 type InsertAgentParams struct {
-	Scope        string        `json:"scope"`
-	OwnerID      pgtype.UUID   `json:"owner_id"`
-	Name         string        `json:"name"`
-	Description  string        `json:"description"`
-	Avatar       string        `json:"avatar"`
-	SystemPrompt string        `json:"system_prompt"`
-	Model        string        `json:"model"`
-	SkillIDs     []pgtype.UUID `json:"skill_ids"`
-	CanvasTools  bool          `json:"canvas_tools"`
-	Strategy     string        `json:"strategy"`
-	Enabled      bool          `json:"enabled"`
+	Scope           string        `json:"scope"`
+	OwnerID         pgtype.UUID   `json:"owner_id"`
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	Avatar          string        `json:"avatar"`
+	SystemPrompt    string        `json:"system_prompt"`
+	Model           string        `json:"model"`
+	SkillIDs        []pgtype.UUID `json:"skill_ids"`
+	CanvasTools     bool          `json:"canvas_tools"`
+	Strategy        string        `json:"strategy"`
+	Enabled         bool          `json:"enabled"`
+	DeployKey       string        `json:"deploy_key"`
+	ParentDeployKey string        `json:"parent_deploy_key"`
+	ModelName       string        `json:"model_name"`
+	ProviderID      string        `json:"provider_id"`
+	Temperature     float64       `json:"temperature"`
+	MaxOutputTokens int32         `json:"max_output_tokens"`
+	Runtime         string        `json:"runtime"`
+	Metadata        []byte        `json:"metadata"`
 }
 
 const insertAgent = `-- name: InsertAgent :one
-INSERT INTO agents (scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at
+INSERT INTO agents (scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled,
+                    deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($12, ''), $13, $14, $15, $16, $17, $18, $19)
+RETURNING id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+          COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
 `
 
 func (q *Queries) InsertAgent(ctx context.Context, arg InsertAgentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, insertAgent,
 		arg.Scope, arg.OwnerID, arg.Name, arg.Description, arg.Avatar,
-		arg.SystemPrompt, arg.Model, arg.SkillIDs, arg.CanvasTools, arg.Strategy, arg.Enabled)
+		arg.SystemPrompt, arg.Model, arg.SkillIDs, arg.CanvasTools, arg.Strategy, arg.Enabled,
+		arg.DeployKey, arg.ParentDeployKey, arg.ModelName, arg.ProviderID, arg.Temperature,
+		arg.MaxOutputTokens, arg.Runtime, arg.Metadata)
 	var i Agent
-	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt)
+	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata)
 	return i, err
 }
 
 type UpdateAgentParams struct {
-	ID           pgtype.UUID   `json:"id"`
-	Name         string        `json:"name"`
-	Description  string        `json:"description"`
-	Avatar       string        `json:"avatar"`
-	SystemPrompt string        `json:"system_prompt"`
-	Model        string        `json:"model"`
-	SkillIDs     []pgtype.UUID `json:"skill_ids"`
-	CanvasTools  bool          `json:"canvas_tools"`
-	Strategy     string        `json:"strategy"`
-	Enabled      bool          `json:"enabled"`
+	ID              pgtype.UUID   `json:"id"`
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	Avatar          string        `json:"avatar"`
+	SystemPrompt    string        `json:"system_prompt"`
+	Model           string        `json:"model"`
+	SkillIDs        []pgtype.UUID `json:"skill_ids"`
+	CanvasTools     bool          `json:"canvas_tools"`
+	Strategy        string        `json:"strategy"`
+	Enabled         bool          `json:"enabled"`
+	DeployKey       string        `json:"deploy_key"`
+	ParentDeployKey string        `json:"parent_deploy_key"`
+	ModelName       string        `json:"model_name"`
+	ProviderID      string        `json:"provider_id"`
+	Temperature     float64       `json:"temperature"`
+	MaxOutputTokens int32         `json:"max_output_tokens"`
+	Runtime         string        `json:"runtime"`
+	Metadata        []byte        `json:"metadata"`
 }
 
 const updateAgent = `-- name: UpdateAgent :one
 UPDATE agents
 SET name = $2, description = $3, avatar = $4, system_prompt = $5, model = $6,
     skill_ids = $7, canvas_tools = $8, strategy = $9, enabled = $10,
+    deploy_key = NULLIF($11, ''), parent_deploy_key = $12, model_name = $13,
+    provider_id = $14, temperature = $15, max_output_tokens = $16,
+    runtime = $17, metadata = $18,
     updated_at = now()
 WHERE id = $1
-RETURNING id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at
+RETURNING id, scope, owner_id, name, description, avatar, system_prompt, model, skill_ids, canvas_tools, strategy, enabled, created_at, updated_at,
+          COALESCE(deploy_key, '') AS deploy_key, parent_deploy_key, model_name, provider_id, temperature, max_output_tokens, runtime, metadata
 `
 
 func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, updateAgent,
 		arg.ID, arg.Name, arg.Description, arg.Avatar, arg.SystemPrompt, arg.Model,
-		arg.SkillIDs, arg.CanvasTools, arg.Strategy, arg.Enabled)
+		arg.SkillIDs, arg.CanvasTools, arg.Strategy, arg.Enabled,
+		arg.DeployKey, arg.ParentDeployKey, arg.ModelName, arg.ProviderID, arg.Temperature,
+		arg.MaxOutputTokens, arg.Runtime, arg.Metadata)
 	var i Agent
-	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt)
+	err := row.Scan(&i.ID, &i.Scope, &i.OwnerID, &i.Name, &i.Description, &i.Avatar, &i.SystemPrompt, &i.Model, &i.SkillIDs, &i.CanvasTools, &i.Strategy, &i.Enabled, &i.CreatedAt, &i.UpdatedAt, &i.DeployKey, &i.ParentDeployKey, &i.ModelName, &i.ProviderID, &i.Temperature, &i.MaxOutputTokens, &i.Runtime, &i.Metadata)
 	return i, err
 }
 

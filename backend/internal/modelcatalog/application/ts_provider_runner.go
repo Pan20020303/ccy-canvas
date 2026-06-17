@@ -55,7 +55,7 @@ type tsRunnerResponse struct {
 
 // PreviewProviderPlugin parses a self-contained TS provider adapter and returns
 // the vendor metadata that can be applied to an admin provider config form.
-// requestedServiceType mirrors Toonflow's mixed vendor files: the same TS
+// requestedServiceType mirrors mixed vendor files: the same TS
 // provider can declare text/image/video/audio models, while this app stores one
 // service type per provider config.
 func (s *Service) PreviewProviderPlugin(ctx context.Context, code string, requestedServiceType string) (*ProviderPluginPreview, error) {

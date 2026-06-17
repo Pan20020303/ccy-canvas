@@ -127,6 +127,22 @@ function stubAdminApis(
       requests.push({ url, method, body });
       if (url.includes("/api/admin/alerts/unread-count")) return apiResponse({ count: 0 });
       if (url.includes("/api/admin/alerts?")) return apiResponse([]);
+      if (method === "GET" && url.endsWith("/api/admin/agent-settings/use-mode")) return apiResponse({ mode: 0 });
+      if (method === "PUT" && url.endsWith("/api/admin/agent-settings/use-mode")) return apiResponse(body ?? { mode: 0 });
+      if (method === "GET" && url.endsWith("/api/admin/agent-memory-settings")) {
+        return apiResponse({
+          messagesPerSummary: 3,
+          shortTermLimit: 5,
+          summaryMaxLength: 500,
+          summaryLimit: 10,
+          ragLimit: 3,
+          deepRetrieveSummaryLimit: 5,
+          modelOnnxFile: "all-MiniLM-L6-v2/onnx/model_fp16.onnx",
+          modelDtype: "fp16",
+        });
+      }
+      if (method === "PUT" && url.endsWith("/api/admin/agent-memory-settings")) return apiResponse(body ?? {});
+      if (method === "POST" && url.endsWith("/api/admin/agents/seed-suite")) return apiResponse({ total: 17, created: 17, existing: 0, updated: 0 });
       if (method === "POST" && url.endsWith("/api/admin/agents")) return apiResponse({ id: "agent-created", ...body });
       if (method === "PUT" && url.includes("/api/admin/agents/")) return apiResponse({ ...(options.agents?.[0] ?? makeAgent()), ...body });
       if (method === "GET" && url.endsWith("/api/admin/agents")) return apiResponse(options.agents ?? []);
@@ -199,7 +215,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(rendered.host.querySelector("[data-testid='provider-config-drawer']")).toBeNull();
   });
 
-  it("renders Toonflow-style settings sections as primary admin pages", async () => {
+  it("renders creator-suite settings sections as primary admin pages", async () => {
     stubAdminApis();
 
     const rendered = await renderPage("agent-config");
@@ -233,7 +249,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(memoryRendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
   });
 
-  it("fills missing Toonflow-style agent presets through the admin Agent API", async () => {
+  it("seeds creator-suite agents through the admin Agent API", async () => {
     const requests = stubAdminApis([], { agents: [], skills: [] });
     const rendered = await renderPage("agent-config");
     root = rendered.root;
@@ -251,14 +267,11 @@ describe("AdminModelCatalogPage provider config editor", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    const createdAgents = requests.filter((request) => request.method === "POST" && request.url.endsWith("/api/admin/agents"));
-    expect(createdAgents).toHaveLength(3);
-    expect(createdAgents.map((request) => (request.body as Record<string, unknown>)?.name)).toEqual(
-      expect.arrayContaining(["剧本Agent", "生产Agent", "通用AI"]),
-    );
+    const seedRequests = requests.filter((request) => request.method === "POST" && request.url.endsWith("/api/admin/agents/seed-suite"));
+    expect(seedRequests).toHaveLength(1);
   });
 
-  it("edits a prompt skill in the Toonflow-style markdown dialog", async () => {
+  it("edits a prompt skill in the creator-suite markdown dialog", async () => {
     const requests = stubAdminApis([], { skills: [makeSkill()] });
     const rendered = await renderPage("prompt-manage");
     root = rendered.root;
@@ -312,7 +325,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
         makeSkill({
           id: "skill-art-character",
           name: "art_character",
-          category: "toonflow/art_skills/2D_90s_japanese_anime/art_prompt",
+          category: "creator-suite/art_skills/2D_90s_japanese_anime/art_prompt",
           kind: "code",
           spec: { content_md: "# 角色绘制\n\n保持 90 年代日漫质感。" },
           description: "90 年代日漫角色绘制技能",
@@ -320,7 +333,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
         makeSkill({
           id: "prompt-event-extraction",
           name: "eventExtraction",
-          category: "toonflow/prompts",
+          category: "creator-suite/prompts",
           kind: "prompt",
           spec: { content_md: "# eventExtraction\n\nPrompt template only." },
           description: "Prompt template should stay out of skill tree.",
@@ -336,19 +349,19 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(rendered.host.textContent).toContain("production_agent_decision.md");
     expect(rendered.host.textContent).not.toContain("eventExtraction.md");
 
-    const toonflowFolder = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
-      item.textContent?.trim() === "toonflow",
+    const suiteFolder = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "creator-suite",
     );
-    expect(toonflowFolder).not.toBeNull();
+    expect(suiteFolder).not.toBeNull();
 
     await act(async () => {
-      toonflowFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      suiteFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(rendered.host.textContent).not.toContain("art_character.md");
 
     await act(async () => {
-      toonflowFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      suiteFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(rendered.host.textContent).toContain("art_character.md");
@@ -387,7 +400,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
     });
   });
 
-  it("edits a Toonflow-style model row and persists vendor model metadata", async () => {
+  it("edits a creator-suite model row and persists vendor model metadata", async () => {
     const requests = stubAdminApis([makeProviderConfig()]);
     const rendered = await renderPage();
     root = rendered.root;
@@ -436,7 +449,7 @@ describe("AdminModelCatalogPage provider config editor", () => {
     });
   });
 
-  it("shows visible feedback when testing a Toonflow-style model fails", async () => {
+  it("shows visible feedback when testing a creator-suite model fails", async () => {
     const requests = stubAdminApis([makeProviderConfig()], {
       testResponse: { ok: false, http_status: 0, latency_ms: 12, error_msg: "network timeout" },
     });

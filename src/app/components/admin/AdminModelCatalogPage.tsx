@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronRight,
   Clapperboard,
-  ExternalLink,
   Eye,
   FileCode2,
   File,
@@ -54,12 +53,19 @@ import {
 import {
   adminCreateAgent,
   adminCreateSkill,
+  adminGetAgentMemorySettings,
+  adminGetAgentUseMode,
   adminListAgents,
   adminListSkills,
+  adminSeedCreatorSuiteAgents,
+  adminUpdateAgentMemorySettings,
   adminUpdateAgent,
+  adminUpdateAgentUseMode,
   adminUpdateSkill,
   type Agent,
+  type AgentMemorySettings,
   type AgentUpsert,
+  type AgentUseMode,
   type Skill,
   type SkillUpsert,
 } from "../../api/skills";
@@ -127,7 +133,7 @@ const SETTINGS_PAGE_META: Record<SettingsPanelKey, { title: string; description:
   },
   "agent-config": {
     title: "Agent配置",
-    description: "参考 Toonflow 的 Agent 配置方式，管理不同助手的模型、系统提示词、可调用技能与运行策略。",
+    description: "管理创作智能体套件的模型路由、系统提示词、可调用技能与运行策略。",
   },
   "prompt-manage": {
     title: "提示词管理",
@@ -412,24 +418,21 @@ type AgentEditorDraft = {
   description: string;
   systemPrompt: string;
   model: string;
+  deployKey: string;
+  parentDeployKey: string;
+  modelName: string;
+  providerId: string;
+  temperature: number;
+  maxOutputTokens: number;
+  runtime: string;
   skillIds: string[];
   canvasTools: boolean;
   enabled: boolean;
   strategy: AgentUpsert["strategy"];
 };
 
-type MemoryConfigForm = {
-  messagesPerSummary: number;
-  shortTermLimit: number;
-  summaryMaxLength: number;
-  summaryLimit: number;
-  ragLimit: number;
-  deepRetrieveSummaryLimit: number;
-  modelOnnxFile: string;
-  modelDtype: string;
-};
+type MemoryConfigForm = AgentMemorySettings;
 
-const MEMORY_CONFIG_KEY = "ccy-admin-agent-memory-config";
 const DEFAULT_MEMORY_CONFIG: MemoryConfigForm = {
   messagesPerSummary: 3,
   shortTermLimit: 5,
@@ -445,6 +448,7 @@ type AgentPresetKey = "script" | "production" | "general" | "tts";
 
 type AgentPresetDefinition = {
   key: AgentPresetKey;
+  deployKey: string;
   name: string;
   description: string;
   modelHint: string;
@@ -459,6 +463,7 @@ type AgentPresetDefinition = {
 const AGENT_PRESETS: AgentPresetDefinition[] = [
   {
     key: "script",
+    deployKey: "scriptAgent",
     name: "剧本Agent",
     description: "用于读取原文生成故事骨架、改编策略，建议使用具备强大文本理解和生成能力的模型。",
     modelHint: "Doubao-Seed-1.8",
@@ -471,6 +476,7 @@ const AGENT_PRESETS: AgentPresetDefinition[] = [
   },
   {
     key: "production",
+    deployKey: "productionAgent",
     name: "生产Agent",
     description: "对工作流进行调度和管理，建议使用具备较强逻辑推理和任务管理能力的模型。",
     modelHint: "Doubao-Seed-2.0-Pro",
@@ -483,6 +489,7 @@ const AGENT_PRESETS: AgentPresetDefinition[] = [
   },
   {
     key: "general",
+    deployKey: "universalAi",
     name: "通用AI",
     description: "用于小说事件提取、资产提示词生成、台词提取等边缘功能，建议使用具备较强文本处理能力的模型。",
     modelHint: "DeepSeek-V3-2",
@@ -495,6 +502,7 @@ const AGENT_PRESETS: AgentPresetDefinition[] = [
   },
   {
     key: "tts",
+    deployKey: "ttsDubbing",
     name: "TTS配音",
     description: "根据剧本内容生成角色配音，支持多种声音风格和情绪。",
     modelHint: "未开放",
@@ -525,6 +533,13 @@ function createAgentDraft(agent: Agent | null, fallbackModel: string, preset?: A
       description: agent.description,
       systemPrompt: agent.system_prompt,
       model: agent.model || fallbackModel,
+      deployKey: agent.deploy_key || preset?.deployKey || "",
+      parentDeployKey: agent.parent_deploy_key || "",
+      modelName: agent.model_name || "",
+      providerId: agent.provider_id || "",
+      temperature: agent.temperature ?? 1,
+      maxOutputTokens: agent.max_output_tokens ?? 0,
+      runtime: agent.runtime || "generic",
       skillIds: agent.skill_ids,
       canvasTools: agent.canvas_tools,
       enabled: agent.enabled,
@@ -538,6 +553,13 @@ function createAgentDraft(agent: Agent | null, fallbackModel: string, preset?: A
       preset?.systemPrompt ||
       "你是 CCY Canvas 中的创作型智能体。优先理解当前画布节点、用户输入和绑定技能，再给出可执行的下一步。",
     model: fallbackModel,
+    deployKey: preset?.deployKey || "",
+    parentDeployKey: "",
+    modelName: "",
+    providerId: "",
+    temperature: 1,
+    maxOutputTokens: 0,
+    runtime: preset?.deployKey || "generic",
     skillIds: [],
     canvasTools: preset?.canvasTools ?? true,
     enabled: true,
@@ -546,6 +568,8 @@ function createAgentDraft(agent: Agent | null, fallbackModel: string, preset?: A
 }
 
 function findPresetAgent(agents: Agent[], preset: AgentPresetDefinition) {
+  const byDeployKey = agents.find((agent) => agent.deploy_key === preset.deployKey);
+  if (byDeployKey) return byDeployKey;
   const aliases = [preset.name, ...preset.aliases].map((item) => item.toLowerCase());
   return agents.find((agent) => {
     const haystack = `${agent.name} ${agent.description} ${agent.system_prompt}`.toLowerCase();
@@ -958,7 +982,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
               <div className="flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-2 text-xs text-neutral-500">
                   <FileCode2 className="h-4 w-4 text-neutral-400" />
-                  粘贴 Toonflow 风格供应商 TS，按当前服务类型解析模型、输入项和图标。
+                  粘贴供应商 TS，按当前服务类型解析模型、输入项和图标。
                 </span>
                 <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setCodeEditorOpen(true)}>
                   <FileCode2 className="mr-2 h-4 w-4" />
@@ -2032,15 +2056,18 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState<"ordinary" | "advanced">("ordinary");
+  const [useMode, setUseMode] = useState<AgentUseMode>(0);
   const [editor, setEditor] = useState<{ agent: Agent | null; draft: AgentEditorDraft } | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError("");
     try {
-      const [nextAgents, nextSkills] = await Promise.all([adminListAgents(), adminListSkills()]);
+      const [nextAgents, nextSkills, nextUseMode] = await Promise.all([adminListAgents(), adminListSkills(), adminGetAgentUseMode()]);
       setAgents(nextAgents);
       setSkills(nextSkills);
+      setUseMode(nextUseMode.mode);
+      setTab(nextUseMode.mode === 1 ? "advanced" : "ordinary");
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
     } finally {
@@ -2060,6 +2087,18 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
     [agents],
   );
 
+  const switchUseMode = async (value: "ordinary" | "advanced") => {
+    const mode: AgentUseMode = value === "advanced" ? 1 : 0;
+    setTab(value);
+    setUseMode(mode);
+    try {
+      const saved = await adminUpdateAgentUseMode(mode);
+      setUseMode(saved.mode);
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    }
+  };
+
   const openEditor = (agent: Agent | null, preset?: AgentPresetDefinition) => {
     if (preset?.disabled) {
       setError("TTS 配音尚未接入音频模型服务，当前保持未开放。");
@@ -2076,27 +2115,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
     setSaving(true);
     setError("");
     try {
-      const existing = new Set(presetAgents.filter((item) => item.agent).map((item) => item.preset.key));
-      const missing = AGENT_PRESETS.filter((preset) => !preset.disabled && !existing.has(preset.key));
-      if (missing.length === 0) {
-        setError("基础 Agent 已经配置完成，无需重复填入。");
-        return;
-      }
-      await Promise.all(
-        missing.map((preset) =>
-          adminCreateAgent({
-            name: preset.name,
-            description: preset.description,
-            avatar: preset.icon,
-            system_prompt: preset.systemPrompt,
-            model: firstModel,
-            skill_ids: [],
-            canvas_tools: preset.canvasTools,
-            strategy: preset.strategy,
-            enabled: true,
-          }),
-        ),
-      );
+      await adminSeedCreatorSuiteAgents();
       await load();
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
@@ -2107,8 +2126,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
   const saveEditor = async () => {
     if (!editor) return;
-    if (!editor.draft.name.trim() || !editor.draft.systemPrompt.trim() || !editor.draft.model.trim()) {
-      setError("请填写 Agent 名称、模型和系统提示词。");
+    if (!editor.draft.name.trim() || !editor.draft.systemPrompt.trim() || (editor.draft.enabled && !editor.draft.model.trim())) {
+      setError("请填写 Agent 名称、系统提示词；启用 Agent 时必须配置模型。");
       return;
     }
     const payload: AgentUpsert = {
@@ -2117,6 +2136,17 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
       avatar: editor.agent?.avatar || "",
       system_prompt: editor.draft.systemPrompt.trim(),
       model: editor.draft.model.trim(),
+      deploy_key: editor.draft.deployKey.trim(),
+      parent_deploy_key: editor.draft.parentDeployKey.trim(),
+      model_name: editor.draft.modelName.trim(),
+      provider_id: editor.draft.providerId.trim(),
+      temperature: editor.draft.temperature,
+      max_output_tokens: editor.draft.maxOutputTokens,
+      runtime: editor.draft.runtime.trim() || "generic",
+      metadata: {
+        source: "creator-suite",
+        display_group: "创作智能体套件",
+      },
       skill_ids: editor.draft.skillIds,
       canvas_tools: editor.draft.canvasTools,
       strategy: editor.draft.strategy,
@@ -2141,7 +2171,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
       <PanelHeader
         icon={<Bot className="h-5 w-5" />}
         title="Agent配置"
-        description="照搬 Toonflow 的简易/高级配置交互，并接入本项目真实 Agent CRUD。"
+        description="管理创作智能体套件的简易/高级模型路由，并接入本项目真实 Agent CRUD。"
         action={
           <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading} className={SETTINGS_PANEL_BUTTON}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -2156,13 +2186,9 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
             <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-400/15 text-emerald-200">
               <ThumbsUp className="h-5 w-5" />
             </span>
-            <span>使用模原力式预设，可一键填入剧本 Agent、生产 Agent、通用 AI，开箱即用。</span>
+            <span>使用创作智能体套件预设，可一键填入剧本 Agent、生产 Agent、通用 AI，开箱即用。</span>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" className="border-emerald-300/20 bg-emerald-300/10 text-emerald-100 hover:bg-emerald-300/15" onClick={() => window.open("https://api.toonflow.net", "_blank")}>
-              进入网站
-              <ExternalLink className="ml-2 h-4 w-4" />
-            </Button>
             <Button type="button" className={SETTINGS_PRIMARY_BUTTON} disabled={saving || loading} onClick={() => void seedPresets()}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
               一键填入
@@ -2181,10 +2207,10 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
           <button
             key={value}
             type="button"
-            onClick={() => setTab(value)}
+            onClick={() => void switchUseMode(value)}
             className={[
               "border-b-2 px-4 py-2 text-sm transition",
-              tab === value ? "border-white font-medium text-white" : "border-transparent text-neutral-500 hover:text-neutral-200",
+              (tab === value || (value === "ordinary" && useMode === 0) || (value === "advanced" && useMode === 1)) ? "border-white font-medium text-white" : "border-transparent text-neutral-500 hover:text-neutral-200",
             ].join(" ")}
           >
             {label}
@@ -2384,7 +2410,7 @@ function PromptManagePanel() {
       <PanelHeader
         icon={<FileText className="h-5 w-5" />}
         title="提示词管理"
-        description="复刻 Toonflow 的卡片列表和 Markdown 编辑弹窗，保存到本项目 prompt Skill。"
+        description="维护提示词模板卡片和 Markdown 编辑弹窗，保存到本项目 prompt Skill。"
         action={<Button onClick={() => openEditor(null)} className={SETTINGS_PRIMARY_BUTTON}><Plus className="mr-2 h-4 w-4" />新增提示词</Button>}
       />
       {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
@@ -2625,30 +2651,50 @@ function SkillManagementPanel() {
 
 function MemoryConfigPanel() {
   const [form, setForm] = useState<MemoryConfigForm>(DEFAULT_MEMORY_CONFIG);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(MEMORY_CONFIG_KEY);
-      if (raw) setForm({ ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) });
-    } catch {
-      setForm(DEFAULT_MEMORY_CONFIG);
-    }
+    let alive = true;
+    adminGetAgentMemorySettings()
+      .then((next) => {
+        if (alive) setForm({ ...DEFAULT_MEMORY_CONFIG, ...next });
+      })
+      .catch((err) => {
+        if (alive) setError(toAdminErrorSummary(err, "zh"));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  const save = (next = form) => {
-    window.localStorage.setItem(MEMORY_CONFIG_KEY, JSON.stringify(next));
-    setNotice("配置已保存到本地后台设置草案。");
+  const save = async (next = form) => {
+    setSaving(true);
+    setError("");
+    try {
+      const saved = await adminUpdateAgentMemorySettings(next);
+      setForm({ ...DEFAULT_MEMORY_CONFIG, ...saved });
+      setNotice("记忆配置已保存。");
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const restore = () => {
     setForm(DEFAULT_MEMORY_CONFIG);
-    save(DEFAULT_MEMORY_CONFIG);
+    void save(DEFAULT_MEMORY_CONFIG);
   };
 
   const clear = () => {
-    window.localStorage.removeItem(MEMORY_CONFIG_KEY);
-    setNotice("本地记忆配置草案已清空，后端会话记忆不会被删除。");
+    setForm(DEFAULT_MEMORY_CONFIG);
+    void save(DEFAULT_MEMORY_CONFIG);
   };
 
   return (
@@ -2658,9 +2704,8 @@ function MemoryConfigPanel() {
         title="Agent记忆配置"
         description="沉淀本项目 Agent 记忆策略的后台配置入口。"
       />
-      <div className="mt-4 rounded-lg border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-200">
-        当前项目还没有 Toonflow 同名的服务端记忆配置接口；这里会保存后台本地草案，后续接入后端即可直接复用这些字段。
-      </div>
+      {loading ? <div className="mt-4 rounded-md border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-sm text-neutral-400">记忆配置加载中...</div> : null}
+      {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
       {notice ? <div className="mt-4 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{notice}</div> : null}
       <div className="mt-4 space-y-4">
         <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
@@ -2696,9 +2741,9 @@ function MemoryConfigPanel() {
         </div>
       </div>
       <div className="mt-auto flex justify-end gap-3 border-t border-white/[0.08] pt-4">
-        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={clear}>清空本地配置</Button>
-        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={restore}>恢复默认</Button>
-        <Button type="button" onClick={() => save()} className={SETTINGS_PRIMARY_BUTTON}>保存配置</Button>
+        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={clear} disabled={saving}>清空为默认</Button>
+        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={restore} disabled={saving}>恢复默认</Button>
+        <Button type="button" onClick={() => void save()} disabled={saving} className={SETTINGS_PRIMARY_BUTTON}>{saving ? "保存中..." : "保存配置"}</Button>
       </div>
     </section>
   );
@@ -2768,6 +2813,31 @@ function AgentConfigModal({
               <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={SETTINGS_INPUT} />
             )}
           </SettingsField>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <SettingsField label="Deploy Key">
+            <input value={draft.deployKey} onChange={(event) => onChange({ ...draft, deployKey: event.target.value })} className={SETTINGS_INPUT} />
+          </SettingsField>
+          <SettingsField label="Parent Key">
+            <input value={draft.parentDeployKey} onChange={(event) => onChange({ ...draft, parentDeployKey: event.target.value })} className={SETTINGS_INPUT} />
+          </SettingsField>
+          <SettingsField label="Runtime">
+            <input value={draft.runtime} onChange={(event) => onChange({ ...draft, runtime: event.target.value })} className={SETTINGS_INPUT} />
+          </SettingsField>
+          <SettingsField label="Model Name">
+            <input value={draft.modelName} onChange={(event) => onChange({ ...draft, modelName: event.target.value })} className={SETTINGS_INPUT} placeholder="provider:model-id" />
+          </SettingsField>
+          <SettingsField label="Provider ID">
+            <input value={draft.providerId} onChange={(event) => onChange({ ...draft, providerId: event.target.value })} className={SETTINGS_INPUT} />
+          </SettingsField>
+          <div className="grid grid-cols-2 gap-2">
+            <SettingsField label="Temperature">
+              <input type="number" step="0.1" min="0" max="2" value={draft.temperature} onChange={(event) => onChange({ ...draft, temperature: Number(event.target.value) || 0 })} className={SETTINGS_INPUT} />
+            </SettingsField>
+            <SettingsField label="Max Tokens">
+              <input type="number" min="0" value={draft.maxOutputTokens} onChange={(event) => onChange({ ...draft, maxOutputTokens: Number(event.target.value) || 0 })} className={SETTINGS_INPUT} />
+            </SettingsField>
+          </div>
         </div>
         <SettingsField label="描述"><textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className={`${SETTINGS_INPUT} resize-none`} /></SettingsField>
         <SettingsField label="系统提示词"><textarea value={draft.systemPrompt} onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })} rows={7} className={`${SETTINGS_INPUT} resize-y font-mono text-xs`} /></SettingsField>

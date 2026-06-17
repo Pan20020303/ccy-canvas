@@ -94,6 +94,14 @@ export type Agent = {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+  deploy_key?: string;
+  parent_deploy_key?: string;
+  model_name?: string;
+  provider_id?: string;
+  temperature?: number;
+  max_output_tokens?: number;
+  runtime?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type AgentUpsert = {
@@ -106,6 +114,14 @@ export type AgentUpsert = {
   canvas_tools: boolean;
   strategy?: "reactive" | "scripted";
   enabled: boolean;
+  deploy_key?: string;
+  parent_deploy_key?: string;
+  model_name?: string;
+  provider_id?: string;
+  temperature?: number;
+  max_output_tokens?: number;
+  runtime?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export function listAgents(): Promise<Agent[]> {
@@ -132,6 +148,46 @@ export function adminUpdateAgent(id: string, payload: AgentUpsert): Promise<Agen
 }
 export function adminDeleteAgent(id: string): Promise<void> {
   return apiClient.delete(`/api/admin/agents/${id}`);
+}
+
+export type AgentUseMode = 0 | 1;
+
+export function adminGetAgentUseMode(): Promise<{ mode: AgentUseMode }> {
+  return apiClient.get<{ mode: AgentUseMode }>("/api/admin/agent-settings/use-mode");
+}
+
+export function adminUpdateAgentUseMode(mode: AgentUseMode): Promise<{ mode: AgentUseMode }> {
+  return apiClient.put<{ mode: AgentUseMode }>("/api/admin/agent-settings/use-mode", { mode });
+}
+
+export type AgentMemorySettings = {
+  messagesPerSummary: number;
+  shortTermLimit: number;
+  summaryMaxLength: number;
+  summaryLimit: number;
+  ragLimit: number;
+  deepRetrieveSummaryLimit: number;
+  modelOnnxFile: string;
+  modelDtype: string;
+};
+
+export function adminGetAgentMemorySettings(): Promise<AgentMemorySettings> {
+  return apiClient.get<AgentMemorySettings>("/api/admin/agent-memory-settings");
+}
+
+export function adminUpdateAgentMemorySettings(payload: AgentMemorySettings): Promise<AgentMemorySettings> {
+  return apiClient.put<AgentMemorySettings>("/api/admin/agent-memory-settings", payload);
+}
+
+export type CreatorSuiteSeedReport = {
+  total: number;
+  created: number;
+  existing: number;
+  updated: number;
+};
+
+export function adminSeedCreatorSuiteAgents(): Promise<CreatorSuiteSeedReport> {
+  return apiClient.post<CreatorSuiteSeedReport>("/api/admin/agents/seed-suite", {});
 }
 
 // ─── Agent run audit log (admin-only) ───────────────────────────────────────

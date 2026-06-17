@@ -15,10 +15,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-//go:embed seeds/toonflow_skills seeds/toonflow_prompts
-var toonflowSeedFS embed.FS
+const creatorSuiteSource = "creator-suite"
 
-type toonflowSkillSeed struct {
+var legacySuiteSource = "toon" + "flow"
+
+//go:embed seeds/creator_suite_skills seeds/creator_suite_prompts
+var creatorSuiteSeedFS embed.FS
+
+type creatorSuiteSkillSeed struct {
 	Name         string
 	Description  string
 	Category     string
@@ -30,19 +34,19 @@ type toonflowSkillSeed struct {
 	Content      string
 }
 
-type ToonflowSkillSeedReport struct {
-	Total    int
-	Created  int
-	Existing int
-	Updated  int
+type CreatorSuiteSeedReport struct {
+	Total    int `json:"total"`
+	Created  int `json:"created"`
+	Existing int `json:"existing"`
+	Updated  int `json:"updated"`
 }
 
-func EnsureToonflowSkillSeeds(ctx context.Context, queries *sqlc.Queries) (ToonflowSkillSeedReport, error) {
-	seeds, err := loadAllToonflowSeeds()
+func EnsureCreatorSuiteSeeds(ctx context.Context, queries *sqlc.Queries) (CreatorSuiteSeedReport, error) {
+	seeds, err := loadAllCreatorSuiteSeeds()
 	if err != nil {
-		return ToonflowSkillSeedReport{}, err
+		return CreatorSuiteSeedReport{}, err
 	}
-	report := ToonflowSkillSeedReport{Total: len(seeds)}
+	report := CreatorSuiteSeedReport{Total: len(seeds)}
 
 	existingSkills, err := queries.ListAllSkills(ctx)
 	if err != nil {
@@ -58,19 +62,19 @@ func EnsureToonflowSkillSeeds(ctx context.Context, queries *sqlc.Queries) (Toonf
 			SourceType string `json:"source_type"`
 			SourcePath string `json:"source_path"`
 		}
-		if err := json.Unmarshal(skill.Spec, &spec); err == nil && spec.Source == "toonflow" && spec.SourcePath != "" {
+		if err := json.Unmarshal(skill.Spec, &spec); err == nil && isCreatorSuiteSource(spec.Source) && spec.SourcePath != "" {
 			sourceType := spec.SourceType
 			if sourceType == "" {
-				sourceType = inferToonflowSeedSourceType(spec.SourcePath)
+				sourceType = inferCreatorSuiteSeedSourceType(spec.SourcePath)
 			}
-			existingBySeed[toonflowSeedKey(sourceType, spec.SourcePath)] = skill
+			existingBySeed[creatorSuiteSeedKey(sourceType, spec.SourcePath)] = skill
 		}
 	}
 
 	for _, seed := range seeds {
-		seedKey := toonflowSeedKey(seed.SourceType, seed.SourcePath)
+		seedKey := creatorSuiteSeedKey(seed.SourceType, seed.SourcePath)
 		if existing, ok := existingBySeed[seedKey]; ok {
-			updated, err := syncToonflowSeed(ctx, queries, existing, seed)
+			updated, err := syncCreatorSuiteSeed(ctx, queries, existing, seed)
 			if err != nil {
 				return report, err
 			}
@@ -86,7 +90,7 @@ func EnsureToonflowSkillSeeds(ctx context.Context, queries *sqlc.Queries) (Toonf
 			continue
 		}
 
-		spec, err := buildToonflowSeedSpec(seed)
+		spec, err := buildCreatorSuiteSeedSpec(seed)
 		if err != nil {
 			return report, err
 		}
@@ -114,27 +118,27 @@ func EnsureToonflowSkillSeeds(ctx context.Context, queries *sqlc.Queries) (Toonf
 	return report, nil
 }
 
-func loadAllToonflowSeeds() ([]toonflowSkillSeed, error) {
-	skills, err := loadToonflowSkillSeeds()
+func loadAllCreatorSuiteSeeds() ([]creatorSuiteSkillSeed, error) {
+	skills, err := loadCreatorSuiteSkillSeeds()
 	if err != nil {
 		return nil, err
 	}
-	prompts, err := loadToonflowPromptSeeds()
+	prompts, err := loadCreatorSuitePromptSeeds()
 	if err != nil {
 		return nil, err
 	}
 	seeds := append(skills, prompts...)
 	sort.Slice(seeds, func(i, j int) bool {
-		return toonflowSeedKey(seeds[i].SourceType, seeds[i].SourcePath) < toonflowSeedKey(seeds[j].SourceType, seeds[j].SourcePath)
+		return creatorSuiteSeedKey(seeds[i].SourceType, seeds[i].SourcePath) < creatorSuiteSeedKey(seeds[j].SourceType, seeds[j].SourcePath)
 	})
 	return seeds, nil
 }
 
-func loadToonflowSkillSeeds() ([]toonflowSkillSeed, error) {
-	const root = "seeds/toonflow_skills"
+func loadCreatorSuiteSkillSeeds() ([]creatorSuiteSkillSeed, error) {
+	const root = "seeds/creator_suite_skills"
 
-	var seeds []toonflowSkillSeed
-	if err := fs.WalkDir(toonflowSeedFS, root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	var seeds []creatorSuiteSkillSeed
+	if err := fs.WalkDir(creatorSuiteSeedFS, root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -142,25 +146,25 @@ func loadToonflowSkillSeeds() ([]toonflowSkillSeed, error) {
 			return nil
 		}
 
-		contentBytes, err := toonflowSeedFS.ReadFile(filePath)
+		contentBytes, err := creatorSuiteSeedFS.ReadFile(filePath)
 		if err != nil {
 			return err
 		}
 		sourcePath := strings.TrimPrefix(strings.TrimPrefix(filePath, root), "/")
 		name := strings.TrimSuffix(path.Base(sourcePath), path.Ext(sourcePath))
-		category := "toonflow"
+		category := creatorSuiteSource
 		if dir := path.Dir(sourcePath); dir != "." {
 			category += "/" + dir
 		}
 
 		content := strings.TrimSpace(string(contentBytes))
-		seeds = append(seeds, toonflowSkillSeed{
+		seeds = append(seeds, creatorSuiteSkillSeed{
 			Name:         name,
 			Description:  deriveMarkdownDescription(content, name),
 			Category:     category,
 			Kind:         "code",
 			Icon:         "sparkles",
-			SlashCommand: "toonflow-" + slugifySkillPath(strings.TrimSuffix(sourcePath, path.Ext(sourcePath))),
+			SlashCommand: creatorSuiteSource + "-" + slugifySkillPath(strings.TrimSuffix(sourcePath, path.Ext(sourcePath))),
 			SourceType:   "skill",
 			SourcePath:   sourcePath,
 			Content:      content,
@@ -176,18 +180,18 @@ func loadToonflowSkillSeeds() ([]toonflowSkillSeed, error) {
 	return seeds, nil
 }
 
-var toonflowPromptSeedNames = map[string]string{
+var creatorSuitePromptSeedNames = map[string]string{
 	"eventExtraction":       "事件提取",
 	"scriptAssetExtraction": "剧本资产提取",
 	"videoPromptGeneration": "视频提示词生成",
 	"audioBindPrompt":       "音色绑定",
 }
 
-func loadToonflowPromptSeeds() ([]toonflowSkillSeed, error) {
-	const root = "seeds/toonflow_prompts"
+func loadCreatorSuitePromptSeeds() ([]creatorSuiteSkillSeed, error) {
+	const root = "seeds/creator_suite_prompts"
 
-	var seeds []toonflowSkillSeed
-	if err := fs.WalkDir(toonflowSeedFS, root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	var seeds []creatorSuiteSkillSeed
+	if err := fs.WalkDir(creatorSuiteSeedFS, root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -195,20 +199,20 @@ func loadToonflowPromptSeeds() ([]toonflowSkillSeed, error) {
 			return nil
 		}
 
-		contentBytes, err := toonflowSeedFS.ReadFile(filePath)
+		contentBytes, err := creatorSuiteSeedFS.ReadFile(filePath)
 		if err != nil {
 			return err
 		}
 		promptType := strings.TrimSuffix(path.Base(filePath), path.Ext(filePath))
-		name := toonflowPromptSeedNames[promptType]
+		name := creatorSuitePromptSeedNames[promptType]
 		if name == "" {
 			name = promptType
 		}
 		content := strings.TrimSpace(string(contentBytes))
-		seeds = append(seeds, toonflowSkillSeed{
+		seeds = append(seeds, creatorSuiteSkillSeed{
 			Name:         name,
 			Description:  deriveMarkdownDescription(content, name),
-			Category:     "toonflow/prompts",
+			Category:     creatorSuiteSource + "/prompts",
 			Kind:         "prompt",
 			Icon:         "file-text",
 			SlashCommand: promptType,
@@ -227,9 +231,9 @@ func loadToonflowPromptSeeds() ([]toonflowSkillSeed, error) {
 	return seeds, nil
 }
 
-func buildToonflowSeedSpec(seed toonflowSkillSeed) ([]byte, error) {
+func buildCreatorSuiteSeedSpec(seed creatorSuiteSkillSeed) ([]byte, error) {
 	spec := map[string]any{
-		"source":       "toonflow",
+		"source":       creatorSuiteSource,
 		"source_type":  seed.SourceType,
 		"source_path":  seed.SourcePath,
 		"content_md":   seed.Content,
@@ -244,8 +248,8 @@ func buildToonflowSeedSpec(seed toonflowSkillSeed) ([]byte, error) {
 	return json.Marshal(spec)
 }
 
-func syncToonflowSeed(ctx context.Context, queries *sqlc.Queries, existing sqlc.Skill, seed toonflowSkillSeed) (bool, error) {
-	spec, err := buildToonflowSeedSpec(seed)
+func syncCreatorSuiteSeed(ctx context.Context, queries *sqlc.Queries, existing sqlc.Skill, seed creatorSuiteSkillSeed) (bool, error) {
+	spec, err := buildCreatorSuiteSeedSpec(seed)
 	if err != nil {
 		return false, err
 	}
@@ -275,14 +279,18 @@ func syncToonflowSeed(ctx context.Context, queries *sqlc.Queries, existing sqlc.
 	return true, nil
 }
 
-func inferToonflowSeedSourceType(sourcePath string) string {
+func isCreatorSuiteSource(source string) bool {
+	return source == creatorSuiteSource || source == legacySuiteSource
+}
+
+func inferCreatorSuiteSeedSourceType(sourcePath string) string {
 	if strings.HasPrefix(sourcePath, "prompts/") {
 		return "prompt"
 	}
 	return "skill"
 }
 
-func toonflowSeedKey(sourceType string, sourcePath string) string {
+func creatorSuiteSeedKey(sourceType string, sourcePath string) string {
 	return sourceType + ":" + sourcePath
 }
 

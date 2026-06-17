@@ -853,7 +853,7 @@ func (h *Handler) listProviderConfigs(ctx context.Context, _ *struct{}) (*listPr
 type previewProviderConfigTSImportInput struct {
 	Body struct {
 		Code        string `json:"code" minLength:"1" doc:"TypeScript provider adapter source"`
-		ServiceType string `json:"service_type,omitempty" enum:"text,image,video,audio" doc:"Service type to import from a mixed Toonflow provider"`
+		ServiceType string `json:"service_type,omitempty" enum:"text,image,video,audio" doc:"Service type to import from a mixed provider"`
 	}
 }
 

@@ -165,20 +165,20 @@ func TestPreviewProviderPluginParsesTSMetadataAndIcons(t *testing.T) {
 	}
 }
 
-const toonflowStyleTSProviderCode = `
+const creatorSuiteStyleTSProviderCode = `
 type ImageModel = { name: string; modelName: string; type: "image"; mode: string[] };
 type VideoModel = { name: string; modelName: string; type: "video"; mode: string[] };
 const vendor = {
-  id: "toonflow-like",
+  id: "creator-suite-like",
   version: "3.2",
-  author: "Toonflow",
-  name: "Toonflow Like Provider",
+  author: "Creator Suite",
+  name: "Creator Suite Like Provider",
   icon: "openai",
   inputs: [
     { key: "apiKey", label: "API Key", type: "password", required: true },
     { key: "baseUrl", label: "Base URL", type: "url", required: true },
   ],
-  inputValues: { apiKey: "", baseUrl: "https://toonflow.example/v1" },
+  inputValues: { apiKey: "", baseUrl: "https://creator-suite.example/v1" },
   models: [
     { name: "Image Display", modelName: "image-model-real", type: "image", mode: ["text", "singleImage"] },
     { name: "Video Display", modelName: "video-model-real", type: "video", mode: ["text"] },
@@ -187,15 +187,15 @@ const vendor = {
 
 const imageRequest = async (config: any, model: ImageModel): Promise<string> => {
   if (vendor.inputValues.apiKey !== "secret-key") throw new Error("missing injected api key");
-  if (vendor.inputValues.baseUrl !== "https://toonflow.example/v1") throw new Error("missing injected base url");
+  if (vendor.inputValues.baseUrl !== "https://creator-suite.example/v1") throw new Error("missing injected base url");
   if (model.modelName !== "image-model-real") throw new Error("wrong selected model: " + model.modelName);
   if (!config.referenceList || config.referenceList[0].type !== "image") throw new Error("referenceList was not built");
   if (config.aspectRatio !== "9:16") throw new Error("aspect ratio was not normalized");
-  return "https://cdn.example/toonflow-style.png";
+  return "https://cdn.example/creator-suite-style.png";
 };
 
 const videoRequest = async (_config: any, _model: VideoModel): Promise<string> => {
-  return "https://cdn.example/toonflow-style.mp4";
+  return "https://cdn.example/creator-suite-style.mp4";
 };
 
 exports.vendor = vendor;
@@ -204,11 +204,11 @@ exports.videoRequest = videoRequest;
 export {};
 `
 
-func TestPreviewProviderPluginFiltersToonflowStyleModelsByServiceType(t *testing.T) {
+func TestPreviewProviderPluginFiltersCreatorSuiteStyleModelsByServiceType(t *testing.T) {
 	requireNodeForTSProviderRunner(t)
 	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
 
-	preview, err := service.PreviewProviderPlugin(context.Background(), toonflowStyleTSProviderCode, "image")
+	preview, err := service.PreviewProviderPlugin(context.Background(), creatorSuiteStyleTSProviderCode, "image")
 	if err != nil {
 		t.Fatalf("PreviewProviderPlugin returned error: %v", err)
 	}
@@ -222,28 +222,28 @@ func TestPreviewProviderPluginFiltersToonflowStyleModelsByServiceType(t *testing
 		t.Fatalf("DefaultModel = %q, want image-model-real", preview.DefaultModel)
 	}
 	if !strings.Contains(string(preview.ParameterSchema), "vendor_all_models") {
-		t.Fatalf("ParameterSchema = %s, want Toonflow vendor metadata", preview.ParameterSchema)
+		t.Fatalf("ParameterSchema = %s, want mixed vendor metadata", preview.ParameterSchema)
 	}
 }
 
-func TestDispatchToVendorSupportsToonflowStyleTSProvider(t *testing.T) {
+func TestDispatchToVendorSupportsCreatorSuiteStyleTSProvider(t *testing.T) {
 	requireNodeForTSProviderRunner(t)
 	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
 	pc := &domain.ProviderConfig{
-		ID:              "provider-toonflow-style",
+		ID:              "provider-creator-suite-style",
 		ServiceType:     "image",
-		Vendor:          "Toonflow",
-		Name:            "Toonflow Like Provider",
-		BaseURL:         "https://toonflow.example/v1",
+		Vendor:          "CreatorSuite",
+		Name:            "Creator Suite Like Provider",
+		BaseURL:         "https://creator-suite.example/v1",
 		ModelList:       []string{"image-model-real"},
 		ParameterSchema: json.RawMessage(`{"vendor_models":[{"name":"Image Display","modelName":"image-model-real","type":"image","mode":["text","singleImage"]}]}`),
 		AdapterRuntime:  "ts",
-		AdapterCode:     toonflowStyleTSProviderCode,
+		AdapterCode:     creatorSuiteStyleTSProviderCode,
 	}
 
 	result, err := service.dispatchToVendor(context.Background(), candidateChannel{
 		cfg:     pc,
-		baseURL: "https://toonflow.example/v1",
+		baseURL: "https://creator-suite.example/v1",
 		apiKey:  "secret-key",
 	}, GenerateRequest{
 		ServiceType:      "image",
@@ -253,12 +253,12 @@ func TestDispatchToVendorSupportsToonflowStyleTSProvider(t *testing.T) {
 		Resolution:       "2K",
 		ReferenceImages:  []string{"data:image/png;base64,AAAA"},
 		GenerationLogID:  "log-1",
-		ProviderConfigID: "provider-toonflow-style",
+		ProviderConfigID: "provider-creator-suite-style",
 	})
 	if err != nil {
 		t.Fatalf("dispatchToVendor returned error: %v", err)
 	}
-	if result.Type != "url" || result.Content != "https://cdn.example/toonflow-style.png" {
+	if result.Type != "url" || result.Content != "https://cdn.example/creator-suite-style.png" {
 		t.Fatalf("result = %#v, want generated URL", result)
 	}
 }

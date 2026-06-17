@@ -346,7 +346,7 @@ function normalizeProviderInput(input, context, fnName) {
   out.model = input.model || context.model;
   out.aspectRatio = aspectRatio;
   out.aspect_ratio = aspectRatio;
-  out.size = fnName === "imageRequest" ? toToonflowImageSize(input.resolution || input.output_resolution || input.quality) : input.size;
+  out.size = fnName === "imageRequest" ? toProviderImageSize(input.resolution || input.output_resolution || input.quality) : input.size;
   out.resolution = input.resolution || input.output_resolution || input.quality || input.size || "720p";
   out.duration = Number(input.duration || 5);
   out.referenceList = input.referenceList || buildReferenceList(input);
@@ -360,7 +360,7 @@ function ratioFromSize(size) {
   return /^\d+\s*:\s*\d+$/.test(text) ? text.replace(/\s+/g, "") : "";
 }
 
-function toToonflowImageSize(value) {
+function toProviderImageSize(value) {
   const text = stringValue(value).toUpperCase();
   if (["1K", "2K", "4K"].includes(text)) return text;
   if (["STANDARD", "LOW", "MEDIUM", "AUTO"].includes(text)) return "1K";

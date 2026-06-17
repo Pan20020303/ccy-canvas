@@ -50,10 +50,15 @@ func main() {
 	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
 	passwordService := password.NewService()
 
-	if report, err := skillsapp.EnsureToonflowSkillSeeds(ctx, queries); err != nil {
-		log.Printf("[skills] Toonflow seed import skipped: %v", err)
+	if report, err := skillsapp.EnsureCreatorSuiteSeeds(ctx, queries); err != nil {
+		log.Printf("[skills] creator-suite seed import skipped: %v", err)
 	} else if report.Created > 0 || report.Updated > 0 {
-		log.Printf("[skills] Toonflow seed import created=%d updated=%d existing=%d total=%d", report.Created, report.Updated, report.Existing, report.Total)
+		log.Printf("[skills] creator-suite seed import created=%d updated=%d existing=%d total=%d", report.Created, report.Updated, report.Existing, report.Total)
+	}
+	if report, err := skillsapp.EnsureCreatorSuiteAgentSeeds(ctx, queries); err != nil {
+		log.Printf("[agents] creator-suite agent seed import skipped: %v", err)
+	} else if report.Created > 0 || report.Updated > 0 {
+		log.Printf("[agents] creator-suite agent seed import created=%d updated=%d existing=%d total=%d", report.Created, report.Updated, report.Existing, report.Total)
 	}
 
 	// Identity & Auth
