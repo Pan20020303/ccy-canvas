@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, X, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, Undo2, Upload, X, Zap } from "lucide-react";
 
 import type { AdapterRuntime, GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
 import {
@@ -56,6 +56,135 @@ type DrawerProps = {
   onSaved: () => void;
 };
 
+type CodeEditorModalProps = {
+  open: boolean;
+  title?: string;
+  description?: string;
+  initialCode: string;
+  saving?: boolean;
+  error?: string;
+  onClose: () => void;
+  onConfirm: (code: string) => void;
+};
+
+function CodeEditorModal({
+  open,
+  title = "代码",
+  description = "请编写 TypeScript 代码配置供应商信息",
+  initialCode,
+  saving,
+  error,
+  onClose,
+  onConfirm,
+}: CodeEditorModalProps) {
+  const [draft, setDraft] = useState(initialCode);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (open) setDraft(initialCode);
+  }, [initialCode, open]);
+
+  const lines = useMemo(() => Math.max(1, draft.split(/\r?\n/).length), [draft]);
+  const minimapRows = useMemo(
+    () =>
+      draft
+        .split(/\r?\n/)
+        .slice(0, 120)
+        .map((line) => Math.min(56, Math.max(8, line.trim().length * 0.55))),
+    [draft],
+  );
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setDraft(await file.text());
+    event.target.value = "";
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/72 px-5 backdrop-blur-sm">
+      <div className="flex h-[78vh] w-full max-w-[1280px] flex-col rounded-xl bg-white text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]">
+        <header className="flex items-start justify-between px-7 pb-3 pt-6">
+          <div>
+            <h3 className="text-base font-semibold">{title}</h3>
+            <p className="mt-5 flex items-center gap-2 text-xs text-neutral-500">
+              <span className="grid h-4 w-4 place-items-center rounded-full border border-neutral-400 text-[10px]">i</span>
+              {description}
+            </p>
+          </div>
+          <button className="rounded-full p-1 text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="flex items-center justify-end gap-2 px-7 pb-3">
+          <button
+            type="button"
+            onClick={() => setDraft(initialCode)}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-neutral-700 transition hover:bg-neutral-100"
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+            重置
+          </button>
+          <input ref={fileInputRef} type="file" accept=".ts,.tsx,.js,.mjs,.txt" className="hidden" onChange={handleImportFile} />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-orange-200 px-3 text-xs text-[#ff6a1f] transition hover:bg-orange-50"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            导入文件
+          </button>
+        </div>
+
+        <div className="mx-7 min-h-0 flex-1 overflow-hidden rounded border border-neutral-200 bg-[#171717]">
+          <div className="relative h-full">
+            <pre className="pointer-events-none absolute left-0 top-0 z-10 min-h-full w-14 select-none border-r border-white/8 bg-[#111111] py-2 pr-3 text-right font-mono text-[12px] leading-6 text-neutral-500">
+              {Array.from({ length: lines }, (_, index) => index + 1).join("\n")}
+            </pre>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              spellCheck={false}
+              className="h-full w-full resize-none bg-[#171717] py-2 pl-16 pr-24 font-mono text-[12px] leading-6 text-[#d8dee9] outline-none selection:bg-[#ff6a1f]/35"
+            />
+            <div className="pointer-events-none absolute right-0 top-0 h-full w-[72px] border-l border-white/8 bg-[#202020]/80 px-2 py-2">
+              <div className="space-y-[2px]">
+                {minimapRows.map((width, index) => (
+                  <div
+                    key={index}
+                    className="h-[2px] rounded-full bg-sky-300/60"
+                    style={{ width }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error ? <div className="mx-7 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
+
+        <footer className="flex items-center justify-end gap-3 px-7 py-5">
+          <button type="button" onClick={onClose} className="h-9 rounded bg-neutral-100 px-5 text-sm text-neutral-700 transition hover:bg-neutral-200">
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(draft)}
+            disabled={saving}
+            className="inline-flex h-9 items-center rounded bg-[#ff6a1f] px-5 text-sm font-medium text-white transition hover:bg-[#f05f16] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            确认
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const isEdit = Boolean(config);
   const [serviceType, setServiceType] = useState<ServiceType>("image");
@@ -79,6 +208,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const [saving, setSaving] = useState(false);
   const [previewingTS, setPreviewingTS] = useState(false);
   const [error, setError] = useState("");
+  const [codeEditorOpen, setCodeEditorOpen] = useState(false);
 
   const templates = VENDOR_TEMPLATES[serviceType] ?? [];
   const showCustomEndpoints = supportsCustomSubmitQueryEndpoints(apiSpec);
@@ -126,6 +256,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       setParameterSchemaText("{}");
     }
     setError("");
+    setCodeEditorOpen(false);
   }, [config, open]);
 
   const applyTemplate = (tpl: VendorTemplate) => {
@@ -286,21 +417,30 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
                   <FileCode2 className="h-4 w-4 text-[#ff9b68]" />
                   粘贴 Toonflow 风格供应商 TS，按当前服务类型解析模型、输入项和图标。
                 </span>
+                <Button type="button" variant="secondary" onClick={() => setCodeEditorOpen(true)}>
+                  <FileCode2 className="mr-2 h-4 w-4" />
+                  编辑代码
+                </Button>
                 <Button type="button" variant="secondary" onClick={handlePreviewTSImport} disabled={previewingTS || !adapterCode.trim()}>
                   {previewingTS ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   解析导入
                 </Button>
               </div>
-              <textarea
-                value={adapterCode}
-                onChange={(event) => {
-                  setAdapterCode(event.target.value);
-                  if (event.target.value.trim()) setAdapterRuntime("ts");
-                }}
-                spellCheck={false}
-                placeholder="exports.vendor = vendor; exports.imageRequest = imageRequest; exports.videoRequest = videoRequest;"
-                className={`${FIELD_INPUT} min-h-36 resize-y py-3 font-mono text-xs`}
-              />
+              <button
+                type="button"
+                onClick={() => setCodeEditorOpen(true)}
+                className="flex w-full items-center justify-between rounded-xl border border-white/[0.07] bg-black/20 px-4 py-3 text-left transition hover:border-[#ff6a1f]/45 hover:bg-black/30"
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-neutral-200">{adapterCode.trim() ? "已载入 TS 供应商代码" : "尚未填写 TS 供应商代码"}</span>
+                  <span className="mt-1 block text-xs text-neutral-500">
+                    {adapterCode.trim()
+                      ? `${adapterCode.split(/\r?\n/).length} 行 · ${adapterCode.length} 字符 · 运行时将使用 TypeScript 供应商脚本`
+                      : "点击打开大编辑器，可粘贴代码或导入 .ts 文件"}
+                  </span>
+                </span>
+                <FileCode2 className="h-5 w-5 text-[#ff9b68]" />
+              </button>
             </div>
           </Field>
 
@@ -392,6 +532,16 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}保存配置</Button>
         </footer>
+        <CodeEditorModal
+          open={codeEditorOpen}
+          initialCode={adapterCode}
+          onClose={() => setCodeEditorOpen(false)}
+          onConfirm={(code) => {
+            setAdapterCode(code);
+            if (code.trim()) setAdapterRuntime("ts");
+            setCodeEditorOpen(false);
+          }}
+        />
       </aside>
     </div>
   );
@@ -438,6 +588,10 @@ export function AdminModelCatalogPage() {
   const [editing, setEditing] = useState<ProviderConfig | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [resettingId, setResettingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [codeEditingConfig, setCodeEditingConfig] = useState<ProviderConfig | null>(null);
+  const [codeSaving, setCodeSaving] = useState(false);
+  const [codeError, setCodeError] = useState("");
 
   const loadConfigs = async () => {
     setLoading(true);
@@ -463,6 +617,17 @@ export function AdminModelCatalogPage() {
   }, [configs, query]);
 
   const enabledCount = configs.filter((item) => item.status === "enabled").length;
+  const selectedConfig = filtered.find((config) => config.id === selectedId) ?? filtered[0] ?? null;
+
+  useEffect(() => {
+    if (!filtered.length) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !filtered.some((config) => config.id === selectedId)) {
+      setSelectedId(filtered[0].id);
+    }
+  }, [filtered, selectedId]);
 
   const openCreate = () => {
     setEditing(null);
@@ -508,6 +673,75 @@ export function AdminModelCatalogPage() {
     setConfigs((prev) => prev.filter((item) => item.id !== config.id));
   };
 
+  const providerPayloadFromConfig = (config: ProviderConfig): ProviderConfigPayload => ({
+    service_type: config.service_type,
+    vendor: config.vendor,
+    name: config.name,
+    api_spec: config.api_spec,
+    protocol: config.protocol,
+    base_url: config.base_url,
+    submit_endpoint: config.submit_endpoint,
+    query_endpoint: config.query_endpoint,
+    model_list: config.model_list,
+    default_model: config.default_model,
+    priority: config.priority,
+    is_default: config.is_default,
+    status: config.status,
+    capabilities: config.capabilities,
+    parameter_schema: config.parameter_schema,
+    adapter_runtime: config.adapter_runtime,
+    adapter_code: config.adapter_code || "",
+    icon_key: config.icon_key,
+    icon_url: config.icon_url,
+  });
+
+  const handleSaveCode = async (config: ProviderConfig, code: string) => {
+    if (!code.trim()) {
+      setCodeError("TS 代码不能为空");
+      return;
+    }
+    setCodeSaving(true);
+    setCodeError("");
+    try {
+      const preview = await previewProviderConfigTSImport(code, config.service_type);
+      const payload: ProviderConfigPayload = {
+        ...providerPayloadFromConfig(config),
+        service_type: preview.service_type || config.service_type,
+        vendor: preview.vendor || config.vendor,
+        name: preview.name || config.name,
+        api_spec: preview.api_spec || config.api_spec,
+        protocol: preview.protocol || config.protocol,
+        base_url: preview.base_url || config.base_url,
+        submit_endpoint: preview.submit_endpoint ?? config.submit_endpoint,
+        query_endpoint: preview.query_endpoint ?? config.query_endpoint,
+        model_list: preview.model_list?.length ? preview.model_list : config.model_list,
+        default_model: preview.default_model || preview.model_list?.[0] || config.default_model,
+        capabilities: preview.capabilities?.length ? preview.capabilities : config.capabilities,
+        parameter_schema: preview.parameter_schema ?? config.parameter_schema,
+        adapter_runtime: "ts",
+        adapter_code: code,
+        icon_key: preview.icon?.key || config.icon_key,
+        icon_url: preview.icon?.url || config.icon_url,
+      };
+      replaceConfig(await updateProviderConfig(config.id, payload));
+      setCodeEditingConfig(null);
+    } catch (err) {
+      setCodeError(err instanceof Error ? err.message : "TS 代码保存失败");
+    } finally {
+      setCodeSaving(false);
+    }
+  };
+
+  const handleDeleteModel = async (config: ProviderConfig, model: string) => {
+    const nextModels = (config.model_list ?? []).filter((item) => item !== model);
+    if (nextModels.length === config.model_list.length) return;
+    replaceConfig(await updateProviderConfig(config.id, {
+      ...providerPayloadFromConfig(config),
+      model_list: nextModels,
+      default_model: config.default_model === model ? nextModels[0] || "" : config.default_model,
+    }));
+  };
+
   return (
     <AdminShell
       title="模型配置"
@@ -535,7 +769,142 @@ export function AdminModelCatalogPage() {
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#101010]/85 shadow-2xl shadow-black/35">
+        <section className="overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#f7f3ed] text-[#1f1f1f] shadow-2xl shadow-black/35">
+          <div className="grid min-h-[560px] grid-cols-[260px_1fr]">
+            <aside className="border-r border-black/10 bg-white/75 p-4">
+              <Button onClick={openCreate} className="mb-3 h-10 w-full rounded-md bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+                <Plus className="mr-2 h-4 w-4" />
+                添加供应商
+              </Button>
+              <div className="space-y-1">
+                {loading ? (
+                  <div className="rounded-xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-neutral-500">加载中...</div>
+                ) : filtered.length === 0 ? (
+                  <div className="rounded-xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-neutral-500">暂无供应商</div>
+                ) : (
+                  filtered.map((config) => (
+                    <button
+                      key={config.id}
+                      type="button"
+                      onClick={() => setSelectedId(config.id)}
+                      className={[
+                        "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm transition",
+                        selectedConfig?.id === config.id ? "bg-[#ff6a1f] text-white shadow-sm" : "text-neutral-700 hover:bg-black/[0.04]",
+                      ].join(" ")}
+                    >
+                      <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
+                      <span className="min-w-0 flex-1 truncate">{config.vendor || config.name}</span>
+                      <span
+                        className={[
+                          "relative h-5 w-9 rounded-full transition",
+                          config.status === "enabled" ? "bg-[#ff7a2d]" : "bg-neutral-300",
+                        ].join(" ")}
+                      >
+                        <span
+                          className={[
+                            "absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition",
+                            config.status === "enabled" ? "left-[18px]" : "left-0.5",
+                          ].join(" ")}
+                        />
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </aside>
+
+            <div className="flex min-w-0 flex-col bg-white p-5">
+              {selectedConfig ? (
+                <>
+                  <div className="flex items-center justify-between border-b border-black/10 pb-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-3">
+                        <ModelBrandIcon model={selectedConfig.default_model || selectedConfig.model_list?.[0]} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={28} />
+                        <div className="min-w-0">
+                          <h3 className="truncate text-lg font-semibold text-neutral-950">{selectedConfig.name}</h3>
+                          <p className="mt-1 truncate text-xs text-neutral-500">{selectedConfig.vendor} · {selectedConfig.base_url || "TS 供应商脚本"}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">{SERVICE_LABELS[selectedConfig.service_type]}</span>
+                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">{selectedConfig.protocol || "openai_compatible"}</span>
+                        {selectedConfig.adapter_runtime === "ts" ? <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">TS 脚本</span> : null}
+                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">模型 ×{selectedConfig.model_list.length}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="secondary" onClick={() => handleToggle(selectedConfig)}>
+                        <Power className="mr-2 h-4 w-4" />
+                        {STATUS_LABEL[selectedConfig.status]}
+                      </Button>
+                      <Button variant="secondary" onClick={() => openEdit(selectedConfig)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        编辑配置
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="min-h-0 flex-1 overflow-y-auto py-4">
+                    <div className="space-y-3">
+                      {selectedConfig.model_list.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-black/15 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
+                      ) : (
+                        selectedConfig.model_list.map((model) => (
+                          <div key={model} className="rounded-xl border border-black/10 bg-white px-5 py-4 shadow-sm transition hover:border-orange-200 hover:shadow-md">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-3">
+                                  <ModelBrandIcon model={model} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={22} />
+                                  <h4 className="truncate text-base font-semibold text-neutral-950">{model}</h4>
+                                </div>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{SERVICE_LABELS[selectedConfig.service_type]}</span>
+                                  {selectedConfig.default_model === model ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">默认模型</span> : null}
+                                  {selectedConfig.service_type === "image" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">图片 ×9</span> : null}
+                                  {selectedConfig.service_type === "video" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">视频 ×3</span> : null}
+                                  {selectedConfig.service_type === "audio" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">音频 ×3</span> : null}
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-3 text-xs">
+                                <button type="button" onClick={() => handleTestConnectivity(selectedConfig)} className="font-medium text-neutral-700 transition hover:text-[#ff6a1f]">测试</button>
+                                <button type="button" onClick={() => openEdit(selectedConfig)} className="font-medium text-neutral-700 transition hover:text-[#ff6a1f]">编辑</button>
+                                <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="font-medium text-red-500 transition hover:text-red-600">删除</button>
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 border-t border-black/10 pt-4">
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(selectedConfig)}
+                      className="h-10 rounded bg-red-500 px-5 text-sm font-medium text-white transition hover:bg-red-600"
+                    >
+                      删除供应商
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCodeError("");
+                        setCodeEditingConfig(selectedConfig);
+                      }}
+                      className="h-10 rounded border border-[#ff6a1f] px-5 text-sm font-medium text-[#ff6a1f] transition hover:bg-orange-50"
+                    >
+                      编辑代码
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="grid h-full place-items-center rounded-xl border border-dashed border-black/15 bg-neutral-50 text-sm text-neutral-500">选择或新增一个供应商</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="hidden overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#101010]/85 shadow-2xl shadow-black/35">
           <table className="w-full text-left text-sm">
             <thead className="bg-white/[0.035] text-xs uppercase tracking-[0.12em] text-neutral-500">
               <tr>
@@ -608,6 +977,18 @@ export function AdminModelCatalogPage() {
       </div>
 
       <ConfigDrawer config={editing} open={drawerOpen} onClose={() => setDrawerOpen(false)} onSaved={loadConfigs} />
+      <CodeEditorModal
+        open={Boolean(codeEditingConfig)}
+        initialCode={codeEditingConfig?.adapter_code || ""}
+        saving={codeSaving}
+        error={codeError}
+        onClose={() => {
+          if (!codeSaving) setCodeEditingConfig(null);
+        }}
+        onConfirm={(code) => {
+          if (codeEditingConfig) void handleSaveCode(codeEditingConfig, code);
+        }}
+      />
     </AdminShell>
   );
 }
