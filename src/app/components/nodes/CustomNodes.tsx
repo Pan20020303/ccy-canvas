@@ -2046,8 +2046,8 @@ function normalizeAssetUrl(rawUrl: string) {
   return apiBase ? `${apiBase.replace(/\/+$/, '')}${rawUrl}` : rawUrl;
 }
 
-async function uploadImageDataUrl(dataUrl: string, filename: string) {
-  const res = await fetch(dataUrl);
+async function uploadImageSource(source: string, filename: string) {
+  const res = await fetch(source);
   const blob = await res.blob();
   const form = new FormData();
   form.append('file', blob, filename);
@@ -2061,6 +2061,14 @@ async function uploadImageDataUrl(dataUrl: string, filename: string) {
     throw new Error('Upload returned empty URL');
   }
   return normalizeAssetUrl(rawUrl);
+}
+
+async function uploadTransientImageReference(source: string, filename: string) {
+  const trimmed = source.trim();
+  if (!/^(data:image\/|blob:)/i.test(trimmed)) {
+    return source;
+  }
+  return uploadImageSource(trimmed, filename);
 }
 
 function isLikelyPanoramaData(data: Record<string, any>) {
@@ -2723,6 +2731,15 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     const model = payload.model || (typeof sourceParams.model === 'string' && sourceParams.model ? sourceParams.model : 'gpt-image-2');
     const isPanoramaAction = payload.editOperation === 'panorama' || session?.action === 'panorama';
     const referenceImages = payload.referenceImages ?? (sourceUrl ? [sourceUrl] : undefined);
+    const timestamp = Date.now();
+    const stableReferenceImages = referenceImages
+      ? await Promise.all(referenceImages.map((ref, index) =>
+          uploadTransientImageReference(ref, `reference-${timestamp}-${index + 1}.png`),
+        ))
+      : undefined;
+    const stableMaskImage = payload.maskImage
+      ? await uploadTransientImageReference(payload.maskImage, `mask-${timestamp}.png`)
+      : undefined;
     addNode({
       id: derivedId,
       type: 'imageNode',
@@ -2742,8 +2759,8 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           quality: sourceParams.quality ?? 'auto',
           resolution: sourceParams.resolution ?? '720p',
           durationSeconds: sourceParams.durationSeconds,
-          referenceImages,
-          maskImage: payload.maskImage,
+          referenceImages: stableReferenceImages,
+          maskImage: stableMaskImage,
           editOperation: payload.editOperation,
           expandDirection: payload.expandDirection,
           outputCount: payload.outputCount,
@@ -4293,7 +4310,7 @@ function PanoramaPreviewModal({
       const dataUrl = await canvasToDataUrl(canvas);
       let stableUrl = dataUrl;
       try {
-        stableUrl = await uploadImageDataUrl(dataUrl, `panorama-view-${Date.now()}.png`);
+        stableUrl = await uploadImageSource(dataUrl, `panorama-view-${Date.now()}.png`);
       } catch {
         // DataURL still works locally if upload is temporarily unavailable.
       }
