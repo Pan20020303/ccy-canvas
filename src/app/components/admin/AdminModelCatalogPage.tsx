@@ -155,6 +155,7 @@ type ModelTestResult = {
   configName: string;
   modelName: string;
   type: ServiceType;
+  status: "loading" | "success" | "failed";
   ok: boolean;
   httpStatus: number;
   latencyMs: number;
@@ -963,20 +964,42 @@ export function AdminModelCatalogPage() {
 
   const handleTestConnectivity = async (config: ProviderConfig, model?: VendorModelDefinition) => {
     const modelKey = model ? `${config.id}:${model.modelName}` : null;
+    const target = {
+      configName: config.name,
+      modelName: model?.modelName ?? config.default_model ?? config.model_list[0] ?? config.name,
+      type: model?.type ?? config.service_type,
+    };
     if (modelKey) setTestingModelKey(modelKey);
     else setTestingId(config.id);
+    setModelTestResult({
+      ...target,
+      status: "loading",
+      ok: false,
+      httpStatus: 0,
+      latencyMs: 0,
+    });
     try {
       const result = await testChannelConnectivity(config.id);
       setModelTestResult({
-        configName: config.name,
-        modelName: model?.modelName ?? config.default_model ?? config.model_list[0] ?? config.name,
-        type: model?.type ?? config.service_type,
+        ...target,
+        status: result.ok ? "success" : "failed",
         ok: result.ok,
         httpStatus: result.http_status,
         latencyMs: result.latency_ms,
         errorMsg: result.error_msg,
       });
-      await loadConfigs();
+      void loadConfigs().catch((err) => {
+        console.warn("Failed to refresh provider configs after connectivity test", err);
+      });
+    } catch (err) {
+      setModelTestResult({
+        ...target,
+        status: "failed",
+        ok: false,
+        httpStatus: 0,
+        latencyMs: 0,
+        errorMsg: toAdminErrorSummary(err, "zh"),
+      });
     } finally {
       if (modelKey) setTestingModelKey(null);
       else setTestingId(null);
@@ -1648,18 +1671,22 @@ function ModelEditorModal({
 }
 
 function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; onClose: () => void }) {
+  const loading = result.status === "loading";
+  const success = result.status === "success";
   return (
     <CenterModal title={`测试结果 - ${result.modelName}`} onClose={onClose} widthClass="max-w-[560px]">
       <div className="space-y-4">
         <div className={[
           "rounded-xl border px-4 py-4",
-          result.ok ? "border-emerald-400/20 bg-emerald-500/10" : "border-rose-400/25 bg-rose-500/10",
+          loading ? "border-white/[0.10] bg-white/[0.045]" : success ? "border-emerald-400/20 bg-emerald-500/10" : "border-rose-400/25 bg-rose-500/10",
         ].join(" ")}>
-          <p className={["text-sm font-semibold", result.ok ? "text-emerald-200" : "text-rose-200"].join(" ")}>
-            {result.ok ? "连接可用" : "连接失败"}
+          <p className={["flex items-center gap-2 text-sm font-semibold", loading ? "text-neutral-100" : success ? "text-emerald-200" : "text-rose-200"].join(" ")}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {loading ? "正在测试连接..." : success ? "连接可用" : "连接失败"}
           </p>
           <p className="mt-2 text-xs leading-6 text-neutral-400">
-            供应商：{result.configName} · 类型：{SERVICE_LABELS[result.type]} · HTTP：{result.httpStatus || "-"} · 耗时：{result.latencyMs}ms
+            供应商：{result.configName} · 类型：{SERVICE_LABELS[result.type]}
+            {loading ? " · 正在验证供应商连通性和凭据路径" : ` · HTTP：${result.httpStatus || "-"} · 耗时：${result.latencyMs}ms`}
           </p>
           {result.errorMsg ? <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-black/35 p-3 text-xs text-rose-100">{result.errorMsg}</pre> : null}
         </div>

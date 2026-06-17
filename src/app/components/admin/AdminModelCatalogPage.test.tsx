@@ -65,7 +65,7 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = []) {
+function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = [], options: { testResponse?: unknown; rejectTest?: boolean } = {}) {
   const requests: Array<{ url: string; method: string; body?: unknown }> = [];
   vi.stubGlobal(
     "fetch",
@@ -78,6 +78,15 @@ function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = []) {
       if (url.includes("/api/admin/alerts?")) return apiResponse([]);
       if (url.endsWith("/api/admin/agents")) return apiResponse([]);
       if (url.endsWith("/api/admin/skills")) return apiResponse([]);
+      if (method === "POST" && url.includes("/api/admin/provider-configs/") && url.endsWith("/test")) {
+        if (options.rejectTest) {
+          return new Response(JSON.stringify({ error: { code: "UPSTREAM_ERROR", message: "network timeout" }, request_id: "req_test" }), {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return apiResponse(options.testResponse ?? { ok: true, http_status: 200, latency_ms: 18 });
+      }
       if (method === "PUT" && url.includes("/api/admin/provider-configs/")) {
         return apiResponse({ ...providerConfigs[0], ...body, id: "provider-1" });
       }
@@ -210,5 +219,27 @@ describe("AdminModelCatalogPage provider config editor", () => {
         ],
       },
     });
+  });
+
+  it("shows visible feedback when testing a Toonflow-style model fails", async () => {
+    const requests = stubAdminApis([makeProviderConfig()], {
+      testResponse: { ok: false, http_status: 0, latency_ms: 12, error_msg: "network timeout" },
+    });
+    const rendered = await renderPage();
+    root = rendered.root;
+
+    const testButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "测试",
+    );
+    expect(testButton).not.toBeNull();
+
+    await act(async () => {
+      testButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(document.body.textContent).toContain("连接失败");
+    expect(document.body.textContent).toContain("network timeout");
+    expect(requests.some((request) => request.method === "POST" && request.url.endsWith("/test"))).toBe(true);
   });
 });
