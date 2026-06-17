@@ -84,8 +84,16 @@ const STATUS_LABEL: Record<ProviderConfig["status"], string> = {
 };
 
 const FIELD_INPUT =
-  "w-full rounded-md border border-black/10 bg-white px-3 py-2.5 text-sm text-neutral-950 outline-none transition placeholder:text-neutral-400 focus:border-[#ff6a1f]/65 focus:ring-2 focus:ring-[#ff6a1f]/10";
+  "w-full rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2.5 text-sm text-neutral-100 outline-none transition placeholder:text-neutral-500 focus:border-white/[0.18] focus:bg-white/[0.065] focus:ring-2 focus:ring-white/[0.04]";
 const FIELD_SELECT = `${FIELD_INPUT} appearance-none`;
+const SETTINGS_INPUT =
+  "w-full rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2.5 text-sm text-neutral-100 outline-none transition placeholder:text-neutral-500 focus:border-white/[0.18] focus:bg-white/[0.065] focus:ring-2 focus:ring-white/[0.04]";
+const SETTINGS_SELECT = `${SETTINGS_INPUT} appearance-none`;
+const SETTINGS_BADGE = "rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-xs text-neutral-300";
+const SETTINGS_PANEL_BUTTON =
+  "border-white/[0.08] bg-white/[0.045] text-neutral-200 hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white";
+const SETTINGS_PRIMARY_BUTTON =
+  "border border-white/[0.10] bg-white/[0.075] text-white hover:border-white/[0.18] hover:bg-white/[0.12]";
 
 type SettingsPanelKey = "model-service" | "agent-config" | "prompt-manage" | "skill-management" | "memory-config";
 type SettingsMenuItem = {
@@ -363,21 +371,21 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       <section
         role="dialog"
         aria-modal="true"
-        className="relative z-10 flex max-h-[88vh] w-full max-w-[1120px] flex-col overflow-hidden rounded-lg border border-black/10 bg-white text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]"
+        className="relative z-10 flex max-h-[88vh] w-full max-w-[1120px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111111] text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]"
       >
-        <header className="flex items-center justify-between border-b border-black/10 px-6 py-5">
+        <header className="flex items-center justify-between border-b border-white/[0.08] px-6 py-5">
           <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-[#ff9b68]">{isEdit ? "编辑配置" : "新增配置"}</p>
-            <h3 className="mt-1 text-lg font-semibold text-neutral-950">{isEdit ? config?.name : "模型服务配置"}</h3>
+            <p className="text-xs uppercase tracking-[0.22em] text-neutral-500">{isEdit ? "编辑配置" : "新增配置"}</p>
+            <h3 className="mt-1 text-lg font-semibold text-neutral-100">{isEdit ? config?.name : "模型服务配置"}</h3>
           </div>
-          <button className="rounded-full p-2 text-neutral-500 transition hover:bg-black/5 hover:text-neutral-950" onClick={onClose}>
+          <button className="rounded-full p-2 text-neutral-500 transition hover:bg-white/[0.08] hover:text-white" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </header>
 
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-            <aside className="space-y-5 rounded-lg border border-black/10 bg-neutral-50 p-4">
+            <aside className="space-y-5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
           <Field label="服务类型">
             <select value={serviceType} onChange={(event) => setServiceType(event.target.value as ServiceType)} className={FIELD_SELECT}>
               {Object.entries(SERVICE_LABELS).map(([value, label]) => (
@@ -393,7 +401,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
                   key={`${tpl.vendor}-${tpl.label}`}
                   type="button"
                   onClick={() => applyTemplate(tpl)}
-                  className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-left text-xs text-neutral-700 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50 hover:text-neutral-950"
+                  className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white"
                 >
                   <ModelBrandIcon model={tpl.models[0]} vendor={tpl.vendor} providerName={tpl.label} size={18} />
                   <span className="min-w-0 flex-1 truncate">{tpl.label}</span>
@@ -403,17 +411,17 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
           </Field>
 
           <Field label="供应商 TS 脚本">
-            <div className="space-y-3 rounded-md border border-black/10 bg-neutral-50 p-3">
+            <div className="space-y-3 rounded-md border border-white/[0.08] bg-white/[0.025] p-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-2 text-xs text-neutral-500">
-                  <FileCode2 className="h-4 w-4 text-[#ff9b68]" />
+                  <FileCode2 className="h-4 w-4 text-neutral-400" />
                   粘贴 Toonflow 风格供应商 TS，按当前服务类型解析模型、输入项和图标。
                 </span>
-                <Button type="button" variant="secondary" onClick={() => setCodeEditorOpen(true)}>
+                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setCodeEditorOpen(true)}>
                   <FileCode2 className="mr-2 h-4 w-4" />
                   编辑代码
                 </Button>
-                <Button type="button" variant="secondary" onClick={handlePreviewTSImport} disabled={previewingTS || !adapterCode.trim()}>
+                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={handlePreviewTSImport} disabled={previewingTS || !adapterCode.trim()}>
                   {previewingTS ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   解析导入
                 </Button>
@@ -421,17 +429,17 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
               <button
                 type="button"
                 onClick={() => setCodeEditorOpen(true)}
-                className="flex w-full items-center justify-between rounded-md border border-black/10 bg-white px-4 py-3 text-left transition hover:border-[#ff6a1f]/45 hover:bg-orange-50/40"
+                className="flex w-full items-center justify-between rounded-md border border-white/[0.08] bg-white/[0.045] px-4 py-3 text-left transition hover:border-white/[0.16] hover:bg-white/[0.075]"
               >
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-neutral-900">{adapterCode.trim() ? "已载入 TS 供应商代码" : "尚未填写 TS 供应商代码"}</span>
+                  <span className="block text-sm font-medium text-neutral-100">{adapterCode.trim() ? "已载入 TS 供应商代码" : "尚未填写 TS 供应商代码"}</span>
                   <span className="mt-1 block text-xs text-neutral-500">
                     {adapterCode.trim()
                       ? `${adapterCode.split(/\r?\n/).length} 行 · ${adapterCode.length} 字符 · 运行时将使用 TypeScript 供应商脚本`
                       : "点击打开大编辑器，可粘贴代码或导入 .ts 文件"}
                   </span>
                 </span>
-                <FileCode2 className="h-5 w-5 text-[#ff9b68]" />
+                <FileCode2 className="h-5 w-5 text-neutral-400" />
               </button>
             </div>
           </Field>
@@ -492,7 +500,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
             </div>
           ) : null}
 
-          <div className="rounded-md border border-black/10 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
+          <div className="rounded-md border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-xs text-neutral-500">
             最终端点：{endpointPreview}
           </div>
 
@@ -505,8 +513,8 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
             <Field label="优先级"><input value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} type="number" className={FIELD_INPUT} /></Field>
           </div>
 
-          <label className="flex items-center gap-2 text-sm text-neutral-700">
-            <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-[#ff6a1f]" />
+          <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-neutral-300" />
             设为默认配置
           </label>
 
@@ -520,14 +528,14 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
             <p className="mt-2 text-xs text-neutral-500">控制前端参数按钮和后端允许透传字段，例如 quality_options、size_options、output_format_options、allowed_parameters、defaults。</p>
           </Field>
 
-          {error ? <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+          {error ? <div className="rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
             </div>
           </div>
         </div>
 
-        <footer className="flex items-center justify-end gap-3 border-t border-black/10 bg-neutral-50 px-6 py-4">
-          <Button variant="secondary" onClick={onClose}>取消</Button>
-          <Button onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}保存配置</Button>
+        <footer className="flex items-center justify-end gap-3 border-t border-white/[0.08] bg-white/[0.025] px-6 py-4">
+          <Button variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={onClose}>取消</Button>
+          <Button className={SETTINGS_PRIMARY_BUTTON} onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}保存配置</Button>
         </footer>
         {codeEditorOpen ? (
           <Suspense fallback={<ProviderCodeEditorFallback />}>
@@ -550,7 +558,16 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block text-sm text-neutral-700">
+    <label className="block text-sm text-neutral-300">
+      <span className="mb-2 block text-xs font-medium text-neutral-500">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function SettingsField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-sm text-neutral-300">
       <span className="mb-2 block text-xs font-medium text-neutral-500">{label}</span>
       {children}
     </label>
@@ -574,7 +591,7 @@ function ActionIconButton({
       title={label}
       disabled={disabled}
       onClick={onClick}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.07] bg-white/[0.035] text-neutral-400 transition hover:border-[#ff6a1f]/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.07] bg-white/[0.035] text-neutral-400 transition hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
     >
       {children}
     </button>
@@ -777,7 +794,7 @@ export function AdminModelCatalogPage() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="h-11 w-full rounded-full border border-white/[0.08] bg-black/20 pl-11 pr-4 text-sm text-white outline-none transition focus:border-[#ff6a1f]/55"
+                className="h-11 w-full rounded-full border border-white/[0.08] bg-black/20 pl-11 pr-4 text-sm text-white outline-none transition focus:border-white/[0.18] focus:ring-2 focus:ring-white/[0.04]"
                 placeholder="搜索名称、厂商、Base URL、协议或模型"
               />
             </div>
@@ -788,23 +805,23 @@ export function AdminModelCatalogPage() {
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#f7f3ed] text-[#1f1f1f] shadow-2xl shadow-black/35">
+        <section className="overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
           <div className="grid min-h-[680px] grid-cols-[250px_1fr]">
             <SettingsSidebar activeKey={settingsPanel} onSelect={setSettingsPanel} />
 
-            <div className="min-w-0 bg-white p-5">
+            <div className="min-w-0 bg-[#101010]/80 p-5">
               {settingsPanel === "model-service" ? (
-                <div data-testid="settings-panel-model-service" className="grid min-h-[620px] grid-cols-[260px_1fr] overflow-hidden rounded-lg border border-black/10">
-            <aside className="border-r border-black/10 bg-white/75 p-4">
-              <Button onClick={openCreate} className="mb-3 h-10 w-full rounded-md bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+                <div data-testid="settings-panel-model-service" className="grid min-h-[620px] grid-cols-[260px_1fr] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111111]/95">
+            <aside className="border-r border-white/[0.06] bg-white/[0.025] p-4">
+              <Button onClick={openCreate} className={`mb-3 h-10 w-full rounded-full ${SETTINGS_PRIMARY_BUTTON}`}>
                 <Plus className="mr-2 h-4 w-4" />
                 添加供应商
               </Button>
               <div className="space-y-1">
                 {loading ? (
-                  <div className="rounded-xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-neutral-500">加载中...</div>
+                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">加载中...</div>
                 ) : filtered.length === 0 ? (
-                  <div className="rounded-xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-neutral-500">暂无供应商</div>
+                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">暂无供应商</div>
                 ) : (
                   filtered.map((config) => (
                     <button
@@ -812,8 +829,8 @@ export function AdminModelCatalogPage() {
                       type="button"
                       onClick={() => setSelectedId(config.id)}
                       className={[
-                        "flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-sm transition",
-                        selectedConfig?.id === config.id ? "bg-[#ff6a1f] text-white shadow-sm" : "text-neutral-700 hover:bg-black/[0.04]",
+                        "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
+                        selectedConfig?.id === config.id ? "border-white/[0.14] bg-white/[0.08] text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
                       ].join(" ")}
                     >
                       <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
@@ -821,7 +838,7 @@ export function AdminModelCatalogPage() {
                       <span
                         className={[
                           "relative h-5 w-9 rounded-full transition",
-                          config.status === "enabled" ? "bg-[#ff7a2d]" : "bg-neutral-300",
+                          config.status === "enabled" ? "bg-emerald-500/70" : "bg-neutral-700",
                         ].join(" ")}
                       >
                         <span
@@ -837,23 +854,23 @@ export function AdminModelCatalogPage() {
               </div>
             </aside>
 
-            <div className="flex min-w-0 flex-col bg-white p-5">
+            <div className="flex min-w-0 flex-col bg-[#111111] p-5">
               {selectedConfig ? (
                 <>
-                  <div className="flex items-center justify-between border-b border-black/10 pb-4">
+                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-3">
                         <ModelBrandIcon model={selectedConfig.default_model || selectedConfig.model_list?.[0]} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={28} />
                         <div className="min-w-0">
-                          <h3 className="truncate text-lg font-semibold text-neutral-950">{selectedConfig.name}</h3>
+                          <h3 className="truncate text-lg font-semibold text-neutral-100">{selectedConfig.name}</h3>
                           <p className="mt-1 truncate text-xs text-neutral-500">{selectedConfig.vendor} · {selectedConfig.base_url || "TS 供应商脚本"}</p>
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">{SERVICE_LABELS[selectedConfig.service_type]}</span>
-                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">{selectedConfig.protocol || "openai_compatible"}</span>
-                        {selectedConfig.adapter_runtime === "ts" ? <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">TS 脚本</span> : null}
-                        <span className="rounded border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-[#ff6a1f]">模型 ×{selectedConfig.model_list.length}</span>
+                        <span className={SETTINGS_BADGE}>{SERVICE_LABELS[selectedConfig.service_type]}</span>
+                        <span className={SETTINGS_BADGE}>{selectedConfig.protocol || "openai_compatible"}</span>
+                        {selectedConfig.adapter_runtime === "ts" ? <span className={SETTINGS_BADGE}>TS 脚本</span> : null}
+                        <span className={SETTINGS_BADGE}>模型 ×{selectedConfig.model_list.length}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -871,27 +888,27 @@ export function AdminModelCatalogPage() {
                   <div className="min-h-0 flex-1 overflow-y-auto py-4">
                     <div className="space-y-3">
                       {selectedConfig.model_list.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-black/15 bg-neutral-50 px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
+                        <div className="rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
                       ) : (
                         selectedConfig.model_list.map((model) => (
-                          <div key={model} className="rounded-xl border border-black/10 bg-white px-5 py-4 shadow-sm transition hover:border-orange-200 hover:shadow-md">
+                          <div key={model} className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]">
                             <div className="flex items-start justify-between gap-4">
                               <div className="min-w-0">
                                 <div className="flex items-center gap-3">
                                   <ModelBrandIcon model={model} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={22} />
-                                  <h4 className="truncate text-base font-semibold text-neutral-950">{model}</h4>
+                                  <h4 className="truncate text-base font-semibold text-neutral-100">{model}</h4>
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{SERVICE_LABELS[selectedConfig.service_type]}</span>
-                                  {selectedConfig.default_model === model ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">默认模型</span> : null}
-                                  {selectedConfig.service_type === "image" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">图片 ×9</span> : null}
-                                  {selectedConfig.service_type === "video" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">视频 ×3</span> : null}
-                                  {selectedConfig.service_type === "audio" ? <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">音频 ×3</span> : null}
+                                  <span className={SETTINGS_BADGE}>{SERVICE_LABELS[selectedConfig.service_type]}</span>
+                                  {selectedConfig.default_model === model ? <span className={SETTINGS_BADGE}>默认模型</span> : null}
+                                  {selectedConfig.service_type === "image" ? <span className={SETTINGS_BADGE}>图片 ×9</span> : null}
+                                  {selectedConfig.service_type === "video" ? <span className={SETTINGS_BADGE}>视频 ×3</span> : null}
+                                  {selectedConfig.service_type === "audio" ? <span className={SETTINGS_BADGE}>音频 ×3</span> : null}
                                 </div>
                               </div>
                               <div className="flex shrink-0 items-center gap-3 text-xs">
-                                <button type="button" onClick={() => handleTestConnectivity(selectedConfig)} className="font-medium text-neutral-700 transition hover:text-[#ff6a1f]">测试</button>
-                                <button type="button" onClick={() => openEdit(selectedConfig)} className="font-medium text-neutral-700 transition hover:text-[#ff6a1f]">编辑</button>
+                                <button type="button" onClick={() => handleTestConnectivity(selectedConfig)} className="font-medium text-neutral-400 transition hover:text-white">测试</button>
+                                <button type="button" onClick={() => openEdit(selectedConfig)} className="font-medium text-neutral-400 transition hover:text-white">编辑</button>
                                 <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="font-medium text-red-500 transition hover:text-red-600">删除</button>
                               </div>
                             </div>
@@ -901,7 +918,7 @@ export function AdminModelCatalogPage() {
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-3 border-t border-black/10 pt-4">
+                  <div className="flex justify-end gap-3 border-t border-white/[0.08] pt-4">
                     <button
                       type="button"
                       onClick={() => handleDelete(selectedConfig)}
@@ -915,14 +932,14 @@ export function AdminModelCatalogPage() {
                         setCodeError("");
                         setCodeEditingConfig(selectedConfig);
                       }}
-                      className="h-10 rounded border border-[#ff6a1f] px-5 text-sm font-medium text-[#ff6a1f] transition hover:bg-orange-50"
+                      className="h-10 rounded-full border border-white/[0.10] bg-white/[0.035] px-5 text-sm font-medium text-neutral-200 transition hover:border-white/[0.18] hover:bg-white/[0.075] hover:text-white"
                     >
                       编辑代码
                     </button>
                   </div>
                 </>
               ) : (
-                <div className="grid h-full place-items-center rounded-xl border border-dashed border-black/15 bg-neutral-50 text-sm text-neutral-500">选择或新增一个供应商</div>
+                <div className="grid h-full place-items-center rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] text-sm text-neutral-500">选择或新增一个供应商</div>
               )}
             </div>
                 </div>
@@ -992,7 +1009,7 @@ export function AdminModelCatalogPage() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-2 text-xs text-neutral-300">
-                        <span className={["h-2 w-2 rounded-full", config.status === "enabled" ? "bg-[#ff6a1f]" : "bg-neutral-600"].join(" ")} />
+                        <span className={["h-2 w-2 rounded-full", config.status === "enabled" ? "bg-emerald-400" : "bg-neutral-600"].join(" ")} />
                         {STATUS_LABEL[config.status]}
                       </span>
                     </td>
@@ -1042,8 +1059,8 @@ export function AdminModelCatalogPage() {
 
 function SettingsSidebar({ activeKey, onSelect }: { activeKey: SettingsPanelKey; onSelect: (key: SettingsPanelKey) => void }) {
   return (
-    <aside className="border-r border-black/10 bg-[#fbfaf8] px-7 py-7">
-      <h2 className="mb-6 text-lg font-semibold text-neutral-950">模原力设置</h2>
+    <aside className="border-r border-white/[0.06] bg-white/[0.025] px-7 py-7">
+      <h2 className="mb-6 text-lg font-semibold text-neutral-100">模原力设置</h2>
       <nav className="space-y-1">
         {SETTINGS_MENU.map((item) => {
           const Icon = item.icon;
@@ -1058,9 +1075,9 @@ function SettingsSidebar({ activeKey, onSelect }: { activeKey: SettingsPanelKey;
                 if (canSelect) onSelect(item.key as SettingsPanelKey);
               }}
               className={[
-                "flex h-10 w-full items-center gap-3 rounded px-3 text-left text-sm transition",
-                active ? "bg-[#ff6a1f] font-medium text-white shadow-sm" : "text-neutral-700 hover:bg-[#fff3ea] hover:text-[#ff6a1f]",
-                !canSelect ? "cursor-not-allowed opacity-45 hover:bg-transparent hover:text-neutral-700" : "",
+                "flex h-10 w-full items-center gap-3 rounded-xl border px-3 text-left text-sm transition",
+                active ? "border-white/[0.14] bg-white/[0.085] font-medium text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
+                !canSelect ? "cursor-not-allowed opacity-35 hover:border-transparent hover:bg-transparent hover:text-neutral-400" : "",
               ].join(" ")}
             >
               <Icon className="h-4 w-4 shrink-0" />
@@ -1165,23 +1182,23 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
   return (
     <section data-testid="settings-panel-agent-config" className="flex h-full min-h-[620px] flex-col">
-      <div className="rounded-lg bg-gradient-to-r from-orange-50 to-white px-5 py-4">
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.035] px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-full bg-[#ff6a1f]/10 text-[#ff6a1f]">
+            <span className="grid h-10 w-10 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-neutral-200">
               <Bot className="h-5 w-5" />
             </span>
             <div>
-              <h3 className="text-lg font-semibold text-neutral-950">Agent配置</h3>
-              <p className="mt-1 text-sm text-neutral-600">给不同创作角色指定模型、系统提示词和可调用 Skills。</p>
+              <h3 className="text-lg font-semibold text-neutral-100">Agent配置</h3>
+              <p className="mt-1 text-sm text-neutral-500">给不同创作角色指定模型、系统提示词和可调用 Skills。</p>
             </div>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading}>
+            <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading} className={SETTINGS_PANEL_BUTTON}>
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
               刷新
             </Button>
-            <Button type="button" onClick={() => openEditor(null)} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+            <Button type="button" onClick={() => openEditor(null)} className={SETTINGS_PRIMARY_BUTTON}>
               <Plus className="mr-2 h-4 w-4" />
               新增 Agent
             </Button>
@@ -1189,9 +1206,9 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
         </div>
       </div>
 
-      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
 
-      <div className="mt-4 flex gap-2 border-b border-black/10">
+      <div className="mt-4 flex gap-2 border-b border-white/[0.08]">
         {[
           ["ordinary", "普通"] as const,
           ["advanced", "高级"] as const,
@@ -1202,7 +1219,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
             onClick={() => setTab(value)}
             className={[
               "border-b-2 px-4 py-2 text-sm transition",
-              tab === value ? "border-[#ff6a1f] font-medium text-[#ff6a1f]" : "border-transparent text-neutral-500 hover:text-neutral-950",
+              tab === value ? "border-white font-medium text-white" : "border-transparent text-neutral-500 hover:text-neutral-200",
             ].join(" ")}
           >
             {label}
@@ -1212,12 +1229,12 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {loading ? (
-          <div className="col-span-full rounded-lg border border-black/10 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
+          <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
         ) : visibleAgents.length === 0 ? (
           <button
             type="button"
             onClick={() => openEditor(null)}
-            className="col-span-full rounded-lg border border-dashed border-black/15 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50"
+            className="col-span-full rounded-lg border border-dashed border-white/[0.12] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-white/[0.18] hover:bg-white/[0.055] hover:text-neutral-300"
           >
             暂无 Agent，点击创建一个可配置的创作角色。
           </button>
@@ -1227,26 +1244,26 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
               key={agent.id}
               type="button"
               onClick={() => openEditor(agent)}
-              className="rounded-lg border border-black/10 bg-white p-4 text-left shadow-sm transition hover:border-[#ff6a1f]/35 hover:shadow-md"
+              className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-4 text-left shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-3">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-neutral-100 text-neutral-700">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-neutral-300">
                     <Bot className="h-4 w-4" />
                   </span>
                   <div className="min-w-0">
-                    <h4 className="truncate text-sm font-semibold text-neutral-950">{agent.name}</h4>
+                    <h4 className="truncate text-sm font-semibold text-neutral-100">{agent.name}</h4>
                     <p className="mt-1 truncate text-xs text-neutral-500">{agent.description || "暂无描述"}</p>
                   </div>
                 </div>
-                <span className={agent.enabled ? "rounded bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700" : "rounded bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500"}>
+                <span className={agent.enabled ? "rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300" : "rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-xs text-neutral-500"}>
                   {agent.enabled ? "已启用" : "未启用"}
                 </span>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{agent.model || "未配置模型"}</span>
-                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">Skills ×{agent.skill_ids.length}</span>
-                <span className="rounded border border-orange-200 px-2 py-0.5 text-xs text-[#ff6a1f]">{agent.canvas_tools ? "画布工具" : "纯对话"}</span>
+                <span className={SETTINGS_BADGE}>{agent.model || "未配置模型"}</span>
+                <span className={SETTINGS_BADGE}>Skills ×{agent.skill_ids.length}</span>
+                <span className={SETTINGS_BADGE}>{agent.canvas_tools ? "画布工具" : "纯对话"}</span>
               </div>
               {tab === "advanced" ? (
                 <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{agent.system_prompt}</p>
@@ -1361,18 +1378,18 @@ function PromptManagePanel() {
       <PanelHeader
         icon={<FileText className="h-5 w-5" />}
         title="提示词管理"
-        description="以 Toonflow 卡片方式管理可被 Agent 或 Slash 命令调用的提示词模板。"
-        action={<Button onClick={() => openEditor(null)} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]"><Plus className="mr-2 h-4 w-4" />新增提示词</Button>}
+        description="管理可被 Agent 或 Slash 命令调用的提示词模板。"
+        action={<Button onClick={() => openEditor(null)} className={SETTINGS_PRIMARY_BUTTON}><Plus className="mr-2 h-4 w-4" />新增提示词</Button>}
       />
-      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         {loading ? (
-          <div className="col-span-full rounded-lg border border-black/10 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500">提示词加载中...</div>
+          <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">提示词加载中...</div>
         ) : prompts.length === 0 ? (
           <button
             type="button"
             onClick={() => openEditor(null)}
-            className="col-span-full rounded-lg border border-dashed border-black/15 bg-neutral-50 px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50"
+            className="col-span-full rounded-lg border border-dashed border-white/[0.12] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500 transition hover:border-white/[0.18] hover:bg-white/[0.055] hover:text-neutral-300"
           >
             暂无提示词模板，点击创建一个。
           </button>
@@ -1382,16 +1399,16 @@ function PromptManagePanel() {
               key={skill.id}
               type="button"
               onClick={() => openEditor(skill)}
-              className="rounded-lg border border-black/10 bg-white p-4 text-left shadow-sm transition hover:border-[#ff6a1f]/35 hover:shadow-md"
+              className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-4 text-left shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h4 className="text-sm font-semibold text-neutral-950">{skill.name}</h4>
+                  <h4 className="text-sm font-semibold text-neutral-100">{skill.name}</h4>
                   <p className="mt-1 text-xs text-neutral-500">{getSkillCommandName(skill)} · {skill.category || "prompt"}</p>
                 </div>
-                <Badge className="border-orange-200 bg-orange-50 text-[#ff6a1f]">prompt</Badge>
+                <Badge className="border-white/[0.08] bg-white/[0.045] text-neutral-300">prompt</Badge>
               </div>
-              <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-600">{getSkillTemplateBody(skill) || skill.description || "暂无提示词内容"}</p>
+              <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{getSkillTemplateBody(skill) || skill.description || "暂无提示词内容"}</p>
             </button>
           ))
         )}
@@ -1466,17 +1483,17 @@ function SkillManagementPanel() {
       <PanelHeader
         icon={<Sparkles className="h-5 w-5" />}
         title="Skills技能管理"
-        description="按 Toonflow 的左树右预览方式查看技能，支持搜索和编辑 Skill spec。"
-        action={<Button variant="secondary" onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}刷新</Button>}
+        description="按左侧列表和右侧预览方式查看技能，支持搜索和编辑 Skill spec。"
+        action={<Button variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}刷新</Button>}
       />
-      {error ? <div className="mt-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
       <div className="mt-4 grid min-h-0 flex-1 gap-3 lg:grid-cols-[300px_1fr]">
-        <aside className="flex min-h-0 flex-col rounded-lg border border-black/10 p-3">
+        <aside className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025] p-3">
           <input
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             placeholder="搜索 Skill"
-            className="h-10 rounded-md border border-black/10 bg-white px-3 text-sm outline-none transition focus:border-[#ff6a1f]/60"
+            className={SETTINGS_INPUT}
           />
           <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
             {loading ? (
@@ -1490,8 +1507,8 @@ function SkillManagementPanel() {
                   type="button"
                   onClick={() => setActiveId(skill.id)}
                   className={[
-                    "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm transition",
-                    active?.id === skill.id ? "bg-[#ff6a1f] text-white" : "text-neutral-700 hover:bg-orange-50 hover:text-[#ff6a1f]",
+                    "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition",
+                    active?.id === skill.id ? "border-white/[0.14] bg-white/[0.08] text-white" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
                   ].join(" ")}
                 >
                   <FileText className="h-4 w-4 shrink-0" />
@@ -1501,21 +1518,21 @@ function SkillManagementPanel() {
             )}
           </div>
         </aside>
-        <div className="flex min-h-0 flex-col rounded-lg border border-black/10">
+        <div className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025]">
           {active ? (
             <>
-              <div className="flex items-center justify-between border-b border-black/10 px-4 py-3">
+              <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3">
                 <div>
-                  <h4 className="text-sm font-semibold text-neutral-950">{active.name}</h4>
+                  <h4 className="text-sm font-semibold text-neutral-100">{active.name}</h4>
                   <p className="mt-1 text-xs text-neutral-500">{active.kind} · {active.category || "未分类"} · {active.enabled ? "已启用" : "未启用"}</p>
                 </div>
-                <Button type="button" variant="secondary" onClick={() => setDraft(JSON.stringify(active.spec ?? {}, null, 2))}>
+                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setDraft(JSON.stringify(active.spec ?? {}, null, 2))}>
                   <Pencil className="mr-2 h-4 w-4" />
                   编辑
                 </Button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <div className="mb-4 rounded-lg bg-neutral-50 p-4 text-sm leading-6 text-neutral-700">
+                <div className="mb-4 rounded-lg border border-white/[0.08] bg-white/[0.035] p-4 text-sm leading-6 text-neutral-400">
                   {active.description || "暂无描述。"}
                 </div>
                 <pre className="whitespace-pre-wrap rounded-lg bg-[#191919] p-4 text-xs leading-5 text-neutral-100">
@@ -1577,35 +1594,35 @@ function MemoryConfigPanel() {
       <PanelHeader
         icon={<BrainCircuit className="h-5 w-5" />}
         title="Agent记忆配置"
-        description="参考 Toonflow 的记忆参数页，先沉淀本项目 Agent 记忆策略的后台配置入口。"
+        description="沉淀本项目 Agent 记忆策略的后台配置入口。"
       />
-      <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
+      <div className="mt-4 rounded-lg border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-200">
         当前项目还没有 Toonflow 同名的服务端记忆配置接口；这里会保存后台本地草案，后续接入后端即可直接复用这些字段。
       </div>
-      {notice ? <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{notice}</div> : null}
+      {notice ? <div className="mt-4 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{notice}</div> : null}
       <div className="mt-4 space-y-4">
-        <div className="rounded-lg border border-black/10 p-4">
-          <h4 className="text-sm font-semibold text-neutral-950">向量模型配置</h4>
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
+          <h4 className="text-sm font-semibold text-neutral-100">向量模型配置</h4>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Field label="模型文件路径">
+            <SettingsField label="模型文件路径">
               <input
                 value={form.modelOnnxFile}
                 onChange={(event) => setForm({ ...form, modelOnnxFile: event.target.value })}
-                className={FIELD_INPUT}
+                className={SETTINGS_INPUT}
               />
               <p className="mt-2 text-xs text-neutral-500">data/models/{form.modelOnnxFile}</p>
-            </Field>
-            <Field label="量化类型">
-              <select value={form.modelDtype} onChange={(event) => setForm({ ...form, modelDtype: event.target.value })} className={FIELD_SELECT}>
+            </SettingsField>
+            <SettingsField label="量化类型">
+              <select value={form.modelDtype} onChange={(event) => setForm({ ...form, modelDtype: event.target.value })} className={SETTINGS_SELECT}>
                 {["fp16", "auto", "fp32", "q8", "int8", "uint8", "q4", "bnb4", "q4f16"].map((item) => (
                   <option key={item} value={item}>{item}</option>
                 ))}
               </select>
-            </Field>
+            </SettingsField>
           </div>
         </div>
-        <div className="rounded-lg border border-black/10 p-4">
-          <h4 className="text-sm font-semibold text-neutral-950">记忆参数</h4>
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
+          <h4 className="text-sm font-semibold text-neutral-100">记忆参数</h4>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <MemoryNumberField label="多少条消息触发摘要" value={form.messagesPerSummary} onChange={(value) => setForm({ ...form, messagesPerSummary: value })} />
             <MemoryNumberField label="短期记忆条数" value={form.shortTermLimit} onChange={(value) => setForm({ ...form, shortTermLimit: value })} />
@@ -1616,10 +1633,10 @@ function MemoryConfigPanel() {
           </div>
         </div>
       </div>
-      <div className="mt-auto flex justify-end gap-3 border-t border-black/10 pt-4">
-        <Button type="button" variant="secondary" onClick={clear}>清空本地配置</Button>
-        <Button type="button" variant="secondary" onClick={restore}>恢复默认</Button>
-        <Button type="button" onClick={() => save()} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">保存配置</Button>
+      <div className="mt-auto flex justify-end gap-3 border-t border-white/[0.08] pt-4">
+        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={clear}>清空本地配置</Button>
+        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={restore}>恢复默认</Button>
+        <Button type="button" onClick={() => save()} className={SETTINGS_PRIMARY_BUTTON}>保存配置</Button>
       </div>
     </section>
   );
@@ -1637,11 +1654,11 @@ function PanelHeader({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-black/10 pb-4">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-4">
       <div className="flex min-w-0 items-center gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#ff6a1f]/10 text-[#ff6a1f]">{icon}</span>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-neutral-200">{icon}</span>
         <div className="min-w-0">
-          <h3 className="text-lg font-semibold text-neutral-950">{title}</h3>
+          <h3 className="text-lg font-semibold text-neutral-100">{title}</h3>
           <p className="mt-1 text-sm text-neutral-500">{description}</p>
         </div>
       </div>
@@ -1679,21 +1696,21 @@ function AgentConfigModal({
     <CenterModal title={editor.agent ? `${editor.agent.name} 模型配置` : "新增 Agent"} onClose={onClose}>
       <div className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Agent 名称"><input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className={FIELD_INPUT} /></Field>
-          <Field label="选择模型">
+          <SettingsField label="Agent 名称"><input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
+          <SettingsField label="选择模型">
             {models.length ? (
-              <select value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={FIELD_SELECT}>
+              <select value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={SETTINGS_SELECT}>
                 {models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             ) : (
-              <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={FIELD_INPUT} />
+              <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={SETTINGS_INPUT} />
             )}
-          </Field>
+          </SettingsField>
         </div>
-        <Field label="描述"><textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className={`${FIELD_INPUT} resize-none`} /></Field>
-        <Field label="系统提示词"><textarea value={draft.systemPrompt} onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })} rows={7} className={`${FIELD_INPUT} resize-y font-mono text-xs`} /></Field>
-        <Field label="可调用 Skills">
-          <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto rounded-md border border-black/10 bg-neutral-50 p-3">
+        <SettingsField label="描述"><textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className={`${SETTINGS_INPUT} resize-none`} /></SettingsField>
+        <SettingsField label="系统提示词"><textarea value={draft.systemPrompt} onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })} rows={7} className={`${SETTINGS_INPUT} resize-y font-mono text-xs`} /></SettingsField>
+        <SettingsField label="可调用 Skills">
+          <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto rounded-md border border-white/[0.08] bg-white/[0.035] p-3">
             {skills.length === 0 ? <span className="text-xs text-neutral-500">暂无提示词型 Skill。</span> : null}
             {skills.map((skill) => (
               <button
@@ -1702,29 +1719,29 @@ function AgentConfigModal({
                 onClick={() => toggleSkill(skill.id)}
                 className={[
                   "rounded-full border px-3 py-1 text-xs transition",
-                  draft.skillIds.includes(skill.id) ? "border-[#ff6a1f] bg-orange-50 text-[#ff6a1f]" : "border-black/10 bg-white text-neutral-600 hover:border-[#ff6a1f]/40",
+                  draft.skillIds.includes(skill.id) ? "border-white/[0.18] bg-white/[0.10] text-white" : "border-white/[0.08] bg-white/[0.045] text-neutral-400 hover:border-white/[0.16] hover:text-neutral-100",
                 ].join(" ")}
               >
                 {getSkillCommandName(skill)}
               </button>
             ))}
           </div>
-        </Field>
+        </SettingsField>
         <div className="grid gap-3 md:grid-cols-3">
-          <label className="flex items-center gap-2 text-sm text-neutral-700">
-            <input type="checkbox" checked={draft.canvasTools} onChange={(event) => onChange({ ...draft, canvasTools: event.target.checked })} className="accent-[#ff6a1f]" />
+          <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <input type="checkbox" checked={draft.canvasTools} onChange={(event) => onChange({ ...draft, canvasTools: event.target.checked })} className="accent-neutral-300" />
             允许画布工具
           </label>
-          <label className="flex items-center gap-2 text-sm text-neutral-700">
-            <input type="checkbox" checked={draft.enabled} onChange={(event) => onChange({ ...draft, enabled: event.target.checked })} className="accent-[#ff6a1f]" />
+          <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <input type="checkbox" checked={draft.enabled} onChange={(event) => onChange({ ...draft, enabled: event.target.checked })} className="accent-neutral-300" />
             启用
           </label>
-          <Field label="策略">
-            <select value={draft.strategy} onChange={(event) => onChange({ ...draft, strategy: event.target.value as AgentUpsert["strategy"] })} className={FIELD_SELECT}>
+          <SettingsField label="策略">
+            <select value={draft.strategy} onChange={(event) => onChange({ ...draft, strategy: event.target.value as AgentUpsert["strategy"] })} className={SETTINGS_SELECT}>
               <option value="reactive">reactive</option>
               <option value="scripted">scripted</option>
             </select>
-          </Field>
+          </SettingsField>
         </div>
       </div>
       <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
@@ -1748,19 +1765,19 @@ function PromptEditorModal({
   return (
     <CenterModal title="提示词编辑器" onClose={onClose} widthClass="max-w-[980px]">
       <div className="grid gap-3 md:grid-cols-3">
-        <Field label="名称"><input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={FIELD_INPUT} /></Field>
-        <Field label="Slash 命令"><input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={FIELD_INPUT} /></Field>
-        <Field label="模型提示"><input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={FIELD_INPUT} /></Field>
+        <SettingsField label="名称"><input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
+        <SettingsField label="Slash 命令"><input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
+        <SettingsField label="模型提示"><input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
       </div>
       <div className="mt-4">
-        <Field label="Markdown 提示词">
+        <SettingsField label="Markdown 提示词">
           <textarea
             value={editor.content}
             onChange={(event) => onChange({ ...editor, content: event.target.value })}
             rows={18}
-            className={`${FIELD_INPUT} resize-y font-mono text-xs leading-5`}
+            className={`${SETTINGS_INPUT} resize-y font-mono text-xs leading-5`}
           />
-        </Field>
+        </SettingsField>
       </div>
       <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
     </CenterModal>
@@ -1789,7 +1806,7 @@ function SkillSpecEditorModal({
         onChange={(event) => onChange(event.target.value)}
         spellCheck={false}
         rows={22}
-        className="w-full rounded-md border border-black/10 bg-[#1e1e1e] px-4 py-3 font-mono text-xs leading-5 text-neutral-100 outline-none focus:border-[#ff6a1f]/60"
+        className="w-full rounded-md border border-white/[0.08] bg-[#1e1e1e] px-4 py-3 font-mono text-xs leading-5 text-neutral-100 outline-none focus:border-white/[0.18]"
       />
       <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
     </CenterModal>
@@ -1810,10 +1827,10 @@ function CenterModal({
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 px-4 py-[8vh] backdrop-blur-sm">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="关闭弹窗" onClick={onClose} />
-      <section className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-y-auto rounded-lg bg-white p-5 text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]`}>
-        <div className="mb-4 flex items-center justify-between border-b border-black/10 pb-3">
+      <section className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#111111] p-5 text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]`}>
+        <div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3">
           <h3 className="text-base font-semibold">{title}</h3>
-          <button type="button" onClick={onClose} className="rounded-full p-1.5 text-neutral-500 transition hover:bg-black/5 hover:text-neutral-950">
+          <button type="button" onClick={onClose} className="rounded-full p-1.5 text-neutral-500 transition hover:bg-white/[0.08] hover:text-white">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -1825,9 +1842,9 @@ function CenterModal({
 
 function ModalFooter({ saving, onClose, onSave }: { saving: boolean; onClose: () => void; onSave: () => void }) {
   return (
-    <div className="mt-5 flex justify-end gap-3 border-t border-black/10 pt-4">
-      <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>取消</Button>
-      <Button type="button" onClick={onSave} disabled={saving} className="bg-[#ff6a1f] text-white hover:bg-[#f05f16]">
+    <div className="mt-5 flex justify-end gap-3 border-t border-white/[0.08] pt-4">
+      <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={onClose} disabled={saving}>取消</Button>
+      <Button type="button" onClick={onSave} disabled={saving} className={SETTINGS_PRIMARY_BUTTON}>
         {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
         保存
       </Button>
@@ -1837,9 +1854,9 @@ function ModalFooter({ saving, onClose, onSave }: { saving: boolean; onClose: ()
 
 function MemoryNumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
   return (
-    <Field label={label}>
-      <input value={value} onChange={(event) => onChange(Number(event.target.value) || 0)} type="number" min={0} className={FIELD_INPUT} />
-    </Field>
+    <SettingsField label={label}>
+      <input value={value} onChange={(event) => onChange(Number(event.target.value) || 0)} type="number" min={0} className={SETTINGS_INPUT} />
+    </SettingsField>
   );
 }
 
