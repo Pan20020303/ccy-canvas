@@ -175,6 +175,17 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
 	}
 
+	// Request-level timeout on a synchronous, non-idempotent media
+	// generation (image/video/audio): the upstream may have already
+	// produced the result, which for a sync call is unrecoverable. Retrying
+	// would re-generate and re-charge while still not returning the original
+	// image. Treat as terminal — do NOT retry.
+	if isMediaGeneration(p.ServiceType) && modelapp.IsRequestDeadlineTimeout(runErr) {
+		log.Printf("[tasks] media generation timed out for log %s (no retry, upstream may have produced an unrecoverable result): %v", p.LogID, runErr)
+		w.svc.FinalizeFailure(req, errTimeoutNoRetry(runErr), duration)
+		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
+	}
+
 	// Transient failure (network, 5xx upstream, lease loss). If retries are
 	// exhausted, persist the terminal error now — no later attempt will.
 	// Otherwise leave the row 'running' and return the error so Asynq
@@ -189,6 +200,25 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	}
 	log.Printf("[tasks] transient failure for log %s (attempt %d/%d), will retry: %v", p.LogID, retried+1, maxRetry, runErr)
 	return runErr
+}
+
+// isMediaGeneration reports whether the service type produces a paid,
+// non-idempotent media asset where a duplicate upstream call (from a retry)
+// would re-generate and re-charge. Text is excluded — it's cheap and
+// effectively idempotent, so retrying a timed-out text call is acceptable.
+func isMediaGeneration(serviceType string) bool {
+	switch serviceType {
+	case "image", "video", "audio":
+		return true
+	default:
+		return false
+	}
+}
+
+// errTimeoutNoRetry wraps a timeout error with a user-facing message that
+// explains why it wasn't retried (so the node's error text is actionable).
+func errTimeoutNoRetry(err error) error {
+	return fmt.Errorf("生成超时：上游可能已生成但未在超时窗口内返回；为避免重复扣费未自动重试，请稍后重试 (%w)", err)
 }
 
 // isPermanentError returns true for failures that retries won't fix.

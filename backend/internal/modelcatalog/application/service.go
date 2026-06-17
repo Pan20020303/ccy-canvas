@@ -1580,8 +1580,37 @@ func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *h
 	return nil, lastErr
 }
 
+// isRequestDeadlineTimeout reports whether err is a *request-level* timeout
+// — the client gave up while awaiting the upstream response (Go's
+// http.Client.Timeout / a context deadline). This is fundamentally
+// different from a pre-send connection failure (dial/TLS handshake/reset):
+// by the time a request deadline fires we have already sent the request and
+// the upstream may have completed it. For a synchronous, non-idempotent,
+// paid generation (image/video/audio) that means retrying would
+// re-generate and re-charge while the original result is unrecoverable — so
+// these timeouts must NOT be retried. Exported so the Asynq worker can make
+// the same non-retry decision at its layer.
+func IsRequestDeadlineTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "client.timeout exceeded") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "awaiting headers")
+}
+
 func isRetryableProviderNetworkError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// Request-level timeout: the upstream may have already done the work
+	// (and, for a sync media call, produced an unrecoverable result). Never
+	// retry — see isRequestDeadlineTimeout.
+	if IsRequestDeadlineTimeout(err) {
 		return false
 	}
 	if errors.Is(err, io.EOF) {

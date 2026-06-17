@@ -232,6 +232,66 @@ func TestDoProviderRequestWithRetryRetriesEOF(t *testing.T) {
 	}
 }
 
+func TestIsRequestDeadlineTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"context deadline", context.DeadlineExceeded, true},
+		{"url wraps deadline", &url.Error{Op: "Post", URL: "x", Err: context.DeadlineExceeded}, true},
+		{"client timeout message", timeoutNetError("Post \"x\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"), true},
+		{"awaiting headers message", timeoutNetError("net/http: request canceled while awaiting headers"), true},
+		{"tls handshake timeout is NOT a request deadline", timeoutNetError("net/http: TLS handshake timeout"), false},
+		{"dial i/o timeout is NOT a request deadline", timeoutNetError("dial tcp 1.2.3.4:443: i/o timeout"), false},
+		{"eof is not a deadline", io.EOF, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRequestDeadlineTimeout(tc.err); got != tc.want {
+				t.Fatalf("IsRequestDeadlineTimeout(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsRetryableProviderNetworkErrorExcludesRequestDeadline(t *testing.T) {
+	// A request-level timeout (upstream may have already done the work) must
+	// not be retried — even though it satisfies net.Error.Timeout().
+	deadline := timeoutNetError("Post \"x\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+	if isRetryableProviderNetworkError(deadline) {
+		t.Fatal("request-deadline timeout should NOT be retryable")
+	}
+	// Pre-send connection failures stay retryable.
+	if !isRetryableProviderNetworkError(timeoutNetError("net/http: TLS handshake timeout")) {
+		t.Fatal("TLS handshake timeout should remain retryable")
+	}
+	if !isRetryableProviderNetworkError(io.EOF) {
+		t.Fatal("EOF should remain retryable")
+	}
+}
+
+func TestDoProviderRequestWithRetryDoesNotRetryRequestDeadline(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return nil, &url.Error{Op: "Post", URL: req.URL.String(), Err: context.DeadlineExceeded}
+		}),
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test/v1/images/edits", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doProviderRequestWithRetry(context.Background(), client, req, []byte(`{"ok":true}`)); err == nil {
+		t.Fatal("expected error for request-deadline timeout")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no retry on request-deadline timeout)", attempts)
+	}
+}
+
 func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) {
 	root := t.TempDir()
 	uploadsDir := filepath.Join(root, "uploads", "2026-06")
