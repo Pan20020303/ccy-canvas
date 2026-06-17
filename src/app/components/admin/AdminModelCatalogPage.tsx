@@ -44,7 +44,7 @@ const STATUS_LABEL: Record<ProviderConfig["status"], string> = {
 };
 
 const FIELD_INPUT =
-  "w-full rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-neutral-600 focus:border-[#ff6a1f]/55";
+  "w-full rounded-md border border-black/10 bg-white px-3 py-2.5 text-sm text-neutral-950 outline-none transition placeholder:text-neutral-400 focus:border-[#ff6a1f]/65 focus:ring-2 focus:ring-[#ff6a1f]/10";
 const FIELD_SELECT = `${FIELD_INPUT} appearance-none`;
 
 function ProviderCodeEditorFallback() {
@@ -61,14 +61,14 @@ function serviceCapabilities(serviceType: ServiceType) {
   return [serviceType];
 }
 
-type DrawerProps = {
+type ConfigModalProps = {
   config: ProviderConfig | null;
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
 };
 
-function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
+function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
   const isEdit = Boolean(config);
   const [serviceType, setServiceType] = useState<ServiceType>("image");
   const [vendor, setVendor] = useState("");
@@ -255,20 +255,29 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <button className="absolute inset-0 cursor-default bg-black/55" aria-label="关闭配置面板" onClick={onClose} />
-      <aside className="relative z-10 flex h-full w-full max-w-[540px] flex-col border-l border-white/[0.08] bg-[#121212]/98 shadow-2xl backdrop-blur-xl">
-        <header className="flex items-center justify-between border-b border-white/[0.07] px-6 py-5">
+    <div
+      data-testid="provider-config-modal"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-4 py-[6vh] backdrop-blur-sm"
+    >
+      <button className="absolute inset-0 cursor-default" aria-label="关闭配置面板" onClick={onClose} />
+      <section
+        role="dialog"
+        aria-modal="true"
+        className="relative z-10 flex max-h-[88vh] w-full max-w-[1120px] flex-col overflow-hidden rounded-lg border border-black/10 bg-white text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]"
+      >
+        <header className="flex items-center justify-between border-b border-black/10 px-6 py-5">
           <div>
             <p className="text-xs uppercase tracking-[0.22em] text-[#ff9b68]">{isEdit ? "编辑配置" : "新增配置"}</p>
-            <h3 className="mt-1 text-lg font-semibold text-white">{isEdit ? config?.name : "模型服务配置"}</h3>
+            <h3 className="mt-1 text-lg font-semibold text-neutral-950">{isEdit ? config?.name : "模型服务配置"}</h3>
           </div>
-          <button className="rounded-full p-2 text-neutral-400 transition hover:bg-white/8 hover:text-white" onClick={onClose}>
+          <button className="rounded-full p-2 text-neutral-500 transition hover:bg-black/5 hover:text-neutral-950" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </header>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+            <aside className="space-y-5 rounded-lg border border-black/10 bg-neutral-50 p-4">
           <Field label="服务类型">
             <select value={serviceType} onChange={(event) => setServiceType(event.target.value as ServiceType)} className={FIELD_SELECT}>
               {Object.entries(SERVICE_LABELS).map(([value, label]) => (
@@ -284,7 +293,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
                   key={`${tpl.vendor}-${tpl.label}`}
                   type="button"
                   onClick={() => applyTemplate(tpl)}
-                  className="flex items-center gap-2 rounded-xl border border-white/[0.07] bg-white/[0.035] px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-[#ff6a1f]/40 hover:bg-white/[0.06] hover:text-white"
+                  className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-2 text-left text-xs text-neutral-700 transition hover:border-[#ff6a1f]/40 hover:bg-orange-50 hover:text-neutral-950"
                 >
                   <ModelBrandIcon model={tpl.models[0]} vendor={tpl.vendor} providerName={tpl.label} size={18} />
                   <span className="min-w-0 flex-1 truncate">{tpl.label}</span>
@@ -294,9 +303,9 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
           </Field>
 
           <Field label="供应商 TS 脚本">
-            <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3">
+            <div className="space-y-3 rounded-md border border-black/10 bg-neutral-50 p-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="inline-flex items-center gap-2 text-xs text-neutral-400">
+                <span className="inline-flex items-center gap-2 text-xs text-neutral-500">
                   <FileCode2 className="h-4 w-4 text-[#ff9b68]" />
                   粘贴 Toonflow 风格供应商 TS，按当前服务类型解析模型、输入项和图标。
                 </span>
@@ -312,10 +321,10 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
               <button
                 type="button"
                 onClick={() => setCodeEditorOpen(true)}
-                className="flex w-full items-center justify-between rounded-xl border border-white/[0.07] bg-black/20 px-4 py-3 text-left transition hover:border-[#ff6a1f]/45 hover:bg-black/30"
+                className="flex w-full items-center justify-between rounded-md border border-black/10 bg-white px-4 py-3 text-left transition hover:border-[#ff6a1f]/45 hover:bg-orange-50/40"
               >
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-neutral-200">{adapterCode.trim() ? "已载入 TS 供应商代码" : "尚未填写 TS 供应商代码"}</span>
+                  <span className="block text-sm font-medium text-neutral-900">{adapterCode.trim() ? "已载入 TS 供应商代码" : "尚未填写 TS 供应商代码"}</span>
                   <span className="mt-1 block text-xs text-neutral-500">
                     {adapterCode.trim()
                       ? `${adapterCode.split(/\r?\n/).length} 行 · ${adapterCode.length} 字符 · 运行时将使用 TypeScript 供应商脚本`
@@ -326,6 +335,9 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
               </button>
             </div>
           </Field>
+
+            </aside>
+            <div className="space-y-5">
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="厂商"><input value={vendor} onChange={(event) => setVendor(event.target.value)} className={FIELD_INPUT} /></Field>
@@ -380,7 +392,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             </div>
           ) : null}
 
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.03] px-4 py-3 text-xs text-neutral-400">
+          <div className="rounded-md border border-black/10 bg-neutral-50 px-4 py-3 text-xs text-neutral-600">
             最终端点：{endpointPreview}
           </div>
 
@@ -393,7 +405,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             <Field label="优先级"><input value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} type="number" className={FIELD_INPUT} /></Field>
           </div>
 
-          <label className="flex items-center gap-2 text-sm text-neutral-300">
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
             <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-[#ff6a1f]" />
             设为默认配置
           </label>
@@ -408,10 +420,12 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             <p className="mt-2 text-xs text-neutral-500">控制前端参数按钮和后端允许透传字段，例如 quality_options、size_options、output_format_options、allowed_parameters、defaults。</p>
           </Field>
 
-          {error ? <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+          {error ? <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+            </div>
+          </div>
         </div>
 
-        <footer className="flex items-center justify-end gap-3 border-t border-white/[0.07] px-6 py-4">
+        <footer className="flex items-center justify-end gap-3 border-t border-black/10 bg-neutral-50 px-6 py-4">
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}保存配置</Button>
         </footer>
@@ -429,15 +443,15 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             />
           </Suspense>
         ) : null}
-      </aside>
+      </section>
     </div>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block text-sm text-neutral-300">
-      <span className="mb-2 block text-xs font-medium uppercase tracking-[0.16em] text-neutral-500">{label}</span>
+    <label className="block text-sm text-neutral-700">
+      <span className="mb-2 block text-xs font-medium text-neutral-500">{label}</span>
       {children}
     </label>
   );
@@ -471,7 +485,7 @@ export function AdminModelCatalogPage() {
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [configModalOpen, setConfigModalOpen] = useState(false);
   const [editing, setEditing] = useState<ProviderConfig | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [resettingId, setResettingId] = useState<string | null>(null);
@@ -518,12 +532,12 @@ export function AdminModelCatalogPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setDrawerOpen(true);
+    setConfigModalOpen(true);
   };
 
   const openEdit = (config: ProviderConfig) => {
     setEditing(config);
-    setDrawerOpen(true);
+    setConfigModalOpen(true);
   };
 
   const replaceConfig = (updated: ProviderConfig) => {
@@ -863,7 +877,7 @@ export function AdminModelCatalogPage() {
         </section>
       </div>
 
-      <ConfigDrawer config={editing} open={drawerOpen} onClose={() => setDrawerOpen(false)} onSaved={loadConfigs} />
+      <ConfigModal config={editing} open={configModalOpen} onClose={() => setConfigModalOpen(false)} onSaved={loadConfigs} />
       {codeEditingConfig ? (
         <Suspense fallback={<ProviderCodeEditorFallback />}>
           <ProviderCodeEditorModal
