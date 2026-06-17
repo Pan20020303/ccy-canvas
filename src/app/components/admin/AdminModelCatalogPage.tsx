@@ -101,6 +101,16 @@ const SETTINGS_PANEL_BUTTON =
   "border-white/[0.08] bg-white/[0.045] text-neutral-200 hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white";
 const SETTINGS_PRIMARY_BUTTON =
   "border border-white/[0.10] bg-white/[0.075] text-white hover:border-white/[0.18] hover:bg-white/[0.12]";
+const EDITOR_INPUT =
+  "w-full rounded-lg border border-[#303030] bg-[#1d1d1b] px-3 py-2.5 text-sm text-[#e8e2d8] outline-none transition placeholder:text-[#736f68] focus:border-[#4a4237] focus:bg-[#22201d] focus:ring-2 focus:ring-[#d7a85c]/10";
+const EDITOR_SCROLLBAR =
+  "[scrollbar-width:thin] [scrollbar-color:rgba(165,156,145,0.42)_rgba(255,255,255,0.045)]";
+const EDITOR_TOOL_BUTTON =
+  "grid h-8 w-8 place-items-center rounded-md text-[#a8a19a] transition hover:bg-[#2a2926] hover:text-[#f2eadf] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#d7a85c]/25";
+const EDITOR_TEXTAREA =
+  `resize-none border-0 border-r border-[#2d2b28] bg-[#121211] px-5 py-4 font-mono text-[13px] leading-7 text-[#e7e0d6] caret-[#d7a85c] outline-none placeholder:text-[#746f67] selection:bg-[#8c6b35]/40 ${EDITOR_SCROLLBAR}`;
+const EDITOR_PREVIEW =
+  `overflow-y-auto bg-[#171716] px-5 py-4 ${EDITOR_SCROLLBAR}`;
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -609,23 +619,23 @@ function MarkdownPreview({ content }: { content: string }) {
   const lines = content.split(/\r?\n/);
   let inCode = false;
   return (
-    <div className="space-y-3 text-sm leading-7 text-neutral-200">
+    <div className="space-y-3 text-[14px] leading-7 text-[#d8d1c7]">
       {lines.map((line, index) => {
         if (line.trim().startsWith("```")) {
           inCode = !inCode;
-          return <div key={index} className="rounded bg-white/[0.06] px-3 py-1 font-mono text-xs text-neutral-400">```</div>;
+          return <div key={index} className="rounded-md bg-[#111110] px-3 py-1 font-mono text-xs text-[#928b82]">```</div>;
         }
         if (inCode) {
-          return <pre key={index} className="overflow-x-auto rounded bg-black/35 px-3 py-2 font-mono text-xs text-neutral-200">{line}</pre>;
+          return <pre key={index} className={`overflow-x-auto rounded-md bg-[#111110] px-3 py-2 font-mono text-xs text-[#d8d1c7] ${EDITOR_SCROLLBAR}`}>{line}</pre>;
         }
         if (!line.trim()) return <div key={index} className="h-2" />;
-        if (/^###\s+/.test(line)) return <h3 key={index} className="text-lg font-semibold text-white">{markdownLineToText(line)}</h3>;
-        if (/^##\s+/.test(line)) return <h2 key={index} className="border-b border-white/[0.08] pb-2 text-xl font-semibold text-white">{markdownLineToText(line)}</h2>;
-        if (/^#\s+/.test(line)) return <h1 key={index} className="border-b border-white/[0.08] pb-2 text-2xl font-semibold text-white">{markdownLineToText(line)}</h1>;
-        if (/^\s*[-*]\s+/.test(line)) return <p key={index} className="pl-3 text-neutral-300">• {markdownLineToText(line)}</p>;
-        if (/^\s*\d+\.\s+/.test(line)) return <p key={index} className="pl-3 text-neutral-300">{markdownLineToText(line)}</p>;
-        if (/^\|.*\|$/.test(line)) return <pre key={index} className="overflow-x-auto rounded bg-white/[0.04] px-3 py-2 font-mono text-xs text-neutral-300">{line}</pre>;
-        return <p key={index} className="text-neutral-300">{markdownLineToText(line)}</p>;
+        if (/^###\s+/.test(line)) return <h3 key={index} className="text-lg font-semibold tracking-[-0.01em] text-[#f2eadf]">{markdownLineToText(line)}</h3>;
+        if (/^##\s+/.test(line)) return <h2 key={index} className="border-b border-[#2c2925] pb-2 text-xl font-semibold tracking-[-0.02em] text-[#f5eee4]">{markdownLineToText(line)}</h2>;
+        if (/^#\s+/.test(line)) return <h1 key={index} className="border-b border-[#2c2925] pb-2 text-2xl font-semibold tracking-[-0.025em] text-[#f6efe5]">{markdownLineToText(line)}</h1>;
+        if (/^\s*[-*]\s+/.test(line)) return <p key={index} className="pl-3 text-[#d8d1c7]">• {markdownLineToText(line)}</p>;
+        if (/^\s*\d+\.\s+/.test(line)) return <p key={index} className="pl-3 text-[#d8d1c7]">{markdownLineToText(line)}</p>;
+        if (/^\|.*\|$/.test(line)) return <pre key={index} className={`overflow-x-auto rounded-md bg-[#111110] px-3 py-2 font-mono text-xs text-[#d8d1c7] ${EDITOR_SCROLLBAR}`}>{line}</pre>;
+        return <p key={index} className="text-[#d8d1c7]">{markdownLineToText(line)}</p>;
       })}
     </div>
   );
@@ -2750,20 +2760,20 @@ function PromptEditorModal({
   };
 
   return (
-    <CenterModal title="提示词" onClose={onClose} widthClass="max-w-[1180px]">
+    <CenterModal title="提示词" onClose={onClose} widthClass="max-w-[1320px]">
       <div className="grid gap-3 md:grid-cols-3">
         <SettingsField label="名称">
-          <input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={SETTINGS_INPUT} />
+          <input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={EDITOR_INPUT} />
         </SettingsField>
         <SettingsField label="类型 / Slash 命令">
-          <input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={SETTINGS_INPUT} />
+          <input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={EDITOR_INPUT} />
         </SettingsField>
         <SettingsField label="模型提示">
-          <input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={SETTINGS_INPUT} />
+          <input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={EDITOR_INPUT} />
         </SettingsField>
       </div>
-      <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025]">
-        <div className="flex items-center justify-between border-b border-white/[0.08] px-3 py-2">
+      <div className="mt-4 overflow-hidden rounded-xl border border-[#303030] bg-[#161615] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+        <div className="flex items-center justify-between border-b border-[#2d2b28] bg-[#1b1a18] px-3 py-2">
           <div className="flex items-center gap-1">
             {PROMPT_TOOLBAR.map((item) => (
               <button
@@ -2772,7 +2782,7 @@ function PromptEditorModal({
                 title={item.label}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => runToolbarAction(item.key)}
-                className="grid h-8 w-8 place-items-center rounded-md text-neutral-400 transition hover:bg-white/[0.08] hover:text-white"
+                className={EDITOR_TOOL_BUTTON}
               >
                 {item.icon}
               </button>
@@ -2784,24 +2794,24 @@ function PromptEditorModal({
             onClick={onTogglePreview}
             className={[
               "grid h-8 w-8 place-items-center rounded-md transition",
-              previewOnly ? "bg-white/[0.10] text-white" : "text-neutral-400 hover:bg-white/[0.08] hover:text-white",
+              previewOnly ? "bg-[#2f2b23] text-[#f2eadf]" : "text-[#a8a19a] hover:bg-[#2a2926] hover:text-[#f2eadf]",
             ].join(" ")}
           >
             <Eye className="h-4 w-4" />
           </button>
         </div>
-        <div className={previewOnly ? "grid min-h-[58vh] grid-cols-1" : "grid min-h-[58vh] grid-cols-1 lg:grid-cols-2"}>
+        <div className={previewOnly ? "grid grid-cols-1" : "grid grid-cols-1 lg:grid-cols-2"} style={{ height: "clamp(420px, 54vh, 570px)" }}>
           {!previewOnly ? (
             <textarea
               ref={textRef}
               value={editor.content}
               onChange={(event) => onChange({ ...editor, content: event.target.value })}
               spellCheck={false}
-              className="min-h-[58vh] resize-none border-0 border-r border-white/[0.08] bg-black/20 px-5 py-4 font-mono text-sm leading-7 text-neutral-100 outline-none placeholder:text-neutral-600"
+              className={EDITOR_TEXTAREA}
               placeholder="请输入 Markdown 提示词..."
             />
           ) : null}
-          <div className="max-h-[58vh] overflow-y-auto px-5 py-4">
+          <div className={EDITOR_PREVIEW}>
             <MarkdownPreview content={editor.content} />
           </div>
         </div>
@@ -2839,9 +2849,9 @@ function SkillSpecEditorModal({
   };
 
   return (
-    <CenterModal title={title} onClose={onClose} widthClass="max-w-[1180px]">
-      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025]">
-        <div className="flex items-center gap-1 border-b border-white/[0.08] px-3 py-2">
+    <CenterModal title={title} onClose={onClose} widthClass="max-w-[1320px]">
+      <div className="overflow-hidden rounded-xl border border-[#303030] bg-[#161615] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+        <div className="flex items-center gap-1 border-b border-[#2d2b28] bg-[#1b1a18] px-3 py-2">
           {PROMPT_TOOLBAR.map((item) => (
             <button
               key={item.key}
@@ -2849,21 +2859,21 @@ function SkillSpecEditorModal({
               title={item.label}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => runToolbarAction(item.key)}
-              className="grid h-8 w-8 place-items-center rounded-md text-neutral-400 transition hover:bg-white/[0.08] hover:text-white"
+              className={EDITOR_TOOL_BUTTON}
             >
               {item.icon}
             </button>
           ))}
         </div>
-        <div className="grid min-h-[62vh] grid-cols-1 lg:grid-cols-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2" style={{ height: "clamp(440px, 58vh, 610px)" }}>
           <textarea
             ref={textRef}
             value={draft}
             onChange={(event) => onChange(event.target.value)}
             spellCheck={false}
-            className="min-h-[62vh] resize-none border-0 border-r border-white/[0.08] bg-black/20 px-5 py-4 font-mono text-sm leading-7 text-neutral-100 outline-none placeholder:text-neutral-600"
+            className={EDITOR_TEXTAREA}
           />
-          <div className="max-h-[62vh] overflow-y-auto px-5 py-4">
+          <div className={EDITOR_PREVIEW}>
             <MarkdownPreview content={draft} />
           </div>
         </div>
@@ -2902,16 +2912,18 @@ function CenterModal({
   }, []);
 
   return (
-    <div ref={overlayRef} className="fixed inset-0 z-[60] flex items-start justify-center bg-black/55 px-4 py-[8vh] backdrop-blur-sm">
+    <div ref={overlayRef} className="fixed inset-0 z-[60] flex items-start justify-center bg-black/70 px-4 py-[5vh] backdrop-blur-sm">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="关闭弹窗" onClick={onClose} />
-      <section ref={panelRef} className={`relative z-10 max-h-[84vh] w-full ${widthClass} overflow-x-hidden overflow-y-auto rounded-2xl border border-white/[0.08] bg-[#111111] p-5 text-neutral-100 shadow-[0_28px_90px_rgba(0,0,0,0.45)]`}>
-        <div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3">
-          <h3 className="text-base font-semibold">{title}</h3>
-          <button type="button" onClick={onClose} className="rounded-full p-1.5 text-neutral-500 transition hover:bg-white/[0.08] hover:text-white">
+      <section ref={panelRef} className={`relative z-10 max-h-[90vh] w-full ${widthClass} overflow-hidden rounded-xl border border-[#303030] bg-[#171716] text-[#eee7dc] shadow-[0_30px_100px_rgba(0,0,0,0.55),0_0_0_1px_rgba(255,255,255,0.03)]`}>
+        <div className="flex items-center justify-between border-b border-[#2d2b28] bg-[#181817] px-5 py-4">
+          <h3 className="text-base font-semibold tracking-[-0.01em] text-[#f4ede3]">{title}</h3>
+          <button type="button" onClick={onClose} className="rounded-full p-1.5 text-[#8d867d] transition hover:bg-[#2a2926] hover:text-[#f2eadf]">
             <X className="h-4 w-4" />
           </button>
         </div>
-        {children}
+        <div className={`max-h-[calc(90vh-58px)] overflow-y-auto px-5 py-4 ${EDITOR_SCROLLBAR}`}>
+          {children}
+        </div>
       </section>
     </div>
   );
@@ -2919,7 +2931,7 @@ function CenterModal({
 
 function ModalFooter({ saving, onClose, onSave }: { saving: boolean; onClose: () => void; onSave: () => void }) {
   return (
-    <div className="mt-5 flex justify-end gap-3 border-t border-white/[0.08] pt-4">
+    <div className="mt-5 flex justify-end gap-3 border-t border-[#2d2b28] pt-4">
       <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={onClose} disabled={saving}>取消</Button>
       <Button type="button" onClick={onSave} disabled={saving} className={SETTINGS_PRIMARY_BUTTON}>
         {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
