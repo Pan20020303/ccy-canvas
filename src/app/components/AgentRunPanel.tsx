@@ -31,6 +31,10 @@ import { getSkillCommandName } from "./settings/skill-agent-presenters";
 const HISTORY_LIMIT = 12;
 const CONVERSATIONS_KEY = (agentId: string, convId: string) => `${agentId}::${convId}`;
 
+function shouldReduceMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
+
 type ToolInvocation = {
   id: string;
   name: string;
@@ -97,6 +101,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [conversationsByAgent, setConversationsByAgent] = useState<Record<string, AgentConversationSummary[]>>({});
   const [activeConversationId, setActiveConversationId] = useState<Record<string, string>>({});
   const [showConversationMenu, setShowConversationMenu] = useState(false);
+  const [showAgentMenu, setShowAgentMenu] = useState(false);
 
   // Per-run streaming state.
   const [streamingReply, setStreamingReply] = useState("");
@@ -122,19 +127,24 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const abortRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
 
   // Panel enter animation: slide up + fade in on open. Runs every time the
   // panel mounts (which `open` controls — when closed the whole tree is
   // unmounted so the next open replays the entrance).
   useEffect(() => {
     if (!open || !panelRef.current) return;
+    if (shouldReduceMotion()) {
+      gsap.set(panelRef.current, { autoAlpha: 1, y: 0, scale: 1 });
+      return;
+    }
     const tween = gsap.from(panelRef.current, {
-      opacity: 0,
+      autoAlpha: 0,
       y: 18,
       scale: 0.96,
       duration: 0.32,
       ease: "power3.out",
-      clearProps: "transform,opacity",
+      clearProps: "transform,opacity,visibility",
     });
     return () => { tween.kill(); };
   }, [open]);
@@ -200,6 +210,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     [conversationStore, conversationKey],
   );
   const conversations = selectedId ? conversationsByAgent[selectedId] ?? [] : [];
+
+  const selectAgent = useCallback((agentId: string) => {
+    if (running) return;
+    setSelectedId(agentId);
+    setShowAgentMenu(false);
+    setShowConversationMenu(false);
+    setStreamingReply("");
+    setRunSteps([]);
+    setRunStartedAt(null);
+    setRunFinishedMs(null);
+  }, [running]);
 
   // Slash menu: open when the message looks like `/foo...` and no space has
   // been typed yet. Discovery spans ALL invokable skills (not just bound) so
@@ -483,6 +504,24 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     );
   };
 
+  const submitWithMotion = () => {
+    if (sendButtonRef.current && !shouldReduceMotion()) {
+      gsap.fromTo(
+        sendButtonRef.current,
+        { scale: 0.84, rotation: -10 },
+        {
+          scale: 1,
+          rotation: 0,
+          duration: 0.46,
+          ease: "elastic.out(1, 0.55)",
+          overwrite: "auto",
+          clearProps: "transform",
+        },
+      );
+    }
+    void start();
+  };
+
   const stop = () => {
     abortRef.current?.();
     abortRef.current = null;
@@ -583,6 +622,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     }
   };
 
+  const handleClose = useCallback(() => {
+    if (!panelRef.current || shouldReduceMotion()) {
+      onClose();
+      return;
+    }
+    gsap.to(panelRef.current, {
+      autoAlpha: 0,
+      y: 14,
+      scale: 0.985,
+      duration: 0.18,
+      ease: "power2.in",
+      overwrite: "auto",
+      onComplete: onClose,
+    });
+  }, [onClose]);
+
   if (!open) return null;
 
   const hasAnyContent = conversationHistory.length > 0 || streamingReply || runSteps.length > 0;
@@ -612,7 +667,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             </span>
           ) : null}
         </div>
-        <button onClick={onClose} className="text-neutral-500 hover:text-white">
+        <button onClick={handleClose} className="text-neutral-500 transition hover:text-white">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -620,11 +675,28 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       {/* Agent picker + conversation switcher */}
       <div className="relative border-b border-white/8 px-4 py-2.5">
         <div className="flex items-center gap-2">
+          <AgentPicker
+            agents={agents}
+            selectedId={selectedId}
+            selectedAgent={selectedAgent}
+            open={showAgentMenu}
+            disabled={running}
+            zh={zh}
+            onToggle={() => {
+              if (running) return;
+              setShowConversationMenu(false);
+              setShowAgentMenu((value) => !value);
+            }}
+            onPick={selectAgent}
+            onClose={() => setShowAgentMenu(false)}
+          />
           <select
             value={selectedId ?? ""}
             onChange={(event) => setSelectedId(event.target.value)}
-            disabled={running}
-            className="flex-1 rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-neutral-200 outline-none disabled:opacity-50"
+            disabled
+            aria-hidden="true"
+            tabIndex={-1}
+            className="hidden"
           >
             {agents.length === 0 ? <option value="">{zh ? "暂无可用智能体" : "No agents available"}</option> : null}
             {agents.map((agent) => (
@@ -633,7 +705,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           </select>
           <button
             type="button"
-            onClick={() => setShowConversationMenu((v) => !v)}
+            onClick={() => {
+              setShowAgentMenu(false);
+              setShowConversationMenu((v) => !v);
+            }}
             disabled={running || !selectedId}
             className="flex items-center gap-1.5 rounded border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-neutral-300 hover:bg-white/5 disabled:opacity-40"
             title={zh ? "切换会话" : "Switch conversation"}
@@ -780,7 +855,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                void start();
+                submitWithMotion();
               }
             }}
             placeholder={zh ? "输入消息，/ 唤出技能，Enter 发送，Shift+Enter 换行" : "Type a message, / for skills, Enter to send"}
@@ -795,7 +870,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             </button>
           ) : (
             <button
-              onClick={() => void start()}
+              ref={sendButtonRef}
+              onClick={submitWithMotion}
               disabled={!message.trim() || !selectedId}
               className="flex h-10 w-10 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40 disabled:opacity-40"
               title={zh ? "发送" : "Send"}
@@ -805,6 +881,143 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentPicker({
+  agents,
+  selectedId,
+  selectedAgent,
+  open,
+  disabled,
+  zh,
+  onToggle,
+  onPick,
+  onClose,
+}: {
+  agents: Agent[];
+  selectedId: string | null;
+  selectedAgent: Agent | null;
+  open: boolean;
+  disabled: boolean;
+  zh: boolean;
+  onToggle: () => void;
+  onPick: (agentId: string) => void;
+  onClose: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      if (rootRef.current && event.target instanceof globalThis.Node && !rootRef.current.contains(event.target)) {
+        onClose();
+      }
+    };
+    window.addEventListener("mousedown", handler);
+    return () => window.removeEventListener("mousedown", handler);
+  }, [onClose, open]);
+
+  useEffect(() => {
+    if (!open || !menuRef.current || shouldReduceMotion()) return;
+    const ctx = gsap.context(() => {
+      const items = menuRef.current?.querySelectorAll("[data-agent-picker-item]");
+      gsap.fromTo(
+        menuRef.current,
+        { autoAlpha: 0, y: 8, scale: 0.98 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.22,
+          ease: "power3.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+      if (items?.length) {
+        gsap.fromTo(
+          items,
+          { autoAlpha: 0, x: -6 },
+          {
+            autoAlpha: 1,
+            x: 0,
+            duration: 0.18,
+            ease: "power2.out",
+            stagger: 0.035,
+            delay: 0.03,
+            clearProps: "transform,opacity,visibility",
+          },
+        );
+      }
+    }, menuRef);
+    return () => ctx.revert();
+  }, [open]);
+
+  const selectedModel = selectedAgent?.model_name || selectedAgent?.model || selectedAgent?.runtime || "";
+
+  return (
+    <div ref={rootRef} className="relative min-w-0 flex-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled}
+        aria-expanded={open}
+        className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs outline-none transition ${
+          open
+            ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.12)]"
+            : "border-white/10 bg-black/30 text-neutral-200 hover:border-white/18 hover:bg-white/[0.04]"
+        } disabled:cursor-not-allowed disabled:opacity-50`}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Bot className={`h-3.5 w-3.5 shrink-0 ${selectedAgent?.enabled === false ? "text-neutral-500" : "text-cyan-300"}`} />
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{selectedAgent?.name || (zh ? "选择智能体" : "Select agent")}</span>
+            {selectedModel ? <span className="block truncate text-[10px] text-neutral-500">{selectedModel}</span> : null}
+          </span>
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-neutral-500 transition ${open ? "rotate-180 text-cyan-300" : ""}`} />
+      </button>
+
+      {open ? (
+        <div
+          ref={menuRef}
+          className="prompt-editor-scroll absolute left-0 right-0 top-[calc(100%+8px)] z-[60] max-h-[280px] overflow-y-auto rounded-xl border border-white/10 bg-[#171a20]/98 p-1.5 shadow-2xl shadow-black/45 backdrop-blur-xl"
+        >
+          {agents.length === 0 ? (
+            <div className="px-3 py-3 text-center text-[11px] text-neutral-500">
+              {zh ? "暂无可用智能体" : "No agents available"}
+            </div>
+          ) : null}
+          {agents.map((agent) => {
+            const active = agent.id === selectedId;
+            const model = agent.model_name || agent.model || agent.runtime || "";
+            return (
+              <button
+                key={agent.id}
+                type="button"
+                data-agent-picker-item
+                onClick={() => onPick(agent.id)}
+                className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition ${
+                  active ? "bg-cyan-500/15 text-cyan-100" : "text-neutral-300 hover:bg-white/[0.05] hover:text-neutral-100"
+                }`}
+              >
+                <span className={`h-2 w-2 shrink-0 rounded-full ${
+                  agent.enabled ? (active ? "bg-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]" : "bg-emerald-400/80") : "bg-neutral-600"
+                }`} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium">{agent.name}</span>
+                  <span className="block truncate text-[10px] text-neutral-500">
+                    {model || (zh ? "未配置模型" : "No model configured")}
+                  </span>
+                </span>
+                {active ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1136,8 +1349,44 @@ function SlashMenu({
   onPick: (skill: Skill) => void;
   zh: boolean;
 }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuRef.current || shouldReduceMotion()) return;
+    const ctx = gsap.context(() => {
+      const items = menuRef.current?.querySelectorAll("[data-slash-menu-item]");
+      gsap.fromTo(
+        menuRef.current,
+        { autoAlpha: 0, y: 10, scale: 0.985 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.2,
+          ease: "power3.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+      if (items?.length) {
+        gsap.fromTo(
+          items,
+          { autoAlpha: 0, y: 4 },
+          {
+            autoAlpha: 1,
+            y: 0,
+            duration: 0.16,
+            ease: "power2.out",
+            stagger: 0.025,
+            clearProps: "transform,opacity,visibility",
+          },
+        );
+      }
+    }, menuRef);
+    return () => ctx.revert();
+  }, []);
+
   return (
-    <div className="prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-white/10 bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
+    <div ref={menuRef} className="prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-white/10 bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
       <div className="px-2.5 pb-1 pt-1 text-[10px] uppercase tracking-wider text-neutral-500">
         {zh ? "技能" : "Skills"}
       </div>
@@ -1147,6 +1396,7 @@ function SlashMenu({
           <button
             key={skill.id}
             type="button"
+            data-slash-menu-item
             onMouseDown={(e) => {
               e.preventDefault();
               onPick(skill);
@@ -1203,6 +1453,40 @@ function ConversationMenu({
     return () => window.removeEventListener("mousedown", handler);
   }, [onClose]);
 
+  useEffect(() => {
+    if (!rootRef.current || shouldReduceMotion()) return;
+    const ctx = gsap.context(() => {
+      const rows = rootRef.current?.querySelectorAll("[data-conversation-row]");
+      gsap.fromTo(
+        rootRef.current,
+        { autoAlpha: 0, y: 8, scale: 0.985 },
+        {
+          autoAlpha: 1,
+          y: 0,
+          scale: 1,
+          duration: 0.22,
+          ease: "power3.out",
+          clearProps: "transform,opacity,visibility",
+        },
+      );
+      if (rows?.length) {
+        gsap.fromTo(
+          rows,
+          { autoAlpha: 0, x: 6 },
+          {
+            autoAlpha: 1,
+            x: 0,
+            duration: 0.16,
+            ease: "power2.out",
+            stagger: 0.025,
+            clearProps: "transform,opacity,visibility",
+          },
+        );
+      }
+    }, rootRef);
+    return () => ctx.revert();
+  }, []);
+
   return (
     <div
       ref={rootRef}
@@ -1226,6 +1510,7 @@ function ConversationMenu({
         return (
           <div
             key={c.id}
+            data-conversation-row
             className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition ${
               isActive ? "bg-white/[0.06] text-neutral-100" : "text-neutral-300 hover:bg-white/[0.03]"
             }`}
