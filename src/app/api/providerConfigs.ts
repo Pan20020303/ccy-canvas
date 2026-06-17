@@ -889,10 +889,11 @@ export function createProviderConfig(
 
 export function previewProviderConfigTSImport(
   code: string,
+  serviceType?: ServiceType,
 ): Promise<ProviderConfigTSImportPreview> {
   return apiClient.post<ProviderConfigTSImportPreview>(
     "/api/admin/provider-configs/import-ts/preview",
-    { code },
+    { code, service_type: serviceType },
   );
 }
 

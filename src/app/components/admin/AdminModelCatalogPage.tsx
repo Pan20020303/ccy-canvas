@@ -153,7 +153,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
     setPreviewingTS(true);
     setError("");
     try {
-      const preview = await previewProviderConfigTSImport(adapterCode);
+      const preview = await previewProviderConfigTSImport(adapterCode, serviceType);
       setAdapterRuntime("ts");
       setServiceType(preview.service_type);
       setVendor(preview.vendor || "Custom");
@@ -279,16 +279,16 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             </div>
           </Field>
 
-          <Field label="TS Provider Adapter">
+          <Field label="供应商 TS 脚本">
             <div className="space-y-3 rounded-2xl border border-white/[0.07] bg-white/[0.025] p-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="inline-flex items-center gap-2 text-xs text-neutral-400">
                   <FileCode2 className="h-4 w-4 text-[#ff9b68]" />
-                  Paste a Toonflow-style TS provider, then parse it into this form.
+                  粘贴 Toonflow 风格供应商 TS，按当前服务类型解析模型、输入项和图标。
                 </span>
                 <Button type="button" variant="secondary" onClick={handlePreviewTSImport} disabled={previewingTS || !adapterCode.trim()}>
                   {previewingTS ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Parse TS
+                  解析导入
                 </Button>
               </div>
               <textarea
@@ -298,7 +298,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
                   if (event.target.value.trim()) setAdapterRuntime("ts");
                 }}
                 spellCheck={false}
-                placeholder="export const vendor = { ... }; export async function imageRequest(input, ctx) { ... }"
+                placeholder="exports.vendor = vendor; exports.imageRequest = imageRequest; exports.videoRequest = videoRequest;"
                 className={`${FIELD_INPUT} min-h-36 resize-y py-3 font-mono text-xs`}
               />
             </div>
@@ -310,8 +310,8 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
           </div>
 
           <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
-            <Field label="Icon Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
-            <Field label="Icon URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
+            <Field label="图标 Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
+            <Field label="图标 URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
             <div className="pb-3">
               <ModelBrandIcon model={defaultModel || modelListText.split(/\n/)[0]} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
             </div>
@@ -336,8 +336,8 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
 
           <Field label="运行时">
             <select value={adapterRuntime} onChange={(event) => setAdapterRuntime(event.target.value as AdapterRuntime)} className={FIELD_SELECT}>
-              <option value="go">Go built-in adapter</option>
-              <option value="ts">TypeScript adapter</option>
+              <option value="go">Go 内置适配器</option>
+              <option value="ts">TypeScript 供应商脚本</option>
             </select>
           </Field>
 

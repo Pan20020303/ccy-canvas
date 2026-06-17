@@ -55,7 +55,10 @@ type tsRunnerResponse struct {
 
 // PreviewProviderPlugin parses a self-contained TS provider adapter and returns
 // the vendor metadata that can be applied to an admin provider config form.
-func (s *Service) PreviewProviderPlugin(ctx context.Context, code string) (*ProviderPluginPreview, error) {
+// requestedServiceType mirrors Toonflow's mixed vendor files: the same TS
+// provider can declare text/image/video/audio models, while this app stores one
+// service type per provider config.
+func (s *Service) PreviewProviderPlugin(ctx context.Context, code string, requestedServiceType string) (*ProviderPluginPreview, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return nil, apperror.New(apperror.CodeInvalidInput, "TS provider code is required")
@@ -65,6 +68,9 @@ func (s *Service) PreviewProviderPlugin(ctx context.Context, code string) (*Prov
 	resp, err := s.callTSProviderRunner(ctx, tsRunnerRequest{
 		Operation: "inspect",
 		Code:      code,
+		Context: map[string]any{
+			"serviceType": strings.ToLower(strings.TrimSpace(requestedServiceType)),
+		},
 		TimeoutMS: 5000,
 	})
 	if err != nil {
@@ -73,7 +79,7 @@ func (s *Service) PreviewProviderPlugin(ctx context.Context, code string) (*Prov
 	preview := resp.Vendor
 	normalizeProviderPluginPreview(&preview)
 	if preview.ServiceType == "" || preview.Name == "" || len(preview.ModelList) == 0 {
-		return nil, apperror.New(apperror.CodeInvalidInput, "TS provider must export vendor.serviceType, vendor.name, and at least one model")
+		return nil, apperror.New(apperror.CodeInvalidInput, "TS provider must export vendor.name and at least one model for the selected service type")
 	}
 	return &preview, nil
 }
@@ -136,15 +142,19 @@ func (s *Service) runTSProvider(ctx context.Context, pc *domain.ProviderConfig, 
 		Function:  functionName,
 		Input:     generateRequestPayload(req),
 		Context: map[string]any{
-			"apiKey":         apiKey,
-			"baseURL":        baseURL,
-			"providerID":     pc.ID,
-			"providerName":   pc.Name,
-			"vendor":         pc.Vendor,
-			"serviceType":    pc.ServiceType,
-			"model":          req.Model,
-			"submitEndpoint": pc.SubmitEndpoint,
-			"queryEndpoint":  pc.QueryEndpoint,
+			"apiKey":          apiKey,
+			"baseURL":         baseURL,
+			"baseUrl":         baseURL,
+			"providerID":      pc.ID,
+			"providerName":    pc.Name,
+			"vendor":          pc.Vendor,
+			"serviceType":     pc.ServiceType,
+			"service_type":    pc.ServiceType,
+			"model":           req.Model,
+			"modelList":       pc.ModelList,
+			"submitEndpoint":  pc.SubmitEndpoint,
+			"queryEndpoint":   pc.QueryEndpoint,
+			"parameterSchema": rawJSONValue(pc.ParameterSchema),
 		},
 	})
 	if err != nil {
@@ -270,9 +280,22 @@ func isTSProvider(pc *domain.ProviderConfig) bool {
 
 func providerPluginFunctionForService(serviceType string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(serviceType)) {
-	case "text", "image", "video", "audio":
+	case "text", "image", "video":
 		return strings.ToLower(strings.TrimSpace(serviceType)) + "Request", nil
+	case "audio":
+		return "ttsRequest", nil
 	default:
 		return "", errors.New("unsupported service type")
 	}
+}
+
+func rawJSONValue(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return map[string]any{}
+	}
+	return value
 }

@@ -852,7 +852,8 @@ func (h *Handler) listProviderConfigs(ctx context.Context, _ *struct{}) (*listPr
 
 type previewProviderConfigTSImportInput struct {
 	Body struct {
-		Code string `json:"code" minLength:"1" doc:"TypeScript provider adapter source"`
+		Code        string `json:"code" minLength:"1" doc:"TypeScript provider adapter source"`
+		ServiceType string `json:"service_type,omitempty" enum:"text,image,video,audio" doc:"Service type to import from a mixed Toonflow provider"`
 	}
 }
 
@@ -864,7 +865,7 @@ type previewProviderConfigTSImportOutput struct {
 }
 
 func (h *Handler) previewProviderConfigTSImport(ctx context.Context, input *previewProviderConfigTSImportInput) (*previewProviderConfigTSImportOutput, error) {
-	preview, err := h.svc.PreviewProviderPlugin(ctx, input.Body.Code)
+	preview, err := h.svc.PreviewProviderPlugin(ctx, input.Body.Code, input.Body.ServiceType)
 	if err != nil {
 		return nil, toHTTPError(err)
 	}
