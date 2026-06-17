@@ -309,12 +309,22 @@ describe("AdminModelCatalogPage provider config editor", () => {
           spec: {},
           description: "决策层 Agent 技能指令",
         }),
+        makeSkill({
+          id: "skill-art-character",
+          name: "art_character",
+          category: "toonflow/art_skills/2D_90s_japanese_anime/art_prompt",
+          kind: "prompt",
+          spec: { content_md: "# 角色绘制\n\n保持 90 年代日漫质感。" },
+          description: "90 年代日漫角色绘制技能",
+        }),
       ],
     });
     const rendered = await renderPage("skill-management");
     root = rendered.root;
 
     expect(rendered.host.textContent).toContain("production_skills");
+    expect(rendered.host.textContent).toContain("2D_90s_japanese_anime");
+    expect(rendered.host.textContent).toContain("art_prompt");
     expect(rendered.host.textContent).toContain("production_agent_decision.md");
 
     const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>

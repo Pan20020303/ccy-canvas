@@ -50,6 +50,12 @@ func main() {
 	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
 	passwordService := password.NewService()
 
+	if report, err := skillsapp.EnsureToonflowSkillSeeds(ctx, queries); err != nil {
+		log.Printf("[skills] Toonflow seed import skipped: %v", err)
+	} else if report.Created > 0 {
+		log.Printf("[skills] Toonflow seed import created=%d existing=%d total=%d", report.Created, report.Existing, report.Total)
+	}
+
 	// Identity & Auth
 	creditService := creditinfra.NewService(queries)
 	identityRepository := identityinfra.NewRepository(pool, queries)

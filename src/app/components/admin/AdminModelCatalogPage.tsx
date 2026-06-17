@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { gsap } from "gsap";
 import {
   Bold,
@@ -591,6 +591,48 @@ function skillFilePath(skill: Skill) {
     .replace(/\s+/g, "_");
   const safeName = skill.name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_") || skill.id;
   return `${category}/${safeName}.md`;
+}
+
+type SkillTreeEntry = {
+  skill: Skill;
+  path: string;
+  content: string;
+};
+
+type SkillTreeNode = {
+  label: string;
+  path: string;
+  children: SkillTreeNode[];
+  entry?: SkillTreeEntry;
+};
+
+function buildSkillTree(entries: SkillTreeEntry[]) {
+  const roots: SkillTreeNode[] = [];
+  const nodeByPath = new Map<string, SkillTreeNode>();
+
+  const ensureNode = (label: string, nodePath: string, siblings: SkillTreeNode[]) => {
+    const existing = nodeByPath.get(nodePath);
+    if (existing) return existing;
+    const next: SkillTreeNode = { label, path: nodePath, children: [] };
+    nodeByPath.set(nodePath, next);
+    siblings.push(next);
+    siblings.sort((a, b) => a.label.localeCompare(b.label));
+    return next;
+  };
+
+  entries.forEach((entry) => {
+    const parts = entry.path.split("/").filter(Boolean);
+    let siblings = roots;
+    let currentPath = "";
+    parts.forEach((part, index) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      const node = ensureNode(part, currentPath, siblings);
+      if (index === parts.length - 1) node.entry = entry;
+      siblings = node.children;
+    });
+  });
+
+  return roots;
 }
 
 function applyPromptToolbar(content: string, selectionStart: number, selectionEnd: number, action: (typeof PROMPT_TOOLBAR)[number]["key"]) {
@@ -2417,12 +2459,7 @@ function SkillManagementPanel() {
   });
   const activeEntry = filtered.find((entry) => entry.path === activePath) ?? filtered[0] ?? null;
   const active = activeEntry?.skill ?? null;
-  const groupedEntries = filtered.reduce<Record<string, typeof filtered>>((acc, entry) => {
-    const [folder] = entry.path.split("/");
-    acc[folder] = acc[folder] ?? [];
-    acc[folder].push(entry);
-    return acc;
-  }, {});
+  const skillTree = buildSkillTree(filtered);
 
   const saveSkillContent = async () => {
     if (!active || draft === null) return;
@@ -2450,6 +2487,40 @@ function SkillManagementPanel() {
     }
   };
 
+  const renderSkillTree = (nodes: SkillTreeNode[], depth = 0): ReactElement[] => nodes.flatMap((node) => {
+    if (node.entry) {
+      return [
+        <button
+          key={node.path}
+          type="button"
+          onClick={() => setActivePath(node.entry!.path)}
+          className={[
+            "flex w-full items-center gap-2 rounded-lg border py-2 pr-3 text-left text-sm transition",
+            activeEntry?.path === node.entry.path
+              ? "border-white/[0.14] bg-white/[0.08] text-white"
+              : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
+          ].join(" ")}
+          style={{ paddingLeft: 12 + depth * 12 }}
+        >
+          <File className="h-4 w-4 shrink-0 text-rose-300/80" />
+          <span className="min-w-0 flex-1 truncate">{node.label}</span>
+        </button>,
+      ];
+    }
+
+    return [
+      <div
+        key={node.path}
+        className="mt-2 flex items-center gap-2 rounded-md px-2 py-1 text-xs font-medium text-neutral-500"
+        style={{ marginLeft: depth * 12 }}
+      >
+        <FolderOpen className="h-4 w-4 shrink-0" />
+        <span className="truncate">{node.label}</span>
+      </div>,
+      ...renderSkillTree(node.children, depth + 1),
+    ];
+  });
+
   return (
     <section data-testid="settings-panel-skill-management" className="flex h-full min-h-[620px] flex-col">
       <PanelHeader
@@ -2473,32 +2544,7 @@ function SkillManagementPanel() {
             ) : filtered.length === 0 ? (
               <div className="px-3 py-8 text-center text-sm text-neutral-500">暂无 Skill</div>
             ) : (
-              Object.entries(groupedEntries).map(([folder, items]) => (
-                <div key={folder} className="mb-2">
-                  <div className="mb-1 flex items-center gap-2 px-2 py-1 text-xs font-medium text-neutral-500">
-                    <FolderOpen className="h-4 w-4" />
-                    {folder}
-                  </div>
-                  <div className="space-y-1 pl-3">
-                    {items.map((entry) => (
-                      <button
-                        key={entry.skill.id}
-                        type="button"
-                        onClick={() => setActivePath(entry.path)}
-                        className={[
-                          "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition",
-                          activeEntry?.path === entry.path
-                            ? "border-white/[0.14] bg-white/[0.08] text-white"
-                            : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
-                        ].join(" ")}
-                      >
-                        <File className="h-4 w-4 shrink-0 text-rose-300/80" />
-                        <span className="min-w-0 flex-1 truncate">{entry.path.split("/").pop()}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))
+              <div className="space-y-1">{renderSkillTree(skillTree)}</div>
             )}
           </div>
         </aside>
