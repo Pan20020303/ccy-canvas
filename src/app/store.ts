@@ -2075,6 +2075,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const serviceTypeMap: Record<string, string> = {
       textNode: 'text',
       imageNode: 'image',
+      panoramaNode: 'image',
       videoNode: 'video',
       audioNode: 'audio',
     };

@@ -1966,6 +1966,51 @@ async function canvasToDataUrl(canvas: HTMLCanvasElement) {
   return canvas.toDataURL('image/png');
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeAssetUrl(rawUrl: string) {
+  if (!rawUrl || /^https?:\/\//.test(rawUrl) || /^data:/.test(rawUrl)) {
+    return rawUrl;
+  }
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '') as string;
+  return apiBase ? `${apiBase.replace(/\/+$/, '')}${rawUrl}` : rawUrl;
+}
+
+async function uploadImageDataUrl(dataUrl: string, filename: string) {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  const form = new FormData();
+  form.append('file', blob, filename);
+  const uploadResp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
+  if (!uploadResp.ok) {
+    throw new Error(`Upload failed: ${uploadResp.status}`);
+  }
+  const json = await uploadResp.json();
+  const rawUrl = json?.data?.url as string | undefined;
+  if (!rawUrl) {
+    throw new Error('Upload returned empty URL');
+  }
+  return normalizeAssetUrl(rawUrl);
+}
+
+function isLikelyPanoramaData(data: Record<string, any>) {
+  const params = (data.generationParams ?? {}) as Record<string, unknown>;
+  const aspectRatio = String(params.aspectRatio ?? data.aspectRatio ?? '');
+  const ratio = Number(data.mediaWidth) > 0 && Number(data.mediaHeight) > 0
+    ? Number(data.mediaWidth) / Number(data.mediaHeight)
+    : 0;
+  return Boolean(
+    data.isPanorama
+    || data.panorama
+    || params.editOperation === 'panorama'
+    || params.mode === 'panorama'
+    || aspectRatio === '2:1'
+    || (ratio >= 1.9 && ratio <= 2.1),
+  );
+}
+
 async function buildSelectionMask(sourceUrl: string, selection: { x: number; y: number; width: number; height: number }) {
   const img = await loadImageElement(sourceUrl);
   const canvas = document.createElement('canvas');
@@ -2095,8 +2140,8 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       switch (action) {
         case 'panorama':
           return language === 'zh'
-            ? '向四周扩展场景，补全环境细节，保持主体不变，画面更宽。'
-            : 'Expand the scene around the subject, preserve the subject, and widen the canvas naturally.';
+            ? '生成 2:1 等距柱状投影 360 全景图，左右可无缝衔接，补全环境细节并保持主体风格一致。'
+            : 'Generate a 2:1 equirectangular 360 panorama with seamless left-right continuity, expanded environment details, and consistent subject style.';
         case 'angles':
           return language === 'zh'
             ? '保持主体一致，输出不同机位/角度版本，背景简洁。'
@@ -2148,23 +2193,30 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     if (!sourceNode) return;
     const base = sourceNode.position ?? { x: 0, y: 0 };
     const derivedId = `img-derive-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const sourceParams = (sourceData.generationParams as Record<string, unknown> | undefined) ?? {};
+    const model = typeof sourceParams.model === 'string' && sourceParams.model ? sourceParams.model : 'gpt-image-2';
+    const isPanoramaAction = payload.editOperation === 'panorama' || session?.action === 'panorama';
+    const referenceImages = payload.referenceImages ?? (sourceUrl ? [sourceUrl] : undefined);
     addNode({
       id: derivedId,
       type: 'imageNode',
       position: { x: base.x + 360, y: base.y + Math.random() * 40 - 20 },
       data: {
-        customTitle: language === 'zh' ? '派生图' : 'Derived image',
+        customTitle: isPanoramaAction
+          ? (language === 'zh' ? '全景图' : 'Panorama image')
+          : (language === 'zh' ? '派生图' : 'Derived image'),
         status: 'idle',
         sourceKind: 'derived',
         derivedFromNodeId: sourceNodeId,
         derivationAction: session?.action ?? 'enhance',
+        isPanorama: isPanoramaAction,
         generationParams: {
-          model: (sourceData.generationParams as Record<string, unknown> | undefined)?.model ?? 'gpt-image-2',
-          aspectRatio: (sourceData.generationParams as Record<string, unknown> | undefined)?.aspectRatio ?? '1:1',
-          quality: (sourceData.generationParams as Record<string, unknown> | undefined)?.quality ?? 'auto',
-          resolution: (sourceData.generationParams as Record<string, unknown> | undefined)?.resolution ?? '720p',
-          durationSeconds: (sourceData.generationParams as Record<string, unknown> | undefined)?.durationSeconds,
-          referenceImages: payload.referenceImages,
+          model,
+          aspectRatio: isPanoramaAction ? '2:1' : (sourceParams.aspectRatio ?? '1:1'),
+          quality: sourceParams.quality ?? 'auto',
+          resolution: sourceParams.resolution ?? '720p',
+          durationSeconds: sourceParams.durationSeconds,
+          referenceImages,
           maskImage: payload.maskImage,
           editOperation: payload.editOperation,
           expandDirection: payload.expandDirection,
@@ -2177,8 +2229,8 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       },
     } as never);
     onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
-    await runNode(derivedId, { prompt: payload.prompt, model: (sourceData.generationParams as Record<string, unknown> | undefined)?.model as string | undefined });
-  }, [addNode, onConnect, runNode, session?.action, sourceData.generationParams, sourceNode, sourceNodeId, language]);
+    await runNode(derivedId, { prompt: payload.prompt, model });
+  }, [addNode, onConnect, runNode, session?.action, sourceData.generationParams, sourceNode, sourceNodeId, sourceUrl, language]);
 
   const handleGenerate = async () => {
     if (!session || busy || !sourceUrl) return;
@@ -2186,7 +2238,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     try {
       const draft = session.draft;
       if (session.action === 'panorama') {
-        const panorama = await buildPanoramaReference(sourceUrl, draft.expandDirection === 'vertical' ? '9:16' : '21:9');
+        const panorama = await buildPanoramaReference(sourceUrl, '2:1');
         await spawnDerivedNode({
           prompt: draft.prompt,
           referenceImages: panorama.referenceImages,
@@ -2214,6 +2266,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           await spawnDerivedNode({
             prompt: anglePrompt,
             outputCount: 1,
+            referenceImages: [sourceUrl],
             anglePreset: draft.anglePreset,
           });
         }
@@ -2221,6 +2274,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         await spawnDerivedNode({
           prompt: draft.prompt,
           outputCount: 1,
+          referenceImages: [sourceUrl],
           lightingPreset: draft.lightingPreset,
           gridPreset: draft.gridPreset,
         });
@@ -2287,7 +2341,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     }
   };
 
-  if (!sourceNode || sourceNode.type !== 'imageNode' || !sourceUrl) return null;
+  if (!sourceNode || !['imageNode', 'referenceImageNode', 'panoramaNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
 
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
 
@@ -2886,11 +2940,14 @@ export const TextNode = ({ id, data, selected }: any) => {
   );
 };
 
-export const ImageNode = ({ id, data, selected }: any) => {
+export const ImageNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
+  const [panoramaPreview, setPanoramaPreview] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
+  const isPanorama = isLikelyPanoramaData(data);
 
   // Use the actual loaded image ratio if available, otherwise fall back to param.
   const effectiveAspect = naturalRatio ?? paramAspect;
@@ -2926,14 +2983,30 @@ export const ImageNode = ({ id, data, selected }: any) => {
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
+      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       {data.url ? (
         <div
           className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
-          onDoubleClick={() => setPreview(true)}
+          onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
-          <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" onLoad={handleImageLoad} />
+          <ResilientImage
+            src={data.url}
+            alt=""
+            className="h-full w-full object-cover select-none"
+            onLoad={handleImageLoad}
+            zh={language === 'zh'}
+          />
+          {isPanorama ? (
+            <PanoramaOpenButton
+              onClick={(event) => {
+                event.stopPropagation();
+                setPanoramaPreview(true);
+              }}
+              compact
+            />
+          ) : null}
         </div>
       ) : (
         <MediaEmptyPlaceholder
@@ -2944,6 +3017,7 @@ export const ImageNode = ({ id, data, selected }: any) => {
         />
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -3244,10 +3318,12 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
+  const [panoramaPreview, setPanoramaPreview] = useState(false);
   const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
+  const isPanorama = isLikelyPanoramaData(data);
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
     : data.sourceKind === 'derived'
@@ -3273,7 +3349,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
           mediaAspectRatio ? "min-h-[120px]" : "aspect-video",
         )}
         style={mediaAspectRatio ? { aspectRatio: mediaAspectRatio } : undefined}
-        onDoubleClick={() => data.url && setPreview(true)}
+        onDoubleClick={() => data.url && (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
       >
         {data.url ? (
           <ResilientImage
@@ -3296,8 +3372,18 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
             <ImageIcon className="h-6 w-6 text-sky-100/40" />
           </div>
         )}
+        {data.url && isPanorama ? (
+          <PanoramaOpenButton
+            onClick={(event) => {
+              event.stopPropagation();
+              setPanoramaPreview(true);
+            }}
+            compact
+          />
+        ) : null}
       </div>
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -3405,8 +3491,10 @@ export const AudioNode = ({ id, data, selected }: any) => {
   );
 };
 
-export const PanoramaNode = ({ id, data, selected }: any) => {
+export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
   const language = useStore((state) => state.language);
+  const [panoramaPreview, setPanoramaPreview] = useState(false);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-[2/1]');
   return (
     <BaseNode
@@ -3418,11 +3506,26 @@ export const PanoramaNode = ({ id, data, selected }: any) => {
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
+      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
-      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
-        {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
+      <div
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        onDoubleClick={() => data.url && setPanoramaPreview(true)}
+      >
+        {data.url ? (
+          <>
+            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} />
+            <PanoramaOpenButton
+              onClick={(event) => {
+                event.stopPropagation();
+                setPanoramaPreview(true);
+              }}
+            />
+          </>
+        ) : <Globe className="h-6 w-6 text-sky-100/40" />}
       </div>
+      {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -3537,17 +3640,213 @@ function ResilientImage({
   );
 }
 
+function PanoramaPreviewModal({
+  src,
+  nodeId,
+  onClose,
+}: {
+  src: string;
+  nodeId: string;
+  onClose: () => void;
+}) {
+  const language = useStore((state) => state.language);
+  const nodes = useStore((state) => state.nodes);
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const [yaw, setYaw] = useState(0.5);
+  const [pitch, setPitch] = useState(0.5);
+  const [capturing, setCapturing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number; width: number; height: number } | null>(null);
+  const sourceNode = nodes.find((node) => node.id === nodeId);
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const displaySrc = /^data:/.test(src)
+    ? src
+    : (/^https?:\/\//.test(src)
+      ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(src)}`
+      : resolveBackendAssetUrl(src));
+
+  const captureCurrentView = useCallback(async () => {
+    if (capturing) return;
+    setCapturing(true);
+    setError(null);
+    try {
+      const img = await loadImageElement(src);
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      const outW = 1280;
+      const outH = 720;
+      const cropW = Math.max(1, Math.round(srcW * 0.28));
+      const cropH = Math.max(1, Math.min(srcH, Math.round(cropW * (outH / outW))));
+      const rawX = Math.round(yaw * srcW - cropW / 2);
+      const sx = ((rawX % srcW) + srcW) % srcW;
+      const sy = clampNumber(Math.round(pitch * srcH - cropH / 2), 0, Math.max(0, srcH - cropH));
+      const canvas = document.createElement('canvas');
+      canvas.width = outW;
+      canvas.height = outH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Canvas unavailable');
+      }
+      ctx.fillStyle = '#050505';
+      ctx.fillRect(0, 0, outW, outH);
+      if (sx + cropW <= srcW) {
+        ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, outW, outH);
+      } else {
+        const rightW = srcW - sx;
+        const leftW = cropW - rightW;
+        const rightOutW = Math.round(outW * (rightW / cropW));
+        ctx.drawImage(img, sx, sy, rightW, cropH, 0, 0, rightOutW, outH);
+        ctx.drawImage(img, 0, sy, leftW, cropH, rightOutW, 0, outW - rightOutW, outH);
+      }
+
+      const dataUrl = await canvasToDataUrl(canvas);
+      let stableUrl = dataUrl;
+      try {
+        stableUrl = await uploadImageDataUrl(dataUrl, `panorama-view-${Date.now()}.png`);
+      } catch {
+        // DataURL still works locally if upload is temporarily unavailable.
+      }
+      const base = sourceNode?.position ?? { x: 0, y: 0 };
+      const captureId = `pano-view-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      addNode({
+        id: captureId,
+        type: 'referenceImageNode',
+        position: { x: base.x + 360, y: base.y + 90 },
+        data: {
+          url: stableUrl,
+          sourceName: language === 'zh' ? '全景视角截图.png' : 'panorama-view.png',
+          sourceKind: 'derived',
+          sourceNodeId: nodeId,
+          derivedFromNodeId: nodeId,
+          derivationAction: 'panorama_capture',
+          mediaWidth: outW,
+          mediaHeight: outH,
+        },
+      } as never);
+      onConnect({ source: nodeId, target: captureId, sourceHandle: null, targetHandle: null } as never);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCapturing(false);
+    }
+  }, [addNode, capturing, language, nodeId, onConnect, pitch, sourceNode?.position, src, yaw]);
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragRef.current = { x: event.clientX, y: event.clientY, yaw, pitch, width: rect.width, height: rect.height };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragRef.current;
+    if (!start) return;
+    const nextYaw = ((start.yaw - (event.clientX - start.x) / Math.max(1, start.width)) % 1 + 1) % 1;
+    const nextPitch = clampNumber(start.pitch + (event.clientY - start.y) / Math.max(1, start.height), 0.12, 0.88);
+    setYaw(nextYaw);
+    setPitch(nextPitch);
+  };
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer may already be released by the browser.
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[240] flex items-center justify-center bg-black/86 p-6 backdrop-blur-xl" onMouseDown={onClose}>
+      <div
+        className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-white/12 bg-[#0d1015] shadow-[0_30px_120px_rgba(0,0,0,0.62)]"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+          <div>
+            <div className="text-sm font-semibold text-white">{language === 'zh' ? '全景拖动预览' : 'Panorama preview'}</div>
+            <div className="mt-1 text-xs text-neutral-400">
+              {language === 'zh' ? '拖动画面调整角度，点击截图会生成新的参考图节点。' : 'Drag to adjust the angle. Capture creates a new reference image node.'}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={captureCurrentView}
+              disabled={capturing}
+              className="rounded-xl border border-cyan-300/25 bg-cyan-400/12 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {capturing ? (language === 'zh' ? '截图中...' : 'Capturing...') : (language === 'zh' ? '截出当前角度' : 'Capture angle')}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-neutral-200 transition hover:bg-white/10"
+            >
+              {language === 'zh' ? '关闭' : 'Close'}
+            </button>
+          </div>
+        </div>
+        <div className="p-5">
+          <div
+            className="relative h-[68vh] min-h-[360px] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-inner cursor-grab active:cursor-grabbing"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            style={{
+              backgroundImage: `url("${displaySrc.replace(/"/g, '\\"')}")`,
+              backgroundRepeat: 'repeat-x',
+              backgroundSize: 'auto 100%',
+              backgroundPosition: `${yaw * 100}% ${pitch * 100}%`,
+            }}
+          >
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/45 to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-cyan-200/35" />
+            <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-white/12 bg-black/45 px-3 py-1 text-xs text-white/80 backdrop-blur">
+              yaw {Math.round(yaw * 360)} deg · pitch {Math.round((0.5 - pitch) * 120)} deg
+            </div>
+          </div>
+          {error ? (
+            <div className="mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+              {language === 'zh' ? `截图失败：${error}` : `Capture failed: ${error}`}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function PanoramaOpenButton({ onClick, compact = false }: { onClick: (event: React.MouseEvent<HTMLButtonElement>) => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-xl border border-white/12 bg-black/55 text-[11px] font-semibold text-white/85 shadow-lg backdrop-blur-md transition hover:border-cyan-300/35 hover:bg-cyan-400/20 hover:text-cyan-50',
+        compact ? 'px-2 py-1' : 'px-2.5 py-1.5',
+      )}
+      title="Panorama preview"
+    >
+      <Globe className="h-3.5 w-3.5" />
+      720
+    </button>
+  );
+}
+
 const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   // Defensive: agent-created nodes (or other producers) may omit `data`.
   // Without this fallback, React crashes the entire workspace on render.
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
+  const [panoramaPreview, setPanoramaPreview] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
   const title = data.customTitle || (language === 'zh' ? '生成图像' : 'Generate Image');
   const effectiveAspect = naturalRatio ?? paramAspect;
   const aspectClass = getAspectRatioClass(effectiveAspect, 'aspect-video');
+  const isPanorama = isLikelyPanoramaData(data);
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
@@ -3584,7 +3883,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       {data.url ? (
         <div
           className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
-          onDoubleClick={() => setPreview(true)}
+          onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
           <ResilientImage
             src={data.url}
@@ -3600,6 +3899,15 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             versions={(data.versions ?? []) as NodeVersion[]}
             mediaKind="image"
           />
+          {isPanorama ? (
+            <PanoramaOpenButton
+              onClick={(event) => {
+                event.stopPropagation();
+                setPanoramaPreview(true);
+              }}
+              compact
+            />
+          ) : null}
         </div>
       ) : (
         <MediaEmptyPlaceholder
@@ -3610,6 +3918,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
         />
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -3802,6 +4111,7 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
 const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
+  const [panoramaPreview, setPanoramaPreview] = useState(false);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-[2/1]');
   const title = data.customTitle || (language === 'zh' ? '生成全景' : '360 Environment');
   return (
@@ -3816,8 +4126,21 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
-      <div className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass)}>
-        {data.url ? <img src={data.url} alt="" draggable={false} className="h-full w-full object-cover select-none" /> : <Globe className="h-6 w-6 text-sky-100/40" />}
+      <div
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        onDoubleClick={() => data.url && setPanoramaPreview(true)}
+      >
+        {data.url ? (
+          <>
+            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} />
+            <PanoramaOpenButton
+              onClick={(event) => {
+                event.stopPropagation();
+                setPanoramaPreview(true);
+              }}
+            />
+          </>
+        ) : <Globe className="h-6 w-6 text-sky-100/40" />}
         {data.url ? (
           <NodeVersionsBadge
             nodeId={id}
@@ -3829,6 +4152,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
           />
         ) : null}
       </div>
+      {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
 };
