@@ -313,9 +313,17 @@ describe("AdminModelCatalogPage provider config editor", () => {
           id: "skill-art-character",
           name: "art_character",
           category: "toonflow/art_skills/2D_90s_japanese_anime/art_prompt",
-          kind: "prompt",
+          kind: "code",
           spec: { content_md: "# 角色绘制\n\n保持 90 年代日漫质感。" },
           description: "90 年代日漫角色绘制技能",
+        }),
+        makeSkill({
+          id: "prompt-event-extraction",
+          name: "eventExtraction",
+          category: "toonflow/prompts",
+          kind: "prompt",
+          spec: { content_md: "# eventExtraction\n\nPrompt template only." },
+          description: "Prompt template should stay out of skill tree.",
         }),
       ],
     });
@@ -326,6 +334,24 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(rendered.host.textContent).toContain("2D_90s_japanese_anime");
     expect(rendered.host.textContent).toContain("art_prompt");
     expect(rendered.host.textContent).toContain("production_agent_decision.md");
+    expect(rendered.host.textContent).not.toContain("eventExtraction.md");
+
+    const toonflowFolder = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "toonflow",
+    );
+    expect(toonflowFolder).not.toBeNull();
+
+    await act(async () => {
+      toonflowFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.host.textContent).not.toContain("art_character.md");
+
+    await act(async () => {
+      toonflowFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.host.textContent).toContain("art_character.md");
 
     const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
       item.textContent?.trim() === "编辑",

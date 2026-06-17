@@ -52,8 +52,8 @@ func main() {
 
 	if report, err := skillsapp.EnsureToonflowSkillSeeds(ctx, queries); err != nil {
 		log.Printf("[skills] Toonflow seed import skipped: %v", err)
-	} else if report.Created > 0 {
-		log.Printf("[skills] Toonflow seed import created=%d existing=%d total=%d", report.Created, report.Existing, report.Total)
+	} else if report.Created > 0 || report.Updated > 0 {
+		log.Printf("[skills] Toonflow seed import created=%d updated=%d existing=%d total=%d", report.Created, report.Updated, report.Existing, report.Total)
 	}
 
 	// Identity & Auth

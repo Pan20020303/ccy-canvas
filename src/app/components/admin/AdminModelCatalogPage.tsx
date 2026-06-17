@@ -4,6 +4,8 @@ import {
   Bold,
   Bot,
   BrainCircuit,
+  ChevronDown,
+  ChevronRight,
   Clapperboard,
   ExternalLink,
   Eye,
@@ -633,6 +635,19 @@ function buildSkillTree(entries: SkillTreeEntry[]) {
   });
 
   return roots;
+}
+
+function collectSkillFolderPaths(paths: string[]) {
+  const folderPaths = new Set<string>();
+  paths.forEach((filePath) => {
+    const parts = filePath.split("/").filter(Boolean);
+    let currentPath = "";
+    parts.slice(0, -1).forEach((part) => {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      folderPaths.add(currentPath);
+    });
+  });
+  return Array.from(folderPaths);
 }
 
 function applyPromptToolbar(content: string, selectionStart: number, selectionEnd: number, action: (typeof PROMPT_TOOLBAR)[number]["key"]) {
@@ -2428,6 +2443,7 @@ function SkillManagementPanel() {
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<string | null>(null);
 
   const load = async () => {
@@ -2436,9 +2452,15 @@ function SkillManagementPanel() {
     try {
       const next = await adminListSkills();
       setSkills(next);
+      const nextSkillPaths = next.filter((skill) => !isPromptTemplateSkill(skill)).map(skillFilePath);
+      const nextFolderPaths = collectSkillFolderPaths(nextSkillPaths);
       setActivePath((current) => {
-        const paths = next.map(skillFilePath);
-        return current && paths.includes(current) ? current : paths[0] ?? null;
+        return current && nextSkillPaths.includes(current) ? current : nextSkillPaths[0] ?? null;
+      });
+      setExpandedPaths((current) => {
+        if (current.size === 0) return new Set(nextFolderPaths);
+        const nextExpanded = new Set(Array.from(current).filter((path) => nextFolderPaths.includes(path)));
+        return nextExpanded.size === 0 ? new Set(nextFolderPaths) : nextExpanded;
       });
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
@@ -2451,7 +2473,9 @@ function SkillManagementPanel() {
     void load();
   }, []);
 
-  const entries = skills.map((skill) => ({ skill, path: skillFilePath(skill), content: skillToMarkdown(skill) }));
+  const entries = skills
+    .filter((skill) => !isPromptTemplateSkill(skill))
+    .map((skill) => ({ skill, path: skillFilePath(skill), content: skillToMarkdown(skill) }));
   const filtered = entries.filter((entry) => {
     const q = keyword.trim().toLowerCase();
     if (!q) return true;
@@ -2508,16 +2532,29 @@ function SkillManagementPanel() {
       ];
     }
 
+    const forceExpanded = keyword.trim().length > 0;
+    const expanded = forceExpanded || expandedPaths.has(node.path);
     return [
-      <div
+      <button
         key={node.path}
-        className="mt-2 flex items-center gap-2 rounded-md px-2 py-1 text-xs font-medium text-neutral-500"
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => {
+          setExpandedPaths((current) => {
+            const next = new Set(current);
+            if (next.has(node.path)) next.delete(node.path);
+            else next.add(node.path);
+            return next;
+          });
+        }}
+        className="mt-2 flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1 text-left text-xs font-medium text-neutral-500 transition hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-200"
         style={{ marginLeft: depth * 12 }}
       >
+        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <FolderOpen className="h-4 w-4 shrink-0" />
         <span className="truncate">{node.label}</span>
-      </div>,
-      ...renderSkillTree(node.children, depth + 1),
+      </button>,
+      ...(expanded ? renderSkillTree(node.children, depth + 1) : []),
     ];
   });
 
