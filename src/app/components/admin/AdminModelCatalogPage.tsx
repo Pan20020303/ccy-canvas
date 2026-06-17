@@ -3,27 +3,17 @@ import { gsap } from "gsap";
 import {
   Bot,
   BrainCircuit,
-  Database,
   FileCode2,
   FileText,
-  FolderOpen,
-  Globe2,
-  Languages,
   Loader2,
-  LogOut,
-  Monitor,
   Pencil,
   Plus,
   Power,
   RefreshCw,
   RotateCcw,
   Search,
-  Settings2,
-  ShieldCheck,
   Sparkles,
   Trash2,
-  UserCog,
-  WandSparkles,
   X,
   Zap,
 } from "lucide-react";
@@ -101,30 +91,29 @@ function prefersReducedMotion() {
 }
 
 type SettingsPanelKey = "model-service" | "agent-config" | "prompt-manage" | "skill-management" | "memory-config";
-type SettingsMenuItem = {
-  key: SettingsPanelKey | "ui" | "language" | "login" | "database" | "files" | "other" | "request" | "developer" | "update" | "logout";
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  disabled?: boolean;
-};
 
-const SETTINGS_MENU: SettingsMenuItem[] = [
-  { key: "ui", label: "界面设置", icon: Settings2, disabled: true },
-  { key: "language", label: "语言设置", icon: Languages, disabled: true },
-  { key: "model-service", label: "模型服务", icon: Monitor },
-  { key: "agent-config", label: "Agent配置", icon: UserCog },
-  { key: "prompt-manage", label: "提示词管理", icon: FileText },
-  { key: "skill-management", label: "Skills技能管理", icon: WandSparkles },
-  { key: "memory-config", label: "Agent记忆配置", icon: BrainCircuit },
-  { key: "login", label: "登录配置", icon: ShieldCheck, disabled: true },
-  { key: "database", label: "数据库操作", icon: Database, disabled: true },
-  { key: "files", label: "文件管理", icon: FolderOpen, disabled: true },
-  { key: "other", label: "其他配置", icon: Settings2, disabled: true },
-  { key: "request", label: "请求地址", icon: Globe2, disabled: true },
-  { key: "developer", label: "开发者选项", icon: FileCode2, disabled: true },
-  { key: "update", label: "检查更新", icon: RefreshCw, disabled: true },
-  { key: "logout", label: "退出登录", icon: LogOut, disabled: true },
-];
+const SETTINGS_PAGE_META: Record<SettingsPanelKey, { title: string; description: string }> = {
+  "model-service": {
+    title: "模型服务",
+    description: "管理 AI 服务供应商、模型列表、TS 适配器和默认路由。失败只报警，不会自动切换或锁定渠道。",
+  },
+  "agent-config": {
+    title: "Agent配置",
+    description: "参考 Toonflow 的 Agent 配置方式，管理不同助手的模型、系统提示词、可调用技能与运行策略。",
+  },
+  "prompt-manage": {
+    title: "提示词管理",
+    description: "维护可复用提示词模板，统一沉淀画布工作流里的常用生成指令和结构化输入。",
+  },
+  "skill-management": {
+    title: "Skills技能管理",
+    description: "管理可启用的 Skills 能力，支持为 Agent 和用户侧工作流提供统一的工具描述。",
+  },
+  "memory-config": {
+    title: "Agent记忆配置",
+    description: "配置 Agent 记忆、摘要、检索和保留策略，让长期上下文在项目里可控地复用。",
+  },
+};
 
 type VendorModelDefinition = {
   name: string;
@@ -913,7 +902,7 @@ function AnimatedProviderSwitch({ checked, label, onToggle }: { checked: boolean
   );
 }
 
-export function AdminModelCatalogPage() {
+export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: SettingsPanelKey } = {}) {
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -930,7 +919,8 @@ export function AdminModelCatalogPage() {
   const [modelEditorError, setModelEditorError] = useState("");
   const [testingModelKey, setTestingModelKey] = useState<string | null>(null);
   const [modelTestResult, setModelTestResult] = useState<ModelTestResult | null>(null);
-  const [settingsPanel, setSettingsPanel] = useState<SettingsPanelKey>("model-service");
+  const activePanel = panel;
+  const pageMeta = SETTINGS_PAGE_META[activePanel];
 
   const loadConfigs = async () => {
     setLoading(true);
@@ -1203,12 +1193,12 @@ export function AdminModelCatalogPage() {
 
   return (
     <AdminShell
-      title="模型配置"
-      description="管理 AI 服务模型配置，支持自建 NewAPI、第三方 OpenAI-compatible 中转站和原生厂商。失败只报警，不会自动切换或锁定渠道。"
-      action={<Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新增模型配置</Button>}
+      title={pageMeta.title}
+      description={pageMeta.description}
+      action={activePanel === "model-service" ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新增模型配置</Button> : null}
     >
       <div className="space-y-5">
-        <section className="rounded-[28px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-2xl shadow-black/30">
+        {activePanel === "model-service" ? <section className="rounded-[28px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-2xl shadow-black/30">
           <div className="flex flex-wrap items-center gap-4">
             <StatCard label="配置总数" value={configs.length} />
             <StatCard label="在线模型" value={enabledCount} />
@@ -1226,15 +1216,10 @@ export function AdminModelCatalogPage() {
               刷新
             </Button>
           </div>
-        </section>
+        </section> : null}
 
-        <section className="overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
-          <div className="grid min-h-[680px] grid-cols-[250px_1fr]">
-            <SettingsSidebar activeKey={settingsPanel} onSelect={setSettingsPanel} />
-
-            <div className="min-w-0 bg-[#101010]/80 p-5">
-              {settingsPanel === "model-service" ? (
-                <div data-testid="settings-panel-model-service" className="grid min-h-[620px] grid-cols-[260px_1fr] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#111111]/95">
+        {activePanel === "model-service" ? (
+          <section data-testid="settings-panel-model-service" className="grid min-h-[680px] grid-cols-[260px_1fr] overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
             <aside className="border-r border-white/[0.06] bg-white/[0.025] p-4">
               <Button onClick={openCreate} className={`mb-3 h-10 w-full rounded-full ${SETTINGS_PRIMARY_BUTTON}`}>
                 <Plus className="mr-2 h-4 w-4" />
@@ -1372,27 +1357,32 @@ export function AdminModelCatalogPage() {
                 <div className="grid h-full place-items-center rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] text-sm text-neutral-500">选择或新增一个供应商</div>
               )}
             </div>
-                </div>
-              ) : null}
+          </section>
+        ) : null}
 
-              {settingsPanel === "agent-config" ? (
-                <AdminAgentConfigPanel availableModels={availableTextModels} />
-              ) : null}
+        {activePanel === "agent-config" ? (
+          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+            <AdminAgentConfigPanel availableModels={availableTextModels} />
+          </section>
+        ) : null}
 
-              {settingsPanel === "prompt-manage" ? (
-                <PromptManagePanel />
-              ) : null}
+        {activePanel === "prompt-manage" ? (
+          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+            <PromptManagePanel />
+          </section>
+        ) : null}
 
-              {settingsPanel === "skill-management" ? (
-                <SkillManagementPanel />
-              ) : null}
+        {activePanel === "skill-management" ? (
+          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+            <SkillManagementPanel />
+          </section>
+        ) : null}
 
-              {settingsPanel === "memory-config" ? (
-                <MemoryConfigPanel />
-              ) : null}
-            </div>
-          </div>
-        </section>
+        {activePanel === "memory-config" ? (
+          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+            <MemoryConfigPanel />
+          </section>
+        ) : null}
 
         <section className="hidden overflow-hidden rounded-[28px] border border-white/[0.08] bg-[#101010]/85 shadow-2xl shadow-black/35">
           <table className="w-full text-left text-sm">
@@ -1747,39 +1737,6 @@ function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; on
         </div>
       </div>
     </CenterModal>
-  );
-}
-
-function SettingsSidebar({ activeKey, onSelect }: { activeKey: SettingsPanelKey; onSelect: (key: SettingsPanelKey) => void }) {
-  return (
-    <aside className="border-r border-white/[0.06] bg-white/[0.025] px-7 py-7">
-      <h2 className="mb-6 text-lg font-semibold text-neutral-100">模原力设置</h2>
-      <nav className="space-y-1">
-        {SETTINGS_MENU.map((item) => {
-          const Icon = item.icon;
-          const active = item.key === activeKey;
-          const canSelect = !item.disabled;
-          return (
-            <button
-              key={item.key}
-              type="button"
-              disabled={!canSelect}
-              onClick={() => {
-                if (canSelect) onSelect(item.key as SettingsPanelKey);
-              }}
-              className={[
-                "flex h-10 w-full items-center gap-3 rounded-xl border px-3 text-left text-sm transition",
-                active ? "border-white/[0.14] bg-white/[0.085] font-medium text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
-                !canSelect ? "cursor-not-allowed opacity-35 hover:border-transparent hover:bg-transparent hover:text-neutral-400" : "",
-              ].join(" ")}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span className="truncate">{item.label}</span>
-            </button>
-          );
-        })}
-      </nav>
-    </aside>
   );
 }
 

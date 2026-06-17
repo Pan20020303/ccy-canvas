@@ -97,7 +97,9 @@ function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = [], opt
   return requests;
 }
 
-async function renderPage() {
+type TestPanel = "model-service" | "agent-config" | "prompt-manage" | "skill-management" | "memory-config";
+
+async function renderPage(panel: TestPanel = "model-service") {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -105,7 +107,7 @@ async function renderPage() {
   await act(async () => {
     root.render(
       <MemoryRouter>
-        <AdminModelCatalogPage />
+        <AdminModelCatalogPage panel={panel} />
       </MemoryRouter>,
     );
   });
@@ -142,34 +144,38 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(rendered.host.querySelector("[data-testid='provider-config-drawer']")).toBeNull();
   });
 
-  it("switches Toonflow-style settings sections for agents prompts skills and memory", async () => {
+  it("renders Toonflow-style settings sections as primary admin pages", async () => {
     stubAdminApis();
-    const rendered = await renderPage();
+
+    const rendered = await renderPage("agent-config");
     root = rendered.root;
-
-    expect(rendered.host.querySelector("[data-testid='settings-panel-model-service']")).not.toBeNull();
-
-    const clickMenu = async (label: string) => {
-      const button = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
-        item.textContent?.includes(label),
-      );
-      expect(button, `missing menu item ${label}`).not.toBeNull();
-      await act(async () => {
-        button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-    };
-
-    await clickMenu("Agent配置");
     expect(rendered.host.querySelector("[data-testid='settings-panel-agent-config']")).not.toBeNull();
+    expect(rendered.host.querySelector("[data-testid='settings-panel-model-service']")).toBeNull();
+    expect(rendered.host.textContent).not.toContain("界面设置");
 
-    await clickMenu("提示词管理");
-    expect(rendered.host.querySelector("[data-testid='settings-panel-prompt-manage']")).not.toBeNull();
+    await act(async () => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
 
-    await clickMenu("Skills技能管理");
-    expect(rendered.host.querySelector("[data-testid='settings-panel-skill-management']")).not.toBeNull();
+    const promptRendered = await renderPage("prompt-manage");
+    root = promptRendered.root;
+    expect(promptRendered.host.querySelector("[data-testid='settings-panel-prompt-manage']")).not.toBeNull();
 
-    await clickMenu("Agent记忆配置");
-    expect(rendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
+    await act(async () => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+
+    const skillRendered = await renderPage("skill-management");
+    root = skillRendered.root;
+    expect(skillRendered.host.querySelector("[data-testid='settings-panel-skill-management']")).not.toBeNull();
+
+    await act(async () => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+
+    const memoryRendered = await renderPage("memory-config");
+    root = memoryRendered.root;
+    expect(memoryRendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
   });
 
   it("edits a Toonflow-style model row and persists vendor model metadata", async () => {
