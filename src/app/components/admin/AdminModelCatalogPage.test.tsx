@@ -59,13 +59,64 @@ function makeProviderConfig(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeAgent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "agent-1",
+    scope: "global",
+    name: "剧本Agent",
+    description: "用于读取原文生成故事骨架。",
+    avatar: "script",
+    system_prompt: "你是剧本 Agent。",
+    model: "gpt-4.1-mini",
+    skill_ids: [],
+    canvas_tools: true,
+    strategy: "reactive",
+    enabled: true,
+    created_at: "2026-06-17T00:00:00Z",
+    updated_at: "2026-06-17T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeSkill(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "skill-1",
+    scope: "global",
+    name: "事件提取",
+    description: "从章节中提取事件。",
+    category: "prompt_skills",
+    icon: "file-text",
+    kind: "prompt",
+    spec: {
+      slash_command: "eventExtraction",
+      content_md: "# 事件提取\n\n忠于原文，不推测。",
+      user_template: "# 事件提取\n\n忠于原文，不推测。",
+    },
+    input_schema: {},
+    output_schema: {},
+    enabled: true,
+    created_at: "2026-06-17T00:00:00Z",
+    updated_at: "2026-06-17T00:00:00Z",
+    ...overrides,
+  };
+}
+
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = [], options: { testResponse?: unknown; rejectTest?: boolean } = {}) {
+function setTextAreaValue(textarea: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function stubAdminApis(
+  providerConfigs: Array<Record<string, unknown>> = [],
+  options: { testResponse?: unknown; rejectTest?: boolean; agents?: Array<Record<string, unknown>>; skills?: Array<Record<string, unknown>> } = {},
+) {
   const requests: Array<{ url: string; method: string; body?: unknown }> = [];
   vi.stubGlobal(
     "fetch",
@@ -76,8 +127,12 @@ function stubAdminApis(providerConfigs: Array<Record<string, unknown>> = [], opt
       requests.push({ url, method, body });
       if (url.includes("/api/admin/alerts/unread-count")) return apiResponse({ count: 0 });
       if (url.includes("/api/admin/alerts?")) return apiResponse([]);
-      if (url.endsWith("/api/admin/agents")) return apiResponse([]);
-      if (url.endsWith("/api/admin/skills")) return apiResponse([]);
+      if (method === "POST" && url.endsWith("/api/admin/agents")) return apiResponse({ id: "agent-created", ...body });
+      if (method === "PUT" && url.includes("/api/admin/agents/")) return apiResponse({ ...(options.agents?.[0] ?? makeAgent()), ...body });
+      if (method === "GET" && url.endsWith("/api/admin/agents")) return apiResponse(options.agents ?? []);
+      if (method === "POST" && url.endsWith("/api/admin/skills")) return apiResponse({ id: "skill-created", ...body });
+      if (method === "PUT" && url.includes("/api/admin/skills/")) return apiResponse({ ...(options.skills?.[0] ?? makeSkill()), ...body });
+      if (method === "GET" && url.endsWith("/api/admin/skills")) return apiResponse(options.skills ?? []);
       if (method === "POST" && url.includes("/api/admin/provider-configs/") && url.endsWith("/test")) {
         if (options.rejectTest) {
           return new Response(JSON.stringify({ error: { code: "UPSTREAM_ERROR", message: "network timeout" }, request_id: "req_test" }), {
@@ -176,6 +231,124 @@ describe("AdminModelCatalogPage provider config editor", () => {
     const memoryRendered = await renderPage("memory-config");
     root = memoryRendered.root;
     expect(memoryRendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
+  });
+
+  it("fills missing Toonflow-style agent presets through the admin Agent API", async () => {
+    const requests = stubAdminApis([], { agents: [], skills: [] });
+    const rendered = await renderPage("agent-config");
+    root = rendered.root;
+
+    expect(rendered.host.textContent).toContain("剧本Agent");
+    expect(rendered.host.textContent).toContain("生产Agent");
+
+    const fillButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.includes("一键填入"),
+    );
+    expect(fillButton).not.toBeNull();
+
+    await act(async () => {
+      fillButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const createdAgents = requests.filter((request) => request.method === "POST" && request.url.endsWith("/api/admin/agents"));
+    expect(createdAgents).toHaveLength(3);
+    expect(createdAgents.map((request) => (request.body as Record<string, unknown>)?.name)).toEqual(
+      expect.arrayContaining(["剧本Agent", "生产Agent", "通用AI"]),
+    );
+  });
+
+  it("edits a prompt skill in the Toonflow-style markdown dialog", async () => {
+    const requests = stubAdminApis([], { skills: [makeSkill()] });
+    const rendered = await renderPage("prompt-manage");
+    root = rendered.root;
+
+    const promptCard = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.includes("事件提取"),
+    );
+    expect(promptCard).not.toBeNull();
+
+    await act(async () => {
+      promptCard!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = document.body.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).not.toBeNull();
+
+    await act(async () => {
+      setTextAreaValue(textarea!, "# 事件提取\n\n只输出结构化事件。");
+    });
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "保存",
+    );
+    expect(saveButton).not.toBeNull();
+
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/skills/skill-1"));
+    expect(update?.body).toMatchObject({
+      spec: {
+        content_md: "# 事件提取\n\n只输出结构化事件。",
+        user_template: "# 事件提取\n\n只输出结构化事件。",
+      },
+    });
+  });
+
+  it("shows skills as a file tree and saves markdown skill content", async () => {
+    const requests = stubAdminApis([], {
+      skills: [
+        makeSkill({
+          id: "skill-decision",
+          name: "production_agent_decision",
+          category: "production_skills",
+          kind: "code",
+          spec: {},
+          description: "决策层 Agent 技能指令",
+        }),
+      ],
+    });
+    const rendered = await renderPage("skill-management");
+    root = rendered.root;
+
+    expect(rendered.host.textContent).toContain("production_skills");
+    expect(rendered.host.textContent).toContain("production_agent_decision.md");
+
+    const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "编辑",
+    );
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = document.body.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).not.toBeNull();
+
+    await act(async () => {
+      setTextAreaValue(textarea!, "# 决策层 Agent 技能指令\n\n只负责决策，不直接执行。");
+    });
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "保存",
+    );
+    expect(saveButton).not.toBeNull();
+
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/skills/skill-decision"));
+    expect(update?.body).toMatchObject({
+      spec: {
+        content_md: "# 决策层 Agent 技能指令\n\n只负责决策，不直接执行。",
+      },
+    });
   });
 
   it("edits a Toonflow-style model row and persists vendor model metadata", async () => {

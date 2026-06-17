@@ -1,19 +1,35 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import {
+  Bold,
   Bot,
   BrainCircuit,
+  Clapperboard,
+  ExternalLink,
+  Eye,
   FileCode2,
+  File,
   FileText,
+  FolderOpen,
+  Italic,
+  List,
+  ListOrdered,
   Loader2,
+  MessageSquareText,
   Pencil,
   Plus,
   Power,
   RefreshCw,
+  Redo2,
   RotateCcw,
   Search,
   Sparkles,
+  Strikethrough,
+  ThumbsUp,
   Trash2,
+  Undo2,
+  Volume2,
+  Wand2,
   X,
   Zap,
 } from "lucide-react";
@@ -412,6 +428,208 @@ const DEFAULT_MEMORY_CONFIG: MemoryConfigForm = {
   modelOnnxFile: "all-MiniLM-L6-v2/onnx/model_fp16.onnx",
   modelDtype: "fp16",
 };
+
+type AgentPresetKey = "script" | "production" | "general" | "tts";
+
+type AgentPresetDefinition = {
+  key: AgentPresetKey;
+  name: string;
+  description: string;
+  modelHint: string;
+  icon: "script" | "production" | "general" | "tts";
+  aliases: string[];
+  disabled?: boolean;
+  strategy: AgentUpsert["strategy"];
+  canvasTools: boolean;
+  systemPrompt: string;
+};
+
+const AGENT_PRESETS: AgentPresetDefinition[] = [
+  {
+    key: "script",
+    name: "剧本Agent",
+    description: "用于读取原文生成故事骨架、改编策略，建议使用具备强大文本理解和生成能力的模型。",
+    modelHint: "Doubao-Seed-1.8",
+    icon: "script",
+    aliases: ["script", "story", "剧本", "故事", "文生故事"],
+    strategy: "reactive",
+    canvasTools: true,
+    systemPrompt:
+      "你是 CCY Canvas 的剧本 Agent，负责理解用户原文、故事结构和画布上下文，输出清晰的故事骨架、改编策略和可执行分镜方向。忠于用户素材，不臆造关键事实。",
+  },
+  {
+    key: "production",
+    name: "生产Agent",
+    description: "对工作流进行调度和管理，建议使用具备较强逻辑推理和任务管理能力的模型。",
+    modelHint: "Doubao-Seed-2.0-Pro",
+    icon: "production",
+    aliases: ["production", "producer", "生产", "调度", "执行"],
+    strategy: "scripted",
+    canvasTools: true,
+    systemPrompt:
+      "你是 CCY Canvas 的生产 Agent，负责把用户目标拆解成可执行任务，调度节点、技能和模型服务，追踪失败原因并给出下一步。优先保证画布状态和用户意图一致。",
+  },
+  {
+    key: "general",
+    name: "通用AI",
+    description: "用于小说事件提取、资产提示词生成、台词提取等边缘功能，建议使用具备较强文本处理能力的模型。",
+    modelHint: "DeepSeek-V3-2",
+    icon: "general",
+    aliases: ["general", "通用", "assistant", "ai", "助手"],
+    strategy: "reactive",
+    canvasTools: true,
+    systemPrompt:
+      "你是 CCY Canvas 的通用 AI 助手，负责理解用户请求、补充创作建议、整理结构化内容，并在需要时调用可用技能协助完成任务。",
+  },
+  {
+    key: "tts",
+    name: "TTS配音",
+    description: "根据剧本内容生成角色配音，支持多种声音风格和情绪。",
+    modelHint: "未开放",
+    icon: "tts",
+    aliases: ["tts", "配音", "语音", "audio"],
+    disabled: true,
+    strategy: "reactive",
+    canvasTools: false,
+    systemPrompt:
+      "你是 CCY Canvas 的 TTS 配音 Agent，负责根据剧本、角色和情绪生成配音请求。当前项目尚未接入音频模型时保持未开放。",
+  },
+];
+
+const PROMPT_TOOLBAR = [
+  { key: "bold", label: "加粗", icon: <Bold className="h-4 w-4" /> },
+  { key: "italic", label: "斜体", icon: <Italic className="h-4 w-4" /> },
+  { key: "strike", label: "删除线", icon: <Strikethrough className="h-4 w-4" /> },
+  { key: "ul", label: "无序列表", icon: <List className="h-4 w-4" /> },
+  { key: "ol", label: "有序列表", icon: <ListOrdered className="h-4 w-4" /> },
+  { key: "undo", label: "撤销", icon: <Undo2 className="h-4 w-4" /> },
+  { key: "redo", label: "重做", icon: <Redo2 className="h-4 w-4" /> },
+] as const;
+
+function createAgentDraft(agent: Agent | null, fallbackModel: string, preset?: AgentPresetDefinition): AgentEditorDraft {
+  if (agent) {
+    return {
+      name: agent.name,
+      description: agent.description,
+      systemPrompt: agent.system_prompt,
+      model: agent.model || fallbackModel,
+      skillIds: agent.skill_ids,
+      canvasTools: agent.canvas_tools,
+      enabled: agent.enabled,
+      strategy: agent.strategy,
+    };
+  }
+  return {
+    name: preset?.name || "新智能体",
+    description: preset?.description || "参考当前画布、上下文和可调用技能完成任务。",
+    systemPrompt:
+      preset?.systemPrompt ||
+      "你是 CCY Canvas 中的创作型智能体。优先理解当前画布节点、用户输入和绑定技能，再给出可执行的下一步。",
+    model: fallbackModel,
+    skillIds: [],
+    canvasTools: preset?.canvasTools ?? true,
+    enabled: true,
+    strategy: preset?.strategy ?? "reactive",
+  };
+}
+
+function findPresetAgent(agents: Agent[], preset: AgentPresetDefinition) {
+  const aliases = [preset.name, ...preset.aliases].map((item) => item.toLowerCase());
+  return agents.find((agent) => {
+    const haystack = `${agent.name} ${agent.description} ${agent.system_prompt}`.toLowerCase();
+    return aliases.some((alias) => haystack.includes(alias));
+  }) ?? null;
+}
+
+function skillToMarkdown(skill: Skill) {
+  const spec = skill.spec ?? {};
+  const promptBody = isPromptTemplateSkill(skill) ? getSkillTemplateBody(skill) : "";
+  const specContent =
+    typeof spec.content_md === "string"
+      ? spec.content_md
+      : typeof spec.user_template === "string"
+        ? spec.user_template
+        : typeof spec.system_prompt === "string"
+          ? spec.system_prompt
+          : "";
+  if (promptBody || specContent) return promptBody || specContent;
+  const command = getSkillCommandName(skill);
+  return [
+    `# ${skill.name}`,
+    "",
+    skill.description || "暂无技能说明。",
+    "",
+    "## 元信息",
+    "",
+    `- 命令：${command}`,
+    `- 类型：${skill.kind}`,
+    `- 分类：${skill.category || "未分类"}`,
+    `- 状态：${skill.enabled ? "已启用" : "未启用"}`,
+    "",
+    "## Spec",
+    "",
+    "```json",
+    JSON.stringify(skill.spec ?? {}, null, 2),
+    "```",
+  ].join("\n");
+}
+
+function skillFilePath(skill: Skill) {
+  const category = (skill.category || (isPromptTemplateSkill(skill) ? "prompt_skills" : "agent_skills"))
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\s+/g, "_");
+  const safeName = skill.name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_") || skill.id;
+  return `${category}/${safeName}.md`;
+}
+
+function applyPromptToolbar(content: string, selectionStart: number, selectionEnd: number, action: (typeof PROMPT_TOOLBAR)[number]["key"]) {
+  const selected = content.slice(selectionStart, selectionEnd) || "文本";
+  const before = content.slice(0, selectionStart);
+  const after = content.slice(selectionEnd);
+  if (action === "bold") return `${before}**${selected}**${after}`;
+  if (action === "italic") return `${before}_${selected}_${after}`;
+  if (action === "strike") return `${before}~~${selected}~~${after}`;
+  if (action === "ul") return `${before}${selected.split(/\r?\n/).map((line) => `- ${line || "列表项"}`).join("\n")}${after}`;
+  if (action === "ol") return `${before}${selected.split(/\r?\n/).map((line, index) => `${index + 1}. ${line || "列表项"}`).join("\n")}${after}`;
+  return content;
+}
+
+function markdownLineToText(line: string) {
+  return line
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/^\s*[-*]\s+/, "")
+    .replace(/^\s*\d+\.\s+/, "")
+    .replace(/\*\*/g, "")
+    .replace(/~~/g, "")
+    .replace(/_/g, "");
+}
+
+function MarkdownPreview({ content }: { content: string }) {
+  const lines = content.split(/\r?\n/);
+  let inCode = false;
+  return (
+    <div className="space-y-3 text-sm leading-7 text-neutral-200">
+      {lines.map((line, index) => {
+        if (line.trim().startsWith("```")) {
+          inCode = !inCode;
+          return <div key={index} className="rounded bg-white/[0.06] px-3 py-1 font-mono text-xs text-neutral-400">```</div>;
+        }
+        if (inCode) {
+          return <pre key={index} className="overflow-x-auto rounded bg-black/35 px-3 py-2 font-mono text-xs text-neutral-200">{line}</pre>;
+        }
+        if (!line.trim()) return <div key={index} className="h-2" />;
+        if (/^###\s+/.test(line)) return <h3 key={index} className="text-lg font-semibold text-white">{markdownLineToText(line)}</h3>;
+        if (/^##\s+/.test(line)) return <h2 key={index} className="border-b border-white/[0.08] pb-2 text-xl font-semibold text-white">{markdownLineToText(line)}</h2>;
+        if (/^#\s+/.test(line)) return <h1 key={index} className="border-b border-white/[0.08] pb-2 text-2xl font-semibold text-white">{markdownLineToText(line)}</h1>;
+        if (/^\s*[-*]\s+/.test(line)) return <p key={index} className="pl-3 text-neutral-300">• {markdownLineToText(line)}</p>;
+        if (/^\s*\d+\.\s+/.test(line)) return <p key={index} className="pl-3 text-neutral-300">{markdownLineToText(line)}</p>;
+        if (/^\|.*\|$/.test(line)) return <pre key={index} className="overflow-x-auto rounded bg-white/[0.04] px-3 py-2 font-mono text-xs text-neutral-300">{line}</pre>;
+        return <p key={index} className="text-neutral-300">{markdownLineToText(line)}</p>;
+      })}
+    </div>
+  );
+}
 
 function ProviderCodeEditorFallback() {
   return (
@@ -1769,34 +1987,55 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
   const promptSkills = useMemo(() => skills.filter(isPromptTemplateSkill), [skills]);
   const models = availableModels.length ? availableModels : ["gpt-4.1-mini"];
-  const visibleAgents = tab === "ordinary" ? agents.filter((agent) => agent.strategy !== "scripted") : agents;
+  const firstModel = models[0] || "";
+  const presetAgents = useMemo(
+    () => AGENT_PRESETS.map((preset) => ({ preset, agent: findPresetAgent(agents, preset) })),
+    [agents],
+  );
 
-  const openEditor = (agent: Agent | null) => {
+  const openEditor = (agent: Agent | null, preset?: AgentPresetDefinition) => {
+    if (preset?.disabled) {
+      setError("TTS 配音尚未接入音频模型服务，当前保持未开放。");
+      return;
+    }
     setError("");
     setEditor({
       agent,
-      draft: agent
-        ? {
-          name: agent.name,
-          description: agent.description,
-          systemPrompt: agent.system_prompt,
-          model: agent.model || models[0],
-          skillIds: agent.skill_ids,
-          canvasTools: agent.canvas_tools,
-          enabled: agent.enabled,
-          strategy: agent.strategy,
-        }
-        : {
-          name: "新智能体",
-          description: "参考当前画布、上下文和可调用技能完成任务。",
-          systemPrompt: "你是 CCY Canvas 中的创作型智能体。优先理解当前画布节点、用户输入和绑定技能，再给出可执行的下一步。",
-          model: models[0],
-          skillIds: [],
-          canvasTools: true,
-          enabled: true,
-          strategy: "reactive",
-        },
+      draft: createAgentDraft(agent, firstModel, preset),
     });
+  };
+
+  const seedPresets = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const existing = new Set(presetAgents.filter((item) => item.agent).map((item) => item.preset.key));
+      const missing = AGENT_PRESETS.filter((preset) => !preset.disabled && !existing.has(preset.key));
+      if (missing.length === 0) {
+        setError("基础 Agent 已经配置完成，无需重复填入。");
+        return;
+      }
+      await Promise.all(
+        missing.map((preset) =>
+          adminCreateAgent({
+            name: preset.name,
+            description: preset.description,
+            avatar: preset.icon,
+            system_prompt: preset.systemPrompt,
+            model: firstModel,
+            skill_ids: [],
+            canvas_tools: preset.canvasTools,
+            strategy: preset.strategy,
+            enabled: true,
+          }),
+        ),
+      );
+      await load();
+    } catch (err) {
+      setError(toAdminErrorSummary(err, "zh"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveEditor = async () => {
@@ -1832,25 +2071,34 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
   return (
     <section data-testid="settings-panel-agent-config" className="flex h-full min-h-[620px] flex-col">
-      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.035] px-5 py-4">
+      <PanelHeader
+        icon={<Bot className="h-5 w-5" />}
+        title="Agent配置"
+        description="照搬 Toonflow 的简易/高级配置交互，并接入本项目真实 Agent CRUD。"
+        action={
+          <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading} className={SETTINGS_PANEL_BUTTON}>
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+            刷新
+          </Button>
+        }
+      />
+
+      <div className="mt-4 rounded-xl border border-emerald-400/15 bg-emerald-500/10 p-4 text-sm text-emerald-100">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-neutral-200">
-              <Bot className="h-5 w-5" />
+            <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-400/15 text-emerald-200">
+              <ThumbsUp className="h-5 w-5" />
             </span>
-            <div>
-              <h3 className="text-lg font-semibold text-neutral-100">Agent配置</h3>
-              <p className="mt-1 text-sm text-neutral-500">给不同创作角色指定模型、系统提示词和可调用 Skills。</p>
-            </div>
+            <span>使用模原力式预设，可一键填入剧本 Agent、生产 Agent、通用 AI，开箱即用。</span>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading} className={SETTINGS_PANEL_BUTTON}>
-              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-              刷新
+            <Button type="button" variant="secondary" className="border-emerald-300/20 bg-emerald-300/10 text-emerald-100 hover:bg-emerald-300/15" onClick={() => window.open("https://api.toonflow.net", "_blank")}>
+              进入网站
+              <ExternalLink className="ml-2 h-4 w-4" />
             </Button>
-            <Button type="button" onClick={() => openEditor(null)} className={SETTINGS_PRIMARY_BUTTON}>
-              <Plus className="mr-2 h-4 w-4" />
-              新增 Agent
+            <Button type="button" className={SETTINGS_PRIMARY_BUTTON} disabled={saving || loading} onClick={() => void seedPresets()}>
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Wand2 className="mr-2 h-4 w-4" />}
+              一键填入
             </Button>
           </div>
         </div>
@@ -1860,8 +2108,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
       <div className="mt-4 flex gap-2 border-b border-white/[0.08]">
         {[
-          ["ordinary", "普通"] as const,
-          ["advanced", "高级"] as const,
+          ["ordinary", "简易配置"] as const,
+          ["advanced", "高级配置"] as const,
         ].map(([value, label]) => (
           <button
             key={value}
@@ -1877,10 +2125,50 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
         ))}
       </div>
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+      {tab === "ordinary" ? (
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          {loading ? (
+            <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
+          ) : (
+            presetAgents.map(({ preset, agent }) => (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={() => openEditor(agent, preset)}
+                className={[
+                  "rounded-xl border p-4 text-left shadow-sm transition",
+                  preset.disabled
+                    ? "cursor-not-allowed border-white/[0.05] bg-white/[0.02] opacity-70"
+                    : "border-white/[0.08] bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.055]",
+                ].join(" ")}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.045] text-neutral-200">
+                      {preset.icon === "script" ? <FileText className="h-5 w-5" /> : null}
+                      {preset.icon === "production" ? <Clapperboard className="h-5 w-5" /> : null}
+                      {preset.icon === "general" ? <MessageSquareText className="h-5 w-5" /> : null}
+                      {preset.icon === "tts" ? <Volume2 className="h-5 w-5" /> : null}
+                    </span>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-semibold text-neutral-100">{preset.name}</h4>
+                      <p className="mt-1 text-xs text-neutral-500">{agent ? "已接入本项目 Agent" : "等待配置"}</p>
+                    </div>
+                  </div>
+                  <span className={agent && !preset.disabled ? "rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300" : preset.disabled ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-xs text-neutral-500" : "rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"}>
+                    {agent && !preset.disabled ? agent.model || preset.modelHint : preset.disabled ? "未开放" : "未配置"}
+                  </span>
+                </div>
+                <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{preset.description}</p>
+              </button>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {loading ? (
           <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
-        ) : visibleAgents.length === 0 ? (
+        ) : agents.length === 0 ? (
           <button
             type="button"
             onClick={() => openEditor(null)}
@@ -1889,7 +2177,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
             暂无 Agent，点击创建一个可配置的创作角色。
           </button>
         ) : (
-          visibleAgents.map((agent) => (
+          agents.map((agent) => (
             <button
               key={agent.id}
               type="button"
@@ -1914,14 +2202,14 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
                 <span className={SETTINGS_BADGE}>{agent.model || "未配置模型"}</span>
                 <span className={SETTINGS_BADGE}>Skills ×{agent.skill_ids.length}</span>
                 <span className={SETTINGS_BADGE}>{agent.canvas_tools ? "画布工具" : "纯对话"}</span>
+                <span className={SETTINGS_BADGE}>策略：{agent.strategy}</span>
               </div>
-              {tab === "advanced" ? (
-                <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{agent.system_prompt}</p>
-              ) : null}
+              <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{agent.system_prompt}</p>
             </button>
           ))
         )}
-      </div>
+        </div>
+      )}
 
       {editor ? (
         <AgentConfigModal
@@ -1945,6 +2233,7 @@ function PromptManagePanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [previewOnly, setPreviewOnly] = useState(false);
   const [editor, setEditor] = useState<{
     skill: Skill | null;
     name: string;
@@ -2028,7 +2317,7 @@ function PromptManagePanel() {
       <PanelHeader
         icon={<FileText className="h-5 w-5" />}
         title="提示词管理"
-        description="管理可被 Agent 或 Slash 命令调用的提示词模板。"
+        description="复刻 Toonflow 的卡片列表和 Markdown 编辑弹窗，保存到本项目 prompt Skill。"
         action={<Button onClick={() => openEditor(null)} className={SETTINGS_PRIMARY_BUTTON}><Plus className="mr-2 h-4 w-4" />新增提示词</Button>}
       />
       {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
@@ -2056,7 +2345,7 @@ function PromptManagePanel() {
                   <h4 className="text-sm font-semibold text-neutral-100">{skill.name}</h4>
                   <p className="mt-1 text-xs text-neutral-500">{getSkillCommandName(skill)} · {skill.category || "prompt"}</p>
                 </div>
-                <Badge className="border-white/[0.08] bg-white/[0.045] text-neutral-300">prompt</Badge>
+                <span className="text-xs text-neutral-500">{getSkillCommandName(skill).replace(/^\//, "")}</span>
               </div>
               <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{getSkillTemplateBody(skill) || skill.description || "暂无提示词内容"}</p>
             </button>
@@ -2067,6 +2356,8 @@ function PromptManagePanel() {
         <PromptEditorModal
           editor={editor}
           saving={saving}
+          previewOnly={previewOnly}
+          onTogglePreview={() => setPreviewOnly((value) => !value)}
           onChange={setEditor}
           onClose={() => {
             if (!saving) setEditor(null);
@@ -2084,7 +2375,7 @@ function SkillManagementPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activePath, setActivePath] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
 
   const load = async () => {
@@ -2093,7 +2384,10 @@ function SkillManagementPanel() {
     try {
       const next = await adminListSkills();
       setSkills(next);
-      setActiveId((current) => current && next.some((skill) => skill.id === current) ? current : next[0]?.id ?? null);
+      setActivePath((current) => {
+        const paths = next.map(skillFilePath);
+        return current && paths.includes(current) ? current : paths[0] ?? null;
+      });
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
     } finally {
@@ -2105,24 +2399,42 @@ function SkillManagementPanel() {
     void load();
   }, []);
 
-  const filtered = skills.filter((skill) => {
+  const entries = skills.map((skill) => ({ skill, path: skillFilePath(skill), content: skillToMarkdown(skill) }));
+  const filtered = entries.filter((entry) => {
     const q = keyword.trim().toLowerCase();
     if (!q) return true;
-    return [skill.name, skill.category, skill.kind, skill.description].some((value) => value.toLowerCase().includes(q));
+    return [entry.path, entry.skill.name, entry.skill.category, entry.skill.kind, entry.skill.description].some((value) => value.toLowerCase().includes(q));
   });
-  const active = filtered.find((skill) => skill.id === activeId) ?? filtered[0] ?? null;
+  const activeEntry = filtered.find((entry) => entry.path === activePath) ?? filtered[0] ?? null;
+  const active = activeEntry?.skill ?? null;
+  const groupedEntries = filtered.reduce<Record<string, typeof filtered>>((acc, entry) => {
+    const [folder] = entry.path.split("/");
+    acc[folder] = acc[folder] ?? [];
+    acc[folder].push(entry);
+    return acc;
+  }, {});
 
-  const saveSpec = async () => {
+  const saveSkillContent = async () => {
     if (!active || draft === null) return;
     setSaving(true);
     setError("");
     try {
-      const parsed = JSON.parse(draft || "{}");
-      await adminUpdateSkill(active.id, skillToUpsert(active, { spec: parsed }));
+      const spec = active.kind === "prompt"
+        ? {
+          ...(active.spec ?? {}),
+          content_md: draft,
+          user_template: draft,
+        }
+        : {
+          ...(active.spec ?? {}),
+          content_md: draft,
+        };
+      const description = active.description || markdownLineToText(draft.split(/\r?\n/).find((line) => line.trim() && !line.startsWith("#")) || "");
+      await adminUpdateSkill(active.id, skillToUpsert(active, { description, spec }));
       setDraft(null);
       await load();
     } catch (err) {
-      setError(err instanceof SyntaxError ? `JSON 格式错误：${err.message}` : toAdminErrorSummary(err, "zh"));
+      setError(toAdminErrorSummary(err, "zh"));
     } finally {
       setSaving(false);
     }
@@ -2142,7 +2454,7 @@ function SkillManagementPanel() {
           <input
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
-            placeholder="搜索 Skill"
+            placeholder="搜索文件名"
             className={SETTINGS_INPUT}
           />
           <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
@@ -2151,43 +2463,50 @@ function SkillManagementPanel() {
             ) : filtered.length === 0 ? (
               <div className="px-3 py-8 text-center text-sm text-neutral-500">暂无 Skill</div>
             ) : (
-              filtered.map((skill) => (
-                <button
-                  key={skill.id}
-                  type="button"
-                  onClick={() => setActiveId(skill.id)}
-                  className={[
-                    "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition",
-                    active?.id === skill.id ? "border-white/[0.14] bg-white/[0.08] text-white" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
-                  ].join(" ")}
-                >
-                  <FileText className="h-4 w-4 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate">{skill.name}</span>
-                </button>
+              Object.entries(groupedEntries).map(([folder, items]) => (
+                <div key={folder} className="mb-2">
+                  <div className="mb-1 flex items-center gap-2 px-2 py-1 text-xs font-medium text-neutral-500">
+                    <FolderOpen className="h-4 w-4" />
+                    {folder}
+                  </div>
+                  <div className="space-y-1 pl-3">
+                    {items.map((entry) => (
+                      <button
+                        key={entry.skill.id}
+                        type="button"
+                        onClick={() => setActivePath(entry.path)}
+                        className={[
+                          "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition",
+                          activeEntry?.path === entry.path
+                            ? "border-white/[0.14] bg-white/[0.08] text-white"
+                            : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
+                        ].join(" ")}
+                      >
+                        <File className="h-4 w-4 shrink-0 text-rose-300/80" />
+                        <span className="min-w-0 flex-1 truncate">{entry.path.split("/").pop()}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))
             )}
           </div>
         </aside>
         <div className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025]">
-          {active ? (
+          {active && activeEntry ? (
             <>
               <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3">
                 <div>
-                  <h4 className="text-sm font-semibold text-neutral-100">{active.name}</h4>
+                  <h4 className="text-sm font-semibold text-neutral-100">{activeEntry.path}</h4>
                   <p className="mt-1 text-xs text-neutral-500">{active.kind} · {active.category || "未分类"} · {active.enabled ? "已启用" : "未启用"}</p>
                 </div>
-                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setDraft(JSON.stringify(active.spec ?? {}, null, 2))}>
+                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setDraft(activeEntry.content)}>
                   <Pencil className="mr-2 h-4 w-4" />
                   编辑
                 </Button>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                <div className="mb-4 rounded-lg border border-white/[0.08] bg-white/[0.035] p-4 text-sm leading-6 text-neutral-400">
-                  {active.description || "暂无描述。"}
-                </div>
-                <pre className="whitespace-pre-wrap rounded-lg bg-[#191919] p-4 text-xs leading-5 text-neutral-100">
-                  {JSON.stringify(active.spec ?? {}, null, 2)}
-                </pre>
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                <MarkdownPreview content={activeEntry.content} />
               </div>
             </>
           ) : (
@@ -2204,7 +2523,7 @@ function SkillManagementPanel() {
           onClose={() => {
             if (!saving) setDraft(null);
           }}
-          onSave={() => void saveSpec()}
+          onSave={() => void saveSkillContent()}
         />
       ) : null}
     </section>
@@ -2402,32 +2721,90 @@ function AgentConfigModal({
 function PromptEditorModal({
   editor,
   saving,
+  previewOnly,
+  onTogglePreview,
   onChange,
   onClose,
   onSave,
 }: {
   editor: { skill: Skill | null; name: string; commandName: string; modelHint: string; content: string };
   saving: boolean;
+  previewOnly: boolean;
+  onTogglePreview: () => void;
   onChange: (editor: { skill: Skill | null; name: string; commandName: string; modelHint: string; content: string }) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
+  const textRef = useRef<HTMLTextAreaElement>(null);
+
+  const runToolbarAction = (action: (typeof PROMPT_TOOLBAR)[number]["key"]) => {
+    const textarea = textRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    if (action === "undo" || action === "redo") {
+      document.execCommand(action === "undo" ? "undo" : "redo");
+      return;
+    }
+    const next = applyPromptToolbar(editor.content, textarea.selectionStart, textarea.selectionEnd, action);
+    onChange({ ...editor, content: next });
+  };
+
   return (
-    <CenterModal title="提示词编辑器" onClose={onClose} widthClass="max-w-[980px]">
+    <CenterModal title="提示词" onClose={onClose} widthClass="max-w-[1180px]">
       <div className="grid gap-3 md:grid-cols-3">
-        <SettingsField label="名称"><input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
-        <SettingsField label="Slash 命令"><input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
-        <SettingsField label="模型提示"><input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
-      </div>
-      <div className="mt-4">
-        <SettingsField label="Markdown 提示词">
-          <textarea
-            value={editor.content}
-            onChange={(event) => onChange({ ...editor, content: event.target.value })}
-            rows={18}
-            className={`${SETTINGS_INPUT} resize-y font-mono text-xs leading-5`}
-          />
+        <SettingsField label="名称">
+          <input value={editor.name} onChange={(event) => onChange({ ...editor, name: event.target.value })} className={SETTINGS_INPUT} />
         </SettingsField>
+        <SettingsField label="类型 / Slash 命令">
+          <input value={editor.commandName} onChange={(event) => onChange({ ...editor, commandName: event.target.value })} className={SETTINGS_INPUT} />
+        </SettingsField>
+        <SettingsField label="模型提示">
+          <input value={editor.modelHint} onChange={(event) => onChange({ ...editor, modelHint: event.target.value })} className={SETTINGS_INPUT} />
+        </SettingsField>
+      </div>
+      <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025]">
+        <div className="flex items-center justify-between border-b border-white/[0.08] px-3 py-2">
+          <div className="flex items-center gap-1">
+            {PROMPT_TOOLBAR.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                title={item.label}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => runToolbarAction(item.key)}
+                className="grid h-8 w-8 place-items-center rounded-md text-neutral-400 transition hover:bg-white/[0.08] hover:text-white"
+              >
+                {item.icon}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            title="预览"
+            onClick={onTogglePreview}
+            className={[
+              "grid h-8 w-8 place-items-center rounded-md transition",
+              previewOnly ? "bg-white/[0.10] text-white" : "text-neutral-400 hover:bg-white/[0.08] hover:text-white",
+            ].join(" ")}
+          >
+            <Eye className="h-4 w-4" />
+          </button>
+        </div>
+        <div className={previewOnly ? "grid min-h-[58vh] grid-cols-1" : "grid min-h-[58vh] grid-cols-1 lg:grid-cols-2"}>
+          {!previewOnly ? (
+            <textarea
+              ref={textRef}
+              value={editor.content}
+              onChange={(event) => onChange({ ...editor, content: event.target.value })}
+              spellCheck={false}
+              className="min-h-[58vh] resize-none border-0 border-r border-white/[0.08] bg-black/20 px-5 py-4 font-mono text-sm leading-7 text-neutral-100 outline-none placeholder:text-neutral-600"
+              placeholder="请输入 Markdown 提示词..."
+            />
+          ) : null}
+          <div className="max-h-[58vh] overflow-y-auto px-5 py-4">
+            <MarkdownPreview content={editor.content} />
+          </div>
+        </div>
       </div>
       <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
     </CenterModal>
@@ -2449,15 +2826,48 @@ function SkillSpecEditorModal({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const runToolbarAction = (action: (typeof PROMPT_TOOLBAR)[number]["key"]) => {
+    const textarea = textRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    if (action === "undo" || action === "redo") {
+      document.execCommand(action === "undo" ? "undo" : "redo");
+      return;
+    }
+    onChange(applyPromptToolbar(draft, textarea.selectionStart, textarea.selectionEnd, action));
+  };
+
   return (
-    <CenterModal title={title} onClose={onClose} widthClass="max-w-[900px]">
-      <textarea
-        value={draft}
-        onChange={(event) => onChange(event.target.value)}
-        spellCheck={false}
-        rows={22}
-        className="w-full rounded-md border border-white/[0.08] bg-[#1e1e1e] px-4 py-3 font-mono text-xs leading-5 text-neutral-100 outline-none focus:border-white/[0.18]"
-      />
+    <CenterModal title={title} onClose={onClose} widthClass="max-w-[1180px]">
+      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025]">
+        <div className="flex items-center gap-1 border-b border-white/[0.08] px-3 py-2">
+          {PROMPT_TOOLBAR.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              title={item.label}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => runToolbarAction(item.key)}
+              className="grid h-8 w-8 place-items-center rounded-md text-neutral-400 transition hover:bg-white/[0.08] hover:text-white"
+            >
+              {item.icon}
+            </button>
+          ))}
+        </div>
+        <div className="grid min-h-[62vh] grid-cols-1 lg:grid-cols-2">
+          <textarea
+            ref={textRef}
+            value={draft}
+            onChange={(event) => onChange(event.target.value)}
+            spellCheck={false}
+            className="min-h-[62vh] resize-none border-0 border-r border-white/[0.08] bg-black/20 px-5 py-4 font-mono text-sm leading-7 text-neutral-100 outline-none placeholder:text-neutral-600"
+          />
+          <div className="max-h-[62vh] overflow-y-auto px-5 py-4">
+            <MarkdownPreview content={draft} />
+          </div>
+        </div>
+      </div>
       <ModalFooter saving={saving} onClose={onClose} onSave={onSave} />
     </CenterModal>
   );
