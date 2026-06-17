@@ -950,7 +950,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
           </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="prompt-editor-scroll flex-1 overflow-y-auto px-6 py-5">
           <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
             <aside className="space-y-5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
           <Field label="服务类型">
