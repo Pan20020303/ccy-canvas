@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, Undo2, Upload, X, Zap } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { FileCode2, Loader2, Pencil, Plus, Power, RefreshCw, RotateCcw, Search, Trash2, X, Zap } from "lucide-react";
 
 import type { AdapterRuntime, GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
 import {
@@ -21,6 +21,8 @@ import { Button } from "../ui/button";
 import { ModelBrandIcon } from "../ModelBrandIcon";
 import { AdminShell } from "./AdminShell";
 import { ChannelHealthBadge } from "./ChannelHealthBadge";
+
+const ProviderCodeEditorModal = lazy(() => import("./ProviderCodeEditorModal"));
 
 const SERVICE_LABELS: Record<ServiceType, string> = {
   text: "文本生成",
@@ -45,6 +47,16 @@ const FIELD_INPUT =
   "w-full rounded-2xl border border-white/[0.08] bg-black/20 px-4 py-2.5 text-sm text-white outline-none transition placeholder:text-neutral-600 focus:border-[#ff6a1f]/55";
 const FIELD_SELECT = `${FIELD_INPUT} appearance-none`;
 
+function ProviderCodeEditorFallback() {
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/72 px-5 backdrop-blur-sm">
+      <div className="grid h-[78vh] w-full max-w-[1344px] place-items-center rounded-lg bg-white text-sm text-neutral-500 shadow-[0_28px_90px_rgba(0,0,0,0.35)]">
+        正在加载代码编辑器...
+      </div>
+    </div>
+  );
+}
+
 function serviceCapabilities(serviceType: ServiceType) {
   return [serviceType];
 }
@@ -55,135 +67,6 @@ type DrawerProps = {
   onClose: () => void;
   onSaved: () => void;
 };
-
-type CodeEditorModalProps = {
-  open: boolean;
-  title?: string;
-  description?: string;
-  initialCode: string;
-  saving?: boolean;
-  error?: string;
-  onClose: () => void;
-  onConfirm: (code: string) => void;
-};
-
-function CodeEditorModal({
-  open,
-  title = "代码",
-  description = "请编写 TypeScript 代码配置供应商信息",
-  initialCode,
-  saving,
-  error,
-  onClose,
-  onConfirm,
-}: CodeEditorModalProps) {
-  const [draft, setDraft] = useState(initialCode);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (open) setDraft(initialCode);
-  }, [initialCode, open]);
-
-  const lines = useMemo(() => Math.max(1, draft.split(/\r?\n/).length), [draft]);
-  const minimapRows = useMemo(
-    () =>
-      draft
-        .split(/\r?\n/)
-        .slice(0, 120)
-        .map((line) => Math.min(56, Math.max(8, line.trim().length * 0.55))),
-    [draft],
-  );
-
-  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setDraft(await file.text());
-    event.target.value = "";
-  };
-
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/72 px-5 backdrop-blur-sm">
-      <div className="flex h-[78vh] w-full max-w-[1280px] flex-col rounded-xl bg-white text-neutral-950 shadow-[0_28px_90px_rgba(0,0,0,0.35)]">
-        <header className="flex items-start justify-between px-7 pb-3 pt-6">
-          <div>
-            <h3 className="text-base font-semibold">{title}</h3>
-            <p className="mt-5 flex items-center gap-2 text-xs text-neutral-500">
-              <span className="grid h-4 w-4 place-items-center rounded-full border border-neutral-400 text-[10px]">i</span>
-              {description}
-            </p>
-          </div>
-          <button className="rounded-full p-1 text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-900" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </button>
-        </header>
-
-        <div className="flex items-center justify-end gap-2 px-7 pb-3">
-          <button
-            type="button"
-            onClick={() => setDraft(initialCode)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs text-neutral-700 transition hover:bg-neutral-100"
-          >
-            <Undo2 className="h-3.5 w-3.5" />
-            重置
-          </button>
-          <input ref={fileInputRef} type="file" accept=".ts,.tsx,.js,.mjs,.txt" className="hidden" onChange={handleImportFile} />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-orange-200 px-3 text-xs text-[#ff6a1f] transition hover:bg-orange-50"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            导入文件
-          </button>
-        </div>
-
-        <div className="mx-7 min-h-0 flex-1 overflow-hidden rounded border border-neutral-200 bg-[#171717]">
-          <div className="relative h-full">
-            <pre className="pointer-events-none absolute left-0 top-0 z-10 min-h-full w-14 select-none border-r border-white/8 bg-[#111111] py-2 pr-3 text-right font-mono text-[12px] leading-6 text-neutral-500">
-              {Array.from({ length: lines }, (_, index) => index + 1).join("\n")}
-            </pre>
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              spellCheck={false}
-              className="h-full w-full resize-none bg-[#171717] py-2 pl-16 pr-24 font-mono text-[12px] leading-6 text-[#d8dee9] outline-none selection:bg-[#ff6a1f]/35"
-            />
-            <div className="pointer-events-none absolute right-0 top-0 h-full w-[72px] border-l border-white/8 bg-[#202020]/80 px-2 py-2">
-              <div className="space-y-[2px]">
-                {minimapRows.map((width, index) => (
-                  <div
-                    key={index}
-                    className="h-[2px] rounded-full bg-sky-300/60"
-                    style={{ width }}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {error ? <div className="mx-7 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
-
-        <footer className="flex items-center justify-end gap-3 px-7 py-5">
-          <button type="button" onClick={onClose} className="h-9 rounded bg-neutral-100 px-5 text-sm text-neutral-700 transition hover:bg-neutral-200">
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={() => onConfirm(draft)}
-            disabled={saving}
-            className="inline-flex h-9 items-center rounded bg-[#ff6a1f] px-5 text-sm font-medium text-white transition hover:bg-[#f05f16] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            确认
-          </button>
-        </footer>
-      </div>
-    </div>
-  );
-}
 
 function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const isEdit = Boolean(config);
@@ -532,16 +415,20 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button onClick={handleSave} disabled={saving}>{saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}保存配置</Button>
         </footer>
-        <CodeEditorModal
-          open={codeEditorOpen}
-          initialCode={adapterCode}
-          onClose={() => setCodeEditorOpen(false)}
-          onConfirm={(code) => {
-            setAdapterCode(code);
-            if (code.trim()) setAdapterRuntime("ts");
-            setCodeEditorOpen(false);
-          }}
-        />
+        {codeEditorOpen ? (
+          <Suspense fallback={<ProviderCodeEditorFallback />}>
+            <ProviderCodeEditorModal
+              open={codeEditorOpen}
+              initialCode={adapterCode}
+              onClose={() => setCodeEditorOpen(false)}
+              onConfirm={(code) => {
+                setAdapterCode(code);
+                if (code.trim()) setAdapterRuntime("ts");
+                setCodeEditorOpen(false);
+              }}
+            />
+          </Suspense>
+        ) : null}
       </aside>
     </div>
   );
@@ -977,18 +864,22 @@ export function AdminModelCatalogPage() {
       </div>
 
       <ConfigDrawer config={editing} open={drawerOpen} onClose={() => setDrawerOpen(false)} onSaved={loadConfigs} />
-      <CodeEditorModal
-        open={Boolean(codeEditingConfig)}
-        initialCode={codeEditingConfig?.adapter_code || ""}
-        saving={codeSaving}
-        error={codeError}
-        onClose={() => {
-          if (!codeSaving) setCodeEditingConfig(null);
-        }}
-        onConfirm={(code) => {
-          if (codeEditingConfig) void handleSaveCode(codeEditingConfig, code);
-        }}
-      />
+      {codeEditingConfig ? (
+        <Suspense fallback={<ProviderCodeEditorFallback />}>
+          <ProviderCodeEditorModal
+            open={Boolean(codeEditingConfig)}
+            initialCode={codeEditingConfig.adapter_code || ""}
+            saving={codeSaving}
+            error={codeError}
+            onClose={() => {
+              if (!codeSaving) setCodeEditingConfig(null);
+            }}
+            onConfirm={(code) => {
+              if (codeEditingConfig) void handleSaveCode(codeEditingConfig, code);
+            }}
+          />
+        </Suspense>
+      ) : null}
     </AdminShell>
   );
 }
