@@ -46,6 +46,20 @@ export function resolveApiUrl(input: string) {
   return `${apiBaseUrl}${input.startsWith("/") ? input : `/${input}`}`;
 }
 
+function inferSameHostBackendUrl(input: string) {
+  if (apiBaseUrl || /^https?:\/\//.test(input) || !input.startsWith("/api/")) {
+    return "";
+  }
+  if (typeof window === "undefined" || !window.location?.hostname) {
+    return "";
+  }
+  const { protocol, hostname, port } = window.location;
+  if (!/^https?:$/.test(protocol) || port === "8080") {
+    return "";
+  }
+  return `${protocol}//${hostname}:8080${input}`;
+}
+
 function isApiErrorEnvelope(body: unknown): body is ApiErrorEnvelope {
   return typeof body === "object" && body !== null && "error" in body && "request_id" in body;
 }
@@ -55,7 +69,8 @@ function isApiEnvelope<T>(body: unknown): body is ApiEnvelope<T> {
 }
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
-  const url = resolveApiUrl(input);
+  let url = resolveApiUrl(input);
+  const fallbackUrl = inferSameHostBackendUrl(input);
   let response: Response;
   try {
     response = await fetch(url, {
@@ -67,15 +82,36 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
       ...init,
     });
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "network error";
-    const hint = apiBaseUrl
-      ? `Cannot reach API at ${url}. Check PUBLIC_API_BASE/VITE_API_BASE_URL, CORS, and whether the backend is running.`
-      : `Cannot reach API at ${url}. Production must proxy /api/ to the backend, or set PUBLIC_API_BASE and rebuild the frontend.`;
-    throw new ApiClientError({
-      code: "NETWORK_ERROR",
-      message: `${hint} (${reason})`,
-      status: 0,
-    });
+    if (fallbackUrl && fallbackUrl !== url) {
+      try {
+        response = await fetch(fallbackUrl, {
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(init?.headers ?? {}),
+          },
+          ...init,
+        });
+        url = fallbackUrl;
+      } catch (fallbackErr) {
+        const reason = fallbackErr instanceof Error ? fallbackErr.message : "network error";
+        throw new ApiClientError({
+          code: "NETWORK_ERROR",
+          message: `Cannot reach API at ${resolveApiUrl(input)} or fallback ${fallbackUrl}. Production must proxy /api/ to the backend, set PUBLIC_API_BASE/VITE_API_BASE_URL and rebuild, or expose backend port 8080. (${reason})`,
+          status: 0,
+        });
+      }
+    } else {
+      const reason = err instanceof Error ? err.message : "network error";
+      const hint = apiBaseUrl
+        ? `Cannot reach API at ${url}. Check PUBLIC_API_BASE/VITE_API_BASE_URL, CORS, and whether the backend is running.`
+        : `Cannot reach API at ${url}. Production must proxy /api/ to the backend, or set PUBLIC_API_BASE and rebuild the frontend.`;
+      throw new ApiClientError({
+        code: "NETWORK_ERROR",
+        message: `${hint} (${reason})`,
+        status: 0,
+      });
+    }
   }
 
   const rawBody = await response.text();
@@ -134,6 +170,9 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   }
 
   if (!body || !isApiEnvelope<T>(body)) {
+    if (fallbackUrl && fallbackUrl !== url) {
+      return requestWithResolvedUrl<T>(fallbackUrl, init);
+    }
     throw new ApiClientError({
       code: "UNEXPECTED_RESPONSE",
       message: "API returned an invalid response payload",
@@ -142,6 +181,37 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     });
   }
 
+  return body.data;
+}
+
+async function requestWithResolvedUrl<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+    ...init,
+  });
+  const rawBody = await response.text();
+  let body: ApiEnvelope<T> | ApiErrorEnvelope | null = null;
+  if (rawBody.trim()) {
+    try {
+      body = JSON.parse(rawBody) as ApiEnvelope<T> | ApiErrorEnvelope;
+    } catch {
+      body = null;
+    }
+  }
+  if (!response.ok || !body || !isApiEnvelope<T>(body)) {
+    throw new ApiClientError({
+      code: !response.ok && body && isApiErrorEnvelope(body) ? body.error.code : "UNEXPECTED_RESPONSE",
+      message: !response.ok && body && isApiErrorEnvelope(body) ? body.error.message : "Request failed",
+      details: !response.ok && body && isApiErrorEnvelope(body) ? body.error.details : undefined,
+      requestId: !response.ok && body && isApiErrorEnvelope(body) ? body.request_id : undefined,
+      status: response.status,
+      rawBody,
+    });
+  }
   return body.data;
 }
 
