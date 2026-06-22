@@ -4349,28 +4349,39 @@ function PanoramaPreviewModal({
       ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(src)}`
       : resolveBackendAssetUrl(src));
 
-  // Load the panorama as a Three.js texture. We use the same display URL
-  // (with the proxy / data: handling) so CORS and signed-URL expiry behave
-  // identically to the rest of the canvas previews.
+  // Load the panorama as a Three.js texture. We go through loadImageElement
+  // (which fetches via the proxy-media endpoint into a blob: URL) — blob
+  // URLs are CORS-free, which sidesteps the "tainted canvas" / CORS failure
+  // that bare TextureLoader hits on cross-origin equirectangular images.
   useEffect(() => {
     let cancelled = false;
-    const loader = new THREE.TextureLoader();
-    loader.setCrossOrigin('anonymous');
-    loader.load(
-      displaySrc,
-      (tex) => {
-        if (cancelled) { tex.dispose(); return; }
+    let createdTexture: THREE.Texture | null = null;
+    (async () => {
+      try {
+        const img = await loadImageElement(src);
+        if (cancelled) return;
+        const tex = new THREE.Texture(img);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.magFilter = THREE.LinearFilter;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
         tex.generateMipmaps = true;
+        tex.needsUpdate = true;
+        createdTexture = tex;
         setTexture(tex);
-      },
-      undefined,
-      (err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); },
-    );
-    return () => { cancelled = true; };
-  }, [displaySrc]);
+      } catch (err) {
+        if (cancelled) return;
+        // Surface a useful message: loadImageElement may throw a real Error
+        // (proxy non-2xx), but DOM image errors come through as plain
+        // exceptions with name "Error" too.
+        const msg = err instanceof Error && err.message ? err.message : 'Failed to load panorama';
+        setError(msg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (createdTexture) createdTexture.dispose();
+    };
+  }, [src]);
 
   // Capture the current view by reading the WebGL canvas directly. We force
   // a render before reading so the buffer matches what the user sees, then
