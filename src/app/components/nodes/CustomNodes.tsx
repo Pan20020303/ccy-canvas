@@ -1469,7 +1469,7 @@ const PromptPanel = ({
         ) : null}
       </div>
       <div
-        className="nodrag nopan flex shrink-0 items-center gap-1 rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] font-medium text-amber-300"
+        className="nodrag nopan mr-1 flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-amber-300/90"
         title={language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost'}
       >
         <Zap className="h-3 w-3" />
