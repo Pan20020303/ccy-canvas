@@ -979,7 +979,7 @@ const InnerCanvas = () => {
       const dataUrl = await toPng(viewportEl, {
         pixelRatio: 2,
         cacheBust: true,
-        backgroundColor: '#141414',
+        backgroundColor: '#1d1f24',
         // Skip lock badges / ReactFlow controls so the export is clean.
         filter: (node) => {
           const cls = (node as HTMLElement).className;
@@ -1038,7 +1038,7 @@ const InnerCanvas = () => {
   return (
     <div
       ref={wrapperRef}
-      className={`relative h-screen w-full bg-[#141414] ${cursorMode}`}
+      className={`relative h-screen w-full bg-[#1d1f24] ${cursorMode}`}
       onContextMenu={(event) => event.preventDefault()}
       onDoubleClick={onCanvasDoubleClick}
       onDragOver={onDragOver}
@@ -1185,7 +1185,7 @@ const InnerCanvas = () => {
            onCanvasDoubleClick 能收到事件唤出"添加节点"菜单. */
         zoomOnDoubleClick={false}
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="#2e2e2e" />
+        <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="#3a3d44" />
         {showMiniMap ? (
           <MiniMap
             position="bottom-left"

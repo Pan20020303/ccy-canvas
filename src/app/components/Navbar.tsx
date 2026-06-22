@@ -67,28 +67,36 @@ export const Navbar = () => {
     );
   }, [menuOpen]);
 
+  // Floating layout: the navbar no longer occupies a horizontal strip \u2014 the
+  // canvas runs edge-to-edge under it. The logo and the controls cluster sit
+  // as independent rounded pills that hover over the canvas, so the actual
+  // workspace area is uninterrupted.
+  const pillBase = "rounded-full border border-white/[0.10] bg-black/55 backdrop-blur-xl shadow-[0_10px_32px_-12px_rgba(0,0,0,0.65)]";
+
   return (
-    <div ref={rootRef} className="absolute left-0 right-0 top-0 z-50 flex h-14 items-center justify-between border-b border-white/10 bg-black/40 px-6 backdrop-blur-md">
-      <div className="flex items-center space-x-2">
-        <img src={logoUrl} alt="CCY Canvas" className="h-7 w-7 rounded object-contain" />
-        <span className="font-semibold tracking-wide text-neutral-200">CCY Canvas</span>
+    <div ref={rootRef} className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4">
+      {/* Left: logo pill */}
+      <div className={`pointer-events-auto flex items-center gap-2 ${pillBase} px-3 py-1.5`}>
+        <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />
+        <span className="text-[13px] font-semibold tracking-wide text-neutral-100">CCY Canvas</span>
       </div>
 
-      <div className="flex items-center space-x-2">
+      {/* Right: controls cluster */}
+      <div className="pointer-events-auto flex items-center gap-2">
         <button
           onClick={toggleLanguage}
-          className="flex items-center space-x-1.5 rounded-md px-3 py-1.5 text-xs text-neutral-300 transition-colors transition-transform duration-200 hover:-translate-y-0.5 hover:bg-white/5"
+          className={`flex items-center gap-1.5 ${pillBase} px-3 py-1.5 text-xs text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
         >
           <Languages className="h-3.5 w-3.5" />
           <span>{language === "en" ? "EN" : "\u4e2d\u6587"}</span>
         </button>
 
         {user && creditSummary ? (
-          <div className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-neutral-300">
+          <div className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200`}>
             <Zap className="h-3 w-3 text-amber-400" />
             <span className="tabular-nums">{creditSummary.current_balance}</span>
-            <span className="text-neutral-600">/</span>
-            <span className="tabular-nums text-neutral-500">{creditSummary.daily_quota}</span>
+            <span className="text-neutral-500">/</span>
+            <span className="tabular-nums text-neutral-400">{creditSummary.daily_quota}</span>
           </div>
         ) : null}
 
@@ -97,17 +105,20 @@ export const Navbar = () => {
         {!user ? (
           <button
             onClick={() => navigate("/login")}
-            className="rounded-md bg-cyan-600 px-4 py-1.5 text-xs font-medium text-white transition-colors transition-transform duration-200 hover:-translate-y-0.5 hover:bg-cyan-500"
+            className="rounded-full bg-cyan-600 px-4 py-1.5 text-xs font-medium text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-cyan-500"
           >
             {dict.login}
           </button>
         ) : (
           <div className="relative">
-            <button onClick={() => setMenuOpen((open) => !open)} className="flex items-center transition-transform duration-200 hover:-translate-y-0.5">
+            <button
+              onClick={() => setMenuOpen((open) => !open)}
+              className={`flex items-center justify-center ${pillBase} h-9 w-9 p-0 transition hover:-translate-y-0.5 hover:bg-black/70`}
+            >
               {user.avatar ? (
-                <img src={user.avatar} alt={user.name} className="h-8 w-8 rounded-full border border-white/15" />
+                <img src={user.avatar} alt={user.name} className="h-7 w-7 rounded-full object-cover" />
               ) : (
-                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-cyan-500/20 text-xs text-cyan-200">
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-xs text-cyan-200">
                   {user.name.slice(0, 1).toUpperCase()}
                 </div>
               )}

@@ -46,7 +46,7 @@ const Workspace = () => {
   }, [setBackendModels]);
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-[#0a0a0a] font-sans text-neutral-200 selection:bg-cyan-500/30">
+    <div className="relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 selection:bg-cyan-500/30">
       <Navbar />
       <Toolbar />
       <Canvas />
@@ -63,7 +63,7 @@ const HomeRedirect = () => {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0a] text-neutral-400">
+      <div className="flex min-h-screen items-center justify-center bg-[#16181c] text-neutral-400">
         {language === "zh" ? "加载中..." : "Loading..."}
       </div>
     );
