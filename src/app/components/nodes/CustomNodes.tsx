@@ -11,6 +11,7 @@ import {
   Globe,
   ChevronDown,
   ArrowUp,
+  Zap,
   Download,
   LayoutTemplate,
   Sparkles,
@@ -894,6 +895,18 @@ const PromptPanel = ({
     [activeModel, enabledConfigs],
   );
   const template = getModelTemplate(activeModel, activeConfig);
+  // Per-call credit cost for the selected model: per-model override in the
+  // schema wins, then the config-level value, then the default of 1. Mirrors
+  // the backend's resolveCreditCost so the badge matches what gets charged.
+  const creditCost = useMemo(() => {
+    const schema = activeConfig?.parameter_schema as
+      | { credit_cost?: number; models?: Record<string, { credit_cost?: number }> }
+      | undefined;
+    const perModel = schema?.models?.[activeModel]?.credit_cost;
+    if (typeof perModel === 'number') return Math.max(0, Math.round(perModel));
+    if (typeof schema?.credit_cost === 'number') return Math.max(0, Math.round(schema.credit_cost));
+    return 1;
+  }, [activeConfig, activeModel]);
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
   const currentResolution = params.resolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
@@ -1454,6 +1467,13 @@ const PromptPanel = ({
             onOutputFormat={(value) => updateNodeGenerationParams(nodeId, { outputFormat: value })}
           />
         ) : null}
+      </div>
+      <div
+        className="nodrag nopan flex shrink-0 items-center gap-1 rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-1 text-[11px] font-medium text-amber-300"
+        title={language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost'}
+      >
+        <Zap className="h-3 w-3" />
+        <span className="tabular-nums">{creditCost}</span>
       </div>
       <button
         type="button"
