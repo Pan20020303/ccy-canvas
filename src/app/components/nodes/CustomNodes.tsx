@@ -1,6 +1,8 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import gsap from 'gsap';
+import * as THREE from 'three';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Handle, Position, useViewport } from '@xyflow/react';
 import {
   Type,
@@ -4282,6 +4284,40 @@ function ResilientImage({
   );
 }
 
+// PanoramaSphere renders the equirectangular panorama on the inside of a
+// sphere (BackSide), with the camera at the origin. This is the standard
+// way to view a 2:1 360 panorama as a true sphere — instead of a flat
+// horizontally-scrolling strip, the viewer sees the world projected onto
+// the inside of the sphere and can look around in 360°.
+function PanoramaSphere({ texture }: { texture: THREE.Texture }) {
+  return (
+    <mesh scale={[-1, 1, 1]}>
+      <sphereGeometry args={[50, 64, 40]} />
+      <meshBasicMaterial map={texture} side={THREE.BackSide} toneMapped={false} />
+    </mesh>
+  );
+}
+
+// PanoramaCameraRig drives the camera rotation from yaw/pitch state. The
+// camera stays at origin (we never translate it — only rotate). Yaw rotates
+// around world-Y, pitch tilts up/down.
+function PanoramaCameraRig({ yaw, pitch, fov }: { yaw: number; pitch: number; fov: number }) {
+  const { camera } = useThree();
+  useEffect(() => {
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov = fov;
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, fov]);
+  useFrame(() => {
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+    camera.rotation.z = 0;
+  });
+  return null;
+}
+
 function PanoramaPreviewModal({
   src,
   nodeId,
@@ -4295,11 +4331,16 @@ function PanoramaPreviewModal({
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
-  const [yaw, setYaw] = useState(0.5);
-  const [pitch, setPitch] = useState(0.5);
+  // yaw / pitch in radians, mapped to camera rotation. yaw wraps over 2π,
+  // pitch clamped to ±~75° so the viewer can't flip past the poles.
+  const [yaw, setYaw] = useState(0);
+  const [pitch, setPitch] = useState(0);
+  const [fov, setFov] = useState(75);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
   const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number; width: number; height: number } | null>(null);
+  const glRef = useRef<THREE.WebGLRenderer | null>(null);
   const sourceNode = nodes.find((node) => node.id === nodeId);
   const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
   const displaySrc = /^data:/.test(src)
@@ -4308,41 +4349,63 @@ function PanoramaPreviewModal({
       ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(src)}`
       : resolveBackendAssetUrl(src));
 
+  // Load the panorama as a Three.js texture. We use the same display URL
+  // (with the proxy / data: handling) so CORS and signed-URL expiry behave
+  // identically to the rest of the canvas previews.
+  useEffect(() => {
+    let cancelled = false;
+    const loader = new THREE.TextureLoader();
+    loader.setCrossOrigin('anonymous');
+    loader.load(
+      displaySrc,
+      (tex) => {
+        if (cancelled) { tex.dispose(); return; }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.magFilter = THREE.LinearFilter;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.generateMipmaps = true;
+        setTexture(tex);
+      },
+      undefined,
+      (err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); },
+    );
+    return () => { cancelled = true; };
+  }, [displaySrc]);
+
+  // Capture the current view by reading the WebGL canvas directly. We force
+  // a render before reading so the buffer matches what the user sees, then
+  // resize-blit it to a 1280x720 output canvas (consistent with what the
+  // backend treats as a "reference image"). The renderer is created with
+  // preserveDrawingBuffer:true so toDataURL doesn't return a blank image.
   const captureCurrentView = useCallback(async () => {
     if (capturing) return;
+    const gl = glRef.current;
+    if (!gl) {
+      setError('Renderer not ready');
+      return;
+    }
     setCapturing(true);
     setError(null);
     try {
-      const img = await loadImageElement(src);
-      const srcW = img.naturalWidth || img.width;
-      const srcH = img.naturalHeight || img.height;
+      // Force a render pass so the framebuffer reflects the current pose.
+      const scene = (gl as unknown as { scene?: THREE.Scene }).scene;
+      const camera = (gl as unknown as { camera?: THREE.Camera }).camera;
+      if (scene && camera) {
+        gl.render(scene, camera);
+      }
+      const srcCanvas = gl.domElement;
       const outW = 1280;
       const outH = 720;
-      const cropW = Math.max(1, Math.round(srcW * 0.28));
-      const cropH = Math.max(1, Math.min(srcH, Math.round(cropW * (outH / outW))));
-      const rawX = Math.round(yaw * srcW - cropW / 2);
-      const sx = ((rawX % srcW) + srcW) % srcW;
-      const sy = clampNumber(Math.round(pitch * srcH - cropH / 2), 0, Math.max(0, srcH - cropH));
-      const canvas = document.createElement('canvas');
-      canvas.width = outW;
-      canvas.height = outH;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error('Canvas unavailable');
-      }
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = outW;
+      outCanvas.height = outH;
+      const ctx = outCanvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas unavailable');
       ctx.fillStyle = '#050505';
       ctx.fillRect(0, 0, outW, outH);
-      if (sx + cropW <= srcW) {
-        ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, outW, outH);
-      } else {
-        const rightW = srcW - sx;
-        const leftW = cropW - rightW;
-        const rightOutW = Math.round(outW * (rightW / cropW));
-        ctx.drawImage(img, sx, sy, rightW, cropH, 0, 0, rightOutW, outH);
-        ctx.drawImage(img, 0, sy, leftW, cropH, rightOutW, 0, outW - rightOutW, outH);
-      }
+      ctx.drawImage(srcCanvas, 0, 0, srcCanvas.width, srcCanvas.height, 0, 0, outW, outH);
 
-      const dataUrl = await canvasToDataUrl(canvas);
+      const dataUrl = await canvasToDataUrl(outCanvas);
       let stableUrl = dataUrl;
       try {
         stableUrl = await uploadImageSource(dataUrl, `panorama-view-${Date.now()}.png`);
@@ -4372,8 +4435,10 @@ function PanoramaPreviewModal({
     } finally {
       setCapturing(false);
     }
-  }, [addNode, capturing, language, nodeId, onConnect, pitch, sourceNode?.position, src, yaw]);
+  }, [addNode, capturing, language, nodeId, onConnect, sourceNode?.position]);
 
+  // Drag converts pixel deltas into camera rotation: full panel width
+  // covers 360° yaw, full panel height covers ~135° pitch.
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     dragRef.current = { x: event.clientX, y: event.clientY, yaw, pitch, width: rect.width, height: rect.height };
@@ -4382,8 +4447,13 @@ function PanoramaPreviewModal({
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const start = dragRef.current;
     if (!start) return;
-    const nextYaw = ((start.yaw - (event.clientX - start.x) / Math.max(1, start.width)) % 1 + 1) % 1;
-    const nextPitch = clampNumber(start.pitch + (event.clientY - start.y) / Math.max(1, start.height), 0.12, 0.88);
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    const yawSpan = Math.PI * 2;
+    const pitchSpan = Math.PI * 0.75;
+    const pitchLimit = Math.PI * 0.42;
+    const nextYaw = start.yaw - (dx / Math.max(1, start.width)) * yawSpan;
+    const nextPitch = clampNumber(start.pitch + (dy / Math.max(1, start.height)) * pitchSpan, -pitchLimit, pitchLimit);
     setYaw(nextYaw);
     setPitch(nextPitch);
   };
@@ -4396,6 +4466,16 @@ function PanoramaPreviewModal({
     }
   };
 
+  // Wheel zooms by changing FOV (smaller fov = closer view).
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    setFov((prev) => clampNumber(prev + (event.deltaY > 0 ? 4 : -4), 30, 100));
+  };
+
+  // Yaw normalized to 0–360 for the readout.
+  const yawDeg = (((yaw * 180 / Math.PI) % 360) + 360) % 360;
+  const pitchDeg = -pitch * 180 / Math.PI;
+
   return createPortal(
     <div className="fixed inset-0 z-[240] flex items-center justify-center bg-black/86 p-6 backdrop-blur-xl" onMouseDown={onClose}>
       <div
@@ -4404,16 +4484,16 @@ function PanoramaPreviewModal({
       >
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
           <div>
-            <div className="text-sm font-semibold text-white">{language === 'zh' ? '全景拖动预览' : 'Panorama preview'}</div>
+            <div className="text-sm font-semibold text-white">{language === 'zh' ? '720° 全景预览' : '720° panorama preview'}</div>
             <div className="mt-1 text-xs text-neutral-400">
-              {language === 'zh' ? '拖动画面调整角度，点击截图会生成新的参考图节点。' : 'Drag to adjust the angle. Capture creates a new reference image node.'}
+              {language === 'zh' ? '拖动旋转视角，滚轮缩放，截出当前角度会生成新的参考图节点。' : 'Drag to rotate, wheel to zoom. Capture creates a new reference image node.'}
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={captureCurrentView}
-              disabled={capturing}
+              disabled={capturing || !texture}
               className="rounded-xl border border-cyan-300/25 bg-cyan-400/12 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {capturing ? (language === 'zh' ? '截图中...' : 'Capturing...') : (language === 'zh' ? '截出当前角度' : 'Capture angle')}
@@ -4429,27 +4509,43 @@ function PanoramaPreviewModal({
         </div>
         <div className="p-5">
           <div
-            className="relative h-[68vh] min-h-[360px] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-inner cursor-grab active:cursor-grabbing"
+            className="relative h-[68vh] min-h-[360px] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-inner cursor-grab active:cursor-grabbing select-none"
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
-            style={{
-              backgroundImage: `url("${displaySrc.replace(/"/g, '\\"')}")`,
-              backgroundRepeat: 'repeat-x',
-              backgroundSize: 'auto 100%',
-              backgroundPosition: `${yaw * 100}% ${pitch * 100}%`,
-            }}
+            onWheel={handleWheel}
           >
+            {texture ? (
+              <Canvas
+                gl={{ preserveDrawingBuffer: true, antialias: true }}
+                camera={{ fov, near: 0.1, far: 1100, position: [0, 0, 0] }}
+                onCreated={(state) => {
+                  glRef.current = state.gl;
+                  // Stash scene/camera on the renderer so captureCurrentView
+                  // can force a render before reading the framebuffer.
+                  (state.gl as unknown as { scene?: THREE.Scene; camera?: THREE.Camera }).scene = state.scene;
+                  (state.gl as unknown as { scene?: THREE.Scene; camera?: THREE.Camera }).camera = state.camera;
+                }}
+                className="absolute inset-0"
+              >
+                <PanoramaSphere texture={texture} />
+                <PanoramaCameraRig yaw={yaw} pitch={pitch} fov={fov} />
+              </Canvas>
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500">
+                {language === 'zh' ? '加载中...' : 'Loading...'}
+              </div>
+            )}
             <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/45 to-transparent" />
             <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-cyan-200/35" />
-            <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-white/12 bg-black/45 px-3 py-1 text-xs text-white/80 backdrop-blur">
-              yaw {Math.round(yaw * 360)} deg · pitch {Math.round((0.5 - pitch) * 120)} deg
+            <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-white/12 bg-black/45 px-3 py-1 text-xs text-white/80 backdrop-blur tabular-nums">
+              yaw {Math.round(yawDeg)}° · pitch {Math.round(pitchDeg)}° · fov {Math.round(fov)}°
             </div>
           </div>
           {error ? (
             <div className="mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
-              {language === 'zh' ? `截图失败：${error}` : `Capture failed: ${error}`}
+              {language === 'zh' ? `预览失败：${error}` : `Preview failed: ${error}`}
             </div>
           ) : null}
         </div>
