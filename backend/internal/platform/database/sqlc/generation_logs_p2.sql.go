@@ -170,11 +170,14 @@ type StaleActiveGenerationRow struct {
 	NodeID      string             `json:"node_id"`
 	ServiceType string             `json:"service_type"`
 	Status      string             `json:"status"`
+	CreditCost  int32              `json:"credit_cost"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 const listStaleActiveGenerations = `
-SELECT id, user_id, node_id, service_type, status, created_at
+SELECT id, user_id, node_id, service_type, status,
+       COALESCE((request_payload->>'CreditCost')::int, 0) AS credit_cost,
+       created_at
 FROM generation_logs
 WHERE status IN ('pending', 'queued', 'running', 'retrying')
   AND created_at < $1
@@ -197,7 +200,7 @@ func (q *Queries) ListStaleActiveGenerations(ctx context.Context, olderThan time
 	items := []StaleActiveGenerationRow{}
 	for rows.Next() {
 		var i StaleActiveGenerationRow
-		if err := rows.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Status, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Status, &i.CreditCost, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

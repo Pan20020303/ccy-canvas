@@ -60,6 +60,74 @@ func (s Service) CreateInitialAccount(ctx context.Context, userID string, dailyQ
 	})
 }
 
+// Reserve atomically deducts amount from the user's balance at generation
+// submit. Returns creditapp.ErrInsufficientCredits when the balance can't
+// cover it (guarded UPDATE — safe under concurrent submits, never negative).
+func (s Service) Reserve(ctx context.Context, userID string, amount int32, reason string) error {
+	if amount <= 0 {
+		return nil
+	}
+	queries := s.queries
+	if scopedQueries, ok := sqlctx.FromContext(ctx); ok {
+		queries = scopedQueries
+	}
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return err
+	}
+	uid := pgtype.UUID{Bytes: userUUID, Valid: true}
+	row, err := queries.DeductCreditBalanceIfEnough(ctx, uid, amount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return creditapp.ErrInsufficientCredits
+		}
+		return err
+	}
+	// Ledger is best-effort audit; the balance deduction above is authoritative.
+	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+		UserID:       uid,
+		AccountID:    row.ID,
+		Type:         "reserve",
+		Amount:       amount,
+		BalanceAfter: row.CurrentBalance,
+		Reason:       reason,
+	})
+	return nil
+}
+
+// Refund returns amount to the user's balance after a terminal generation
+// failure (reverses an earlier Reserve).
+func (s Service) Refund(ctx context.Context, userID string, amount int32, reason string) error {
+	if amount <= 0 {
+		return nil
+	}
+	queries := s.queries
+	if scopedQueries, ok := sqlctx.FromContext(ctx); ok {
+		queries = scopedQueries
+	}
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return err
+	}
+	uid := pgtype.UUID{Bytes: userUUID, Valid: true}
+	acct, err := queries.AdjustCreditBalance(ctx, sqlc.AdjustCreditBalanceParams{
+		UserID:         uid,
+		CurrentBalance: amount, // delta: + amount
+	})
+	if err != nil {
+		return err
+	}
+	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+		UserID:       uid,
+		AccountID:    acct.ID,
+		Type:         "refund",
+		Amount:       amount,
+		BalanceAfter: acct.CurrentBalance,
+		Reason:       reason,
+	})
+	return nil
+}
+
 func (s Service) GetSummary(ctx context.Context, userID string) (creditapp.CreditSummary, error) {
 	queries := s.queries
 	if scopedQueries, ok := sqlctx.FromContext(ctx); ok {

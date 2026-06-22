@@ -135,6 +135,90 @@ type Service struct {
 	// at boot leaves this nil and behavior is unchanged (legacy path).
 	// See docs/dev/2026-06-newapi-runbook.md.
 	newAPI *NewAPIClient
+	// credits is optional. When set, each generation reserves credits at
+	// submit and refunds them on terminal failure. nil → no charging (the
+	// legacy behavior). Wired in main from the credits bounded context.
+	credits creditcharger
+}
+
+// creditcharger mirrors credits/application.Charger as a local interface so
+// this package stays free of a credits import. main wires the concrete one.
+type creditcharger interface {
+	Reserve(ctx context.Context, userID string, amount int32, reason string) error
+	Refund(ctx context.Context, userID string, amount int32, reason string) error
+}
+
+// ErrInsufficientCredits is re-exported so the HTTP handler can detect it
+// without importing the credits package.
+var ErrInsufficientCredits = errors.New("insufficient credits")
+
+// WithCredits attaches the per-generation credit charger. Returns the
+// service for chaining.
+func (s *Service) WithCredits(c creditcharger) *Service {
+	s.credits = c
+	return s
+}
+
+// defaultCreditCost is charged when a provider config doesn't specify a
+// per-model or config-level credit_cost in its parameter_schema.
+const defaultCreditCost int32 = 1
+
+func clampCreditCost(v int32) int32 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+// resolveCreditCost reads the per-call price from a provider config's
+// parameter_schema: a per-model override (models.<model>.credit_cost) wins,
+// then the config-level credit_cost, then the global default.
+func resolveCreditCost(schemaRaw []byte, model string) int32 {
+	if len(schemaRaw) == 0 {
+		return defaultCreditCost
+	}
+	var schema providerParameterSchema
+	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
+		return defaultCreditCost
+	}
+	if m, ok := schema.Models[model]; ok && m.CreditCost != nil {
+		return clampCreditCost(*m.CreditCost)
+	}
+	if schema.CreditCost != nil {
+		return clampCreditCost(*schema.CreditCost)
+	}
+	return defaultCreditCost
+}
+
+// ResolveGenerationCost determines how many credits this request will cost
+// by selecting the same provider config the generation will use and reading
+// its configured price. Returns 0 when no provider can be resolved (the
+// generation will then fail on its own without having charged anything).
+func (s *Service) ResolveGenerationCost(req GenerateRequest) int32 {
+	candidates, err := s.buildCandidates(req)
+	if err != nil || len(candidates) == 0 {
+		return 0
+	}
+	return resolveCreditCost(candidates[0].cfg.ParameterSchema, req.Model)
+}
+
+// ReserveCredits deducts amount at submit. Returns ErrInsufficientCredits
+// when the balance can't cover it. No-op when charging isn't wired.
+func (s *Service) ReserveCredits(ctx context.Context, userID string, amount int32, reason string) error {
+	if s.credits == nil || amount <= 0 || userID == "" {
+		return nil
+	}
+	return s.credits.Reserve(ctx, userID, amount, reason)
+}
+
+// RefundCredits returns amount after a terminal failure. Best-effort.
+func (s *Service) RefundCredits(ctx context.Context, userID string, amount int32, reason string) {
+	if s.credits == nil || amount <= 0 || userID == "" {
+		return
+	}
+	if err := s.credits.Refund(ctx, userID, amount, reason); err != nil {
+		log.Printf("[credits] refund failed for user %s amount %d: %v", userID, amount, err)
+	}
 }
 
 // NewService creates a new model catalog Service.
@@ -774,6 +858,11 @@ type GenerateRequest struct {
 	// enqueue path uses it as both the generation_logs.request_id unique key
 	// and the Asynq TaskID, so a duplicate submit dedupes to one task.
 	RequestID string
+	// CreditCost is the number of credits reserved for this generation at
+	// submit time (resolved from the provider config's per-model price).
+	// Persisted in request_payload so the worker/reaper can refund the exact
+	// amount on a terminal failure.
+	CreditCost int32
 }
 
 // GenerateResult carries the generation result.
@@ -948,6 +1037,8 @@ func maxRuntimeForType(serviceType string) time.Duration {
 func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	candidates, err := s.buildCandidates(req)
 	if err != nil {
+		// No provider → terminal before any work; refund the reserve.
+		s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: no provider "+req.GenerationLogID)
 		return nil, err
 	}
 
@@ -993,6 +1084,11 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		// event that disagrees with the persisted source of truth.
 		if perr := s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration, cacheHit); perr == nil {
 			s.publishTaskEvent(req, result, runErr, duration)
+		}
+		// Legacy inline path runs once (no Asynq retry), so any error here is
+		// terminal → refund the reserved credits.
+		if runErr != nil {
+			s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 		}
 
 		doneCh <- genResult{result: result, err: runErr}
@@ -1077,6 +1173,10 @@ func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.
 	if perr := s.persistGenerationOutcome(req.GenerationLogID, nil, err, duration, false); perr == nil {
 		s.publishTaskEvent(req, nil, err, duration)
 	}
+	// Terminal failure → return the credits reserved at submit. (Transient
+	// failures that will be retried never reach here, so we never refund a
+	// generation that's still in flight.)
+	s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 }
 
 // reaperFloor is the smallest per-type runtime budget; the reaper's DB
@@ -1129,6 +1229,8 @@ func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
 			NodeID:          row.NodeID,
 			ServiceType:     row.ServiceType,
 		}, nil, errors.New(msg), age)
+		// Refund the credits reserved for this abandoned task.
+		s.RefundCredits(ctx, row.UserID, row.CreditCost, "refund: task reaped "+row.ID)
 	}
 	if reaped > 0 {
 		log.Printf("[modelcatalog] reaper marked %d stale generation(s) as error", reaped)
@@ -1687,6 +1789,10 @@ type providerParameterSchema struct {
 	RequestFormat     string                             `json:"request_format"`
 	ReferenceFormat   string                             `json:"reference_request_format"`
 	QualityOptions    []string                           `json:"quality_options"`
+	// CreditCost is the per-call price in credits for this provider config
+	// (or per-model when set inside Models). Resolved by resolveCreditCost.
+	// nil → fall back to the config-level value, then the global default.
+	CreditCost *int32 `json:"credit_cost,omitempty"`
 }
 
 type providerModelRoute struct {

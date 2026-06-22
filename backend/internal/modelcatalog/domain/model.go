@@ -187,5 +187,6 @@ type StaleGeneration struct {
 	NodeID      string
 	ServiceType string
 	Status      string
+	CreditCost  int32
 	CreatedAt   time.Time
 }

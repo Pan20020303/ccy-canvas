@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
+	creditapp "ccy-canvas/backend/internal/credits/application"
 	creditinfra "ccy-canvas/backend/internal/credits/infrastructure"
 	identityapp "ccy-canvas/backend/internal/identity/application"
 	identityinfra "ccy-canvas/backend/internal/identity/infrastructure"
@@ -68,7 +70,9 @@ func main() {
 		taskBus = taskBus.WithTransport(transport)
 		go taskBus.StartBridge(context.Background())
 	}
-	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).WithEventBus(taskBus)
+	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).
+		WithEventBus(taskBus).
+		WithCredits(creditChargerAdapter{svc: creditService})
 	var redisCache *cache.JSONCache
 	if cfg.RedisAddr != "" {
 		redisCache = cache.NewJSONCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, "ccy")
@@ -199,6 +203,28 @@ func main() {
 	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// creditChargerAdapter bridges the credits service to the modelcatalog
+// service's credit hook, translating the credits package's
+// ErrInsufficientCredits sentinel into the modelcatalog one so the HTTP
+// handler can detect it without importing the credits package.
+type creditChargerAdapter struct {
+	svc creditinfra.Service
+}
+
+func (a creditChargerAdapter) Reserve(ctx context.Context, userID string, amount int32, reason string) error {
+	if err := a.svc.Reserve(ctx, userID, amount, reason); err != nil {
+		if errors.Is(err, creditapp.ErrInsufficientCredits) {
+			return application.ErrInsufficientCredits
+		}
+		return err
+	}
+	return nil
+}
+
+func (a creditChargerAdapter) Refund(ctx context.Context, userID string, amount int32, reason string) error {
+	return a.svc.Refund(ctx, userID, amount, reason)
 }
 
 // taskQueueAdapter bridges *tasks.Queue (concrete type, owns Redis

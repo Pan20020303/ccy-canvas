@@ -1411,13 +1411,35 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		RequestID:        input.Body.RequestID,
 	}
 
+	// ─── Per-generation credit reserve ─────────────────────────────
+	// Resolve the per-model price and reserve it up-front so we can hard
+	// block (402) before doing any work. A terminal failure later refunds
+	// it (service / worker / reaper); a success keeps it. No-op when credit
+	// charging isn't wired or the model costs 0.
+	cost := h.svc.ResolveGenerationCost(req)
+	if cost > 0 {
+		reason := "reserve: " + input.Body.ServiceType + " " + input.Body.Model + " node=" + input.Body.NodeId
+		if rerr := h.svc.ReserveCredits(ctx, userIDStr, cost, reason); rerr != nil {
+			if errors.Is(rerr, application.ErrInsufficientCredits) {
+				return nil, huma.Error402PaymentRequired("积分不足，请充值或开通会员后重试")
+			}
+			return nil, huma.Error500InternalServerError("Failed to reserve credits: " + rerr.Error())
+		}
+		req.CreditCost = cost
+	}
+
 	// ─── Asynq durable path ────────────────────────────────────────
 	// When the task queue is wired up (REDIS_ADDR set + tasks worker
 	// running), we persist the full request and enqueue. The handler
 	// returns 'queued' immediately; the worker picks up and writes
 	// the outcome. Survives backend restart.
 	if h.tasks != nil && h.tasks.Enabled() && h.q != nil {
-		return h.enqueueGeneration(ctx, userID, userIDStr, req, input)
+		out, eerr := h.enqueueGeneration(ctx, userID, userIDStr, req, input)
+		if eerr != nil {
+			// Enqueue failed → no worker will run → return the reserve.
+			h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: enqueue failed")
+		}
+		return out, eerr
 	}
 
 	// ─── Legacy inline path ────────────────────────────────────────
@@ -1427,6 +1449,8 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	case h.generateLimiter <- struct{}{}:
 		defer func() { <-h.generateLimiter }()
 	case <-ctx.Done():
+		// Never started → return the reserve.
+		h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: canceled before slot")
 		return nil, huma.Error408RequestTimeout("Request canceled while waiting for a generation slot")
 	}
 
