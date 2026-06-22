@@ -10,7 +10,6 @@ import { AdminLogsPage } from "./components/admin/AdminLogsPage";
 import { AdminMembersPage } from "./components/admin/AdminMembersPage";
 import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
 import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
-import { AdminSkillsPage } from "./components/admin/AdminSkillsPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
 import { Canvas } from "./components/Canvas";
 import { LoginPage } from "./components/LoginPage";
@@ -101,7 +100,23 @@ export const router = createBrowserRouter([
     path: "/admin",
     Component: () => (
       <ProtectedRoute requireRole="admin">
-        <AdminModelCatalogPage />
+        <AdminModelCatalogPage panel="model-service" />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/agents",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminModelCatalogPage panel="agent-config" />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/prompts",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminModelCatalogPage panel="prompt-manage" />
       </ProtectedRoute>
     ),
   },
@@ -141,7 +156,15 @@ export const router = createBrowserRouter([
     path: "/admin/skills",
     Component: () => (
       <ProtectedRoute requireRole="admin">
-        <AdminSkillsPage />
+        <AdminModelCatalogPage panel="skill-management" />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/memory",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminModelCatalogPage panel="memory-config" />
       </ProtectedRoute>
     ),
   },

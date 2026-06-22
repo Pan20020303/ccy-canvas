@@ -11,11 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	skillsapp "ccy-canvas/backend/internal/skills/application"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/shared/httpx"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 )
 
 // Handler wires Skills + Agents user-facing endpoints.
@@ -180,32 +180,48 @@ type SkillUpsertBody struct {
 }
 
 type AgentItem struct {
-	ID           string   `json:"id"`
-	Scope        string   `json:"scope"`
-	OwnerID      string   `json:"owner_id,omitempty"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Avatar       string   `json:"avatar"`
-	SystemPrompt string   `json:"system_prompt"`
-	Model        string   `json:"model"`
-	SkillIDs     []string `json:"skill_ids"`
-	CanvasTools  bool     `json:"canvas_tools"`
-	Strategy     string   `json:"strategy"`
-	Enabled      bool     `json:"enabled"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	ID              string          `json:"id"`
+	Scope           string          `json:"scope"`
+	OwnerID         string          `json:"owner_id,omitempty"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
+	Avatar          string          `json:"avatar"`
+	SystemPrompt    string          `json:"system_prompt"`
+	Model           string          `json:"model"`
+	SkillIDs        []string        `json:"skill_ids"`
+	CanvasTools     bool            `json:"canvas_tools"`
+	Strategy        string          `json:"strategy"`
+	Enabled         bool            `json:"enabled"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
+	DeployKey       string          `json:"deploy_key,omitempty"`
+	ParentDeployKey string          `json:"parent_deploy_key,omitempty"`
+	ModelName       string          `json:"model_name,omitempty"`
+	ProviderID      string          `json:"provider_id,omitempty"`
+	Temperature     float64         `json:"temperature,omitempty"`
+	MaxOutputTokens int32           `json:"max_output_tokens,omitempty"`
+	Runtime         string          `json:"runtime,omitempty"`
+	Metadata        json.RawMessage `json:"metadata,omitempty"`
 }
 
 type AgentUpsertBody struct {
-	Name         string   `json:"name" minLength:"1"`
-	Description  string   `json:"description,omitempty"`
-	Avatar       string   `json:"avatar,omitempty"`
-	SystemPrompt string   `json:"system_prompt"`
-	Model        string   `json:"model" minLength:"1"`
-	SkillIDs     []string `json:"skill_ids,omitempty"`
-	CanvasTools  bool     `json:"canvas_tools"`
-	Strategy     string   `json:"strategy,omitempty" enum:"reactive,scripted"`
-	Enabled      bool     `json:"enabled"`
+	Name            string          `json:"name" minLength:"1"`
+	Description     string          `json:"description,omitempty"`
+	Avatar          string          `json:"avatar,omitempty"`
+	SystemPrompt    string          `json:"system_prompt"`
+	Model           string          `json:"model"`
+	SkillIDs        []string        `json:"skill_ids,omitempty"`
+	CanvasTools     bool            `json:"canvas_tools"`
+	Strategy        string          `json:"strategy,omitempty" enum:"reactive,scripted"`
+	Enabled         bool            `json:"enabled"`
+	DeployKey       string          `json:"deploy_key,omitempty"`
+	ParentDeployKey string          `json:"parent_deploy_key,omitempty"`
+	ModelName       string          `json:"model_name,omitempty"`
+	ProviderID      string          `json:"provider_id,omitempty"`
+	Temperature     float64         `json:"temperature,omitempty"`
+	MaxOutputTokens int32           `json:"max_output_tokens,omitempty"`
+	Runtime         string          `json:"runtime,omitempty"`
+	Metadata        json.RawMessage `json:"metadata,omitempty"`
 }
 
 type AgentConversationItem struct {
@@ -499,17 +515,25 @@ func (h *Handler) createPersonalAgent(ctx context.Context, input *createAgentInp
 		return nil, err
 	}
 	row, err := h.q.InsertAgent(ctx, sqlc.InsertAgentParams{
-		Scope:        "personal",
-		OwnerID:      uid,
-		Name:         input.Body.Name,
-		Description:  input.Body.Description,
-		Avatar:       input.Body.Avatar,
-		SystemPrompt: input.Body.SystemPrompt,
-		Model:        input.Body.Model,
-		SkillIDs:     skillIDs,
-		CanvasTools:  input.Body.CanvasTools,
-		Strategy:     defaulted(input.Body.Strategy, "reactive"),
-		Enabled:      input.Body.Enabled,
+		Scope:           "personal",
+		OwnerID:         uid,
+		Name:            input.Body.Name,
+		Description:     input.Body.Description,
+		Avatar:          input.Body.Avatar,
+		SystemPrompt:    input.Body.SystemPrompt,
+		Model:           input.Body.Model,
+		SkillIDs:        skillIDs,
+		CanvasTools:     input.Body.CanvasTools,
+		Strategy:        defaulted(input.Body.Strategy, "reactive"),
+		Enabled:         input.Body.Enabled,
+		DeployKey:       input.Body.DeployKey,
+		ParentDeployKey: input.Body.ParentDeployKey,
+		ModelName:       input.Body.ModelName,
+		ProviderID:      input.Body.ProviderID,
+		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		MaxOutputTokens: input.Body.MaxOutputTokens,
+		Runtime:         defaulted(input.Body.Runtime, "generic"),
+		Metadata:        jsonOrEmpty(input.Body.Metadata),
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to insert agent: " + err.Error())
@@ -539,16 +563,24 @@ func (h *Handler) updatePersonalAgent(ctx context.Context, input *updateAgentInp
 		return nil, err
 	}
 	row, err := h.q.UpdateAgent(ctx, sqlc.UpdateAgentParams{
-		ID:           pgID,
-		Name:         input.Body.Name,
-		Description:  input.Body.Description,
-		Avatar:       input.Body.Avatar,
-		SystemPrompt: input.Body.SystemPrompt,
-		Model:        input.Body.Model,
-		SkillIDs:     skillIDs,
-		CanvasTools:  input.Body.CanvasTools,
-		Strategy:     defaulted(input.Body.Strategy, existing.Strategy),
-		Enabled:      input.Body.Enabled,
+		ID:              pgID,
+		Name:            input.Body.Name,
+		Description:     input.Body.Description,
+		Avatar:          input.Body.Avatar,
+		SystemPrompt:    input.Body.SystemPrompt,
+		Model:           input.Body.Model,
+		SkillIDs:        skillIDs,
+		CanvasTools:     input.Body.CanvasTools,
+		Strategy:        defaulted(input.Body.Strategy, existing.Strategy),
+		Enabled:         input.Body.Enabled,
+		DeployKey:       defaulted(input.Body.DeployKey, existing.DeployKey),
+		ParentDeployKey: input.Body.ParentDeployKey,
+		ModelName:       input.Body.ModelName,
+		ProviderID:      input.Body.ProviderID,
+		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		MaxOutputTokens: input.Body.MaxOutputTokens,
+		Runtime:         defaulted(input.Body.Runtime, "generic"),
+		Metadata:        jsonOrEmpty(input.Body.Metadata),
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to update agent")
@@ -786,6 +818,21 @@ func toAgentItem(r sqlc.Agent) AgentItem {
 	return item
 }
 
+func toAdminAgentItem(r sqlc.Agent) AgentItem {
+	item := toAgentItem(r)
+	item.DeployKey = r.DeployKey
+	item.ParentDeployKey = r.ParentDeployKey
+	item.ModelName = r.ModelName
+	item.ProviderID = r.ProviderID
+	item.Temperature = r.Temperature
+	item.MaxOutputTokens = r.MaxOutputTokens
+	item.Runtime = r.Runtime
+	if len(r.Metadata) > 0 {
+		item.Metadata = json.RawMessage(r.Metadata)
+	}
+	return item
+}
+
 // guardMutation rejects edits/deletes when the caller doesn't own the row.
 // Personal rows must match owner; global rows can only be mutated by admin handlers.
 func guardMutation(ctx context.Context, scope string, ownerID pgtype.UUID) error {
@@ -827,6 +874,13 @@ func jsonOrEmpty(raw json.RawMessage) []byte {
 		return []byte("{}")
 	}
 	return []byte(raw)
+}
+
+func defaultFloat(value, fallback float64) float64 {
+	if value == 0 {
+		return fallback
+	}
+	return value
 }
 
 func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.Agent, pgtype.UUID, error) {

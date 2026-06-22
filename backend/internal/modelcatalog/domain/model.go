@@ -103,6 +103,11 @@ type ProviderConfig struct {
 	Status          string // enabled / disabled
 	Capabilities    []string
 	ParameterSchema json.RawMessage
+	AdapterRuntime  string
+	AdapterCode     string
+	AdapterChecksum string
+	IconKey         string
+	IconURL         string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	// Channel health (migration 011). FailureCount + LastFailureAt are
@@ -175,6 +180,8 @@ type AppProviderConfig struct {
 	DefaultModel    string
 	Priority        int32
 	ParameterSchema json.RawMessage
+	IconKey         string
+	IconURL         string
 }
 
 // StaleGeneration is a generation_logs row stuck in an active state past

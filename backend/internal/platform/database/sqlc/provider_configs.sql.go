@@ -17,7 +17,9 @@ import (
 // and 5 separate Scan() argument lists.
 const providerConfigSelectColumns = `id, service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, capabilities, parameter_schema, created_at, updated_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url,
+       created_at, updated_at,
        failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns`
 
@@ -46,6 +48,11 @@ func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
 		&dst.Status,
 		&dst.Capabilities,
 		&dst.ParameterSchema,
+		&dst.AdapterRuntime,
+		&dst.AdapterCode,
+		&dst.AdapterChecksum,
+		&dst.IconKey,
+		&dst.IconUrl,
 		&dst.CreatedAt,
 		&dst.UpdatedAt,
 		&dst.FailureCount,
@@ -60,8 +67,9 @@ func scanProviderConfig(row rowScanner, dst *ProviderConfig) error {
 
 const createProviderConfig = `-- name: CreateProviderConfig :one
 INSERT INTO provider_configs (service_type, vendor, name, api_spec, protocol, base_url, encrypted_api_key,
-       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status, capabilities, parameter_schema)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       submit_endpoint, query_endpoint, model_list, default_model, priority, is_default, status, capabilities, parameter_schema,
+       adapter_runtime, adapter_code, adapter_checksum, icon_key, icon_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 RETURNING ` + providerConfigSelectColumns
 
 type CreateProviderConfigParams struct {
@@ -81,6 +89,11 @@ type CreateProviderConfigParams struct {
 	Status          string   `json:"status"`
 	Capabilities    []string `json:"capabilities"`
 	ParameterSchema []byte   `json:"parameter_schema"`
+	AdapterRuntime  string   `json:"adapter_runtime"`
+	AdapterCode     string   `json:"adapter_code"`
+	AdapterChecksum string   `json:"adapter_checksum"`
+	IconKey         string   `json:"icon_key"`
+	IconUrl         string   `json:"icon_url"`
 }
 
 func (q *Queries) CreateProviderConfig(ctx context.Context, arg CreateProviderConfigParams) (ProviderConfig, error) {
@@ -88,7 +101,7 @@ func (q *Queries) CreateProviderConfig(ctx context.Context, arg CreateProviderCo
 		arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.Protocol, arg.BaseUrl,
 		arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
 		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status, arg.Capabilities,
-		arg.ParameterSchema,
+		arg.ParameterSchema, arg.AdapterRuntime, arg.AdapterCode, arg.AdapterChecksum, arg.IconKey, arg.IconUrl,
 	)
 	var i ProviderConfig
 	err := scanProviderConfig(row, &i)
@@ -123,7 +136,8 @@ func (q *Queries) GetProviderConfigByID(ctx context.Context, id pgtype.UUID) (Pr
 const listEnabledProviderConfigs = `-- name: ListEnabledProviderConfigs :many
 SELECT id, service_type, vendor, name, api_spec, protocol, base_url,
        submit_endpoint, query_endpoint, model_list, default_model,
-       priority, is_default, status, capabilities, parameter_schema, created_at, updated_at,
+       priority, is_default, status, capabilities, parameter_schema,
+       icon_key, icon_url, created_at, updated_at,
        failure_count, last_failure_at, last_error_msg, last_error_code, last_success_at,
        cooldown_until, consecutive_cooldowns
 FROM provider_configs
@@ -148,6 +162,8 @@ type ListEnabledProviderConfigsRow struct {
 	Status               string             `json:"status"`
 	Capabilities         []string           `json:"capabilities"`
 	ParameterSchema      []byte             `json:"parameter_schema"`
+	IconKey              string             `json:"icon_key"`
+	IconUrl              string             `json:"icon_url"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	FailureCount         int32              `json:"failure_count"`
@@ -171,7 +187,8 @@ func (q *Queries) ListEnabledProviderConfigs(ctx context.Context) ([]ListEnabled
 		if err := rows.Scan(
 			&i.ID, &i.ServiceType, &i.Vendor, &i.Name, &i.ApiSpec, &i.Protocol, &i.BaseUrl,
 			&i.SubmitEndpoint, &i.QueryEndpoint, &i.ModelList, &i.DefaultModel,
-			&i.Priority, &i.IsDefault, &i.Status, &i.Capabilities, &i.ParameterSchema, &i.CreatedAt, &i.UpdatedAt,
+			&i.Priority, &i.IsDefault, &i.Status, &i.Capabilities, &i.ParameterSchema,
+			&i.IconKey, &i.IconUrl, &i.CreatedAt, &i.UpdatedAt,
 			&i.FailureCount, &i.LastFailureAt, &i.LastErrorMsg, &i.LastErrorCode, &i.LastSuccessAt,
 			&i.CooldownUntil, &i.ConsecutiveCooldowns,
 		); err != nil {
@@ -223,6 +240,11 @@ SET service_type     = $2,
     status           = $15,
     capabilities     = $16,
     parameter_schema = $17,
+    adapter_runtime  = $18,
+    adapter_code     = $19,
+    adapter_checksum = $20,
+    icon_key         = $21,
+    icon_url         = $22,
     updated_at       = now()
 WHERE id = $1
 RETURNING ` + providerConfigSelectColumns
@@ -245,6 +267,11 @@ type UpdateProviderConfigParams struct {
 	Status          string      `json:"status"`
 	Capabilities    []string    `json:"capabilities"`
 	ParameterSchema []byte      `json:"parameter_schema"`
+	AdapterRuntime  string      `json:"adapter_runtime"`
+	AdapterCode     string      `json:"adapter_code"`
+	AdapterChecksum string      `json:"adapter_checksum"`
+	IconKey         string      `json:"icon_key"`
+	IconUrl         string      `json:"icon_url"`
 }
 
 func (q *Queries) UpdateProviderConfig(ctx context.Context, arg UpdateProviderConfigParams) (ProviderConfig, error) {
@@ -252,7 +279,7 @@ func (q *Queries) UpdateProviderConfig(ctx context.Context, arg UpdateProviderCo
 		arg.ID, arg.ServiceType, arg.Vendor, arg.Name, arg.ApiSpec, arg.Protocol,
 		arg.BaseUrl, arg.EncryptedApiKey, arg.SubmitEndpoint, arg.QueryEndpoint,
 		arg.ModelList, arg.DefaultModel, arg.Priority, arg.IsDefault, arg.Status, arg.Capabilities,
-		arg.ParameterSchema,
+		arg.ParameterSchema, arg.AdapterRuntime, arg.AdapterCode, arg.AdapterChecksum, arg.IconKey, arg.IconUrl,
 	)
 	var i ProviderConfig
 	err := scanProviderConfig(row, &i)

@@ -321,6 +321,16 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.listProviderConfigs)
 
 	huma.Register(api, huma.Operation{
+		OperationID:   "preview-provider-config-ts-import",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/provider-configs/import-ts/preview",
+		Summary:       "Preview a TypeScript provider adapter import",
+		Tags:          []string{"Admin", "ProviderConfig"},
+		Security:      adminSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.previewProviderConfigTSImport)
+
+	huma.Register(api, huma.Operation{
 		OperationID:   "create-provider-config",
 		Method:        http.MethodPost,
 		Path:          "/api/admin/provider-configs",
@@ -730,9 +740,14 @@ type ProviderConfigItem struct {
 	ParameterSchema json.RawMessage `json:"parameter_schema"`
 	// CreditCost is the effective per-call price in credits (configured
 	// value, or the default of 1 when unset). Admin-editable.
-	CreditCost int32  `json:"credit_cost"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	CreditCost      int32  `json:"credit_cost"`
+	AdapterRuntime  string `json:"adapter_runtime"`
+	AdapterCode     string `json:"adapter_code,omitempty"`
+	AdapterChecksum string `json:"adapter_checksum,omitempty"`
+	IconKey         string `json:"icon_key,omitempty"`
+	IconURL         string `json:"icon_url,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
 	// Channel-health snapshot. Empty timestamps + zero counters = healthy.
 	FailureCount         int32  `json:"failure_count"`
 	LastFailureAt        string `json:"last_failure_at,omitempty"`
@@ -752,6 +767,8 @@ type AppProviderConfigItem struct {
 	DefaultModel    string          `json:"default_model"`
 	Priority        int32           `json:"priority"`
 	ParameterSchema json.RawMessage `json:"parameter_schema"`
+	IconKey         string          `json:"icon_key,omitempty"`
+	IconURL         string          `json:"icon_url,omitempty"`
 }
 
 // effectiveCreditCostFromSchema returns the configured per-call credit cost
@@ -821,6 +838,11 @@ func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
 		Capabilities:         pc.Capabilities,
 		ParameterSchema:      pc.ParameterSchema,
 		CreditCost:           effectiveCreditCostFromSchema(pc.ParameterSchema),
+		AdapterRuntime:       pc.AdapterRuntime,
+		AdapterCode:          pc.AdapterCode,
+		AdapterChecksum:      pc.AdapterChecksum,
+		IconKey:              pc.IconKey,
+		IconURL:              pc.IconURL,
 		CreatedAt:            pc.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            pc.UpdatedAt.Format(time.RFC3339),
 		FailureCount:         pc.FailureCount,
@@ -843,6 +865,8 @@ func toAppProviderConfigItem(pc domain.AppProviderConfig) AppProviderConfigItem 
 		DefaultModel:    pc.DefaultModel,
 		Priority:        pc.Priority,
 		ParameterSchema: pc.ParameterSchema,
+		IconKey:         pc.IconKey,
+		IconURL:         pc.IconURL,
 	}
 }
 
@@ -870,6 +894,31 @@ func (h *Handler) listProviderConfigs(ctx context.Context, _ *struct{}) (*listPr
 	return out, nil
 }
 
+type previewProviderConfigTSImportInput struct {
+	Body struct {
+		Code        string `json:"code" minLength:"1" doc:"TypeScript provider adapter source"`
+		ServiceType string `json:"service_type,omitempty" enum:"text,image,video,audio" doc:"Service type to import from a mixed provider"`
+	}
+}
+
+type previewProviderConfigTSImportOutput struct {
+	Body struct {
+		Data      application.ProviderPluginPreview `json:"data"`
+		RequestID string                            `json:"request_id"`
+	}
+}
+
+func (h *Handler) previewProviderConfigTSImport(ctx context.Context, input *previewProviderConfigTSImportInput) (*previewProviderConfigTSImportOutput, error) {
+	preview, err := h.svc.PreviewProviderPlugin(ctx, input.Body.Code, input.Body.ServiceType)
+	if err != nil {
+		return nil, toHTTPError(err)
+	}
+	out := &previewProviderConfigTSImportOutput{}
+	out.Body.Data = *preview
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
 type createProviderConfigInput struct {
 	Body struct {
 		ServiceType     string          `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
@@ -889,6 +938,10 @@ type createProviderConfigInput struct {
 		Capabilities    []string        `json:"capabilities,omitempty" doc:"Declared channel capabilities"`
 		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty" doc:"Supported request parameters and UI options"`
 		CreditCost      *int32          `json:"credit_cost,omitempty" doc:"Per-call price in credits (omit to keep current / default 1)"`
+		AdapterRuntime  string          `json:"adapter_runtime,omitempty" enum:"go,ts" doc:"Adapter runtime"`
+		AdapterCode     string          `json:"adapter_code,omitempty" doc:"TypeScript adapter code"`
+		IconKey         string          `json:"icon_key,omitempty" doc:"Brand icon key"`
+		IconURL         string          `json:"icon_url,omitempty" doc:"Icon image URL or data URL"`
 	}
 }
 
@@ -916,6 +969,10 @@ func (h *Handler) createProviderConfig(ctx context.Context, input *createProvide
 		Status:          input.Body.Status,
 		Capabilities:    input.Body.Capabilities,
 		ParameterSchema: mergeCreditCostIntoSchema(input.Body.ParameterSchema, input.Body.CreditCost),
+		AdapterRuntime:  input.Body.AdapterRuntime,
+		AdapterCode:     input.Body.AdapterCode,
+		IconKey:         input.Body.IconKey,
+		IconURL:         input.Body.IconURL,
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}
@@ -953,6 +1010,10 @@ type updateProviderConfigInput struct {
 		Capabilities    []string        `json:"capabilities,omitempty"`
 		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty"`
 		CreditCost      *int32          `json:"credit_cost,omitempty" doc:"Per-call price in credits (omit to keep current)"`
+		AdapterRuntime  string          `json:"adapter_runtime,omitempty" enum:"go,ts"`
+		AdapterCode     string          `json:"adapter_code,omitempty"`
+		IconKey         string          `json:"icon_key,omitempty"`
+		IconURL         string          `json:"icon_url,omitempty"`
 	}
 }
 
@@ -983,6 +1044,10 @@ func (h *Handler) updateProviderConfig(ctx context.Context, input *updateProvide
 		Status:          input.Body.Status,
 		Capabilities:    input.Body.Capabilities,
 		ParameterSchema: mergeCreditCostIntoSchema(schema, input.Body.CreditCost),
+		AdapterRuntime:  input.Body.AdapterRuntime,
+		AdapterCode:     input.Body.AdapterCode,
+		IconKey:         input.Body.IconKey,
+		IconURL:         input.Body.IconURL,
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}

@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/shared/httpx"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 )
 
 // AdminHandler exposes admin-side CRUD on global skills + agents.
@@ -96,6 +98,42 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		Tags:        []string{"Admin", "Agents"},
 		Security:    adminSec,
 	}, h.listAgentRuns)
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-get-agent-use-mode",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/agent-settings/use-mode",
+		Tags:        []string{"Admin", "Agents"},
+		Security:    adminSec,
+	}, h.getAgentUseMode)
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-update-agent-use-mode",
+		Method:      http.MethodPut,
+		Path:        "/api/admin/agent-settings/use-mode",
+		Tags:        []string{"Admin", "Agents"},
+		Security:    adminSec,
+	}, h.updateAgentUseMode)
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-get-agent-memory-settings",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/agent-memory-settings",
+		Tags:        []string{"Admin", "Agents"},
+		Security:    adminSec,
+	}, h.getAgentMemorySettings)
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-update-agent-memory-settings",
+		Method:      http.MethodPut,
+		Path:        "/api/admin/agent-memory-settings",
+		Tags:        []string{"Admin", "Agents"},
+		Security:    adminSec,
+	}, h.updateAgentMemorySettings)
+	huma.Register(api, huma.Operation{
+		OperationID:   "admin-seed-creator-suite-agents",
+		Method:        http.MethodPost,
+		Path:          "/api/admin/agents/seed-suite",
+		Tags:          []string{"Admin", "Agents"},
+		Security:      adminSec,
+		DefaultStatus: http.StatusCreated,
+	}, h.seedCreatorSuiteAgents)
 }
 
 // ─── Agent runs ──────────────────────────────────────────────────────────────
@@ -229,7 +267,7 @@ func (h *AdminHandler) listAllAgents(ctx context.Context, _ *struct{}) (*listAge
 	out := &listAgentsOutput{}
 	out.Body.Data = make([]AgentItem, 0, len(rows))
 	for _, r := range rows {
-		out.Body.Data = append(out.Body.Data, toAgentItem(r))
+		out.Body.Data = append(out.Body.Data, toAdminAgentItem(r))
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
@@ -242,22 +280,30 @@ func (h *AdminHandler) createGlobalAgent(ctx context.Context, input *createAgent
 		return nil, err
 	}
 	row, err := h.q.InsertAgent(ctx, sqlc.InsertAgentParams{
-		Scope:        "global",
-		OwnerID:      noOwner,
-		Name:         input.Body.Name,
-		Description:  input.Body.Description,
-		Avatar:       input.Body.Avatar,
-		SystemPrompt: input.Body.SystemPrompt,
-		Model:        input.Body.Model,
-		SkillIDs:     skillIDs,
-		CanvasTools:  input.Body.CanvasTools,
-		Strategy:     defaulted(input.Body.Strategy, "reactive"),
-		Enabled:      input.Body.Enabled,
+		Scope:           "global",
+		OwnerID:         noOwner,
+		Name:            input.Body.Name,
+		Description:     input.Body.Description,
+		Avatar:          input.Body.Avatar,
+		SystemPrompt:    input.Body.SystemPrompt,
+		Model:           input.Body.Model,
+		SkillIDs:        skillIDs,
+		CanvasTools:     input.Body.CanvasTools,
+		Strategy:        defaulted(input.Body.Strategy, "reactive"),
+		Enabled:         input.Body.Enabled,
+		DeployKey:       input.Body.DeployKey,
+		ParentDeployKey: input.Body.ParentDeployKey,
+		ModelName:       input.Body.ModelName,
+		ProviderID:      input.Body.ProviderID,
+		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		MaxOutputTokens: input.Body.MaxOutputTokens,
+		Runtime:         defaulted(input.Body.Runtime, "generic"),
+		Metadata:        jsonOrEmpty(input.Body.Metadata),
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to insert global agent: " + err.Error())
 	}
-	return wrapAgent(ctx, row), nil
+	return wrapAdminAgent(ctx, row), nil
 }
 
 func (h *AdminHandler) updateAnyAgent(ctx context.Context, input *updateAgentInput) (*agentOutput, error) {
@@ -274,21 +320,29 @@ func (h *AdminHandler) updateAnyAgent(ctx context.Context, input *updateAgentInp
 		return nil, err
 	}
 	row, err := h.q.UpdateAgent(ctx, sqlc.UpdateAgentParams{
-		ID:           pgID,
-		Name:         input.Body.Name,
-		Description:  input.Body.Description,
-		Avatar:       input.Body.Avatar,
-		SystemPrompt: input.Body.SystemPrompt,
-		Model:        input.Body.Model,
-		SkillIDs:     skillIDs,
-		CanvasTools:  input.Body.CanvasTools,
-		Strategy:     defaulted(input.Body.Strategy, existing.Strategy),
-		Enabled:      input.Body.Enabled,
+		ID:              pgID,
+		Name:            input.Body.Name,
+		Description:     input.Body.Description,
+		Avatar:          input.Body.Avatar,
+		SystemPrompt:    input.Body.SystemPrompt,
+		Model:           input.Body.Model,
+		SkillIDs:        skillIDs,
+		CanvasTools:     input.Body.CanvasTools,
+		Strategy:        defaulted(input.Body.Strategy, existing.Strategy),
+		Enabled:         input.Body.Enabled,
+		DeployKey:       defaulted(input.Body.DeployKey, existing.DeployKey),
+		ParentDeployKey: input.Body.ParentDeployKey,
+		ModelName:       input.Body.ModelName,
+		ProviderID:      input.Body.ProviderID,
+		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		MaxOutputTokens: input.Body.MaxOutputTokens,
+		Runtime:         defaulted(input.Body.Runtime, "generic"),
+		Metadata:        jsonOrEmpty(input.Body.Metadata),
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to update agent")
 	}
-	return wrapAgent(ctx, row), nil
+	return wrapAdminAgent(ctx, row), nil
 }
 
 func (h *AdminHandler) deleteAnyAgent(ctx context.Context, input *deleteAgentInput) (*struct{}, error) {
@@ -304,3 +358,109 @@ func (h *AdminHandler) deleteAnyAgent(ctx context.Context, input *deleteAgentInp
 
 // keep time package linked (used by uuid helper file ordering); silenced.
 var _ = time.Now
+
+func wrapAdminAgent(ctx context.Context, row sqlc.Agent) *agentOutput {
+	out := &agentOutput{}
+	out.Body.Data = toAdminAgentItem(row)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out
+}
+
+type agentUseModeOutput struct {
+	Body struct {
+		Data struct {
+			Mode int32 `json:"mode"`
+		} `json:"data"`
+		RequestID string `json:"request_id"`
+	}
+}
+
+type updateAgentUseModeInput struct {
+	Body struct {
+		Mode int32 `json:"mode"`
+	}
+}
+
+func (h *AdminHandler) getAgentUseMode(ctx context.Context, _ *struct{}) (*agentUseModeOutput, error) {
+	mode := skillsapp.AgentUseModeSimple
+	if row, err := h.q.GetAgentSetting(ctx, skillsapp.AgentUseModeSettingKey); err == nil {
+		var payload struct {
+			Mode int32 `json:"mode"`
+		}
+		if err := json.Unmarshal(row.Value, &payload); err == nil && payload.Mode == skillsapp.AgentUseModeAdvanced {
+			mode = skillsapp.AgentUseModeAdvanced
+		}
+	}
+	out := &agentUseModeOutput{}
+	out.Body.Data.Mode = mode
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *AdminHandler) updateAgentUseMode(ctx context.Context, input *updateAgentUseModeInput) (*agentUseModeOutput, error) {
+	mode := input.Body.Mode
+	if mode != skillsapp.AgentUseModeAdvanced {
+		mode = skillsapp.AgentUseModeSimple
+	}
+	payload, _ := json.Marshal(map[string]int32{"mode": mode})
+	if _, err := h.q.UpsertAgentSetting(ctx, sqlc.UpsertAgentSettingParams{Key: skillsapp.AgentUseModeSettingKey, Value: payload}); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to save agent use mode")
+	}
+	out := &agentUseModeOutput{}
+	out.Body.Data.Mode = mode
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type memorySettingsOutput struct {
+	Body struct {
+		Data      json.RawMessage `json:"data"`
+		RequestID string          `json:"request_id"`
+	}
+}
+
+type updateMemorySettingsInput struct {
+	Body json.RawMessage
+}
+
+var defaultAgentMemorySettings = json.RawMessage(`{"messagesPerSummary":3,"shortTermLimit":5,"summaryMaxLength":500,"summaryLimit":10,"ragLimit":3,"deepRetrieveSummaryLimit":5,"modelOnnxFile":"all-MiniLM-L6-v2/onnx/model_fp16.onnx","modelDtype":"fp16"}`)
+
+func (h *AdminHandler) getAgentMemorySettings(ctx context.Context, _ *struct{}) (*memorySettingsOutput, error) {
+	data := defaultAgentMemorySettings
+	if row, err := h.q.GetAgentSetting(ctx, skillsapp.AgentMemorySettingsKey); err == nil && len(row.Value) > 0 {
+		data = json.RawMessage(row.Value)
+	}
+	out := &memorySettingsOutput{}
+	out.Body.Data = data
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *AdminHandler) updateAgentMemorySettings(ctx context.Context, input *updateMemorySettingsInput) (*memorySettingsOutput, error) {
+	payload := jsonOrEmpty(input.Body)
+	if _, err := h.q.UpsertAgentSetting(ctx, sqlc.UpsertAgentSettingParams{Key: skillsapp.AgentMemorySettingsKey, Value: payload}); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to save memory settings")
+	}
+	out := &memorySettingsOutput{}
+	out.Body.Data = json.RawMessage(payload)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type seedSuiteOutput struct {
+	Body struct {
+		Data      skillsapp.CreatorSuiteAgentSeedReport `json:"data"`
+		RequestID string                                `json:"request_id"`
+	}
+}
+
+func (h *AdminHandler) seedCreatorSuiteAgents(ctx context.Context, _ *struct{}) (*seedSuiteOutput, error) {
+	report, err := skillsapp.EnsureCreatorSuiteAgentSeeds(ctx, h.q)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to seed creator suite agents: " + err.Error())
+	}
+	out := &seedSuiteOutput{}
+	out.Body.Data = report
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}

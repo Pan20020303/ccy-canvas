@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -102,6 +103,193 @@ func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
 
 	if got := body["model"]; got != "gemini-3.0-pro-image 4K" {
 		t.Fatalf("model = %v, want gemini-3.0-pro-image 4K", got)
+	}
+}
+
+func requireNodeForTSProviderRunner(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required for TS provider runner tests")
+	}
+}
+
+const sampleTSProviderCode = `
+type Req = { prompt: string; model: string };
+export const vendor = {
+  id: "sample-ts-image",
+  serviceType: "image",
+  vendor: "SampleVendor",
+  name: "Sample TS Image",
+  apiSpec: "custom",
+  protocol: "openai_compatible",
+  baseURL: "https://provider.example/v1",
+  submitEndpoint: "/images/generations",
+  icon: { key: "OpenAI", url: "data:image/png;base64,AAAA" },
+  models: [{ model: "sample-image-1" }],
+  defaultModel: "sample-image-1",
+  parameterSchema: { quality_options: ["standard", "hd"] },
+};
+
+export async function imageRequest(input: Req, ctx: { apiKey: string; baseURL: string }) {
+  if (ctx.apiKey !== "secret-key") throw new Error("api key was not injected");
+  if (ctx.baseURL !== "https://provider.example/v1") throw new Error("base URL was not injected");
+  return { url: "https://cdn.example/generated.png" };
+}
+`
+
+func TestPreviewProviderPluginParsesTSMetadataAndIcons(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+
+	preview, err := service.PreviewProviderPlugin(context.Background(), sampleTSProviderCode, "image")
+	if err != nil {
+		t.Fatalf("PreviewProviderPlugin returned error: %v", err)
+	}
+	if preview.Name != "Sample TS Image" {
+		t.Fatalf("Name = %q, want Sample TS Image", preview.Name)
+	}
+	if preview.ServiceType != "image" {
+		t.Fatalf("ServiceType = %q, want image", preview.ServiceType)
+	}
+	if got := preview.ModelList; len(got) != 1 || got[0] != "sample-image-1" {
+		t.Fatalf("ModelList = %#v, want sample-image-1", got)
+	}
+	if preview.Icon.Key != "openai" {
+		t.Fatalf("Icon.Key = %q, want openai", preview.Icon.Key)
+	}
+	if preview.Icon.URL == "" {
+		t.Fatal("Icon.URL should be preserved")
+	}
+	if !strings.Contains(string(preview.ParameterSchema), "quality_options") {
+		t.Fatalf("ParameterSchema = %s, want quality_options", preview.ParameterSchema)
+	}
+}
+
+const creatorSuiteStyleTSProviderCode = `
+type ImageModel = { name: string; modelName: string; type: "image"; mode: string[] };
+type VideoModel = { name: string; modelName: string; type: "video"; mode: string[] };
+const vendor = {
+  id: "creator-suite-like",
+  version: "3.2",
+  author: "Creator Suite",
+  name: "Creator Suite Like Provider",
+  icon: "openai",
+  inputs: [
+    { key: "apiKey", label: "API Key", type: "password", required: true },
+    { key: "baseUrl", label: "Base URL", type: "url", required: true },
+  ],
+  inputValues: { apiKey: "", baseUrl: "https://creator-suite.example/v1" },
+  models: [
+    { name: "Image Display", modelName: "image-model-real", type: "image", mode: ["text", "singleImage"] },
+    { name: "Video Display", modelName: "video-model-real", type: "video", mode: ["text"] },
+  ],
+};
+
+const imageRequest = async (config: any, model: ImageModel): Promise<string> => {
+  if (vendor.inputValues.apiKey !== "secret-key") throw new Error("missing injected api key");
+  if (vendor.inputValues.baseUrl !== "https://creator-suite.example/v1") throw new Error("missing injected base url");
+  if (model.modelName !== "image-model-real") throw new Error("wrong selected model: " + model.modelName);
+  if (!config.referenceList || config.referenceList[0].type !== "image") throw new Error("referenceList was not built");
+  if (config.aspectRatio !== "9:16") throw new Error("aspect ratio was not normalized");
+  return "https://cdn.example/creator-suite-style.png";
+};
+
+const videoRequest = async (_config: any, _model: VideoModel): Promise<string> => {
+  return "https://cdn.example/creator-suite-style.mp4";
+};
+
+exports.vendor = vendor;
+exports.imageRequest = imageRequest;
+exports.videoRequest = videoRequest;
+export {};
+`
+
+func TestPreviewProviderPluginFiltersCreatorSuiteStyleModelsByServiceType(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+
+	preview, err := service.PreviewProviderPlugin(context.Background(), creatorSuiteStyleTSProviderCode, "image")
+	if err != nil {
+		t.Fatalf("PreviewProviderPlugin returned error: %v", err)
+	}
+	if preview.ServiceType != "image" {
+		t.Fatalf("ServiceType = %q, want image", preview.ServiceType)
+	}
+	if got := preview.ModelList; len(got) != 1 || got[0] != "image-model-real" {
+		t.Fatalf("ModelList = %#v, want only image-model-real", got)
+	}
+	if preview.DefaultModel != "image-model-real" {
+		t.Fatalf("DefaultModel = %q, want image-model-real", preview.DefaultModel)
+	}
+	if !strings.Contains(string(preview.ParameterSchema), "vendor_all_models") {
+		t.Fatalf("ParameterSchema = %s, want mixed vendor metadata", preview.ParameterSchema)
+	}
+}
+
+func TestDispatchToVendorSupportsCreatorSuiteStyleTSProvider(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+	pc := &domain.ProviderConfig{
+		ID:              "provider-creator-suite-style",
+		ServiceType:     "image",
+		Vendor:          "CreatorSuite",
+		Name:            "Creator Suite Like Provider",
+		BaseURL:         "https://creator-suite.example/v1",
+		ModelList:       []string{"image-model-real"},
+		ParameterSchema: json.RawMessage(`{"vendor_models":[{"name":"Image Display","modelName":"image-model-real","type":"image","mode":["text","singleImage"]}]}`),
+		AdapterRuntime:  "ts",
+		AdapterCode:     creatorSuiteStyleTSProviderCode,
+	}
+
+	result, err := service.dispatchToVendor(context.Background(), candidateChannel{
+		cfg:     pc,
+		baseURL: "https://creator-suite.example/v1",
+		apiKey:  "secret-key",
+	}, GenerateRequest{
+		ServiceType:      "image",
+		Model:            "image-model-real",
+		Prompt:           "make an image",
+		Size:             "9:16",
+		Resolution:       "2K",
+		ReferenceImages:  []string{"data:image/png;base64,AAAA"},
+		GenerationLogID:  "log-1",
+		ProviderConfigID: "provider-creator-suite-style",
+	})
+	if err != nil {
+		t.Fatalf("dispatchToVendor returned error: %v", err)
+	}
+	if result.Type != "url" || result.Content != "https://cdn.example/creator-suite-style.png" {
+		t.Fatalf("result = %#v, want generated URL", result)
+	}
+}
+
+func TestDispatchToVendorUsesTSProviderRunner(t *testing.T) {
+	requireNodeForTSProviderRunner(t)
+	service := NewService(&fakeRepository{}, []byte("01234567890123456789012345678901"))
+	pc := &domain.ProviderConfig{
+		ID:             "provider-ts",
+		ServiceType:    "image",
+		Vendor:         "SampleVendor",
+		Name:           "Sample TS Image",
+		BaseURL:        "https://provider.example/v1",
+		AdapterRuntime: "ts",
+		AdapterCode:    sampleTSProviderCode,
+	}
+
+	result, err := service.dispatchToVendor(context.Background(), candidateChannel{
+		cfg:     pc,
+		baseURL: "https://provider.example/v1",
+		apiKey:  "secret-key",
+	}, GenerateRequest{
+		ServiceType: "image",
+		Model:       "sample-image-1",
+		Prompt:      "make an image",
+	})
+	if err != nil {
+		t.Fatalf("dispatchToVendor returned error: %v", err)
+	}
+	if result.Type != "url" || result.Content != "https://cdn.example/generated.png" {
+		t.Fatalf("result = %#v, want generated URL", result)
 	}
 }
 

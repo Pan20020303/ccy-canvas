@@ -35,6 +35,7 @@ import {
   Minus,
   Copy as CopyIcon,
   Highlighter,
+  RotateCcw,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -1428,7 +1429,7 @@ const PromptPanel = ({
     <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
         <Dropdown
-          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} size={14} />}
+          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
           value={activeModel}
           options={availableModels}
           onChange={handleModelChange}
@@ -1441,7 +1442,7 @@ const PromptPanel = ({
               ?? optTemplate?.durationOptions?.[0];
             return (
               <div className="flex w-full items-center gap-2">
-                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} size={18} />
+                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
                 <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>
@@ -1887,7 +1888,17 @@ type ImageActionDraft = {
   prompt: string;
   model?: string;
   anglePreset?: string;
+  angleYaw?: number;
+  anglePitch?: number;
+  angleZoom?: number;
+  anglePromptEnabled?: boolean;
   lightingPreset?: string;
+  lightingView?: string;
+  lightingBrightness?: number;
+  lightingColor?: string;
+  lightingKeyLight?: string;
+  lightingSmart?: boolean;
+  lightingRim?: boolean;
   gridPreset?: string;
   expandDirection?: string;
   outputCount?: number;
@@ -1895,18 +1906,6 @@ type ImageActionDraft = {
   maskImage?: string;
   splitRows?: number;
   splitCols?: number;
-  // Angle editor (from 4017e8e7).
-  angleYaw?: number;
-  anglePitch?: number;
-  angleZoom?: number;
-  anglePromptEnabled?: boolean;
-  // Lighting editor (from 4017e8e7).
-  lightingView?: string;
-  lightingBrightness?: number;
-  lightingColor?: string;
-  lightingKeyLight?: string;
-  lightingSmart?: boolean;
-  lightingRim?: boolean;
 };
 
 // Wraps an in-flight image action with its draft + dialog open state.
@@ -1959,6 +1958,33 @@ const GRID_COMPOSE_PRESETS = [
 ];
 
 const GRID_SPLIT_PRESETS = GRID_COMPOSE_PRESETS;
+
+function buildAngleEditorPrompt(draft: ImageActionDraft, language: string) {
+  const yaw = Math.round(draft.angleYaw ?? 0);
+  const pitch = Math.round(draft.anglePitch ?? 0);
+  const zoom = Math.round(draft.angleZoom ?? 50);
+  const preset = ANGLE_EDITOR_PRESETS.find((item) => item.id === draft.anglePreset);
+  const presetLabel = preset ? (language === 'zh' ? preset.labelZh : preset.labelEn) : draft.anglePreset;
+  const parameterPrompt = language === 'zh'
+    ? `按多角度编辑参数生成：视角预设=${presetLabel ?? '自定义'}，水平环绕=${yaw}°，垂直俯仰=${pitch}°，景别缩放=${zoom}%。保持主体身份、服装、比例和材质一致，输出干净的多角度/三视图参考图。`
+    : `Generate with angle-editor parameters: preset=${presetLabel ?? 'Custom'}, yaw=${yaw}deg, pitch=${pitch}deg, framing zoom=${zoom}%. Keep identity, outfit, proportions, and material consistent; output a clean multi-angle/three-view reference sheet.`;
+  return draft.anglePromptEnabled === false
+    ? parameterPrompt
+    : `${draft.prompt}\n${parameterPrompt}`.trim();
+}
+
+function buildLightingEditorPrompt(draft: ImageActionDraft, language: string) {
+  const brightness = Math.round(draft.lightingBrightness ?? 50);
+  const keyLight = LIGHTING_KEY_LIGHTS.find((item) => item.id === draft.lightingKeyLight);
+  const keyLightLabel = keyLight ? (language === 'zh' ? keyLight.labelZh : keyLight.labelEn) : draft.lightingKeyLight;
+  const view = draft.lightingView === 'front'
+    ? (language === 'zh' ? '正面' : 'front')
+    : (language === 'zh' ? '透视' : 'transparent');
+  const parameterPrompt = language === 'zh'
+    ? `按打光编辑参数调整：预览模式=${view}，亮度=${brightness}%，主光源=${keyLightLabel ?? '前方'}，色温/颜色=${draft.lightingColor ?? '#ffffff'}，智能模式=${draft.lightingSmart ? '开启' : '关闭'}，轮廓光=${draft.lightingRim ? '开启' : '关闭'}。保持主体、构图、服装和背景布局不变，只改变光照、阴影、质感和氛围。`
+    : `Apply lighting-editor parameters: preview=${view}, brightness=${brightness}%, key light=${keyLightLabel ?? 'Front'}, color=${draft.lightingColor ?? '#ffffff'}, smart mode=${draft.lightingSmart ? 'on' : 'off'}, rim light=${draft.lightingRim ? 'on' : 'off'}. Keep subject, composition, outfit, and background layout unchanged; only adjust light, shadow, material, and mood.`;
+  return `${draft.prompt}\n${parameterPrompt}`.trim();
+}
 
 const VIDEO_EDIT_PRESETS = [
   { id: 'scene-preserve', labelZh: '保留主体', labelEn: 'Preserve subject', prompt: '保持主体和构图基本不变，只处理视频编辑目标。' },
@@ -2311,7 +2337,7 @@ function PanoramaActionEditor({
             <div className="text-xs text-neutral-400">{language === 'zh' ? '生成模型' : 'Model'}</div>
             <div className="rounded-xl border border-white/10 bg-black/20 px-1 py-1">
               <Dropdown
-                label={<ModelBrandIcon model={selectedModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} size={16} />}
+                label={<ModelBrandIcon model={selectedModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={16} />}
                 value={selectedModel}
                 options={options}
                 onChange={(model) => updateDraft({ model })}
@@ -2321,7 +2347,7 @@ function PanoramaActionEditor({
                   const optionConfig = providerConfigs.find((config) => config.model_list.includes(option)) ?? null;
                   return (
                     <div className="flex w-full items-center gap-2">
-                      <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} size={18} />
+                      <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
                       <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
                     </div>
                   );
@@ -2697,6 +2723,18 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         model: action === 'panorama' ? defaultImageModel : undefined,
         outputCount: action === 'angles' ? 3 : 1,
         expandDirection: action === 'panorama' ? 'horizontal' : 'both',
+        anglePreset: action === 'angles' ? 'custom' : undefined,
+        angleYaw: 0,
+        anglePitch: 0,
+        angleZoom: 50,
+        anglePromptEnabled: false,
+        lightingPreset: action === 'lighting' ? 'studio-key' : undefined,
+        lightingView: 'transparent',
+        lightingBrightness: 50,
+        lightingColor: '#ffffff',
+        lightingKeyLight: 'front',
+        lightingSmart: false,
+        lightingRim: false,
         ...draft,
       },
     });
@@ -2793,9 +2831,9 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           outputCount: 1,
         });
       } else if (session.action === 'angles') {
-        const outputs = Math.max(1, draft.outputCount ?? 3);
         const angleLabel = draft.anglePreset ?? 'three-view';
-        const anglePrompt = `${draft.prompt} ${angleLabel}`;
+        const anglePrompt = `${buildAngleEditorPrompt(draft, language)} ${angleLabel}`;
+        const outputs = Math.max(1, draft.outputCount ?? 1);
         for (let index = 0; index < outputs; index += 1) {
           // Stagger each derived node slightly so multi-output sets are readable.
           // The backend can still collapse to one output if the provider ignores n.
@@ -2806,6 +2844,13 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             anglePreset: draft.anglePreset,
           });
         }
+      } else if (session.action === 'lighting') {
+        await spawnDerivedNode({
+          prompt: buildLightingEditorPrompt(draft, language),
+          outputCount: 1,
+          referenceImages: [sourceUrl],
+          lightingPreset: draft.lightingPreset,
+        });
       } else {
         await spawnDerivedNode({
           prompt: draft.prompt,
@@ -2953,7 +2998,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             {ANGLE_PRESETS.map((preset) => (
               <DropdownMenuItem
                 key={preset.id}
-                onClick={() => openDraft('angles', { anglePreset: preset.id, prompt: preset.prompt, outputCount: preset.outputs })}
+                onClick={() => openDraft('angles', { anglePreset: 'custom', prompt: preset.prompt, outputCount: 1, anglePromptEnabled: true })}
               >
                 <div className="flex w-full items-center justify-between gap-3">
                   <span>{language === 'zh' ? preset.labelZh : preset.labelEn}</span>
@@ -2975,7 +3020,14 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             {LIGHTING_PRESETS.map((preset) => (
               <DropdownMenuItem
                 key={preset.id}
-                onClick={() => openDraft('lighting', { lightingPreset: preset.id, prompt: preset.prompt })}
+                onClick={() => openDraft('lighting', {
+                  lightingPreset: preset.id,
+                  prompt: preset.prompt,
+                  lightingKeyLight: preset.id === 'side-light' ? 'left' : preset.id === 'rim-light' ? 'back' : 'front',
+                  lightingBrightness: preset.id === 'soft-light' ? 62 : 50,
+                  lightingSmart: preset.id === 'soft-light',
+                  lightingRim: preset.id === 'rim-light',
+                })}
               >
                 {language === 'zh' ? preset.labelZh : preset.labelEn}
               </DropdownMenuItem>
@@ -3043,7 +3095,10 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       </div>
 
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) closeSession(); }}>
-        <DialogContent className="max-w-3xl border-white/10 bg-[#111318] text-neutral-100">
+        <DialogContent className={clsx(
+          'border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)]',
+          isPrecisionEditor ? 'max-w-4xl' : 'max-w-3xl',
+        )}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
           </DialogHeader>
@@ -3074,9 +3129,9 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
                 <div className="space-y-3">
                   <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
                     {latestDerivedUrl ? (
-                      <img src={latestDerivedUrl} alt="" className="h-48 w-full object-cover" />
+                      <ResilientImage src={latestDerivedUrl} alt="" className="h-48 w-full object-cover" zh={language === 'zh'} />
                     ) : (
-                      <img src={sourceUrl} alt="" className="h-48 w-full object-cover" />
+                      <ResilientImage src={sourceUrl} alt="" className="h-48 w-full object-cover" zh={language === 'zh'} />
                     )}
                   </div>
                   <div className="text-xs text-neutral-400">
@@ -3086,11 +3141,20 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
               </div>
             )
           ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
-            <Button onClick={() => void handleGenerate()} disabled={busy}>
-              {busy ? (language === 'zh' ? '生成中…' : 'Working…') : (language === 'zh' ? '开始生成' : 'Generate')}
-            </Button>
+          <DialogFooter className={clsx(isPrecisionEditor && 'items-center justify-between sm:justify-between')}>
+            {isPrecisionEditor ? (
+              <Button variant="ghost" onClick={resetEditorDraft} className="mr-auto text-neutral-300 hover:bg-white/[0.08] hover:text-white">
+                <RotateCcw className="mr-2 h-4 w-4" />
+                {language === 'zh' ? '重置参数' : 'Reset'}
+              </Button>
+            ) : null}
+            <div className="flex items-center gap-2">
+              {isPrecisionEditor ? <span className="text-xs text-neutral-400">1</span> : null}
+              <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
+              <Button onClick={() => void handleGenerate()} disabled={busy}>
+                {busy ? (language === 'zh' ? '生成中...' : 'Working...') : (language === 'zh' ? '开始生成' : 'Generate')}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

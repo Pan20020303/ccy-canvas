@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { ApiClientError, apiClient } from "./client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -7,6 +7,12 @@ import { apiClient } from "./client";
 export type ServiceType = "text" | "image" | "video" | "audio";
 export type AdapterProfileID = "openai" | "ark" | "custom";
 export type GatewayProtocol = "openai_compatible" | "newapi" | "native";
+export type AdapterRuntime = "go" | "ts";
+
+export type ProviderIcon = {
+  key?: string;
+  url?: string;
+};
 
 /** Admin view — encrypted API key never returned, only hint. */
 export type ProviderConfig = {
@@ -30,6 +36,11 @@ export type ProviderConfig = {
   parameter_schema?: ModelParameterSchema;
   /** Effective per-call price in credits (configured value, or default 1). */
   credit_cost?: number;
+  adapter_runtime: AdapterRuntime;
+  adapter_code?: string;
+  adapter_checksum?: string;
+  icon_key?: string;
+  icon_url?: string;
   created_at: string;
   updated_at: string;
   /** Channel-health snapshot (migration 011). Backend populates these so
@@ -51,6 +62,24 @@ export type ChannelTestResult = {
   error_msg?: string;
 };
 
+function normalizeChannelTestResultPayload(value: unknown): ChannelTestResult | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const candidate = record.data && typeof record.data === "object"
+    ? record.data as Record<string, unknown>
+    : record;
+  if (typeof candidate.ok !== "boolean") return null;
+  const httpStatus = Number(candidate.http_status ?? candidate.httpStatus ?? 0);
+  const latencyMs = Number(candidate.latency_ms ?? candidate.latencyMs ?? 0);
+  const errorMsg = candidate.error_msg ?? candidate.errorMsg;
+  return {
+    ok: candidate.ok,
+    http_status: Number.isFinite(httpStatus) ? httpStatus : 0,
+    latency_ms: Number.isFinite(latencyMs) ? latencyMs : 0,
+    error_msg: typeof errorMsg === "string" ? errorMsg : undefined,
+  };
+}
+
 /** User app view — minimal info. */
 export type AppProviderConfig = {
   id: string;
@@ -60,6 +89,8 @@ export type AppProviderConfig = {
   protocol?: GatewayProtocol;
   capabilities?: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  icon_key?: string;
+  icon_url?: string;
   model_list: string[];
   default_model: string;
   priority: number;
@@ -85,6 +116,27 @@ export type ProviderConfigPayload = {
   parameter_schema?: ModelParameterSchema;
   /** Per-call price in credits. Omit to keep the current value. */
   credit_cost?: number;
+  adapter_runtime?: AdapterRuntime;
+  adapter_code?: string;
+  icon_key?: string;
+  icon_url?: string;
+};
+
+export type ProviderConfigTSImportPreview = {
+  id?: string;
+  service_type: ServiceType;
+  vendor: string;
+  name: string;
+  api_spec: string;
+  protocol: GatewayProtocol;
+  base_url: string;
+  submit_endpoint?: string;
+  query_endpoint?: string;
+  model_list: string[];
+  default_model?: string;
+  capabilities?: ServiceType[];
+  parameter_schema?: ModelParameterSchema;
+  icon?: ProviderIcon;
 };
 
 export type ModelParameterSchema = {
@@ -93,6 +145,14 @@ export type ModelParameterSchema = {
   credit_cost?: number;
   allowed_parameters?: string[];
   defaults?: Record<string, unknown>;
+  vendor_id?: string;
+  vendor_version?: string;
+  vendor_author?: string;
+  vendor_description?: string;
+  vendor_inputs?: unknown[];
+  vendor_input_values?: Record<string, unknown>;
+  vendor_models?: unknown[];
+  vendor_all_models?: unknown[];
   models?: Record<string, ModelParameterSchema>;
   parameter_aliases?: Record<string, string>;
   parameterAliases?: Record<string, string>;
@@ -860,6 +920,16 @@ export function createProviderConfig(
   return apiClient.post<ProviderConfig>("/api/admin/provider-configs", payload);
 }
 
+export function previewProviderConfigTSImport(
+  code: string,
+  serviceType?: ServiceType,
+): Promise<ProviderConfigTSImportPreview> {
+  return apiClient.post<ProviderConfigTSImportPreview>(
+    "/api/admin/provider-configs/import-ts/preview",
+    { code, service_type: serviceType },
+  );
+}
+
 export function updateProviderConfig(
   id: string,
   payload: ProviderConfigPayload,
@@ -884,12 +954,24 @@ export function resetChannelHealth(id: string): Promise<ProviderConfig> {
 
 /** POST /api/admin/provider-configs/:id/test — probes the upstream relay
  *  to verify credentials + network path. Doesn't consume model quota. */
-export function testChannelConnectivity(
+export async function testChannelConnectivity(
   id: string,
 ): Promise<ChannelTestResult> {
-  return apiClient.post<ChannelTestResult>(
-    `/api/admin/provider-configs/${id}/test`,
-  );
+  try {
+    return await apiClient.post<ChannelTestResult>(
+      `/api/admin/provider-configs/${id}/test`,
+    );
+  } catch (err) {
+    if (err instanceof ApiClientError && err.code === "UNEXPECTED_RESPONSE" && err.rawBody) {
+      try {
+        const normalized = normalizeChannelTestResultPayload(JSON.parse(err.rawBody));
+        if (normalized) return normalized;
+      } catch {
+        // Fall through to the original API client error.
+      }
+    }
+    throw err;
+  }
 }
 
 export function toggleProviderConfigStatus(
