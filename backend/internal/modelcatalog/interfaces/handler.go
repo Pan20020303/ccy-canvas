@@ -728,8 +728,11 @@ type ProviderConfigItem struct {
 	Status          string          `json:"status"`
 	Capabilities    []string        `json:"capabilities"`
 	ParameterSchema json.RawMessage `json:"parameter_schema"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
+	// CreditCost is the effective per-call price in credits (configured
+	// value, or the default of 1 when unset). Admin-editable.
+	CreditCost int32  `json:"credit_cost"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 	// Channel-health snapshot. Empty timestamps + zero counters = healthy.
 	FailureCount         int32  `json:"failure_count"`
 	LastFailureAt        string `json:"last_failure_at,omitempty"`
@@ -749,6 +752,46 @@ type AppProviderConfigItem struct {
 	DefaultModel    string          `json:"default_model"`
 	Priority        int32           `json:"priority"`
 	ParameterSchema json.RawMessage `json:"parameter_schema"`
+}
+
+// effectiveCreditCostFromSchema returns the configured per-call credit cost
+// from a provider config's parameter_schema, or the default of 1 when unset.
+func effectiveCreditCostFromSchema(schema json.RawMessage) int32 {
+	if len(schema) > 0 {
+		var m struct {
+			CreditCost *int32 `json:"credit_cost"`
+		}
+		if json.Unmarshal(schema, &m) == nil && m.CreditCost != nil {
+			if *m.CreditCost < 0 {
+				return 0
+			}
+			return *m.CreditCost
+		}
+	}
+	return 1 // default cost, matches application.defaultCreditCost
+}
+
+// mergeCreditCostIntoSchema sets credit_cost inside a parameter_schema JSON
+// object. nil cost leaves the schema unchanged. Used so the admin can edit
+// the price via a dedicated field without hand-editing the schema.
+func mergeCreditCostIntoSchema(schema json.RawMessage, cost *int32) json.RawMessage {
+	if cost == nil {
+		return schema
+	}
+	m := map[string]any{}
+	if len(schema) > 0 {
+		_ = json.Unmarshal(schema, &m)
+	}
+	v := *cost
+	if v < 0 {
+		v = 0
+	}
+	m["credit_cost"] = v
+	out, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return out
 }
 
 func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
@@ -777,6 +820,7 @@ func toProviderConfigItem(pc domain.ProviderConfig) ProviderConfigItem {
 		Status:               pc.Status,
 		Capabilities:         pc.Capabilities,
 		ParameterSchema:      pc.ParameterSchema,
+		CreditCost:           effectiveCreditCostFromSchema(pc.ParameterSchema),
 		CreatedAt:            pc.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:            pc.UpdatedAt.Format(time.RFC3339),
 		FailureCount:         pc.FailureCount,
@@ -844,6 +888,7 @@ type createProviderConfigInput struct {
 		Status          string          `json:"status,omitempty" enum:"enabled,disabled" doc:"Initial status"`
 		Capabilities    []string        `json:"capabilities,omitempty" doc:"Declared channel capabilities"`
 		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty" doc:"Supported request parameters and UI options"`
+		CreditCost      *int32          `json:"credit_cost,omitempty" doc:"Per-call price in credits (omit to keep current / default 1)"`
 	}
 }
 
@@ -870,7 +915,7 @@ func (h *Handler) createProviderConfig(ctx context.Context, input *createProvide
 		IsDefault:       input.Body.IsDefault,
 		Status:          input.Body.Status,
 		Capabilities:    input.Body.Capabilities,
-		ParameterSchema: input.Body.ParameterSchema,
+		ParameterSchema: mergeCreditCostIntoSchema(input.Body.ParameterSchema, input.Body.CreditCost),
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}
@@ -907,10 +952,20 @@ type updateProviderConfigInput struct {
 		Status          string          `json:"status,omitempty" enum:"enabled,disabled"`
 		Capabilities    []string        `json:"capabilities,omitempty"`
 		ParameterSchema json.RawMessage `json:"parameter_schema,omitempty"`
+		CreditCost      *int32          `json:"credit_cost,omitempty" doc:"Per-call price in credits (omit to keep current)"`
 	}
 }
 
 func (h *Handler) updateProviderConfig(ctx context.Context, input *updateProviderConfigInput) (*providerConfigOutput, error) {
+	// Defensive: if the request omits parameter_schema, keep the existing one
+	// so an edit through the drawer (which may not resend it) can't wipe
+	// request_format etc. Then merge the credit_cost edit into it.
+	schema := input.Body.ParameterSchema
+	if len(schema) == 0 {
+		if existing, gerr := h.svc.GetProviderConfigByID(ctx, input.ID); gerr == nil && existing != nil {
+			schema = existing.ParameterSchema
+		}
+	}
 	pc := domain.ProviderConfig{
 		ID:              input.ID,
 		ServiceType:     input.Body.ServiceType,
@@ -927,7 +982,7 @@ func (h *Handler) updateProviderConfig(ctx context.Context, input *updateProvide
 		IsDefault:       input.Body.IsDefault,
 		Status:          input.Body.Status,
 		Capabilities:    input.Body.Capabilities,
-		ParameterSchema: input.Body.ParameterSchema,
+		ParameterSchema: mergeCreditCostIntoSchema(schema, input.Body.CreditCost),
 	}
 	if pc.ModelList == nil {
 		pc.ModelList = []string{}

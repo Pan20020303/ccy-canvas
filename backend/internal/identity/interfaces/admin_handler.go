@@ -89,6 +89,15 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		DefaultStatus: http.StatusOK,
 	}, h.adjustCredits)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-credit-ledger",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/credits/ledger",
+		Summary:     "List credit ledger entries (reserve/refund/charge/admin)",
+		Tags:        []string{"Admin", "Credits"},
+		Security:    adminSec,
+	}, h.listCreditLedger)
+
 	// Invitations
 	huma.Register(api, huma.Operation{
 		OperationID: "admin-list-invitations",
@@ -660,4 +669,77 @@ func hexVal(c byte) byte {
 	default:
 		return 0xFF
 	}
+}
+
+// ─── Credit ledger (扣费流水) ─────────────────────────────────────────
+
+type listCreditLedgerInput struct {
+	User   string `query:"user" doc:"Filter by user name/email keyword"`
+	Type   string `query:"type" doc:"Filter by entry type (reserve/refund/charge/admin_adjustment/daily_reset)"`
+	Limit  int    `query:"limit" default:"100"`
+	Offset int    `query:"offset" default:"0"`
+}
+
+type CreditLedgerItem struct {
+	ID           string `json:"id"`
+	UserID       string `json:"user_id"`
+	UserName     string `json:"user_name"`
+	UserEmail    string `json:"user_email"`
+	Type         string `json:"type"`
+	Amount       int32  `json:"amount"`
+	BalanceAfter int32  `json:"balance_after"`
+	Reason       string `json:"reason"`
+	CreatedAt    string `json:"created_at"`
+}
+
+type listCreditLedgerOutput struct {
+	Body struct {
+		Data      []CreditLedgerItem `json:"data"`
+		Total     int64              `json:"total"`
+		RequestID string             `json:"request_id"`
+	}
+}
+
+func (h *AdminHandler) listCreditLedger(ctx context.Context, input *listCreditLedgerInput) (*listCreditLedgerOutput, error) {
+	limit := int32(input.Limit)
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset := int32(input.Offset)
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := h.q.ListCreditLedgerEntries(ctx, sqlc.ListCreditLedgerEntriesParams{
+		UserKeyword: input.User,
+		TypeFilter:  input.Type,
+		Limit:       limit,
+		Offset:      offset,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	total, _ := h.q.CountCreditLedgerEntries(ctx, input.User, input.Type)
+
+	out := &listCreditLedgerOutput{}
+	out.Body.Data = make([]CreditLedgerItem, 0, len(rows))
+	for _, r := range rows {
+		createdAt := ""
+		if r.CreatedAt.Valid {
+			createdAt = r.CreatedAt.Time.UTC().Format(time.RFC3339)
+		}
+		out.Body.Data = append(out.Body.Data, CreditLedgerItem{
+			ID:           formatUUID(r.ID.Bytes),
+			UserID:       formatUUID(r.UserID.Bytes),
+			UserName:     r.UserName,
+			UserEmail:    r.UserEmail,
+			Type:         r.Type,
+			Amount:       r.Amount,
+			BalanceAfter: r.BalanceAfter,
+			Reason:       r.Reason,
+			CreatedAt:    createdAt,
+		})
+	}
+	out.Body.Total = total
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
 }

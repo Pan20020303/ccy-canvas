@@ -28,6 +28,8 @@ export type ProviderConfig = {
   status: "enabled" | "disabled";
   capabilities: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  /** Effective per-call price in credits (configured value, or default 1). */
+  credit_cost?: number;
   created_at: string;
   updated_at: string;
   /** Channel-health snapshot (migration 011). Backend populates these so
@@ -81,9 +83,14 @@ export type ProviderConfigPayload = {
   status?: "enabled" | "disabled";
   capabilities?: ServiceType[];
   parameter_schema?: ModelParameterSchema;
+  /** Per-call price in credits. Omit to keep the current value. */
+  credit_cost?: number;
 };
 
 export type ModelParameterSchema = {
+  /** Per-call price in credits (config-level; per-model overrides live in
+   *  models.<name>.credit_cost). */
+  credit_cost?: number;
   allowed_parameters?: string[];
   defaults?: Record<string, unknown>;
   models?: Record<string, ModelParameterSchema>;

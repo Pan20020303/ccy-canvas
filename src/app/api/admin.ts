@@ -216,3 +216,45 @@ export async function listLogs(limit = 50, offset = 0, filters: AdminLogFilters 
     total: typeof body.total === "number" ? body.total : Array.isArray(body.data) ? body.data.length : 0,
   };
 }
+
+// ─── Credit ledger (扣费流水) ─────────────────────────────────────────
+
+export type CreditLedgerEntry = {
+  id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  type: string; // reserve / refund / charge / admin_adjustment / daily_reset
+  amount: number;
+  balance_after: number;
+  reason: string;
+  created_at: string;
+};
+
+export type CreditLedgerResponse = { data: CreditLedgerEntry[]; total: number };
+
+export async function listCreditLedger(
+  limit = 100,
+  offset = 0,
+  filters: { user?: string; type?: string } = {},
+): Promise<CreditLedgerResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (filters.user?.trim()) params.set("user", filters.user.trim());
+  if (filters.type?.trim()) params.set("type", filters.type.trim());
+
+  const response = await fetch(resolveAdminUrl(`/api/admin/credits/ledger?${params.toString()}`), {
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+  });
+  const body = (await response.json()) as Partial<CreditLedgerResponse> & {
+    error?: { message?: string };
+    detail?: string;
+  };
+  if (!response.ok) {
+    throw new Error(body.error?.message ?? body.detail ?? "加载积分流水失败");
+  }
+  return {
+    data: Array.isArray(body.data) ? body.data : [],
+    total: typeof body.total === "number" ? body.total : 0,
+  };
+}

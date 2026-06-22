@@ -70,6 +70,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
   const [defaultModel, setDefaultModel] = useState("");
   const [priority, setPriority] = useState(0);
   const [isDefault, setIsDefault] = useState(false);
+  const [creditCost, setCreditCost] = useState(1);
   const [parameterSchemaText, setParameterSchemaText] = useState("{}");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -94,6 +95,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       setDefaultModel(config.default_model || "");
       setPriority(config.priority || 0);
       setIsDefault(Boolean(config.is_default));
+      setCreditCost(config.credit_cost ?? config.parameter_schema?.credit_cost ?? 1);
       setParameterSchemaText(JSON.stringify(config.parameter_schema ?? {}, null, 2));
     } else {
       setServiceType("image");
@@ -109,6 +111,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       setDefaultModel("");
       setPriority(0);
       setIsDefault(false);
+      setCreditCost(1);
       setParameterSchemaText("{}");
     }
     setError("");
@@ -164,6 +167,7 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
       is_default: isDefault,
       capabilities: serviceCapabilities(serviceType),
       parameter_schema: parameterSchema,
+      credit_cost: Math.max(0, Math.round(creditCost)),
     };
     if (config) {
       payload.status = config.status;
@@ -272,6 +276,18 @@ function ConfigDrawer({ config, open, onClose, onSaved }: DrawerProps) {
             <Field label="默认模型"><input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} className={FIELD_INPUT} /></Field>
             <Field label="优先级"><input value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} type="number" className={FIELD_INPUT} /></Field>
           </div>
+
+          <Field label="积分 / 次（每次生成扣除）">
+            <input
+              value={creditCost}
+              onChange={(event) => setCreditCost(Math.max(0, Number(event.target.value) || 0))}
+              type="number"
+              min={0}
+              step={1}
+              className={FIELD_INPUT}
+            />
+            <p className="mt-1 text-[11px] text-neutral-500">用此配置生成一次扣除的积分数。0 = 免费。按模型差异化可在下方 Schema 的 models.&lt;模型名&gt;.credit_cost 设置。</p>
+          </Field>
 
           <label className="flex items-center gap-2 text-sm text-neutral-300">
             <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-[#ff6a1f]" />
