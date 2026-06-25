@@ -11,6 +11,7 @@
 // See docs/dev/2026-06-reference-mode-capability-plan.md
 
 export type ReferenceModeKey =
+  | "first-frame"
   | "first-last"
   | "multi-image"
   | "motion-mimic"
@@ -21,6 +22,7 @@ export type ReferenceModeKey =
  *  side (ReferenceMode field in service.go). */
 export type BackendReferenceMode =
   | "auto"
+  | "first_frame"
   | "start_end"
   | "image_reference"
   | "motion_mimic"
@@ -58,6 +60,21 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
     disabledHint: {
       zh: "首尾帧需要连接 1~2 张图片",
       en: "First/Last needs 1–2 reference images",
+    },
+  },
+  // 首帧专用（HappyHorse 图生 i2v 等只支持单张首帧的模型）。
+  // 不接受尾帧，避免误导用户连两张。
+  "first-frame": {
+    key: "first-frame",
+    label: { zh: "首帧", en: "First frame" },
+    requires: { images: { min: 1, max: 1 }, videos: { min: 0, max: 0 } },
+    backendMode: "first_frame",
+    slots: [
+      { zh: "首帧", en: "First frame" },
+    ],
+    disabledHint: {
+      zh: "首帧模式需要连接 1 张图片",
+      en: "First-frame mode needs exactly 1 image",
     },
   },
   "multi-image": {
@@ -114,6 +131,7 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
 
 /** Ordered list used to render tabs left-to-right. */
 export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
+  "first-frame",
   "first-last",
   "multi-image",
   "motion-mimic",

@@ -814,36 +814,58 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
 // subscription.
 let activeTasksHydrated = false;
 
+// Reentrancy guard: applyActiveTasksToNodes calls setStore SYNCHRONOUSLY,
+// which notifies every store subscriber in the same tick. One of those
+// subscribers (registered by hydrateActiveTasks below) re-runs this very
+// function — and would infinitely recur through it. The guard makes any
+// reentrant call a no-op so the outer call can finish, its caller can
+// remove the applied ids from `pending`, and the next subscribe firing
+// will see an empty pending set and unsubscribe.
+let applyActiveTasksInFlight = false;
+
 function applyActiveTasksToNodes(
   tasks: TaskItem[],
   getStore: () => AppState,
   setStore: (updater: (state: AppState) => Partial<AppState>) => void,
 ): Set<string> {
-  const appliedNodeIds = new Set<string>();
-  const nodes = getStore().nodes;
-  for (const task of tasks) {
-    const node = nodes.find((n) => n.id === task.node_id);
-    if (!node) continue; // node not loaded yet — caller retries on change
-    appliedNodeIds.add(task.node_id);
-    trackedTaskNodes.add(task.node_id);
+  if (applyActiveTasksInFlight) return new Set();
+  applyActiveTasksInFlight = true;
+  try {
+    const appliedNodeIds = new Set<string>();
+    const nodes = getStore().nodes;
+    for (const task of tasks) {
+      const node = nodes.find((n) => n.id === task.node_id);
+      if (!node) continue; // node not loaded yet — caller retries on change
+      appliedNodeIds.add(task.node_id);
+      trackedTaskNodes.add(task.node_id);
+    }
+    if (appliedNodeIds.size === 0) return appliedNodeIds;
+    const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
+    setStore((state) => ({
+      nodes: state.nodes.map((node) => {
+        const task = taskByNode.get(node.id);
+        if (!task) return node;
+        const data = (node.data ?? {}) as Record<string, unknown>;
+        // Don't disturb a node that already finished or is already tracking
+        // this exact task.
+        if (data.status === 'running' && data.taskId === task.id) return node;
+        // Resume the timer from when the backend task actually started, not
+        // from "now" — otherwise refreshing the page resets the elapsed
+        // counter back to 0 even though the upstream task has been running
+        // for minutes. Falls back to current time if the timestamp can't be
+        // parsed.
+        const parsedStart = task.created_at ? Date.parse(task.created_at) : NaN;
+        const runningStartedAt = Number.isFinite(parsedStart) ? parsedStart : Date.now();
+        return {
+          ...node,
+          data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined, runningStartedAt },
+        };
+      }),
+    }));
+    return appliedNodeIds;
+  } finally {
+    applyActiveTasksInFlight = false;
   }
-  if (appliedNodeIds.size === 0) return appliedNodeIds;
-  const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
-  setStore((state) => ({
-    nodes: state.nodes.map((node) => {
-      const task = taskByNode.get(node.id);
-      if (!task) return node;
-      const data = (node.data ?? {}) as Record<string, unknown>;
-      // Don't disturb a node that already finished or is already tracking
-      // this exact task.
-      if (data.status === 'running' && data.taskId === task.id) return node;
-      return {
-        ...node,
-        data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined },
-      };
-    }),
-  }));
-  return appliedNodeIds;
 }
 
 async function hydrateActiveTasks(
@@ -2178,13 +2200,22 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
     const aspectRatio = genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
+    // Preserve the ORIGINAL case of the 'p' / 'P' suffix: some providers
+    // (DashScope / 阿里云 HappyHorse) reject lowercase `720p` with
+    // "Input should be '1080P' or '720P'". The model templates declare the
+    // capitalisation they want (e.g. HappyHorse declares "720P/1080P"),
+    // so we just preserve whatever case was set; only fall back to
+    // lowercase when there was no suffix at all.
     const rawRes = genParams?.resolution ?? '720p';
     const resolution = (() => {
       const text = rawRes.trim();
       const imageMatch = text.match(/([124])\s*k/i);
       if (serviceType === 'image' && imageMatch) return `${imageMatch[1]}K`;
-      const videoMatch = text.match(/(\d{3,4})\s*p/i) ?? text.match(/(\d{3,4})/);
-      if (serviceType === 'video' && videoMatch) return `${videoMatch[1]}p`;
+      const videoMatch = text.match(/(\d{3,4})\s*([Pp])/) ?? text.match(/(\d{3,4})/);
+      if (serviceType === 'video' && videoMatch) {
+        const suffix = videoMatch[2] ?? 'p';
+        return `${videoMatch[1]}${suffix}`;
+      }
       return serviceType === 'image' ? '1K' : '720p';
     })();
     const quality = (genParams?.quality ?? 'auto').trim().toLowerCase() || 'auto';
@@ -2194,45 +2225,57 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // preflight-validate the upstream inputs BEFORE spending a request.
     // The backend reference_mode is derived from the chosen mode, not from
     // ad-hoc input counting. See reference-modes.ts.
+    //
+    // Models with NO declared referenceModes (e.g. HappyHorse t2v —
+    // pure text-to-video) skip this block entirely. Calling modesForModel
+    // on an empty / undefined input would fall back to ["multi-image"]
+    // which then errors with "needs 1+ image" — wrong for text-only.
     let resolvedReferenceMode: string | undefined;
     if (serviceType === 'video') {
-      const counts = {
-        images: referenceMedia.imageUrls.length,
-        videos: referenceMedia.videoUrls.length,
-      };
       const template = getModelTemplate(payload.model ?? '');
-      const supported = modesForModel(template?.referenceModes);
-      const persisted = genParams?.referenceVariant as ReferenceModeKey | undefined;
-      // Pick the mode the same way the UI does: persisted choice when still
-      // valid, else first satisfiable supported mode.
-      const chosen: ReferenceModeKey | undefined =
-        persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts)
-          ? persisted
-          : (supported.find((k) => isModeSatisfied(k, counts)) ?? supported[0]);
+      const declared = template?.referenceModes;
+      if (declared && declared.length > 0) {
+        const counts = {
+          images: referenceMedia.imageUrls.length,
+          videos: referenceMedia.videoUrls.length,
+        };
+        const supported = modesForModel(declared);
+        const persisted = genParams?.referenceVariant as ReferenceModeKey | undefined;
+        // Pick the mode the same way the UI does: persisted choice when still
+        // valid, else first satisfiable supported mode.
+        const chosen: ReferenceModeKey | undefined =
+          persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts)
+            ? persisted
+            : (supported.find((k) => isModeSatisfied(k, counts)) ?? supported[0]);
 
-      if (chosen) {
-        const spec = REFERENCE_MODE_SPECS[chosen];
-        // Preflight: if the chosen mode's input requirements aren't met,
-        // surface the reason on the node and abort without a network call.
-        if (!isModeSatisfied(chosen, counts)) {
-          const lang = get().language;
-          const hint = lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en;
-          set((snapshot) => ({
-            nodes: snapshot.nodes.map((node) => node.id === nodeId
-              ? { ...node, data: { ...node.data, status: 'error', error: hint } }
-              : node),
-          }));
-          return;
+        if (chosen) {
+          const spec = REFERENCE_MODE_SPECS[chosen];
+          // Preflight: if the chosen mode's input requirements aren't met,
+          // surface the reason on the node and abort without a network call.
+          if (!isModeSatisfied(chosen, counts)) {
+            const lang = get().language;
+            const hint = lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en;
+            set((snapshot) => ({
+              nodes: snapshot.nodes.map((node) => node.id === nodeId
+                ? { ...node, data: { ...node.data, status: 'error', error: hint } }
+                : node),
+            }));
+            return;
+          }
+          resolvedReferenceMode = spec.backendMode;
         }
-        resolvedReferenceMode = spec.backendMode;
       }
     }
 
     // Set status to running — clear error but keep old url/content until new result arrives.
+    // runningStartedAt is persisted on the node so NodeLoadingTimer can
+    // resume from the original start time after a page refresh (instead of
+    // counting from 0 each mount).
+    const startedAt = Date.now();
     set((snapshot) => ({
-      activeRun: { nodeId, startedAt: Date.now() },
+      activeRun: { nodeId, startedAt },
       nodes: snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'running', error: undefined, queuedAfterTimeout: false, prompt: payload.prompt, resolvedPrompt, model: payload.model } }
+        ? { ...node, data: { ...node.data, status: 'running', error: undefined, queuedAfterTimeout: false, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
         : node),
     }));
 

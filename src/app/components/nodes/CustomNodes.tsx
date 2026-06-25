@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { toast } from 'sonner';
 import gsap from 'gsap';
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -108,14 +109,26 @@ function NodeLoadingWater() {
   );
 }
 
-/** Timer badge �?sits OUTSIDE the node frame, at top-right corner. */
-function NodeLoadingTimer() {
+/** Timer badge — sits OUTSIDE the node frame, at top-right corner.
+ *  Reads the persisted `runningStartedAt` from the node's data so a page
+ *  refresh in the middle of a long generation doesn't reset elapsed back
+ *  to 00:00. Falls back to mount time if the field is missing (legacy
+ *  nodes, or new submits before the store has caught up). */
+function NodeLoadingTimer({ nodeId }: { nodeId?: string }) {
+  const persistedStart = useStore((state) => {
+    if (!nodeId) return undefined;
+    const node = state.nodes.find((n) => n.id === nodeId);
+    const v = (node?.data as { runningStartedAt?: number } | undefined)?.runningStartedAt;
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  });
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    const t0 = Date.now();
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 200);
+    const t0 = persistedStart ?? Date.now();
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
+    tick();
+    const id = setInterval(tick, 500);
     return () => clearInterval(id);
-  }, []);
+  }, [persistedStart]);
   const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const ss = String(elapsed % 60).padStart(2, '0');
   return (
@@ -151,25 +164,57 @@ function useNodeLoadingProgress(nodeId: string, loading: boolean) {
   return getGenerationProgressPercent(startedAt, now);
 }
 
-function NodeLoadingCenterBadge({ nodeId }: { nodeId: string }) {
-  const language = useStore((state) => state.language);
-  const progress = useNodeLoadingProgress(nodeId, true);
-  // When the frontend HTTP request timed out but the backend task is
-  // still running (Stage 1 detached goroutine + Stage 2/3 recovery),
-  // we surface "已加入队列" so the user understands the work hasn't
-  // been lost. Cleared automatically when the task settles.
-  const queuedAfterTimeout = useStore((state) =>
-    Boolean(((state.nodes.find((n) => n.id === nodeId)?.data ?? {}) as { queuedAfterTimeout?: boolean }).queuedAfterTimeout),
+/** Lightweight rotating ring spinner — same vibe as the Lottie reference
+ *  the user linked, but with no runtime dependency. SVG so it stays crisp
+ *  at any size; the .ccy-spinner-arc class in globals.css spins it. */
+function LoadingSpinner({
+  size = 18,
+  tone = 'dark',
+  className,
+}: {
+  size?: number;
+  /** 'dark' = white-on-translucent badge bg; 'light' = neutral on white. */
+  tone?: 'dark' | 'light';
+  className?: string;
+}) {
+  const stroke = size >= 28 ? 3 : 2.4;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  // Quarter-circle accent arc; the rest of the dasharray = transparent track.
+  const arc = c * 0.28;
+  const trackColor = tone === 'light' ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.18)';
+  const accentColor = tone === 'light' ? 'rgba(0,0,0,0.88)' : 'rgba(255,255,255,0.95)';
+  return (
+    <svg
+      className={clsx('ccy-spinner', className)}
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      aria-hidden
+    >
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={trackColor} strokeWidth={stroke} />
+      <circle
+        className="ccy-spinner-arc"
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        fill="none"
+        stroke={accentColor}
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={`${arc} ${c - arc}`}
+      />
+    </svg>
   );
+}
 
-  const label = queuedAfterTimeout
-    ? (language === 'zh' ? '已加入队列，正在查询状态（不会重复提交）...' : 'Queued — checking status, not resubmitting...')
-    : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
-
+function NodeLoadingCenterBadge({ nodeId: _nodeId }: { nodeId: string }) {
+  const language = useStore((state) => state.language);
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-      <div className="rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-        {label}
+      <div className="flex items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <LoadingSpinner size={18} tone="dark" />
+        <span>{language === 'zh' ? '生成中' : 'Generating'}</span>
       </div>
     </div>
   );
@@ -178,19 +223,7 @@ function NodeLoadingCenterBadge({ nodeId }: { nodeId: string }) {
 function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: string; loading: boolean; hasPreview: boolean }) {
   const language = useStore((state) => state.language);
   const cancelNode = useStore((state) => state.cancelNode);
-  const progress = useNodeLoadingProgress(nodeId, loading);
-  const queuedAfterTimeout = useStore((state) =>
-    Boolean(((state.nodes.find((n) => n.id === nodeId)?.data ?? {}) as { queuedAfterTimeout?: boolean }).queuedAfterTimeout),
-  );
-
-  if (!loading || progress == null) {
-    return null;
-  }
-
-  const label = queuedAfterTimeout
-    ? (language === 'zh' ? '已加入队列，正在查询状态（不会重复提交）...' : 'Queued — checking status, not resubmitting...')
-    : (language === 'zh' ? `生成中 ${progress}%...` : `Generating ${progress}%...`);
-
+  if (!loading) return null;
   return (
     <div
       className={clsx(
@@ -199,7 +232,8 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
       )}
     >
       <div className="flex items-center gap-3 rounded-2xl border border-white/35 bg-white/78 px-4 py-2 text-sm font-medium text-neutral-900 shadow-[0_16px_44px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-        <span>{label}</span>
+        <LoadingSpinner size={18} tone="light" />
+        <span>{language === 'zh' ? '生成中' : 'Generating'}</span>
         <button
           type="button"
           onClick={(event) => {
@@ -213,6 +247,43 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
       </div>
     </div>
   );
+}
+
+// HappyHorse 快乐马家族 helpers — 把真实模型名 `happyhorse-{ver}-{suffix}`
+// 拆成「版本 + 模式」两个维度，UI 上以 dropdown 暴露给用户，提交时再合成
+// 真实模型名。视频编辑只在 1.0 存在。
+const HAPPYHORSE_MODE_TO_SUFFIX: Record<string, string> = {
+  '文生': 't2v',
+  '图生': 'i2v',
+  '参考生': 'r2v',
+  '视频编辑': 'video-edit',
+};
+const HAPPYHORSE_MODE_TO_SUFFIX_EN: Record<string, string> = {
+  'Text-to-Video': 't2v',
+  'Image-to-Video': 'i2v',
+  'Reference-to-Video': 'r2v',
+  'Video-Edit': 'video-edit',
+};
+const HAPPYHORSE_SUFFIX_TO_MODE_ZH: Record<string, string> = {
+  't2v': '文生',
+  'i2v': '图生',
+  'r2v': '参考生',
+  'video-edit': '视频编辑',
+};
+const HAPPYHORSE_SUFFIX_TO_MODE_EN: Record<string, string> = {
+  't2v': 'Text-to-Video',
+  'i2v': 'Image-to-Video',
+  'r2v': 'Reference-to-Video',
+  'video-edit': 'Video-Edit',
+};
+function parseHappyHorseModel(model: string | undefined | null): { version: string; suffix: string } | null {
+  if (!model) return null;
+  const m = /^happyhorse-(\d+\.\d+)-(t2v|i2v|r2v|video-edit)$/.exec(model);
+  if (!m) return null;
+  return { version: m[1], suffix: m[2] };
+}
+function composeHappyHorseModel(version: string, suffix: string): string {
+  return `happyhorse-${version}-${suffix}`;
 }
 
 const Dropdown = ({
@@ -338,8 +409,11 @@ const MediaParamsPopover = ({
   const hasResolution = template.supportsResolution && template.resolutionOptions?.length;
   const hasQuality = template.supportsQuality && template.qualityOptions?.length;
   const hasOutputFormat = template.supportsOutputFormat && template.outputFormatOptions?.length;
-  const hasDurationSlider = template.supportsDuration && template.durationRange && !template.durationOptions?.length;
-  const hasDurationOptions = template.supportsDuration && template.durationOptions?.length;
+  // Slider wins when the template declares a range — even if some legacy
+  // schema also dumped a duration_options array in. Otherwise (range
+  // absent) fall back to the explicit-options pill row.
+  const hasDurationSlider = template.supportsDuration && template.durationRange;
+  const hasDurationOptions = template.supportsDuration && template.durationOptions?.length && !template.durationRange;
 
   // Some resolution labels carry a qualitative hint inline (Seedance style).
   // Falls back to just the raw value when no friendly label exists.
@@ -406,17 +480,17 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
-            {/* ── Resolution ──────────────────────────────────────────── */}
+            {/* ── Resolution (block-style grid like reference UI) ──────── */}
             {hasResolution ? (
               <div className="mb-5">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '分辨率' : 'Resolution'}</div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="grid grid-cols-2 gap-2">
                   {template.resolutionOptions!.map((option) => {
                     const hint = RES_HINTS[option.toLowerCase()];
                     return (
-                      <PillButton key={option} active={option === resolution} onClick={() => onResolution(option)}>
+                      <BlockButton key={option} active={option === resolution} onClick={() => onResolution(option)}>
                         {option}{hint ? ` (${hint})` : ''}
-                      </PillButton>
+                      </BlockButton>
                     );
                   })}
                 </div>
@@ -451,20 +525,27 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
-            {/* ── Aspect ratio ────────────────────────────────────────── */}
+            {/* ── Aspect ratio (block grid w/ shape icon) ──────────────── */}
             {hasAspect ? (
               <div>
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '宽高比' : 'Aspect ratio'}</div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="grid grid-cols-3 gap-2">
                   {template.supportsAutoAspect ? (
-                    <PillButton active={aspectRatio === 'auto'} onClick={() => onAspectRatio('auto')}>
-                      {language === 'zh' ? '自适应' : 'Auto'}
-                    </PillButton>
+                    <AspectBlockButton
+                      ratio="auto"
+                      active={aspectRatio === 'auto'}
+                      onClick={() => onAspectRatio('auto')}
+                      label={language === 'zh' ? '自适应' : 'Auto'}
+                    />
                   ) : null}
                   {template.aspectRatioOptions!.map((option) => (
-                    <PillButton key={option} active={option === aspectRatio} onClick={() => onAspectRatio(option)}>
-                      {ASPECT_LABEL[option] ?? option}
-                    </PillButton>
+                    <AspectBlockButton
+                      key={option}
+                      ratio={option}
+                      active={option === aspectRatio}
+                      onClick={() => onAspectRatio(option)}
+                      label={ASPECT_LABEL[option] ?? option}
+                    />
                   ))}
                 </div>
               </div>
@@ -499,6 +580,75 @@ function PillButton({
       )}
     >
       {children}
+    </button>
+  );
+}
+
+/** Block-style button used for Resolution + Aspect ratio in the params popover.
+ *  Larger tap target, lives inside a 2/3-column grid. Mirrors the reference UI. */
+function BlockButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        'flex items-center justify-center rounded-xl px-3 py-2.5 text-xs transition',
+        active
+          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
+          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Aspect-ratio block button — small rect icon scaled to the actual W:H above
+ *  the label so users can see the shape at a glance. */
+function AspectBlockButton({
+  ratio,
+  active,
+  onClick,
+  label,
+}: {
+  ratio: string;
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  // Parse "W:H"; default to a horizontal box for "auto" / unparseable.
+  const dims = (() => {
+    const m = /^(\d+):(\d+)$/.exec(ratio);
+    if (!m) return { w: 22, h: 14 };
+    const w = Number(m[1]);
+    const h = Number(m[2]);
+    if (!w || !h) return { w: 22, h: 14 };
+    const max = 22;
+    if (w >= h) return { w: max, h: Math.max(8, Math.round((max * h) / w)) };
+    return { w: Math.max(8, Math.round((max * w) / h)), h: max };
+  })();
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        'flex flex-col items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-[11px] transition',
+        active
+          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
+          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
+      )}
+    >
+      <span
+        className={clsx('rounded-[2px] border', active ? 'border-white/80' : 'border-white/40')}
+        style={{ width: dims.w, height: dims.h }}
+      />
+      <span className="truncate leading-tight">{label}</span>
     </button>
   );
 }
@@ -1208,6 +1358,95 @@ const PromptPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeReferenceMode, persistedReferenceMode, serviceType, nodeId]);
 
+  // HappyHorse 家族：把单一模型 dropdown 拆成「版本」+「模式」两个，
+  // 用户感知不到 -t2v/-i2v/-r2v/-video-edit 后缀，提交时再合成。
+  const happyHorse = parseHappyHorseModel(activeModel);
+  const happyHorseFamily = useMemo(() => {
+    if (!happyHorse) return null;
+    const versions = new Set<string>();
+    const versionToSuffixes = new Map<string, Set<string>>();
+    for (const m of availableModels) {
+      const parsed = parseHappyHorseModel(m);
+      if (!parsed) continue;
+      versions.add(parsed.version);
+      if (!versionToSuffixes.has(parsed.version)) versionToSuffixes.set(parsed.version, new Set());
+      versionToSuffixes.get(parsed.version)!.add(parsed.suffix);
+    }
+    return {
+      versions: Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })),
+      suffixesByVersion: versionToSuffixes,
+    };
+  }, [availableModels, happyHorse]);
+
+  // HappyHorse 顶部模式 tab strip：文生 / 图生 / 参考生 / 视频编辑，
+  // 替代标准 referenceTabs。点击直接切换真实模型名（保留 version）。
+  // 门控：
+  //   - t2v 不能有任何参考节点（有就禁用，提示用户先断开引用）
+  //   - i2v / r2v 需要 ≥1 张参考图
+  //   - video-edit 需要 ≥1 段参考视频
+  // 不满足时点击不切换，弹一个 top-center toast 告诉用户为什么。
+  const happyHorseTabs = (() => {
+    if (!happyHorse || !happyHorseFamily) return null;
+    const order: Array<'t2v' | 'i2v' | 'r2v' | 'video-edit'> = ['t2v', 'i2v', 'r2v', 'video-edit'];
+    const avail = happyHorseFamily.suffixesByVersion.get(happyHorse.version) ?? new Set<string>();
+    const visible = order.filter((s) => avail.has(s));
+    return (
+      <div className="mb-3 flex items-center gap-1 overflow-x-auto pb-0.5">
+        {visible.map((suffix) => {
+          const isActive = suffix === happyHorse.suffix;
+          const labelMap = language === 'zh' ? HAPPYHORSE_SUFFIX_TO_MODE_ZH : HAPPYHORSE_SUFFIX_TO_MODE_EN;
+          let satisfied = true;
+          let hint = '';
+          if (suffix === 't2v' && (refCounts.images > 0 || refCounts.videos > 0)) {
+            satisfied = false;
+            hint = language === 'zh'
+              ? '文生不接受参考节点，请先断开所有上游引用'
+              : 'Text-to-video does not accept references; disconnect upstream first';
+          } else if (suffix === 'i2v' && refCounts.images < 1) {
+            satisfied = false;
+            hint = language === 'zh'
+              ? '图生需要 1 张首帧图，请先连接一张参考图'
+              : 'Image-to-video needs 1 first-frame image; connect a reference first';
+          } else if (suffix === 'r2v' && refCounts.images < 1) {
+            satisfied = false;
+            hint = language === 'zh'
+              ? '参考生需要至少 1 张参考图，请先连接参考节点'
+              : 'Reference-to-video needs 1+ reference images; connect a reference first';
+          } else if (suffix === 'video-edit' && refCounts.videos < 1) {
+            satisfied = false;
+            hint = language === 'zh'
+              ? '视频编辑需要 1 段视频，请先连接一个视频节点'
+              : 'Video edit needs 1 reference video; connect a video first';
+          }
+          return (
+            <button
+              key={suffix}
+              type="button"
+              title={satisfied ? undefined : hint}
+              onClick={() => {
+                if (!satisfied) {
+                  toast.warning(hint, { id: `happyhorse-${suffix}`, duration: 2600 });
+                  return;
+                }
+                handleModelChange(composeHappyHorseModel(happyHorse.version, suffix));
+              }}
+              className={clsx(
+                'shrink-0 rounded-full px-3 py-1 text-xs transition',
+                isActive
+                  ? 'bg-white/15 text-white ring-1 ring-white/30'
+                  : satisfied
+                    ? 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/8 hover:bg-white/[0.06] hover:text-neutral-200'
+                    : 'bg-white/[0.02] text-neutral-600 ring-1 ring-white/[0.04] hover:bg-white/[0.04]',
+              )}
+            >
+              {labelMap[suffix]}
+            </button>
+          );
+        })}
+      </div>
+    );
+  })();
+
   const referenceTabs = modelReferenceModes.length ? (
     <div className="mb-3 flex items-center gap-1 overflow-x-auto pb-0.5">
       {modelReferenceModes.map((key) => {
@@ -1430,28 +1669,50 @@ const PromptPanel = ({
   const bottomControls = (
     <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
-        <Dropdown
-          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
-          value={activeModel}
-          options={availableModels}
-          onChange={handleModelChange}
-          menuMinWidth={240}
-          renderOption={(option, selected) => {
-            // Show the model's default video duration on the right (when applicable).
-            const optionConfig = enabledConfigs.find((config) => config.modelList.includes(option))?.raw ?? null;
-            const optTemplate = getModelTemplate(option, optionConfig);
-            const dur = optTemplate?.durationRange?.defaultValue
-              ?? optTemplate?.durationOptions?.[0];
-            return (
-              <div className="flex w-full items-center gap-2">
-                <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
-                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
-                {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
-              </div>
-            );
-          }}
-        />
-        {template?.supportsMode && template.modeOptions?.length ? (
+        {happyHorse && happyHorseFamily ? (
+          /* 版本 picker：HappyHorse 1.1 / HappyHorse 1.0
+             模式 picker 已移到顶部 happyHorseTabs，不在这里再放。 */
+          <Dropdown
+            label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
+            value={`HappyHorse ${happyHorse.version}`}
+            options={happyHorseFamily.versions.map((v) => `HappyHorse ${v}`)}
+            onChange={(label) => {
+              const ver = label.replace(/^HappyHorse\s+/, '');
+              const availSuffixes = happyHorseFamily.suffixesByVersion.get(ver);
+              if (!availSuffixes) return;
+              // 切版本时尽量保留当前模式；如果新版本没有这个模式（如 1.1 没 video-edit），
+              // 退回 t2v / 该版本第一个可用模式。
+              const desired = availSuffixes.has(happyHorse.suffix)
+                ? happyHorse.suffix
+                : (availSuffixes.has('t2v') ? 't2v' : Array.from(availSuffixes)[0]);
+              handleModelChange(composeHappyHorseModel(ver, desired));
+            }}
+            menuMinWidth={180}
+          />
+        ) : (
+          <Dropdown
+            label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
+            value={activeModel}
+            options={availableModels}
+            onChange={handleModelChange}
+            menuMinWidth={240}
+            renderOption={(option, selected) => {
+              // Show the model's default video duration on the right (when applicable).
+              const optionConfig = enabledConfigs.find((config) => config.modelList.includes(option))?.raw ?? null;
+              const optTemplate = getModelTemplate(option, optionConfig);
+              const dur = optTemplate?.durationRange?.defaultValue
+                ?? optTemplate?.durationOptions?.[0];
+              return (
+                <div className="flex w-full items-center gap-2">
+                  <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
+                  <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
+                  {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
+                </div>
+              );
+            }}
+          />
+        )}
+        {!happyHorse && template?.supportsMode && template.modeOptions?.length ? (
           <Dropdown
             value={currentMode}
             options={template.modeOptions}
@@ -1474,26 +1735,28 @@ const PromptPanel = ({
           />
         ) : null}
       </div>
-      <div
-        className="nodrag nopan mr-1 flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-amber-300/90"
-        title={language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost'}
-      >
-        <Zap className="h-3 w-3" />
-        <span className="tabular-nums">{creditCost}</span>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <div
+          className="nodrag nopan flex items-center gap-0.5 text-[11px] font-medium text-amber-300/90"
+          title={language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost'}
+        >
+          <Zap className="h-3 w-3" />
+          <span className="tabular-nums">{creditCost}</span>
+        </div>
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            submit();
+          }}
+          className="nodrag nopan flex h-8 w-8 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40"
+        >
+          <ArrowUp className="h-4 w-4" />
+        </button>
       </div>
-      <button
-        type="button"
-        onPointerDown={(event) => event.stopPropagation()}
-        onMouseDown={(event) => event.stopPropagation()}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          submit();
-        }}
-        className="nodrag nopan flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40"
-      >
-        <ArrowUp className="h-4 w-4" />
-      </button>
     </div>
   );
 
@@ -1522,7 +1785,7 @@ const PromptPanel = ({
           >
             <Expand className="h-3.5 w-3.5" />
           </button>
-          {referenceTabs}
+          {happyHorseTabs ?? referenceTabs}
           {previewStrip}
           {renderPromptEditor(false)}
           {bottomControls}
@@ -1544,7 +1807,7 @@ const PromptPanel = ({
             >
               <X className="h-4 w-4" />
             </button>
-            {referenceTabs}
+            {happyHorseTabs ?? referenceTabs}
             {previewStrip}
             {renderPromptEditor(true)}
             {bottomControls}
@@ -1664,7 +1927,7 @@ const BaseNode = ({
           {loading && !loadingOverlay ? <NodeLoadingWater /> : null}
           {loading ? (loadingOverlay ?? (loadingNodeId ? <NodeLoadingCenterBadge nodeId={loadingNodeId} /> : null)) : null}
         </div>
-        {loading && !loadingOverlay ? <NodeLoadingTimer /> : null}
+        {loading && !loadingOverlay ? <NodeLoadingTimer nodeId={loadingNodeId} /> : null}
 
         <Handle
           type="target"
@@ -1766,31 +2029,39 @@ function NodeErrorBanner({ error }: { error: string }) {
   const copyDetail = () => { try { navigator.clipboard?.writeText(error); } catch { /* ignore */ } };
 
   return (
-    <div className="px-3 pb-3 pt-1">
-      <div className="rounded-md border border-rose-500/20 bg-rose-500/5 px-2.5 py-1.5 text-[11px] text-rose-300">
-        <div className="flex items-center justify-between gap-2">
-          <span className="break-words">{summary}</span>
+    // Full-coverage overlay over the node shell — replaces the empty
+    // placeholder with the error summary and a 详情 toggle. Layered as
+    // `absolute inset-0` so it covers any child preview as well; clicks
+    // bubble normally to the inner buttons. Centered icon + label like a
+    // toast, expandable detail panel below.
+    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-[inherit] bg-rose-950/55 px-4 py-3 text-rose-100 backdrop-blur-md">
+      <div className="flex items-center gap-2 text-xs font-medium">
+        <ImageOff className="h-4 w-4 text-rose-300" />
+        <span className="break-words text-center">{summary}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] text-rose-100 transition hover:bg-white/[0.12]"
+        >
+          {expanded ? (language === 'zh' ? '收起' : 'Hide') : (language === 'zh' ? '详情' : 'Details')}
+        </button>
+        {expanded ? (
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+            onClick={copyDetail}
+            className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] text-rose-100 transition hover:bg-white/[0.12]"
           >
-            {expanded ? (language === 'zh' ? '收起' : 'Hide') : (language === 'zh' ? '详情' : 'Details')}
+            {language === 'zh' ? '复制' : 'Copy'}
           </button>
-        </div>
-        {expanded ? (
-          <div className="mt-2 flex flex-col gap-1.5">
-            <pre className="prompt-editor-scroll max-h-[120px] overflow-auto whitespace-pre-wrap break-all rounded bg-black/30 p-2 text-[10px] text-neutral-400">{error}</pre>
-            <button
-              type="button"
-              onClick={copyDetail}
-              className="self-start rounded px-2 py-0.5 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
-            >
-              {language === 'zh' ? '复制错误' : 'Copy error'}
-            </button>
-          </div>
         ) : null}
       </div>
+      {expanded ? (
+        <pre className="prompt-editor-scroll max-h-[120px] w-full overflow-auto whitespace-pre-wrap break-all rounded bg-black/40 p-2 text-[10px] text-rose-100/80">
+          {error}
+        </pre>
+      ) : null}
     </div>
   );
 }

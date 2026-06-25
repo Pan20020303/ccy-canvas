@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CheckCircle2, ChevronDown, ListChecks, Loader2, XCircle } from 'lucide-react';
+import { Bell, CheckCircle2, ChevronDown, Loader2, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 import { useAuth } from '../auth/AuthProvider';
@@ -19,13 +19,19 @@ export const TaskQueue = () => {
     <div className="relative">
       <button
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-xs text-neutral-200 shadow-xl backdrop-blur-xl transition hover:bg-black/60"
+        title={dict.task_queue}
+        className="relative flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-xs text-neutral-200 shadow-xl backdrop-blur-xl transition hover:bg-black/60"
       >
-        <ListChecks className="h-3.5 w-3.5 text-cyan-300" />
+        <Bell className={clsx('h-3.5 w-3.5', active > 0 ? 'text-cyan-300' : 'text-neutral-300')} />
         <span>{dict.task_queue}</span>
-        <span className="rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] text-neutral-300">
-          {active > 0 ? active : visibleTasks.length}
-        </span>
+        {active > 0 ? (
+          // Unread badge: small pulsing red dot like a notification bell.
+          // Sits over the bell icon's top-right corner.
+          <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2 items-center justify-center">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
+          </span>
+        ) : null}
         <ChevronDown className={clsx('h-3.5 w-3.5 text-neutral-500 transition-transform', open && 'rotate-180')} />
       </button>
 

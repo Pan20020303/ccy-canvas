@@ -87,8 +87,9 @@ export function getModelBrand(
   if (m.includes('doubao'))       return { kind: 'doubao',     color: '#fb7185', vendor: 'ByteDance · 豆包' };
 
   // Alibaba family
+  if (m.includes('happyhorse'))   return { kind: 'qwen',       color: '#e879f9', vendor: 'Alibaba · HappyHorse' };
   if (m.includes('qwen') || m.includes('tongyi') || m.includes('cosyvoice') || m.includes('sambert'))
-                                  return { kind: 'qwen',       color: '#a78bfa', vendor: 'Alibaba · 通义' };
+                                   return { kind: 'qwen',       color: '#a78bfa', vendor: 'Alibaba · 通义' };
   if (m.includes('wanx'))         return { kind: 'qwen',       color: '#c084fc', vendor: 'Alibaba · 万相' };
 
   // OpenAI family

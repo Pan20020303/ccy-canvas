@@ -5,7 +5,7 @@ import { ApiClientError, apiClient } from "./client";
 // ---------------------------------------------------------------------------
 
 export type ServiceType = "text" | "image" | "video" | "audio";
-export type AdapterProfileID = "openai" | "ark" | "custom";
+export type AdapterProfileID = "openai" | "ark" | "dashscope" | "custom";
 export type GatewayProtocol = "openai_compatible" | "newapi" | "native";
 export type AdapterRuntime = "go" | "ts";
 
@@ -218,7 +218,7 @@ export function getEndpointPreview(
   baseURL = "",
 ): string {
   const profile =
-    apiSpec === "ark" ? "ark" : apiSpec === "custom" ? "custom" : "openai";
+    apiSpec === "ark" ? "ark" : apiSpec === "dashscope" ? "dashscope" : apiSpec === "custom" ? "custom" : "openai";
   const customSubmit = submitEndpoint.trim();
   const customQuery = queryEndpoint.trim();
   const isRelayBases = baseURL.toLowerCase().includes("relaybases");
@@ -254,13 +254,17 @@ export function getEndpointPreview(
         ? customSubmit
         : profile === "ark"
           ? "/contents/generations/tasks"
-          : "/videos";
+          : profile === "dashscope"
+            ? "/services/aigc/video-generation/video-synthesis"
+            : "/videos";
     const query =
       profile === "custom" && customQuery
         ? customQuery
         : profile === "ark"
           ? "/contents/generations/tasks/{taskId}"
-          : "/videos/{taskId}";
+          : profile === "dashscope"
+            ? "/tasks/{taskId}"
+            : "/videos/{taskId}";
     return `提交 ${submit} · 查询 ${query}`;
   }
 
@@ -797,7 +801,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       vendor: "Alibaba",
       label: "阿里云 · 通义万相视频",
       baseURL: "https://dashscope.aliyuncs.com/api/v1",
-      apiSpec: "custom",
+      apiSpec: "dashscope",
       models: [
         "wanx2.1-t2v-turbo",
         "wanx2.1-t2v-plus",
@@ -806,6 +810,31 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       ],
       submitEndpoint: "/services/aigc/video-generation/video-synthesis",
       queryEndpoint: "/tasks/{taskId}",
+    },
+    {
+      vendor: "Alibaba",
+      label: "阿里云 · HappyHorse 快乐马（文/图/参/编）",
+      baseURL: "https://dashscope.aliyuncs.com/api/v1",
+      apiSpec: "dashscope",
+      models: [
+        "happyhorse-1.1-t2v",
+        "happyhorse-1.0-t2v",
+        "happyhorse-1.1-i2v",
+        "happyhorse-1.0-i2v",
+        "happyhorse-1.1-r2v",
+        "happyhorse-1.0-r2v",
+        "happyhorse-1.0-video-edit",
+      ],
+      submitEndpoint: "/services/aigc/video-generation/video-synthesis",
+      queryEndpoint: "/tasks/{taskId}",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "resolution", "ratio", "duration", "watermark", "seed"],
+        resolution_options: ["720P", "1080P"],
+        // duration_options 故意不设；前端按模型模板里的 durationRange (3–15s, step 1) 渲染成滑块。
+        supports_resolution: true,
+        supports_duration: true,
+        defaults: { resolution: "1080P", duration: 5 },
+      },
     },
     {
       vendor: "Kling",

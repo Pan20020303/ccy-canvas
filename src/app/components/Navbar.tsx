@@ -13,7 +13,7 @@ export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
-  const { user, creditSummary, logout } = useAuth();
+  const { user, creditSummary, logout, refresh } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -67,6 +67,39 @@ export const Navbar = () => {
     );
   }, [menuOpen]);
 
+  // Keep the credit pill in sync with server-side balance:
+  //   · refresh whenever the tab regains focus (covers in-flight tasks that
+  //     completed in another tab, or balance changes from admin tools)
+  //   · refresh whenever an in-flight generation settles (activeRun null←non-null)
+  //   · poll once a minute as a low-cost safety net
+  // refresh() also re-fetches the user object, so we re-use it instead of
+  // adding a credits-only endpoint.
+  useEffect(() => {
+    if (!user) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    const intervalId = window.setInterval(() => { void refresh(); }, 60_000);
+
+    // Subscribe to activeRun transitions: any "running → idle" edge means
+    // a generation just settled (success / failure / refund), so the
+    // balance probably changed — fetch the new number now instead of
+    // waiting up to a minute for the polling tick.
+    let prevActive = useStore.getState().activeRun;
+    const unsubscribe = useStore.subscribe((state) => {
+      const next = state.activeRun;
+      if (prevActive && !next) void refresh();
+      prevActive = next;
+    });
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(intervalId);
+      unsubscribe();
+    };
+  }, [user, refresh]);
+
   // Floating layout: the navbar no longer occupies a horizontal strip \u2014 the
   // canvas runs edge-to-edge under it. The logo and the controls cluster sit
   // as independent rounded pills that hover over the canvas, so the actual
@@ -91,12 +124,16 @@ export const Navbar = () => {
           <span>{language === "en" ? "EN" : "\u4e2d\u6587"}</span>
         </button>
 
-        {user && creditSummary ? (
+        {user ? (
+          // Show the pill whenever the user is logged in, even if the
+          // credit summary hasn't loaded yet — falling back to `—` so the
+          // pill doesn't visually disappear on transient backend errors
+          // or before the first /auth/me response lands.
           <div className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200`}>
             <Zap className="h-3 w-3 text-amber-400" />
-            <span className="tabular-nums">{creditSummary.current_balance}</span>
+            <span className="tabular-nums">{creditSummary ? creditSummary.current_balance : "—"}</span>
             <span className="text-neutral-500">/</span>
-            <span className="tabular-nums text-neutral-400">{creditSummary.daily_quota}</span>
+            <span className="tabular-nums text-neutral-400">{creditSummary ? creditSummary.daily_quota : "—"}</span>
           </div>
         ) : null}
 

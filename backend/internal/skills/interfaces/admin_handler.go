@@ -366,12 +366,19 @@ func wrapAdminAgent(ctx context.Context, row sqlc.Agent) *agentOutput {
 	return out
 }
 
+// agentUseModeData is named (not anonymous) so Huma's schema registry
+// doesn't collide with other admin handlers that also embed an inline
+// `Data` field — Huma derives the schema name from the field, and two
+// anonymous structs both named `DataStruct` with different fields panic
+// at route registration time.
+type agentUseModeData struct {
+	Mode int32 `json:"mode"`
+}
+
 type agentUseModeOutput struct {
 	Body struct {
-		Data struct {
-			Mode int32 `json:"mode"`
-		} `json:"data"`
-		RequestID string `json:"request_id"`
+		Data      agentUseModeData `json:"data"`
+		RequestID string           `json:"request_id"`
 	}
 }
 

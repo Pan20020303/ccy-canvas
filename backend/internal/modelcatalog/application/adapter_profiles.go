@@ -62,6 +62,14 @@ var profileArk = AdapterProfile{
 	VideoQueryPath:  "/contents/generations/tasks/{taskId}",
 }
 
+var profileDashScope = AdapterProfile{
+	ID:              "dashscope",
+	ImageGenPath:    "/services/aigc/text2image/image-synthesis",
+	ImageEditPath:   "/services/aigc/text2image/image-synthesis",
+	VideoSubmitPath: "/services/aigc/video-generation/video-synthesis",
+	VideoQueryPath:  "/tasks/{taskId}",
+}
+
 // profileCustom carries openai-shaped fallbacks so a custom config with
 // EMPTY endpoint fields still does something sensible instead of hitting
 // the bare base URL.
@@ -90,6 +98,8 @@ func ResolveProfile(pc *domain.ProviderConfig) AdapterProfile {
 	switch strings.ToLower(strings.TrimSpace(pc.APISpec)) {
 	case "ark":
 		return profileArk
+	case "dashscope":
+		return profileDashScope
 	case "custom":
 		return profileCustom
 	default:

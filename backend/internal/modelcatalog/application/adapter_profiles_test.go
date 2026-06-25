@@ -16,6 +16,7 @@ func TestResolveProfile(t *testing.T) {
 		{"empty spec defaults to openai", &domain.ProviderConfig{}, "openai"},
 		{"explicit openai", &domain.ProviderConfig{APISpec: "openai"}, "openai"},
 		{"explicit ark", &domain.ProviderConfig{APISpec: "ark"}, "ark"},
+		{"explicit dashscope", &domain.ProviderConfig{APISpec: "dashscope"}, "dashscope"},
 		{"explicit custom", &domain.ProviderConfig{APISpec: "custom"}, "custom"},
 		{"relaybases uses openai-compatible profile", &domain.ProviderConfig{APISpec: "openai", Name: "RelayBases · gpt-image-2"}, "openai"},
 		// Legacy Volcengine rows were saved with api_spec="custom" —
@@ -141,5 +142,13 @@ func TestResolveVideoPaths(t *testing.T) {
 	}
 	if got := resolveVideoQueryPath(openaiOverride); got != "/videos/{taskId}" {
 		t.Errorf("openai query override = %q, want /videos/{taskId}", got)
+	}
+
+	dashscopePC := &domain.ProviderConfig{APISpec: "dashscope"}
+	if got := resolveVideoSubmitPath(dashscopePC); got != "/services/aigc/video-generation/video-synthesis" {
+		t.Errorf("dashscope video submit = %q, want /services/aigc/video-generation/video-synthesis", got)
+	}
+	if got := resolveVideoQueryPath(dashscopePC); got != "/tasks/{taskId}" {
+		t.Errorf("dashscope video query = %q, want /tasks/{taskId}", got)
 	}
 }

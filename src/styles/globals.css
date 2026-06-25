@@ -397,3 +397,40 @@ html.theme-light .prompt-editor-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--ccy-scrollbar-thumb) var(--ccy-scrollbar-track);
 }
+
+/* Force dark native dropdowns for the model service config dialog (and any
+   select inside a modal dialog). `color-scheme: dark` makes Chrome render
+   the native option list with a dark background; the explicit option rule
+   covers Firefox / Edge where `color-scheme` alone is not enough. */
+[data-testid="provider-config-modal"] select,
+[role="dialog"] select {
+  color-scheme: dark;
+}
+[data-testid="provider-config-modal"] select option,
+[role="dialog"] select option {
+  background-color: #1a1a1a;
+  color: #f5f5f5;
+}
+[data-testid="provider-config-modal"] select option:checked,
+[role="dialog"] select option:checked {
+  background-color: #2a2a2a;
+  color: #ffffff;
+}
+
+/* ── Loading spinner — used in NodeLoadingCenterBadge / ImageGenerationOverlay.
+   Pure SVG + CSS so we don't ship a Lottie runtime just for one rotating ring.
+   Two layered strokes:
+     · soft track ring (low-opacity full circle)
+     · accent arc (~25% of the circumference) rotating endlessly
+   The accent arc uses stroke-dasharray to draw only a quarter of the circle. */
+@keyframes ccy-spin {
+  to { transform: rotate(360deg); }
+}
+.ccy-spinner {
+  display: inline-block;
+  vertical-align: middle;
+}
+.ccy-spinner-arc {
+  transform-origin: center;
+  animation: ccy-spin 0.95s linear infinite;
+}

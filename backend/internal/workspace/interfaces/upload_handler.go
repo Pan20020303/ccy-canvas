@@ -1,6 +1,7 @@
 package interfaces
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/http"
@@ -105,24 +106,101 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		}
 
 		client := &http.Client{Timeout: 60 * time.Second}
-		resp, err := client.Get(target)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 		if err != nil {
-			http.Error(w, "Failed to fetch media", http.StatusBadGateway)
+			http.Error(w, "Failed to build request", http.StatusBadRequest)
+			return
+		}
+		// Some buckets / CDNs (COS 防盗链, Cloudflare bot fight, etc.)
+		// reject requests with an empty or non-browser User-Agent. Set
+		// a common one. We explicitly do NOT forward Referer so
+		// referrer-based hotlink protection doesn't bite either.
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
+		req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, "Failed to fetch media: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
-		ct := resp.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") {
-			http.Error(w, "Not a media resource", http.StatusBadRequest)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			http.Error(w, fmt.Sprintf("Upstream returned HTTP %d", resp.StatusCode), http.StatusBadGateway)
 			return
+		}
+
+		// Be permissive with Content-Type. Many object stores (COS
+		// included) return application/octet-stream when no
+		// Content-Type was set at upload time — the file is still a
+		// real image/video. Resolution order:
+		//   1. trust upstream if it's already image/* or video/*
+		//   2. sniff URL extension (covers signed-URL cases)
+		//   3. peek the first 512 bytes and run http.DetectContentType
+		//      (bulletproof for COS files saved with .bin/.img keys)
+		ct := resp.Header.Get("Content-Type")
+		body := bufio.NewReaderSize(resp.Body, 512)
+		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") {
+			if sniffed := sniffMediaType(target); sniffed != "" {
+				ct = sniffed
+			} else {
+				peek, _ := body.Peek(512)
+				detected := http.DetectContentType(peek)
+				if strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "video/") {
+					ct = detected
+				} else {
+					http.Error(w, "Not a media resource (upstream="+resp.Header.Get("Content-Type")+", detected="+detected+")", http.StatusBadRequest)
+					return
+				}
+			}
 		}
 
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
 		}
-		io.Copy(w, io.LimitReader(resp.Body, maxProxySize))
+		io.Copy(w, io.LimitReader(body, maxProxySize))
 	}
+}
+
+// sniffMediaType returns a best-guess image/video MIME type for a URL
+// when the upstream Content-Type is missing or generic
+// (application/octet-stream). Returns "" if the URL has no recognised
+// media extension — caller should reject in that case.
+func sniffMediaType(rawURL string) string {
+	idx := strings.IndexAny(rawURL, "?#")
+	path := rawURL
+	if idx >= 0 {
+		path = rawURL[:idx]
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".webp":
+		return "image/webp"
+	case ".gif":
+		return "image/gif"
+	case ".bmp":
+		return "image/bmp"
+	case ".svg":
+		return "image/svg+xml"
+	case ".avif":
+		return "image/avif"
+	case ".heic":
+		return "image/heic"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".webm":
+		return "video/webm"
+	case ".mkv":
+		return "video/x-matroska"
+	}
+	return ""
 }

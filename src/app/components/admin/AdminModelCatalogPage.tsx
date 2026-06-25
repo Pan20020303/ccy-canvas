@@ -100,10 +100,10 @@ const STATUS_LABEL: Record<ProviderConfig["status"], string> = {
 
 const FIELD_INPUT =
   "w-full rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2.5 text-sm text-neutral-100 outline-none transition placeholder:text-neutral-500 focus:border-white/[0.18] focus:bg-white/[0.065] focus:ring-2 focus:ring-white/[0.04]";
-const FIELD_SELECT = `${FIELD_INPUT} appearance-none`;
+const FIELD_SELECT = `${FIELD_INPUT} appearance-none [color-scheme:dark]`;
 const SETTINGS_INPUT =
   "w-full rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2.5 text-sm text-neutral-100 outline-none transition placeholder:text-neutral-500 focus:border-white/[0.18] focus:bg-white/[0.065] focus:ring-2 focus:ring-white/[0.04]";
-const SETTINGS_SELECT = `${SETTINGS_INPUT} appearance-none`;
+const SETTINGS_SELECT = `${SETTINGS_INPUT} appearance-none [color-scheme:dark]`;
 const SETTINGS_BADGE = "rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-xs text-neutral-300";
 const SETTINGS_PANEL_BUTTON =
   "border-white/[0.08] bg-white/[0.045] text-neutral-200 hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white";
@@ -966,8 +966,8 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
           </Field>
 
           <Field label="中转站模板">
-            <div className="grid grid-cols-2 gap-2">
-              {templates.slice(0, 8).map((tpl) => (
+            <div className="prompt-editor-scroll grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
+              {templates.map((tpl) => (
                 <button
                   key={`${tpl.vendor}-${tpl.label}`}
                   type="button"
