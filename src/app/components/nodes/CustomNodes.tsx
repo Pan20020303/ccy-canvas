@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import gsap from 'gsap';
@@ -1361,8 +1361,9 @@ const PromptPanel = ({
   // HappyHorse 家族：把单一模型 dropdown 拆成「版本」+「模式」两个，
   // 用户感知不到 -t2v/-i2v/-r2v/-video-edit 后缀，提交时再合成。
   const happyHorse = parseHappyHorseModel(activeModel);
+  // 家族结构按 availableModels 计算 —— 即便当前不在 HappyHorse 上，模型
+  // dropdown 也要把 7 个真实变体收成「HappyHorse 1.1 / 1.0」两行展示。
   const happyHorseFamily = useMemo(() => {
-    if (!happyHorse) return null;
     const versions = new Set<string>();
     const versionToSuffixes = new Map<string, Set<string>>();
     for (const m of availableModels) {
@@ -1372,11 +1373,56 @@ const PromptPanel = ({
       if (!versionToSuffixes.has(parsed.version)) versionToSuffixes.set(parsed.version, new Set());
       versionToSuffixes.get(parsed.version)!.add(parsed.suffix);
     }
+    if (versions.size === 0) return null;
     return {
       versions: Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })),
       suffixesByVersion: versionToSuffixes,
     };
-  }, [availableModels, happyHorse]);
+  }, [availableModels]);
+
+  // 收编模型列表给底部 Dropdown 用：非 HappyHorse 模型原样保留；HappyHorse
+  // 折叠成每个版本一项 `HappyHorse X.Y`（虚拟值），点击时映射回真实模型名。
+  // 真实变体的切换由顶部 happyHorseTabs 完成。
+  const HAPPYHORSE_VIRTUAL_PREFIX = 'HappyHorse ';
+  const isHappyHorseVirtual = (value: string) => value.startsWith(HAPPYHORSE_VIRTUAL_PREFIX);
+  const displayModels = useMemo<string[]>(() => {
+    const out: string[] = [];
+    const seenVirtual = new Set<string>();
+    for (const m of availableModels) {
+      const parsed = parseHappyHorseModel(m);
+      if (parsed) {
+        const v = `${HAPPYHORSE_VIRTUAL_PREFIX}${parsed.version}`;
+        if (!seenVirtual.has(v)) {
+          seenVirtual.add(v);
+          out.push(v);
+        }
+        continue;
+      }
+      out.push(m);
+    }
+    return out;
+  }, [availableModels]);
+
+  // 当前底部 dropdown 应该选中的「显示值」：HappyHorse 系列收编成虚拟名。
+  const activeModelDisplay = happyHorse
+    ? `${HAPPYHORSE_VIRTUAL_PREFIX}${happyHorse.version}`
+    : activeModel;
+
+  // 折叠后点选：HappyHorse 虚拟项 → 默认 t2v；版本里若无 t2v（理论不会）
+  // 退回该版本第一个可用后缀。其它模型原样转发到 handleModelChange。
+  const handleDisplayPick = (display: string) => {
+    if (isHappyHorseVirtual(display) && happyHorseFamily) {
+      const ver = display.slice(HAPPYHORSE_VIRTUAL_PREFIX.length);
+      const avail = happyHorseFamily.suffixesByVersion.get(ver);
+      if (!avail) return;
+      const suffix = avail.has('t2v')
+        ? 't2v'
+        : (avail.has('i2v') ? 'i2v' : Array.from(avail)[0]);
+      handleModelChange(composeHappyHorseModel(ver, suffix));
+      return;
+    }
+    handleModelChange(display);
+  };
 
   // HappyHorse 顶部模式 tab strip：文生 / 图生 / 参考生 / 视频编辑，
   // 替代标准 referenceTabs。点击直接切换真实模型名（保留 version）。
@@ -1669,49 +1715,38 @@ const PromptPanel = ({
   const bottomControls = (
     <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
       <div className="flex items-center gap-1 min-w-0">
-        {happyHorse && happyHorseFamily ? (
-          /* 版本 picker：HappyHorse 1.1 / HappyHorse 1.0
-             模式 picker 已移到顶部 happyHorseTabs，不在这里再放。 */
-          <Dropdown
-            label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
-            value={`HappyHorse ${happyHorse.version}`}
-            options={happyHorseFamily.versions.map((v) => `HappyHorse ${v}`)}
-            onChange={(label) => {
-              const ver = label.replace(/^HappyHorse\s+/, '');
-              const availSuffixes = happyHorseFamily.suffixesByVersion.get(ver);
-              if (!availSuffixes) return;
-              // 切版本时尽量保留当前模式；如果新版本没有这个模式（如 1.1 没 video-edit），
-              // 退回 t2v / 该版本第一个可用模式。
-              const desired = availSuffixes.has(happyHorse.suffix)
-                ? happyHorse.suffix
-                : (availSuffixes.has('t2v') ? 't2v' : Array.from(availSuffixes)[0]);
-              handleModelChange(composeHappyHorseModel(ver, desired));
-            }}
-            menuMinWidth={180}
-          />
-        ) : (
-          <Dropdown
-            label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
-            value={activeModel}
-            options={availableModels}
-            onChange={handleModelChange}
-            menuMinWidth={240}
-            renderOption={(option, selected) => {
-              // Show the model's default video duration on the right (when applicable).
-              const optionConfig = enabledConfigs.find((config) => config.modelList.includes(option))?.raw ?? null;
-              const optTemplate = getModelTemplate(option, optionConfig);
-              const dur = optTemplate?.durationRange?.defaultValue
-                ?? optTemplate?.durationOptions?.[0];
-              return (
-                <div className="flex w-full items-center gap-2">
-                  <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
-                  <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
-                  {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
-                </div>
-              );
-            }}
-          />
-        )}
+        {/* 模型 dropdown：HappyHorse 系列折叠成一行/版本（虚拟值），
+            点击映射回真实模型；其余厂商模型原样展示。
+            模式（文生/图生/参考生/视频编辑）由顶部 happyHorseTabs 处理，
+            不再单独占一个底栏 dropdown。 */}
+        <Dropdown
+          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
+          value={activeModelDisplay}
+          options={displayModels}
+          onChange={handleDisplayPick}
+          menuMinWidth={240}
+          renderOption={(option, selected) => {
+            // HappyHorse 虚拟项不去查 enabledConfigs（不是真实 model 名），
+            // 但需要找到任一真实变体来取 icon / vendor 信息。
+            const lookupModel = isHappyHorseVirtual(option)
+              ? availableModels.find((m) => {
+                  const p = parseHappyHorseModel(m);
+                  return p && `${HAPPYHORSE_VIRTUAL_PREFIX}${p.version}` === option;
+                }) ?? option
+              : option;
+            const optionConfig = enabledConfigs.find((config) => config.modelList.includes(lookupModel))?.raw ?? null;
+            const optTemplate = getModelTemplate(lookupModel, optionConfig);
+            const dur = optTemplate?.durationRange?.defaultValue
+              ?? optTemplate?.durationOptions?.[0];
+            return (
+              <div className="flex w-full items-center gap-2">
+                <ModelBrandIcon model={lookupModel} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
+                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
+                {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
+              </div>
+            );
+          }}
+        />
         {!happyHorse && template?.supportsMode && template.modeOptions?.length ? (
           <Dropdown
             value={currentMode}

@@ -1374,6 +1374,15 @@ func taskCacheKey(id string) string {
 	return "generation_task:" + id
 }
 
+func isActiveTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued", "pending", "running", "retrying":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*taskOutput, error) {
 	if h.q == nil {
 		return nil, huma.Error500InternalServerError("Database unavailable")
@@ -1388,10 +1397,12 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	if h.cache != nil {
 		var cached TaskItem
 		if h.cache.Get(ctx, taskCacheKey(input.ID), &cached) {
-			out := &taskOutput{}
-			out.Body.Data = cached
-			out.Body.RequestID = httpx.RequestIDFrom(ctx)
-			return out, nil
+			if !isActiveTaskStatus(cached.Status) {
+				out := &taskOutput{}
+				out.Body.Data = cached
+				out.Body.RequestID = httpx.RequestIDFrom(ctx)
+				return out, nil
+			}
 		}
 	}
 	var taskID pgtype.UUID
@@ -1408,7 +1419,11 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	out := &taskOutput{}
 	out.Body.Data = toTaskItem(row)
 	if h.cache != nil {
-		h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 5*time.Minute)
+		if isActiveTaskStatus(out.Body.Data.Status) {
+			h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 2*time.Second)
+		} else {
+			h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 5*time.Minute)
+		}
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil

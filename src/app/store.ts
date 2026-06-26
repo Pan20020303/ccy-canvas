@@ -531,6 +531,7 @@ const seedInvitations: AdminInvitation[] = [
 ];
 
 const runAborters: Record<string, AbortController> = {};
+const runTokens: Record<string, string> = {};
 const generationTimeoutMs = 900 * 1000;
 
 // ─── Task recovery polling (Stage 2) ─────────────────────────────────────
@@ -549,11 +550,41 @@ let taskPollerTimer: ReturnType<typeof setInterval> | null = null;
 // node list is the source of truth but we don't want to scan all nodes
 // every tick; the set is the working subset.
 const trackedTaskNodes = new Set<string>();
+const activeTaskStatuses = new Set(['queued', 'pending', 'running', 'retrying']);
+const successTaskStatuses = new Set(['success', 'succeeded', 'completed', 'done']);
+const errorTaskStatuses = new Set(['error', 'failed', 'failure', 'cancelled', 'canceled']);
+
+function normalizeTaskStatus(status: string): 'active' | 'success' | 'error' | 'unknown' {
+  const normalized = status.trim().toLowerCase();
+  if (activeTaskStatuses.has(normalized)) return 'active';
+  if (successTaskStatuses.has(normalized)) return 'success';
+  if (errorTaskStatuses.has(normalized)) return 'error';
+  return 'unknown';
+}
 
 /** Apply a task lookup result back onto its node. Called from the poller
  *  for each non-pending row the backend returns. */
 function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
-  if (task.status !== 'success' && task.status !== 'error') {
+  const normalizedStatus = normalizeTaskStatus(task.status);
+  if (normalizedStatus !== 'success' && normalizedStatus !== 'error') {
+    if (normalizedStatus === 'active') {
+      const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
+      const targetData = targetNode?.data as Record<string, unknown> | undefined;
+      const nodeTaskId = typeof targetData?.taskId === 'string' ? targetData.taskId : undefined;
+      if (targetNode && (!nodeTaskId || nodeTaskId === task.id)) {
+        setStore((state) => {
+          const nodes = state.nodes.map((node) => node.id === task.node_id
+            ? { ...node, data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined } }
+            : node);
+          const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+          return {
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(state, { projectStateById }),
+          };
+        });
+      }
+    }
     return; // still pending — leave node alone
   }
   const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
@@ -573,22 +604,50 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   if (nodeTaskId && task.id && nodeTaskId !== task.id) {
     return;
   }
+  if (!nodeTaskId) {
+    const runningStartedAt = typeof targetData?.runningStartedAt === 'number' ? targetData.runningStartedAt : 0;
+    const taskCreatedAt = task.created_at ? Date.parse(task.created_at) : NaN;
+    const taskMatchesCurrentRunWindow = Number.isFinite(taskCreatedAt) && taskCreatedAt + 2000 >= runningStartedAt;
+    if ((currentStatus !== 'running' && currentStatus !== 'generating') || !taskMatchesCurrentRunWindow) {
+      return;
+    }
+  }
   const queuedAfterTimeout = targetData?.queuedAfterTimeout === true;
-  const isSameQueuedTask = queuedAfterTimeout && (!targetData?.taskId || targetData.taskId === task.id);
-  if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask) {
+  const isSameQueuedTask = queuedAfterTimeout && (!nodeTaskId || nodeTaskId === task.id);
+  // Orphan recovery: the node has the same taskId on file but never got
+  // its result url back (e.g. browser closed before SSE arrived). In
+  // that case the result is FOR this node — apply it even though
+  // status drifted back to idle/pending while the user was away.
+  const hasUrl = typeof targetData?.url === 'string' && (targetData.url as string).length > 0;
+  const hasContent = typeof targetData?.content === 'string' && (targetData.content as string).length > 0;
+  const isOrphanedRecovery = Boolean(nodeTaskId) && nodeTaskId === task.id && !hasUrl && !hasContent;
+  if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask && !isOrphanedRecovery) {
     // The node has already moved on (user ran a new generation, or the
     // success path already handled it). Drop tracking and skip.
     trackedTaskNodes.delete(task.node_id);
     return;
   }
 
-  setStore((state) => ({
-    nodes: state.nodes.map((node) => {
+  setStore((state) => {
+    const nodes = state.nodes.map((node) => {
       if (node.id !== task.node_id) return node;
       const isUrl = task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio';
-      if (task.status === 'success') {
+      if (normalizedStatus === 'success') {
+        if (!task.result_url) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              status: 'error',
+              taskId: task.id,
+              queuedAfterTimeout: false,
+              error: '生成任务已完成，但后端没有返回图片地址。',
+            },
+          };
+        }
         // 把当前 url (如果有) 压进 versions 顶端, 把新 url 提为当前.
         // 只对 image / video / audio 这种 url 型节点维护历史.
+        const resultUrl = isUrl ? resolveRenderableMediaUrl(task.result_url) : task.result_url;
         const prevData = (node.data ?? {}) as Record<string, unknown>;
         let nextVersions: NodeVersion[] | undefined;
         let nextActiveVersionId: string | undefined;
@@ -596,7 +655,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         if (isUrl) {
           const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
           const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
-          if (prevUrl && prevUrl !== task.result_url) {
+          if (prevUrl && prevUrl !== resultUrl) {
             const snapshot: NodeVersion = {
               id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
               url: prevUrl,
@@ -620,13 +679,14 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             error: undefined,
             ...(isUrl
               ? {
-                  url: task.result_url,
-                  output: task.result_url,
+                  url: resultUrl,
+                  output: resultUrl,
+                  originalUrl: task.result_url,
                   versions: nextVersions,
                   activeVersionId: nextActiveVersionId,
                   activeVersionTimestamp: nextTs,
                 }
-              : { content: task.result_url, output: task.result_url }),
+              : { content: resultUrl, output: resultUrl }),
           },
         };
       }
@@ -640,8 +700,15 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
           error: `Queued task failed: ${task.error_msg || 'Generation failed'}`,
         },
       };
-    }),
-  }));
+    });
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      activeRun: state.activeRun?.nodeId === task.node_id ? null : state.activeRun,
+      nodes,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  });
   trackedTaskNodes.delete(task.node_id);
 }
 
@@ -653,11 +720,27 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
   // Reconcile the tracked set with what's actually in the store: keep
   // actively running nodes and queued-after-timeout nodes that may have
   // been restored as idle from a saved canvas snapshot.
+  //
+  // ALSO include "orphan" nodes — ones that have a taskId on file but
+  // never received a result url. These happen when a long generation
+  // (4 min+ video) completes while the user has the tab closed or has
+  // already refreshed past the snapshot: the SSE event is missed and
+  // the snapshot says status='idle', so without this clause the result
+  // would silently fall through the cracks and the node would stay
+  // empty forever even though the backend succeeded.
   const runningNodeIds = getStore().nodes
     .filter((n) => {
       const data = n.data as Record<string, unknown>;
       const status = data?.status;
-      return status === 'running' || status === 'generating' || data?.queuedAfterTimeout === true;
+      if (status === 'running' || status === 'generating') return true;
+      if (data?.queuedAfterTimeout === true) return true;
+      const taskId = typeof data?.taskId === 'string' ? (data.taskId as string) : '';
+      const url = typeof data?.url === 'string' ? (data.url as string) : '';
+      const content = typeof data?.content === 'string' ? (data.content as string) : '';
+      const errored = status === 'error';
+      // Has a taskId on file, no settled output (url / content), and not
+      // already shown as a hard error → still waiting on a backend task.
+      return Boolean(taskId) && !url && !content && !errored;
     })
     .map((n) => n.id);
 
@@ -691,10 +774,18 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
 
   const requests: Promise<TaskItem[]>[] = [];
   if (withoutTaskId.length > 0) {
-    requests.push(batchTasksByNodeIds(withoutTaskId).catch(() => []));
+    requests.push(batchTasksByNodeIds(withoutTaskId).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[taskPoller] batchTasksByNodeIds failed', err);
+      return [];
+    }));
   }
   for (const taskId of withTaskId) {
-    requests.push(getTask(taskId).then((t) => [t]).catch(() => []));
+    requests.push(getTask(taskId).then((t) => [t]).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[taskPoller] getTask failed', { taskId, error: err });
+      return [];
+    }));
   }
 
   const results = await Promise.all(requests);
@@ -841,8 +932,8 @@ function applyActiveTasksToNodes(
     }
     if (appliedNodeIds.size === 0) return appliedNodeIds;
     const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
-    setStore((state) => ({
-      nodes: state.nodes.map((node) => {
+    setStore((state) => {
+      const nodes = state.nodes.map((node) => {
         const task = taskByNode.get(node.id);
         if (!task) return node;
         const data = (node.data ?? {}) as Record<string, unknown>;
@@ -860,8 +951,14 @@ function applyActiveTasksToNodes(
           ...node,
           data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined, runningStartedAt },
         };
-      }),
-    }));
+      });
+      const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+      return {
+        nodes,
+        projectStateById,
+        ...syncActiveSpaceSnapshot(state, { projectStateById }),
+      };
+    });
     return appliedNodeIds;
   } finally {
     applyActiveTasksInFlight = false;
@@ -1152,6 +1249,12 @@ function findReferenceProviderForRequest(
   return preferredProvider ?? matchingProviders[0] ?? null;
 }
 
+function resolveRenderableMediaUrl(url: string): string {
+  if (!/^https?:\/\//.test(url)) return url;
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  return `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(url)}`;
+}
+
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
   if (result.type !== 'url') {
     return result.content;
@@ -1188,7 +1291,9 @@ async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string>
             : 'bin';
     const uploaded = await uploadFile(blob, `generated-${Date.now()}.${extension}`);
     return uploaded.url;
-  } catch {
+  } catch (proxyErr) {
+    // eslint-disable-next-line no-console
+    console.warn('[persistGeneratedMediaUrl] proxy/upload failed — falling back to original URL', proxyErr);
     return result.content;
   }
 }
@@ -1446,11 +1551,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         const canvas = await getCanvas(first.id);
         set((state) => {
           const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : state.nodes;
-          // Clear stale running/error status from persisted nodes.
           const nodes = rawNodes.map((n) => {
             const d = n.data as Record<string, unknown> | undefined;
             if (d?.status === 'running' || d?.status === 'generating') {
-              return { ...n, data: { ...d, status: 'idle', error: undefined } };
+              return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
             }
             return n;
           });
@@ -1525,24 +1629,28 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const nodes = rawNodes.map((n) => {
         const d = n.data as Record<string, unknown> | undefined;
         if (d?.status === 'running' || d?.status === 'generating') {
-          return { ...n, data: { ...d, status: 'idle', error: undefined } };
+          return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
         }
         return n;
       });
       const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
-      set((state) => ({
-        nodes,
-        edges,
-        groups: [],
-        undoStack: [],
-        copiedCanvasSelection: null,
-        activeProjectId: id,
-        canvasHydrated: true,
-        projectStateById: {
+      set((state) => {
+        const projectStateById = {
           ...state.projectStateById,
           [id]: createCanvasSnapshot(nodes, edges, []),
-        },
-      }));
+        };
+        return {
+          nodes,
+          edges,
+          groups: [],
+          undoStack: [],
+          copiedCanvasSelection: null,
+          activeProjectId: id,
+          canvasHydrated: true,
+          projectStateById,
+          ...syncActiveSpaceSnapshot(state, { projectStateById }),
+        };
+      });
     } catch {
       // Canvas fetch failed (network / auth / 5xx) — NOT a new empty project
       // (those resolve with an empty canvas). Show an empty canvas but keep
@@ -1562,11 +1670,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // the full backend snapshot. (Switching projects saves the *outgoing*
     // canvas via saveCanvas() directly, which is intentionally not gated.)
     if (!canvasHydrated) return;
-    // Strip transient runtime status before persisting so reloads don't show stale running state.
     const cleanNodes = nodes.map((n) => {
       const d = n.data as Record<string, unknown> | undefined;
       if (d?.status === 'running' || d?.status === 'generating') {
-        return { ...n, data: { ...d, status: 'idle', error: undefined } };
+        return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
       }
       return n;
     });
@@ -2113,11 +2220,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
-    // Concurrency guard (F6): if a generation is already in flight for this
-    // node, drop the duplicate submit. runAborters[nodeId] is set
-    // synchronously below (before the first await), so a rapid double-click
-    // or React StrictMode double-invoke can't slip two requests through.
-    if (runAborters[nodeId]) return;
+    // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
+    // 不能直接 return，否则用户会看到按钮只闪一下但没有任何生成状态。
+    if (runAborters[nodeId]) {
+      runAborters[nodeId]?.abort();
+      delete runAborters[nodeId];
+    }
+    const runToken = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID()
+      : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    runTokens[nodeId] = runToken;
+    const isCurrentRun = () => runTokens[nodeId] === runToken;
     const state = get();
     // Determine service type from the node type.
     const currentNode = state.nodes.find((n) => n.id === nodeId);
@@ -2160,12 +2273,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const error = language === 'zh'
         ? '当前模型需要公网可访问的参考图。请重新上传图片到 COS，或移除本地/旧上传引用后再生成。'
         : 'This model needs public reference image URLs. Re-upload the image to COS, or remove local/stale references before generating.';
-      set((snapshot) => ({
-        activeRun: null,
-        nodes: snapshot.nodes.map((node) => node.id === nodeId
+      set((snapshot) => {
+      const nodes = snapshot.nodes.map((node) => node.id === nodeId
           ? { ...node, data: { ...node.data, status: 'error', error } }
-          : node),
-      }));
+          : node);
+      const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+      return {
+        activeRun: null,
+        nodes,
+        projectStateById,
+        ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+      };
+    });
       return;
     }
     const shouldStripMentions = serviceType === 'video'
@@ -2255,11 +2374,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           if (!isModeSatisfied(chosen, counts)) {
             const lang = get().language;
             const hint = lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en;
-            set((snapshot) => ({
-              nodes: snapshot.nodes.map((node) => node.id === nodeId
-                ? { ...node, data: { ...node.data, status: 'error', error: hint } }
-                : node),
-            }));
+            set((snapshot) => {
+          const nodes = snapshot.nodes.map((node) => node.id === nodeId
+              ? { ...node, data: { ...node.data, status: 'error', error: hint } }
+              : node);
+          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+          return {
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+          };
+        });
             return;
           }
           resolvedReferenceMode = spec.backendMode;
@@ -2272,12 +2397,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // resume from the original start time after a page refresh (instead of
     // counting from 0 each mount).
     const startedAt = Date.now();
-    set((snapshot) => ({
-      activeRun: { nodeId, startedAt },
-      nodes: snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'running', error: undefined, queuedAfterTimeout: false, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
-        : node),
-    }));
+    set((snapshot) => {
+      const nodes = snapshot.nodes.map((node) => node.id === nodeId
+        ? { ...node, data: { ...node.data, status: 'running', error: undefined, taskId: undefined, queuedAfterTimeout: false, output: undefined, content: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
+        : node);
+      const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+      return {
+        activeRun: { nodeId, startedAt },
+        nodes,
+        projectStateById,
+        ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+      };
+    });
 
     // Video-specific: duration from genParams.
     const durationSeconds = genParams?.durationSeconds ?? undefined;
@@ -2333,10 +2464,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
       }, aborter.signal);
 
+      if (!isCurrentRun()) return;
+
       if (result.type === 'queued') {
-        set((snapshot) => ({
-          activeRun: null,
-          nodes: snapshot.nodes.map((node) => node.id === nodeId
+        set((snapshot) => {
+          const nodes = snapshot.nodes.map((node) => node.id === nodeId
             ? {
                 ...node,
                 data: {
@@ -2347,16 +2479,70 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                   error: undefined,
                 },
               }
-            : node),
-        }));
+            : node);
+          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+          return {
+            activeRun: { nodeId, startedAt, timedOut: true },
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+          };
+        });
+        if (result.task_id) {
+          void getTask(result.task_id)
+            .then((task) => applyTaskResultToNode(task, get, set as never))
+            .catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn('[runNode] initial queued task lookup failed', { taskId: result.task_id, error: err });
+            });
+        }
         return;
       }
 
+      // eslint-disable-next-line no-console
+      console.log('[runNode] generate response', {
+        nodeId,
+        type: result.type,
+        contentPreview: typeof result.content === 'string' ? result.content.slice(0, 120) : '(non-string)',
+        task_id: result.task_id,
+      });
       const persistedContent = await persistGeneratedMediaUrl(result);
+      if (!isCurrentRun()) return;
 
-      set((snapshot) => ({
-        activeRun: null,
-        nodes: snapshot.nodes.map((node) => {
+      // Hard guard: don't pretend success when the backend returned an
+      // empty payload — that produces a `<img src="">` and looks like
+      // "click, blue flash, nothing" to the user. Log the actual response
+      // shape so we can tell why it came back empty.
+      if (!result.content || !persistedContent) {
+        // eslint-disable-next-line no-console
+        console.error('[runNode] empty result from backend', {
+          nodeId,
+          resultType: result.type,
+          resultContentLength: result.content?.length ?? 0,
+          persistedLength: persistedContent?.length ?? 0,
+          task_id: result.task_id,
+        });
+        const message = get().language === 'zh'
+          ? '生成请求返回了空结果（type=' + result.type + '）。请检查模型配置或在管理端日志查看任务详情。'
+          : 'Backend returned an empty result (type=' + result.type + '). Check the model config or admin task logs.';
+        set((snapshot) => {
+          const nodes = snapshot.nodes.map((node) => node.id === nodeId
+            ? { ...node, data: { ...node.data, status: 'error', error: message, taskId: result.task_id } }
+            : node);
+          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+          return {
+            activeRun: null,
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+          };
+        });
+        trackedTaskNodes.delete(nodeId);
+        return;
+      }
+
+      set((snapshot) => {
+        const nodes = snapshot.nodes.map((node) => {
           if (node.id !== nodeId) return node;
           // 把旧 url 压进 versions[]、新 url 提升为当前. 跟
           // applyTaskResultToNode 同样的语义,保证两条成功路径
@@ -2398,6 +2584,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                 ? {
                     url: persistedContent,
                     output: persistedContent,
+                    originalUrl: result.content,
                     versions: nextVersions,
                     activeVersionId: nextActiveVersionId,
                     activeVersionTimestamp: nextTs,
@@ -2407,8 +2594,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                 : { content: result.content, output: result.content }),
             },
           };
-        }),
-      }));
+        });
+        const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+        return {
+          activeRun: null,
+          nodes,
+          projectStateById,
+          ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+        };
+      });
       trackedTaskNodes.delete(nodeId);
 
       // Add to history for the file manager panel.
@@ -2425,6 +2619,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         derivationAction: (currentNode?.data as Record<string, unknown> | undefined)?.derivationAction as string | undefined,
       });
     } catch (err: unknown) {
+      if (!isCurrentRun()) return;
+      // eslint-disable-next-line no-console
+      console.error('[runNode] generation request failed', { nodeId, error: err });
       const message = err instanceof Error ? err.message : 'Generation failed';
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       const isTimeoutLike = isAbort || /timeout|timed out|aborted|deadline/i.test(message);
@@ -2434,26 +2631,41 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         // Leave status='running' and flag queuedAfterTimeout so the
         // loading overlay can swap to "已加入队列" copy. Cleared when
         // the recovery poller / SSE event flips the node to done/error.
-        set((snapshot) => ({
-          activeRun: null,
-          nodes: snapshot.nodes.map((node) => node.id === nodeId
+        set((snapshot) => {
+          const nodes = snapshot.nodes.map((node) => node.id === nodeId
             ? { ...node, data: { ...node.data, status: 'running', queuedAfterTimeout: true, error: undefined } }
-            : node),
-        }));
+            : node);
+          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+          return {
+            activeRun: null,
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+          };
+        });
       } else {
         // Real, non-timeout failure (4xx, network down, etc.). Surface
         // the error directly and stop tracking.
-        set((snapshot) => ({
-          activeRun: null,
-          nodes: snapshot.nodes.map((node) => node.id === nodeId
+        set((snapshot) => {
+          const nodes = snapshot.nodes.map((node) => node.id === nodeId
             ? { ...node, data: { ...node.data, status: 'error', error: message } }
-            : node),
-        }));
+            : node);
+          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+          return {
+            activeRun: null,
+            nodes,
+            projectStateById,
+            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
+          };
+        });
         trackedTaskNodes.delete(nodeId);
       }
     } finally {
       clearTimeout(timeout);
-      delete runAborters[nodeId];
+      if (isCurrentRun()) {
+        delete runAborters[nodeId];
+        delete runTokens[nodeId];
+      }
     }
   },
   cancelNode: (nodeId) => {

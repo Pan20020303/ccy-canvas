@@ -470,6 +470,67 @@ describe("workspace control bar state", () => {
     expect((imageNode?.data as Record<string, unknown>)?.error).toBeUndefined();
   });
 
+  it("keeps queued generations running until task success writes back to the node", async () => {
+    const { useStore } = await loadStore();
+    let resolveTask!: (response: Response) => void;
+    const taskLookup = new Promise<Response>((resolve) => {
+      resolveTask = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/app/generate") {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({
+            data: { type: "queued", task_id: "task-queued-success", status: "pending" },
+            request_id: "req-queued-success",
+          }),
+        } as Response);
+      }
+      if (url === "/api/app/tasks/task-queued-success") {
+        return taskLookup;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useStore.getState().runNode("2", { prompt: "queued wolf", model: "doubao-seedream-5-0-260128" });
+
+    let imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("running");
+    expect((imageNode?.data as Record<string, unknown>)?.taskId).toBe("task-queued-success");
+    expect(useStore.getState().activeRun?.nodeId).toBe("2");
+
+    resolveTask({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: {
+          id: "task-queued-success",
+          node_id: "2",
+          service_type: "image",
+          model: "doubao-seedream-5-0-260128",
+          status: "success",
+          result_url: "https://example.com/queued-wolf.png",
+          error_msg: "",
+          duration_ms: 33000,
+          created_at: new Date().toISOString(),
+        },
+        request_id: "req-task-success",
+      }),
+    } as Response);
+    await taskLookup;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
+    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fqueued-wolf.png");
+    expect((imageNode?.data as Record<string, unknown>)?.output).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fqueued-wolf.png");
+    expect((imageNode?.data as Record<string, unknown>)?.originalUrl).toBe("https://example.com/queued-wolf.png");
+    expect(useStore.getState().activeRun).toBeNull();
+  });
+
   it("upgrades uploaded reference images to public urls for chat-image providers", async () => {
     vi.stubEnv("VITE_API_BASE_URL", "https://canvas.example.com");
     try {
