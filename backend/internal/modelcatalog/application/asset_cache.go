@@ -86,8 +86,10 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasAssetCache/1.0)")
 	req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+	attachedBearer := false
 	if auth.shouldAttachBearer(trimmed) {
 		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(auth.bearerToken))
+		attachedBearer = true
 	}
 	resp, err := assetCacheHTTPClient.Do(req)
 	if err != nil {
@@ -96,7 +98,7 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream returned HTTP %d while staging asset", resp.StatusCode)
+		return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), resp.StatusCode, attachedBearer)
 	}
 
 	ext := extensionFor(trimmed, resp.Header.Get("Content-Type"))
@@ -105,6 +107,14 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 		contentType = mime.TypeByExtension(ext)
 	}
 	return writeStagedAsset(resp.Body, ext, contentType)
+}
+
+func safeURLHost(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || strings.TrimSpace(u.Host) == "" {
+		return "unknown"
+	}
+	return strings.ToLower(u.Host)
 }
 
 func (a remoteAssetAuth) shouldAttachBearer(remoteURL string) bool {
@@ -128,7 +138,10 @@ func assetURLMatchesProviderHost(remoteURL, providerBaseURL string) bool {
 	if assetHost == "" || providerHost == "" {
 		return false
 	}
-	if assetHost != providerHost && !strings.HasSuffix(assetHost, "."+providerHost) {
+	hostMatches := assetHost == providerHost ||
+		strings.HasSuffix(assetHost, "."+providerHost) ||
+		knownProviderSiblingAssetHost(assetHost, providerHost)
+	if !hostMatches {
 		return false
 	}
 	providerPort := provider.Port()
@@ -137,6 +150,21 @@ func assetURLMatchesProviderHost(remoteURL, providerBaseURL string) bool {
 		return assetPort == providerPort
 	}
 	return assetPort == "" || isDefaultURLPort(asset.Scheme, assetPort)
+}
+
+func knownProviderSiblingAssetHost(assetHost, providerHost string) bool {
+	for _, domain := range []string{"relaybases.com"} {
+		if hostWithinDomain(assetHost, domain) && hostWithinDomain(providerHost, domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostWithinDomain(host, domain string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 
 func isDefaultURLPort(scheme, port string) bool {

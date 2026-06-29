@@ -906,6 +906,13 @@ const stopNodeGesture = (event: React.MouseEvent | React.PointerEvent) => {
   event.stopPropagation();
 };
 
+export function canSubmitEmptyPromptForReferences(
+  serviceType: string,
+  counts: { images: number; videos: number },
+): boolean {
+  return serviceType === 'video' && (counts.images > 0 || counts.videos > 0);
+}
+
 const PromptPanel = ({
   nodeId,
   serviceType,
@@ -1220,7 +1227,15 @@ const PromptPanel = ({
   };
 
   const submit = () => {
-    if (!text.trim()) {
+    const currentReferenceCounts = upstreamNodes.reduce(
+      (counts, up) => {
+        if (up.type === 'imageNode' || up.type === 'referenceImageNode') counts.images += 1;
+        else if (up.type === 'videoNode' || up.type === 'referenceVideoNode') counts.videos += 1;
+        return counts;
+      },
+      { images: 0, videos: 0 },
+    );
+    if (!text.trim() && !canSubmitEmptyPromptForReferences(serviceType, currentReferenceCounts)) {
       updateNodeData(nodeId, {
         status: 'error',
         error: language === 'zh' ? '请输入提示词后再生成。' : 'Enter a prompt before generating.',

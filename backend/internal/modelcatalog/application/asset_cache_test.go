@@ -71,3 +71,15 @@ func TestPersistRemoteAssetUsesBrowserLikeHeaders(t *testing.T) {
 		t.Fatalf("PersistRemoteAsset returned %q, want /uploads/generated/...png", got)
 	}
 }
+
+func TestAssetURLMatchesProviderHostAllowsKnownProviderSiblingDomains(t *testing.T) {
+	if !assetURLMatchesProviderHost("https://assets.relaybases.com/generated/result.png", "https://image-2.relaybases.com") {
+		t.Fatal("expected RelayBases sibling asset host to match provider host")
+	}
+}
+
+func TestAssetURLMatchesProviderHostRejectsUnknownSiblingDomains(t *testing.T) {
+	if assetURLMatchesProviderHost("https://assets.example.com/generated/result.png", "https://api.example.com") {
+		t.Fatal("expected unknown sibling asset host to be rejected")
+	}
+}
