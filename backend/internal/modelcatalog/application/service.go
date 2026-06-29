@@ -1136,14 +1136,14 @@ type generatedAssetPersistenceOutcome struct {
 	pending  bool
 }
 
-func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req GenerateRequest, result *GenerateResult, startedAt time.Time) (generatedAssetPersistenceOutcome, error) {
+func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req GenerateRequest, result *GenerateResult, startedAt time.Time, c candidateChannel) (generatedAssetPersistenceOutcome, error) {
 	out := generatedAssetPersistenceOutcome{cacheHit: true}
 	if result == nil || result.Type != "url" || strings.TrimSpace(result.Content) == "" {
 		return out, nil
 	}
 
 	originalURL := strings.TrimSpace(result.Content)
-	staged, err := StageRemoteAsset(ctx, originalURL)
+	staged, err := StageRemoteAssetWithProviderAuth(ctx, originalURL, c.baseURL, c.apiKey)
 	if err != nil {
 		return out, fmt.Errorf("asset staging failed: generated media could not be downloaded to local staging: %w", err)
 	}
@@ -1233,7 +1233,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		cacheHit := true
 		assetPending := false
 		if runErr == nil {
-			assetOutcome, cacheErr := s.persistGeneratedAssetForResult(detachedCtx, req, result, startedAt)
+			assetOutcome, cacheErr := s.persistGeneratedAssetForResult(detachedCtx, req, result, startedAt, candidates[0])
 			cacheHit = assetOutcome.cacheHit
 			assetPending = assetOutcome.pending
 			if cacheErr != nil {
@@ -1310,7 +1310,7 @@ func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*Gen
 		return result, runErr
 	}
 	cacheHit := true
-	assetOutcome, cacheErr := s.persistGeneratedAssetForResult(ctx, req, result, startedAt)
+	assetOutcome, cacheErr := s.persistGeneratedAssetForResult(ctx, req, result, startedAt, candidates[0])
 	cacheHit = assetOutcome.cacheHit
 	if cacheErr != nil {
 		log.Printf("[modelcatalog] ERROR asset staging failed for log %s: %v", req.GenerationLogID, cacheErr)

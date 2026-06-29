@@ -44,10 +44,26 @@ func PersistRemoteAsset(ctx context.Context, remoteURL string) (string, error) {
 	return storedURL, nil
 }
 
+type remoteAssetAuth struct {
+	providerBaseURL string
+	bearerToken     string
+}
+
 // StageRemoteAsset downloads a provider result into a persistent local staging
 // file under uploads/staging/..., so the paid generation is no longer dependent
 // on the provider's expiring URL.
 func StageRemoteAsset(ctx context.Context, remoteURL string) (StagedAsset, error) {
+	return stageRemoteAsset(ctx, remoteURL, remoteAssetAuth{})
+}
+
+func StageRemoteAssetWithProviderAuth(ctx context.Context, remoteURL, providerBaseURL, apiKey string) (StagedAsset, error) {
+	return stageRemoteAsset(ctx, remoteURL, remoteAssetAuth{
+		providerBaseURL: providerBaseURL,
+		bearerToken:     apiKey,
+	})
+}
+
+func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAuth) (StagedAsset, error) {
 	trimmed := strings.TrimSpace(remoteURL)
 	if trimmed == "" {
 		return StagedAsset{StagingURL: remoteURL}, nil
@@ -70,6 +86,9 @@ func StageRemoteAsset(ctx context.Context, remoteURL string) (StagedAsset, error
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasAssetCache/1.0)")
 	req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+	if auth.shouldAttachBearer(trimmed) {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(auth.bearerToken))
+	}
 	resp, err := assetCacheHTTPClient.Do(req)
 	if err != nil {
 		return StagedAsset{StagingURL: remoteURL}, err
@@ -86,6 +105,49 @@ func StageRemoteAsset(ctx context.Context, remoteURL string) (StagedAsset, error
 		contentType = mime.TypeByExtension(ext)
 	}
 	return writeStagedAsset(resp.Body, ext, contentType)
+}
+
+func (a remoteAssetAuth) shouldAttachBearer(remoteURL string) bool {
+	if strings.TrimSpace(a.bearerToken) == "" || strings.TrimSpace(a.providerBaseURL) == "" {
+		return false
+	}
+	return assetURLMatchesProviderHost(remoteURL, a.providerBaseURL)
+}
+
+func assetURLMatchesProviderHost(remoteURL, providerBaseURL string) bool {
+	asset, err := url.Parse(strings.TrimSpace(remoteURL))
+	if err != nil {
+		return false
+	}
+	provider, err := url.Parse(strings.TrimSpace(providerBaseURL))
+	if err != nil {
+		return false
+	}
+	assetHost := strings.ToLower(strings.TrimSpace(asset.Hostname()))
+	providerHost := strings.ToLower(strings.TrimSpace(provider.Hostname()))
+	if assetHost == "" || providerHost == "" {
+		return false
+	}
+	if assetHost != providerHost && !strings.HasSuffix(assetHost, "."+providerHost) {
+		return false
+	}
+	providerPort := provider.Port()
+	assetPort := asset.Port()
+	if providerPort != "" {
+		return assetPort == providerPort
+	}
+	return assetPort == "" || isDefaultURLPort(asset.Scheme, assetPort)
+}
+
+func isDefaultURLPort(scheme, port string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http":
+		return port == "80"
+	case "https":
+		return port == "443"
+	default:
+		return false
+	}
 }
 
 func PromoteStagedAssetToStore(ctx context.Context, staged StagedAsset) (string, error) {

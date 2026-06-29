@@ -1094,6 +1094,66 @@ func TestGenerateImageFailsWhenGeneratedAssetCannotBeStaged(t *testing.T) {
 	}
 }
 
+func TestGenerateImageStagesProtectedProviderAssetWithBearerToken(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	var serverURL string
+	var assetDownloads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/images/generations":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-api-key" {
+				t.Fatalf("generation Authorization header = %q", got)
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"url":%q}]}`, serverURL+"/protected-result.png")))
+		case "/protected-result.png":
+			assetDownloads.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer test-api-key" {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("protected image bytes"))
+		default:
+			t.Fatalf("unexpected path = %q", r.URL.Path)
+		}
+	}))
+	serverURL = server.URL
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-protected-asset",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "gpt-image-2",
+		Prompt:      "draw a protected image",
+	})
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
+	}
+	if assetDownloads.Load() != 1 {
+		t.Fatalf("asset downloads = %d, want 1", assetDownloads.Load())
+	}
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
+	}
+	verifyCachedAsset(t, result.Content, []byte("protected image bytes"))
+}
+
 func TestGenerateImageTextOnlyNormalizesConfiguredQualityOptions(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
