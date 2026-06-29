@@ -66,6 +66,18 @@ func TestAssetPersistenceFailureIsPermanent(t *testing.T) {
 	}
 }
 
+func TestProviderInputValidationFailuresArePermanent(t *testing.T) {
+	cases := []string{
+		"Video generation failed: DataInspectionFailed: Green net check failed for text (input): Input data may contain inappropriate content.",
+		"Video generation failed: InvalidParameter: Input should be 'reference_image': input.media.0.type",
+	}
+	for _, msg := range cases {
+		if !isPermanentError(errors.New(msg)) {
+			t.Fatalf("isPermanentError(%q) = false, want true", msg)
+		}
+	}
+}
+
 func TestErrTimeoutNoRetryWrapsOriginal(t *testing.T) {
 	orig := context.DeadlineExceeded
 	wrapped := errTimeoutNoRetry(orig)

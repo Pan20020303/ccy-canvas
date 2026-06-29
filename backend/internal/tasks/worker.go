@@ -304,6 +304,16 @@ func isPermanentError(err error) bool {
 		return true
 	case strings.Contains(msg, "forbidden"):
 		return true
+	case strings.Contains(msg, "datainspectionfailed"):
+		return true
+	case strings.Contains(msg, "green net check failed"):
+		return true
+	case strings.Contains(msg, "input data may contain inappropriate content"):
+		return true
+	case strings.Contains(msg, "invalidparameter"):
+		return true
+	case strings.Contains(msg, "invalid parameter"):
+		return true
 	case strings.Contains(msg, "asset persistence failed"):
 		return true
 	}
