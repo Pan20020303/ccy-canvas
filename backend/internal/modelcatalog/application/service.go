@@ -1145,11 +1145,15 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	originalURL := strings.TrimSpace(result.Content)
 	staged, err := StageRemoteAssetWithProviderAuth(ctx, originalURL, c.baseURL, c.apiKey)
 	if err != nil {
-		return out, fmt.Errorf("asset staging failed: generated media could not be downloaded to local staging: %w", err)
+		out.cacheHit = false
+		log.Printf("[modelcatalog] WARNING asset staging failed for log %s; keeping temporary upstream URL: %v", req.GenerationLogID, err)
+		return out, nil
 	}
 	if staged.LocalPath == "" {
 		if staged.StagingURL == originalURL && isTemporaryGeneratedAssetURL(originalURL) {
-			return out, fmt.Errorf("asset staging failed: generated media stayed on a temporary upstream URL")
+			out.cacheHit = false
+			log.Printf("[modelcatalog] WARNING generated media for log %s stayed on a temporary upstream URL", req.GenerationLogID)
+			return out, nil
 		}
 		result.Content = staged.StagingURL
 		return out, nil
@@ -1227,9 +1231,10 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 
 		result, runErr := s.runCandidateLoop(detachedCtx, candidates, req)
 
-		// Cache the upstream URL to configured storage before surfacing success.
-		// If this fails, do not persist/publish the provider's temporary URL:
-		// the task must fail loudly instead of saving an expiring asset.
+		// Try to cache the upstream URL before surfacing success. If staging
+		// fails, keep the provider URL visible and mark cache_hit=false; a
+		// generated image/video should not be turned into a failed task just
+		// because durable asset archival hit a temporary download problem.
 		cacheHit := true
 		assetPending := false
 		if runErr == nil {

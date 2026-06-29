@@ -425,6 +425,9 @@ type fakeRepository struct {
 	listUserID      string
 	listRole        string
 	providerConfigs []domain.ProviderConfig
+	lastLogStatus   string
+	lastLogResult   string
+	lastLogCacheHit bool
 }
 
 func (r *fakeRepository) GetRelayProvider(context.Context) (*domain.RelayProvider, error) {
@@ -821,7 +824,10 @@ func (r *fakeRepository) InsertGenerationAttempt(context.Context, domain.Generat
 func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([]domain.GenerationAttempt, error) {
 	return nil, nil
 }
-func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, string, string, string, int32, bool) error {
+func (r *fakeRepository) UpdateGenerationLogResult(_ context.Context, _ string, status, resultURL, _ string, _ int32, cacheHit bool) error {
+	r.lastLogStatus = status
+	r.lastLogResult = resultURL
+	r.lastLogCacheHit = cacheHit
 	return nil
 }
 func (r *fakeRepository) MarkGenerationLogPersisting(context.Context, string, StagedAsset, int32) error {
@@ -1052,20 +1058,22 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
-func TestGenerateImageFailsWhenGeneratedAssetCannotBeStaged(t *testing.T) {
+func TestGenerateImageFallsBackToTemporaryURLWhenGeneratedAssetCannotBeStaged(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
 		t.Fatalf("encrypt key: %v", err)
 	}
 
+	temporaryURL := ""
 	assetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "signed url expired", http.StatusForbidden)
 	}))
 	defer assetServer.Close()
+	temporaryURL = assetServer.URL + "/expired.png?X-Tos-Expires=86400"
 
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"url":%q}]}`, assetServer.URL+"/expired.png?X-Tos-Expires=86400")))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"url":%q}]}`, temporaryURL)))
 	}))
 	defer providerServer.Close()
 
@@ -1082,15 +1090,25 @@ func TestGenerateImageFailsWhenGeneratedAssetCannotBeStaged(t *testing.T) {
 	service := NewService(repo, key)
 
 	result, err := service.Generate(context.Background(), GenerateRequest{
-		ServiceType: "image",
-		Model:       "gpt-image-2",
-		Prompt:      "draw a durable image",
+		GenerationLogID: "log-fallback",
+		ServiceType:     "image",
+		Model:           "gpt-image-2",
+		Prompt:          "draw a durable image",
 	})
-	if err == nil {
-		t.Fatalf("Generate returned nil error with result %#v; want asset persistence failure", result)
+	if err != nil {
+		t.Fatalf("Generate returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "asset staging failed") {
-		t.Fatalf("Generate error = %v, want asset staging failure", err)
+	if result == nil || result.Content != temporaryURL {
+		t.Fatalf("Generate result = %#v, want temporary upstream URL %q", result, temporaryURL)
+	}
+	if repo.lastLogStatus != "success" {
+		t.Fatalf("lastLogStatus = %q, want success", repo.lastLogStatus)
+	}
+	if repo.lastLogResult != temporaryURL {
+		t.Fatalf("lastLogResult = %q, want %q", repo.lastLogResult, temporaryURL)
+	}
+	if repo.lastLogCacheHit {
+		t.Fatal("lastLogCacheHit = true, want false while asset is not yet cached")
 	}
 }
 
