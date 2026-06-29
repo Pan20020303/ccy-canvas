@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -18,111 +19,115 @@ import (
 	"github.com/google/uuid"
 )
 
-// PersistRemoteAsset downloads a generated asset from an upstream URL and
-// writes it under generated/{yyyy-mm}/{uuid}.{ext}, returning a stable
-// URL from the configured asset store (local /uploads/... by default, COS
-// when STORAGE_BACKEND=cos).
-//
-// Why server-side: upstream URLs from OpenAI/Volcengine/Sora-style relays
-// frequently expire (signed URLs valid for hours-to-days, or relay-host
-// proxies that disappear). The legacy client-side persist (proxy → upload
-// → local URL) only ran when the browser was alive at the moment the
-// generation returned. Doing it here covers EVERY completion path —
-// inline-success, SSE push, recovery poller — so by the time anyone sees
-// the result_url it already points to a file we own.
-//
-// Best-effort: failures here return the original URL unchanged so the
-// node still has *something* renderable; an admin can chase the missing
-// local file later via the generation_attempts trail.
-//
-// Skips data:/blob: URIs (already inline) and same-origin /uploads/
-// paths (already ours). Only http(s) external URLs are downloaded.
+type StagedAsset struct {
+	LocalPath   string
+	StagingURL  string
+	COSKey      string
+	ContentType string
+}
+
+// PersistRemoteAsset keeps the legacy "give me a durable URL" contract while
+// internally using the newer two-step path: stage locally, then promote to the
+// configured asset store.
 func PersistRemoteAsset(ctx context.Context, remoteURL string) (string, error) {
+	staged, err := StageRemoteAsset(ctx, remoteURL)
+	if err != nil {
+		return remoteURL, err
+	}
+	if staged.LocalPath == "" {
+		return staged.StagingURL, nil
+	}
+	storedURL, err := PromoteStagedAssetToStore(ctx, staged)
+	if err != nil {
+		return staged.StagingURL, err
+	}
+	return storedURL, nil
+}
+
+// StageRemoteAsset downloads a provider result into a persistent local staging
+// file under uploads/staging/..., so the paid generation is no longer dependent
+// on the provider's expiring URL.
+func StageRemoteAsset(ctx context.Context, remoteURL string) (StagedAsset, error) {
 	trimmed := strings.TrimSpace(remoteURL)
 	if trimmed == "" {
-		return remoteURL, nil
+		return StagedAsset{StagingURL: remoteURL}, nil
 	}
-	// data: URIs come from relays that return base64 inline (e.g. RelayBases
-	// gpt-image-2 ships `data[0].b64_json`, which our parser wraps as
-	// `data:image/png;base64,...`). Decode and write to disk so we don't
-	// store multi-MB base64 blobs in generation_logs.result_url or push
-	// huge SSE frames at the browser.
 	if strings.HasPrefix(trimmed, "data:") {
-		return persistDataURI(trimmed)
+		return stageDataURI(trimmed)
 	}
-	// blob: URLs are browser-only — there's nothing we can fetch server-side.
-	if strings.HasPrefix(trimmed, "blob:") {
-		return remoteURL, nil
-	}
-	// Already same-origin static asset (this server's /uploads/...) —
-	// no point re-downloading our own file.
-	if strings.HasPrefix(trimmed, "/uploads/") {
-		return remoteURL, nil
-	}
-	// Only handle absolute http(s) URLs.
-	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
-		return remoteURL, nil
+	if strings.HasPrefix(trimmed, "blob:") ||
+		strings.HasPrefix(trimmed, "/uploads/") ||
+		(!strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://")) {
+		return StagedAsset{StagingURL: remoteURL}, nil
 	}
 
-	// Bound the download itself so a hung upstream can't pin the
-	// detached goroutine forever. 60s covers reasonable image/video
-	// downloads (~50 MB at conservative bandwidth).
 	dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, trimmed, nil)
 	if err != nil {
-		return remoteURL, err
+		return StagedAsset{StagingURL: remoteURL}, err
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasAssetCache/1.0)")
+	req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
 	resp, err := assetCacheHTTPClient.Do(req)
 	if err != nil {
-		return remoteURL, err
+		return StagedAsset{StagingURL: remoteURL}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return remoteURL, fmt.Errorf("upstream returned HTTP %d while caching asset", resp.StatusCode)
+		return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream returned HTTP %d while staging asset", resp.StatusCode)
 	}
 
 	ext := extensionFor(trimmed, resp.Header.Get("Content-Type"))
-
-	dateDir := time.Now().Format("2006-01")
-	filename := uuid.New().String() + ext
-
-	// Cap the persisted body so a misbehaving upstream streaming a
-	// multi-GB file can't fill local disk or object storage.
-	const maxBytes = 200 * 1024 * 1024 // 200 MB
-	limited := io.LimitReader(resp.Body, maxBytes)
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = mime.TypeByExtension(ext)
 	}
-	storedURL, err := assetstore.Save(ctx, fmt.Sprintf("generated/%s/%s", dateDir, filename), limited, contentType)
-	if err != nil {
-		return remoteURL, err
-	}
+	return writeStagedAsset(resp.Body, ext, contentType)
+}
 
+func PromoteStagedAssetToStore(ctx context.Context, staged StagedAsset) (string, error) {
+	if strings.TrimSpace(staged.LocalPath) == "" {
+		return staged.StagingURL, nil
+	}
+	if strings.TrimSpace(staged.COSKey) == "" {
+		return "", fmt.Errorf("missing object key for staged asset")
+	}
+	storedURL, err := assetstore.UploadFile(ctx, staged.COSKey, staged.LocalPath, staged.ContentType)
+	if err != nil {
+		return "", err
+	}
+	if storedURL != staged.StagingURL {
+		_ = os.Remove(staged.LocalPath)
+	}
 	return storedURL, nil
 }
 
-// persistDataURI decodes a `data:<mime>;base64,<payload>` URI to bytes
-// and writes them to uploads/generated/{yyyy-mm}/{uuid}.{ext}. Same
-// using the same key layout as PersistRemoteAsset. Returns the stored URL
-// on success; on any parse / decode / write failure returns the original
-// URI so the caller can still surface SOMETHING renderable to the user.
 func persistDataURI(uri string) (string, error) {
-	// Expected: data:<mime>;base64,<base64data>
+	staged, err := stageDataURI(uri)
+	if err != nil {
+		return uri, err
+	}
+	storedURL, err := PromoteStagedAssetToStore(context.Background(), staged)
+	if err != nil {
+		return staged.StagingURL, err
+	}
+	return storedURL, nil
+}
+
+func stageDataURI(uri string) (StagedAsset, error) {
 	const prefix = "data:"
 	if !strings.HasPrefix(uri, prefix) {
-		return uri, fmt.Errorf("not a data URI")
+		return StagedAsset{StagingURL: uri}, fmt.Errorf("not a data URI")
 	}
 	commaIdx := strings.IndexByte(uri, ',')
 	if commaIdx <= len(prefix) {
-		return uri, fmt.Errorf("malformed data URI: missing payload")
+		return StagedAsset{StagingURL: uri}, fmt.Errorf("malformed data URI: missing payload")
 	}
 	header := uri[len(prefix):commaIdx]
 	payload := uri[commaIdx+1:]
-	// header looks like `image/png;base64` (or `image/png` w/o base64).
 	mimeType := header
 	isBase64 := false
 	if idx := strings.IndexByte(header, ';'); idx >= 0 {
@@ -138,41 +143,71 @@ func persistDataURI(uri string) (string, error) {
 	if isBase64 {
 		decoded, err := base64.StdEncoding.DecodeString(payload)
 		if err != nil {
-			// Some clients drop padding — try the URL-safe variant.
 			decoded, err = base64.RawStdEncoding.DecodeString(payload)
 			if err != nil {
-				return uri, err
+				return StagedAsset{StagingURL: uri}, err
 			}
 		}
 		payloadBytes = decoded
 	} else {
-		// Plain text payload — URL-decode and use as-is.
 		unescaped, err := url.QueryUnescape(payload)
 		if err != nil {
-			return uri, err
+			return StagedAsset{StagingURL: uri}, err
 		}
 		payloadBytes = []byte(unescaped)
 	}
-
 	if len(payloadBytes) == 0 {
-		return uri, fmt.Errorf("decoded data URI was empty")
+		return StagedAsset{StagingURL: uri}, fmt.Errorf("decoded data URI was empty")
 	}
 
-	ext := extensionFor("", mimeType)
-	dateDir := time.Now().Format("2006-01")
-	filename := uuid.New().String() + ext
-	storedURL, err := assetstore.Save(context.Background(), fmt.Sprintf("generated/%s/%s", dateDir, filename), bytes.NewReader(payloadBytes), mimeType)
-	if err != nil {
-		return uri, err
-	}
-	return storedURL, nil
+	return writeStagedAsset(bytes.NewReader(payloadBytes), extensionFor("", mimeType), mimeType)
 }
 
-// extensionFor picks the best file extension we can derive from the
-// upstream URL and Content-Type. URL path wins when present (some
-// providers serve all media as application/octet-stream); Content-Type
-// fills in the gap when the URL has none (signed S3-style URLs often
-// drop the suffix). Defaults to .bin if neither helps.
+func writeStagedAsset(body io.Reader, ext, contentType string) (StagedAsset, error) {
+	dateDir := time.Now().Format("2006-01")
+	filename := uuid.New().String() + ext
+	rel := filepath.ToSlash(filepath.Join("staging", "generated", dateDir, filename))
+	localPath := filepath.Join(uploadRoot(), filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return StagedAsset{}, err
+	}
+	dst, err := os.Create(localPath)
+	if err != nil {
+		return StagedAsset{}, err
+	}
+	const maxBytes = 200 * 1024 * 1024
+	written, copyErr := io.Copy(dst, io.LimitReader(body, maxBytes))
+	closeErr := dst.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(localPath)
+		if copyErr != nil {
+			return StagedAsset{}, copyErr
+		}
+		return StagedAsset{}, closeErr
+	}
+	if written == 0 {
+		_ = os.Remove(localPath)
+		return StagedAsset{}, fmt.Errorf("asset body was empty")
+	}
+	if contentType == "" {
+		contentType = mime.TypeByExtension(ext)
+	}
+	return StagedAsset{
+		LocalPath:   localPath,
+		StagingURL:  "/uploads/" + rel,
+		COSKey:      fmt.Sprintf("generated/%s/%s", dateDir, filename),
+		ContentType: contentType,
+	}, nil
+}
+
+func uploadRoot() string {
+	root := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))
+	if root == "" {
+		return "uploads"
+	}
+	return root
+}
+
 func extensionFor(urlStr, contentType string) string {
 	if u, err := url.Parse(urlStr); err == nil {
 		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != "" && len(ext) <= 6 {
@@ -205,7 +240,6 @@ func extensionFor(urlStr, contentType string) string {
 		case "audio/aac":
 			return ".aac"
 		}
-		// Fallback: derive from primary type.
 		if strings.HasPrefix(mt, "image/") {
 			return ".img"
 		}
@@ -219,10 +253,6 @@ func extensionFor(urlStr, contentType string) string {
 	return ".bin"
 }
 
-// assetCacheHTTPClient is a dedicated client so we don't reach into the
-// channel-routing provider client (which carries auth headers / proxies
-// for upstream model APIs). The asset URLs returned by those APIs are
-// typically public CDN links — a vanilla client is fine.
 var assetCacheHTTPClient = &http.Client{
-	Timeout: 70 * time.Second, // slightly above the per-request ctx deadline
+	Timeout: 70 * time.Second,
 }

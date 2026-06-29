@@ -38,7 +38,7 @@ type AuthContextValue = {
     email: string;
     password: string;
     name: string;
-    invitationCode: string;
+    invitationCode?: string;
   }) => Promise<AuthUser>;
   logout: () => Promise<void>;
   refresh: () => Promise<AuthUser | null>;
@@ -99,11 +99,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return data.user;
       },
       async registerByInvite(input) {
-        const data = await apiClient.post<AuthPayload>("/api/auth/register-by-invite", {
+        const data = await apiClient.post<AuthPayload>("/api/auth/register", {
           email: input.email,
           password: input.password,
           name: input.name,
-          invitation_code: input.invitationCode,
+          invitation_code: input.invitationCode?.trim() ?? "",
         });
         bindStorageToUser(data.user.id);
         setUser(data.user);

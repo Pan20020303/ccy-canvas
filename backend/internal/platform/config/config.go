@@ -31,6 +31,13 @@ type Config struct {
 	NewAPITimeout int // seconds; default 60
 	ChannelPolicy string
 
+	// Auth / registration.
+	DefaultDailyQuota      int32
+	GoogleOAuthClientID    string
+	GoogleOAuthSecret      string
+	GoogleOAuthRedirectURL string
+	AuthFrontendBaseURL    string
+
 	// Redis / Asynq task queue (optional).
 	// When RedisAddr is set, the generation handler enqueues a durable
 	// task via Asynq instead of running it inline in a detached goroutine.
@@ -61,24 +68,34 @@ func Load() (Config, error) {
 		newAPITimeout = 60
 	}
 
+	defaultDailyQuota, err := strconv.Atoi(getenv("DEFAULT_DAILY_QUOTA", "100"))
+	if err != nil || defaultDailyQuota < 0 {
+		defaultDailyQuota = 100
+	}
+
 	redisDB, err := strconv.Atoi(getenv("REDIS_DB", "0"))
 	if err != nil || redisDB < 0 {
 		redisDB = 0
 	}
 
 	cfg := Config{
-		HTTPAddr:      getenv("HTTP_ADDR", ":8080"),
-		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		SessionSecret: os.Getenv("SESSION_SECRET"),
-		CookieSecure:  cookieSecure,
-		EncryptionKey: encryptionKey,
-		NewAPIBaseURL: strings.TrimRight(os.Getenv("NEWAPI_BASE_URL"), "/"),
-		NewAPIToken:   os.Getenv("NEWAPI_TOKEN"),
-		NewAPITimeout: newAPITimeout,
-		ChannelPolicy: strings.ToLower(getenv("CHANNEL_POLICY", "single")),
-		RedisAddr:     os.Getenv("REDIS_ADDR"),
-		RedisPassword: os.Getenv("REDIS_PASSWORD"),
-		RedisDB:       redisDB,
+		HTTPAddr:               getenv("HTTP_ADDR", ":8080"),
+		DatabaseURL:            os.Getenv("DATABASE_URL"),
+		SessionSecret:          os.Getenv("SESSION_SECRET"),
+		CookieSecure:           cookieSecure,
+		EncryptionKey:          encryptionKey,
+		NewAPIBaseURL:          strings.TrimRight(os.Getenv("NEWAPI_BASE_URL"), "/"),
+		NewAPIToken:            os.Getenv("NEWAPI_TOKEN"),
+		NewAPITimeout:          newAPITimeout,
+		ChannelPolicy:          strings.ToLower(getenv("CHANNEL_POLICY", "single")),
+		DefaultDailyQuota:      int32(defaultDailyQuota),
+		GoogleOAuthClientID:    os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+		GoogleOAuthSecret:      os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+		GoogleOAuthRedirectURL: strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_REDIRECT_URL")),
+		AuthFrontendBaseURL:    strings.TrimRight(strings.TrimSpace(os.Getenv("AUTH_FRONTEND_BASE_URL")), "/"),
+		RedisAddr:              os.Getenv("REDIS_ADDR"),
+		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
+		RedisDB:                redisDB,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

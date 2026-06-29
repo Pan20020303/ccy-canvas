@@ -81,11 +81,11 @@ export function RegisterPage() {
       zh
         ? {
             brand: "橙次元",
-            tagline: "使用邀请码加入工作台，接入同一套智能创作系统。",
+            tagline: "邀请码可选；填写后会自动领取对应赠送额度。",
             name: "姓名",
             email: "邮箱地址",
             password: "密码",
-            code: "邀请码",
+            code: "邀请码（选填）",
             submit: "立即注册",
             submitLoading: "注册中...",
             loginHint: "已有账号？",
@@ -93,15 +93,15 @@ export function RegisterPage() {
             namePlaceholder: "请输入姓名",
             emailPlaceholder: "邮箱地址",
             passwordPlaceholder: "请设置登录密码",
-            codePlaceholder: "请输入邀请码",
+            codePlaceholder: "有邀请码可填写，留空也能注册",
           }
         : {
             brand: "CCY Dimension",
-            tagline: "Join the workspace with an invite code and enter the shared creative system.",
+            tagline: "Invitation codes are optional; enter one to claim bonus credits.",
             name: "Name",
             email: "Email",
             password: "Password",
-            code: "Invitation code",
+            code: "Invitation code (optional)",
             submit: "Create account",
             submitLoading: "Creating...",
             loginHint: "Already have an account?",
@@ -109,7 +109,7 @@ export function RegisterPage() {
             namePlaceholder: "Enter your name",
             emailPlaceholder: "Email",
             passwordPlaceholder: "Set a password",
-            codePlaceholder: "Enter invitation code",
+            codePlaceholder: "Enter a code for bonus credits, or leave blank",
           },
     [zh],
   );
@@ -171,7 +171,7 @@ export function RegisterPage() {
         <div data-auth-note className="mt-6 rounded-[16px] border border-white/10 bg-white/[0.03] p-4 text-[14px] text-white/48">
           <div className="flex items-center gap-3 text-white/72">
             <BadgeCheck className="h-5 w-5 text-[#ff6c28]" />
-            <span>{zh ? "管理员发放的邀请码会自动绑定初始额度。" : "Admin-issued invite codes bootstrap your initial quota automatically."}</span>
+            <span>{zh ? "注册不再强制邀请码；填写有效邀请码会自动领取赠送额度。" : "You can register without a code; valid invite codes add bonus starting credits."}</span>
           </div>
         </div>
 

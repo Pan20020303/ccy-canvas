@@ -16,6 +16,7 @@ import (
 
 type Store interface {
 	Save(ctx context.Context, key string, body io.Reader, contentType string) (string, error)
+	UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error)
 }
 
 var (
@@ -30,6 +31,14 @@ func Save(ctx context.Context, key string, body io.Reader, contentType string) (
 		return "", err
 	}
 	return store.Save(ctx, key, body, contentType)
+}
+
+func UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error) {
+	store, err := Default()
+	if err != nil {
+		return "", err
+	}
+	return store.UploadFile(ctx, key, localPath, contentType)
 }
 
 func Default() (Store, error) {
@@ -115,6 +124,15 @@ func (s localStore) Save(_ context.Context, key string, body io.Reader, _ string
 	return "/uploads/" + key, nil
 }
 
+func (s localStore) UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error) {
+	file, err := os.Open(localPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	return s.Save(ctx, key, file, contentType)
+}
+
 type cosStore struct {
 	client     *cos.Client
 	publicBase string
@@ -138,6 +156,37 @@ func (s cosStore) Save(ctx context.Context, key string, body io.Reader, contentT
 	if _, err := s.client.Object.Put(ctx, key, body, opt); err != nil {
 		return "", err
 	}
+	return s.publicBase + "/" + key, nil
+}
+
+func (s cosStore) UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error) {
+	key = cleanObjectKey(key)
+	if key == "" {
+		return "", fmt.Errorf("empty asset key")
+	}
+	if s.keyPrefix != "" {
+		key = s.keyPrefix + "/" + key
+	}
+	opt := &cos.MultiUploadOptions{
+		PartSize:       16,
+		ThreadPoolSize: 3,
+		CheckPoint:     true,
+		OptIni: &cos.InitiateMultipartUploadOptions{
+			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
+				ContentType:        contentType,
+				CacheControl:       "public, max-age=31536000",
+				ContentDisposition: "inline",
+				XCosMetaXXX: &http.Header{
+					"x-cos-meta-source": []string{"ccy-canvas-generated"},
+				},
+			},
+		},
+	}
+	_, _, err := s.client.Object.Upload(ctx, key, localPath, opt)
+	if err != nil {
+		return "", err
+	}
+	_ = os.Remove(localPath + ".cp")
 	return s.publicBase + "/" + key, nil
 }
 

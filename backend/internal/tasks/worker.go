@@ -58,6 +58,7 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 				"image":   6,
 				"video":   4,
 				"audio":   2,
+				"asset":   4,
 				"default": 2,
 			},
 			// Asynq's default retry delay is fine (1s, 2s, 4s, 8s, ...).
@@ -86,6 +87,7 @@ func (w *Worker) Start() error {
 	}
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(TaskTypeGeneration, w.handleGeneration)
+	mux.HandleFunc(TaskTypeAssetPersist, w.handleAssetPersist)
 	return w.server.Run(mux)
 }
 
@@ -203,6 +205,40 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	return runErr
 }
 
+func (w *Worker) handleAssetPersist(ctx context.Context, t *asynq.Task) error {
+	var p AssetPersistPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("decode asset payload: %w: %w", err, asynq.SkipRetry)
+	}
+	if p.LogID == "" || p.StagingPath == "" || p.COSKey == "" {
+		return fmt.Errorf("invalid asset persist payload for log %q: %w", p.LogID, asynq.SkipRetry)
+	}
+	if w.svc == nil {
+		return fmt.Errorf("modelcatalog service unavailable")
+	}
+	err := w.svc.PromoteStagedAssetForLog(ctx, modelapp.AssetPersistPayload{
+		LogID:       p.LogID,
+		UserID:      p.UserID,
+		NodeID:      p.NodeID,
+		ServiceType: p.ServiceType,
+		StagingPath: p.StagingPath,
+		StagingURL:  p.StagingURL,
+		COSKey:      p.COSKey,
+		ContentType: p.ContentType,
+		EnqueuedAt:  p.EnqueuedAt,
+	})
+	if err == nil {
+		return nil
+	}
+	if time.Since(time.Unix(p.EnqueuedAt, 0)) >= 24*time.Hour {
+		if logUUID, parseErr := parseUUID(p.LogID); parseErr == nil && w.queries != nil {
+			_ = w.queries.MarkGenerationLogAssetFailed(context.Background(), logUUID, "cos_failed", err.Error())
+		}
+		return fmt.Errorf("asset persist window exhausted: %w: %w", err, asynq.SkipRetry)
+	}
+	return err
+}
+
 // isMediaGeneration reports whether the service type produces a paid,
 // non-idempotent media asset where a duplicate upstream call (from a retry)
 // would re-generate and re-charge. Text is excluded — it's cheap and
@@ -267,6 +303,8 @@ func isPermanentError(err error) bool {
 	case strings.Contains(msg, "unauthorized"):
 		return true
 	case strings.Contains(msg, "forbidden"):
+		return true
+	case strings.Contains(msg, "asset persistence failed"):
 		return true
 	}
 	return false

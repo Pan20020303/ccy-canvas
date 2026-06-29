@@ -66,8 +66,23 @@ func main() {
 	// Identity & Auth
 	creditService := creditinfra.NewService(queries)
 	identityRepository := identityinfra.NewRepository(pool, queries)
-	identityService := identityapp.NewService(identityRepository, passwordService, creditService)
-	identityHandler := identityhttp.NewHandler(identityService, creditService, sessionManager)
+	identityService := identityapp.NewService(identityRepository, passwordService, creditService).
+		WithDefaultDailyQuota(cfg.DefaultDailyQuota)
+	identityHandler := identityhttp.NewHandler(
+		identityService,
+		creditService,
+		sessionManager,
+		identityhttp.WithGoogleOAuth(identityhttp.GoogleOAuthConfig{
+			ClientID:        cfg.GoogleOAuthClientID,
+			ClientSecret:    cfg.GoogleOAuthSecret,
+			RedirectURL:     cfg.GoogleOAuthRedirectURL,
+			FrontendBaseURL: cfg.AuthFrontendBaseURL,
+			CookieSecure:    cfg.CookieSecure,
+		}),
+	)
+	if cfg.GoogleOAuthClientID != "" && cfg.GoogleOAuthSecret != "" {
+		log.Printf("[auth] Google OAuth enabled")
+	}
 
 	// Model Catalog
 	catalogRepo := infrastructure.NewRepository(queries)
@@ -107,7 +122,9 @@ func main() {
 	if cfg.RedisAddr != "" {
 		taskQueue := tasks.NewQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		taskWorker := tasks.NewWorker(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, catalogService, queries)
-		catalogHandler = catalogHandler.WithTasks(taskQueueAdapter{q: taskQueue})
+		queueAdapter := taskQueueAdapter{q: taskQueue}
+		catalogService = catalogService.WithAssetPersistQueue(queueAdapter)
+		catalogHandler = catalogHandler.WithTasks(queueAdapter)
 		go func() {
 			log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
 			if err := taskWorker.Start(); err != nil {
@@ -258,5 +275,19 @@ func (a taskQueueAdapter) Enqueue(ctx context.Context, p modelhttp.TaskGeneratio
 		ServiceType: p.ServiceType,
 		Model:       p.Model,
 		NodeID:      p.NodeID,
+	})
+}
+
+func (a taskQueueAdapter) EnqueueAssetPersist(ctx context.Context, p application.AssetPersistPayload) (string, error) {
+	return a.q.EnqueueAssetPersist(ctx, tasks.AssetPersistPayload{
+		LogID:       p.LogID,
+		UserID:      p.UserID,
+		NodeID:      p.NodeID,
+		ServiceType: p.ServiceType,
+		StagingPath: p.StagingPath,
+		StagingURL:  p.StagingURL,
+		COSKey:      p.COSKey,
+		ContentType: p.ContentType,
+		EnqueuedAt:  p.EnqueuedAt,
 	})
 }

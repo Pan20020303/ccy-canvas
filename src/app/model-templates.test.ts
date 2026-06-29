@@ -66,6 +66,15 @@ describe("model templates", () => {
     });
   });
 
+  it("exposes aspect ratio controls for HappyHorse image-to-video models", () => {
+    for (const model of ["happyhorse-1.1-i2v", "happyhorse-1.0-i2v"]) {
+      const template = getModelTemplate(model);
+      expect(template?.supportsAspectRatio).toBe(true);
+      expect(template?.aspectRatioOptions).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"]);
+      expect(template?.defaults?.aspectRatio).toBe("16:9");
+    }
+  });
+
   it("exports a non-empty template registry", () => {
     expect(Object.keys(modelTemplates).length).toBeGreaterThan(0);
   });

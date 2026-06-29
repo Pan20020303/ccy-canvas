@@ -8,6 +8,7 @@ const (
 	CodeUnauthenticated    Code = "UNAUTHENTICATED"
 	CodeForbidden          Code = "FORBIDDEN"
 	CodeInvalidInput       Code = "INVALID_INPUT"
+	CodeNotFound           Code = "NOT_FOUND"
 	CodeInvitationInvalid  Code = "INVITATION_INVALID"
 	CodeEmailAlreadyExists Code = "EMAIL_ALREADY_EXISTS"
 	CodeInternal           Code = "INTERNAL"

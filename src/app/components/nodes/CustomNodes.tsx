@@ -787,6 +787,12 @@ const getAspectRatioClass = (aspectRatio: string | undefined, fallback: string) 
   }
 };
 
+const getMediaAspectRatioStyle = (data: Record<string, any>): React.CSSProperties | undefined => {
+  const width = Number(data.mediaWidth);
+  const height = Number(data.mediaHeight);
+  return width > 0 && height > 0 ? { aspectRatio: `${width} / ${height}` } : undefined;
+};
+
 // Flat dark shell — no gradients, no inner ring. Selected = single hairline ring.
 // Bg sits a touch above canvas (#0a0a0a); border kept very faint so the card
 // reads from value contrast rather than a stroked outline.
@@ -4128,6 +4134,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaAspectStyle = getMediaAspectRatioStyle(data);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
 
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -4215,9 +4222,10 @@ export const VideoNode = ({ id, data, selected }: any) => {
           className={clsx(
             'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
-            aspectClass,
+            mediaAspectStyle ? 'min-h-[120px]' : aspectClass,
             data.url && 'cursor-zoom-in',
           )}
+          style={mediaAspectStyle}
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
@@ -4987,6 +4995,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaAspectStyle = getMediaAspectRatioStyle(data);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
   const title = data.customTitle || (language === 'zh' ? '生成视频' : 'Generate Video');
 
@@ -5066,9 +5075,10 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
           className={clsx(
             'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
-            aspectClass,
+            mediaAspectStyle ? 'min-h-[120px]' : aspectClass,
             data.url && 'cursor-zoom-in',
           )}
+          style={mediaAspectStyle}
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (

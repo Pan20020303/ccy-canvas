@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const toastWarningMock = vi.hoisted(() => vi.fn());
+
+vi.mock("sonner", () => ({
+  toast: {
+    warning: toastWarningMock,
+  },
+}));
+
 type StoreModule = typeof import("./store");
 
 function createStorageMock(values: Map<string, string> = new Map()): Storage {
@@ -40,6 +48,7 @@ async function loadStore(storage = createStorageMock()): Promise<StoreModule> {
 describe("workspace project state", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    toastWarningMock.mockReset();
   });
 
   it("creates a new project with its own empty canvas snapshot", async () => {
@@ -416,6 +425,35 @@ describe("workspace control bar state", () => {
     const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
     expect((imageNode?.data as Record<string, unknown>)?.status).toBe("error");
     expect((imageNode?.data as Record<string, unknown>)?.error).toContain("backend generation unavailable");
+  });
+
+  it("keeps the node and shows an admin contact hint when credits are insufficient", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 402,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        error: {
+          code: "insufficient_credits",
+          message: "积分不足，请充值或开通会员后重试",
+        },
+        request_id: "req-insufficient-credits",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useStore.getState().runNode("2", { prompt: "test", model: "gpt-image-2" });
+
+    const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+    expect(imageNode).toBeDefined();
+    expect((imageNode?.data as Record<string, unknown>)?.status).toBe("error");
+    expect((imageNode?.data as Record<string, unknown>)?.error).toBe("积分不足请联系管理员");
+    expect(toastWarningMock).toHaveBeenCalledWith("积分不足请联系管理员", {
+      id: "insufficient-credits",
+      duration: 3200,
+    });
+    expect(useStore.getState().nodes.some((node) => node.id === "2")).toBe(true);
   });
 
   it("includes upstream reference images in image generation payloads", async () => {
@@ -906,6 +944,40 @@ describe("workspace control bar state", () => {
     expect(rehydratedState.history.find((item) => item.id === "blob-history-image")?.thumbnail).toBe("");
   });
 
+  it("treats malformed saved assets from persisted state as an empty list", async () => {
+    const sharedStorage = createStorageMock(new Map([
+      ["cineflow-store", JSON.stringify({
+        state: {
+          nodes: [
+            { id: "legacy-image", type: "imageNode", position: { x: 0, y: 0 }, data: {} },
+          ],
+          edges: [],
+          history: [],
+          groups: [],
+          projects: [{ id: "p-default", name: "Untitled", createdAt: 1, updatedAt: 1 }],
+          activeProjectId: "p-default",
+          projectStateById: {
+            "p-default": {
+              nodes: [
+                { id: "legacy-image", type: "imageNode", position: { x: 0, y: 0 }, data: {} },
+              ],
+              edges: [],
+              groups: [],
+            },
+          },
+          savedAssets: null,
+        },
+        version: 5,
+      })],
+    ]));
+    const { useStore } = await loadStore(sharedStorage);
+
+    expect(useStore.getState().savedAssets).toEqual([]);
+    expect(() => {
+      useStore.getState().updateNodeGenerationParams("legacy-image", { aspectRatio: "16:9" });
+    }).not.toThrow();
+  });
+
   it("does not persist heavy inline media fields that can exceed browser storage quota", async () => {
     const sharedStorage = createStorageMock();
     const { useStore } = await loadStore(sharedStorage);
@@ -1029,6 +1101,48 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).toContain("\"reference_video\":\"/uploads/2026-01/ref.mp4\"");
     expect(String(init.body)).not.toContain("data:image/png;base64,from-drop");
     expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
+  });
+
+  it("uses original public urls instead of proxy media urls for video references", async () => {
+    const { useStore } = await loadStore();
+    const remoteImageUrl = "https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-5-0/reference.jpeg?X-Tos-Expires=86400&X-Tos-Signature=abc";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.mp4" },
+        request_id: "req-video-proxy-ref",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "video-gen-proxy-ref",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "generated-image-ref",
+      type: "imageNode",
+      position: { x: 0, y: 0 },
+      data: {
+        url: `/api/app/proxy-media?url=${encodeURIComponent(remoteImageUrl)}`,
+        originalUrl: remoteImageUrl,
+      },
+    } as never);
+    useStore.getState().onConnect({
+      source: "generated-image-ref",
+      target: "video-gen-proxy-ref",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    await useStore.getState().runNode("video-gen-proxy-ref", { prompt: "animate this", model: "doubao-seedance" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain(`"reference_images":["${remoteImageUrl}"]`);
+    expect(String(init.body)).not.toContain("/api/app/proxy-media");
   });
 
   it("passes through video derivation fields and records source metadata in history", async () => {

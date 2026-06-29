@@ -60,6 +60,10 @@ function inferSameHostBackendUrl(input: string) {
   return `${protocol}//${hostname}:8080${input}`;
 }
 
+export function resolveApiBrowserUrl(input: string) {
+  return inferSameHostBackendUrl(input) || resolveApiUrl(input);
+}
+
 function isApiErrorEnvelope(body: unknown): body is ApiErrorEnvelope {
   return typeof body === "object" && body !== null && "error" in body && "request_id" in body;
 }

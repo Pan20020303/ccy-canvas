@@ -10,6 +10,7 @@ require (
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clbanning/mxj v1.8.4 // indirect
 	github.com/danielgtaylor/huma/v2 v2.38.0 // indirect
@@ -26,6 +27,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73 // indirect
 	golang.org/x/image v0.41.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

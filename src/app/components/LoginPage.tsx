@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router";
 import { ArrowUpRight, Eye, EyeOff, Github, Lock, Mail, ShieldCheck } from "lucide-react";
 import { gsap } from "gsap";
 
+import { resolveApiBrowserUrl } from "../api/client";
 import { toUserMessage } from "../api/errors";
 import { useAuth } from "../auth/AuthProvider";
 import { useStore } from "../store";
@@ -20,6 +21,13 @@ export const LoginPage = () => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zh = language === "zh";
+
+  useEffect(() => {
+    const authError = new URLSearchParams(window.location.search).get("auth_error");
+    if (authError) {
+      setError(zh ? "Google 登录失败，请稍后重试或使用邮箱密码登录。" : "Google sign-in failed. Please try again or use email login.");
+    }
+  }, [zh]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -135,6 +143,10 @@ export const LoginPage = () => {
     }
   };
 
+  const startGoogleLogin = () => {
+    window.location.assign(resolveApiBrowserUrl("/api/auth/google/start"));
+  };
+
   return (
     <AuthLayout title={copy.brand} subtitle={copy.tagline}>
       <form ref={rootRef} onSubmit={submit}>
@@ -203,7 +215,7 @@ export const LoginPage = () => {
         </div>
 
         <div className="mt-6 grid grid-cols-3 gap-3 sm:gap-3.5" data-auth-socials>
-          <SocialButton label={copy.google}>
+          <SocialButton label={copy.google} onClick={startGoogleLogin}>
             <GoogleIcon />
           </SocialButton>
           <SocialButton label={copy.github}>
@@ -228,13 +240,16 @@ export const LoginPage = () => {
 function SocialButton({
   children,
   label,
+  onClick,
 }: {
   children: React.ReactNode;
   label: string;
+  onClick?: () => void;
 }) {
   return (
     <button
       type="button"
+      onClick={onClick}
       data-auth-social
       className="flex h-[76px] min-w-0 flex-col items-center justify-center gap-2 rounded-[12px] border border-white/12 bg-[linear-gradient(180deg,rgba(17,20,28,0.50),rgba(11,14,20,0.58))] px-3 text-[13.5px] text-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition hover:border-white/24 hover:bg-white/[0.07]"
     >

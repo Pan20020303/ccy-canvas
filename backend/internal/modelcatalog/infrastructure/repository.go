@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 )
@@ -548,6 +549,41 @@ func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, statu
 		DurationMs: durationMs,
 		CacheHit:   cacheHit,
 	})
+}
+
+func (r *Repository) MarkGenerationLogPersisting(ctx context.Context, logID string, staged application.StagedAsset, durationMs int32) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkGenerationLogPersisting(ctx, sqlc.MarkGenerationLogPersistingParams{
+		ID:          pgID,
+		StagingPath: staged.LocalPath,
+		StagingUrl:  staged.StagingURL,
+		CosKey:      staged.COSKey,
+		ContentType: staged.ContentType,
+		DurationMs:  durationMs,
+	})
+}
+
+func (r *Repository) MarkGenerationLogAssetReady(ctx context.Context, logID, cosURL string, durationMs int32) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkGenerationLogAssetReady(ctx, sqlc.MarkGenerationLogAssetReadyParams{
+		ID:         pgID,
+		CosUrl:     cosURL,
+		DurationMs: durationMs,
+	})
+}
+
+func (r *Repository) MarkGenerationLogAssetFailed(ctx context.Context, logID, status, errMsg string) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.MarkGenerationLogAssetFailed(ctx, pgID, status, errMsg)
 }
 
 func (r *Repository) ListStaleActiveGenerations(ctx context.Context, olderThan time.Time) ([]domain.StaleGeneration, error) {

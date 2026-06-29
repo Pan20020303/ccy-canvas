@@ -48,6 +48,8 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 			status = http.StatusUnauthorized
 		case apperror.CodeForbidden:
 			status = http.StatusForbidden
+		case apperror.CodeNotFound:
+			status = http.StatusNotFound
 		case apperror.CodeInvalidInput, apperror.CodeInvitationInvalid, apperror.CodeEmailAlreadyExists:
 			status = http.StatusBadRequest
 		default:

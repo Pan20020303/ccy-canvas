@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 
 import { toAdminErrorSummary } from "../../api/errors";
-import type { AdapterRuntime, GatewayProtocol, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
+import type { AdapterRuntime, GatewayProtocol, ModelParameterSchema, ProviderConfig, ProviderConfigPayload, ServiceType, VendorTemplate } from "../../api/providerConfigs";
 import {
   createProviderConfig,
   deleteProviderConfig,
@@ -153,6 +153,7 @@ type VendorModelDefinition = {
   name: string;
   modelName: string;
   type: ServiceType;
+  creditCost?: number;
   think?: boolean;
   mode?: Array<string | string[]>;
   audio?: "optional" | false | true;
@@ -170,6 +171,7 @@ type ModelEditorDraft = {
   mixedModeCount: Record<string, number>;
   audio: "optional" | false | true;
   durationResolutionMap: Array<{ duration: string; resolution: string }>;
+  creditCost: string;
   isDefault: boolean;
 };
 
@@ -270,6 +272,28 @@ function normalizeDurationResolutionMap(value: unknown): VendorModelDefinition["
     .filter((item): item is { duration: number[]; resolution: string[] } => Boolean(item));
 }
 
+function normalizeCreditCost(value: unknown): number | undefined {
+  const cost = Number(value);
+  return Number.isFinite(cost) && cost >= 0 ? Math.round(cost) : undefined;
+}
+
+function getSchemaModelEntry(schema: ModelParameterSchema | undefined, modelName: string): ModelParameterSchema | undefined {
+  const models = schema?.models;
+  if (!models) return undefined;
+  if (models[modelName]) return models[modelName];
+  const lowerModel = modelName.toLowerCase().trim();
+  const key = Object.keys(models).find((item) => item.toLowerCase().trim() === lowerModel);
+  return key ? models[key] : undefined;
+}
+
+function getModelCreditCost(config: ProviderConfig, modelName: string, model?: VendorModelDefinition) {
+  return model?.creditCost
+    ?? normalizeCreditCost(getSchemaModelEntry(config.parameter_schema, modelName)?.credit_cost)
+    ?? normalizeCreditCost(config.credit_cost)
+    ?? normalizeCreditCost(config.parameter_schema?.credit_cost)
+    ?? 1;
+}
+
 function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackName = ""): VendorModelDefinition | null {
   if (typeof raw === "string") {
     const modelName = raw.trim();
@@ -284,6 +308,7 @@ function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackN
     name: cleanString(raw.name) || fallbackName || modelName,
     modelName,
     type,
+    creditCost: normalizeCreditCost(raw.creditCost ?? raw.credit_cost),
     think: Boolean(raw.think),
     mode: mode.length ? mode : undefined,
     audio: raw.audio === true || raw.audio === false || raw.audio === "optional" ? raw.audio : undefined,
@@ -304,13 +329,21 @@ function getVendorModels(config: ProviderConfig): VendorModelDefinition[] {
     const model = normalizeVendorModel(raw, config.service_type);
     if (model && !seen.has(model.modelName)) {
       seen.add(model.modelName);
-      models.push(model);
+      models.push({
+        ...model,
+        creditCost: model.creditCost ?? normalizeCreditCost(getSchemaModelEntry(schema, model.modelName)?.credit_cost),
+      });
     }
   });
   config.model_list.forEach((modelName) => {
     if (!seen.has(modelName)) {
       seen.add(modelName);
-      models.push({ name: modelName, modelName, type: config.service_type });
+      models.push({
+        name: modelName,
+        modelName,
+        type: config.service_type,
+        creditCost: normalizeCreditCost(getSchemaModelEntry(schema, modelName)?.credit_cost),
+      });
     }
   });
   return models;
@@ -358,19 +391,27 @@ function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition)
           resolution: row.resolution.join(", "),
         }))
       : [{ duration: "", resolution: "" }],
+    creditCost: source.creditCost === undefined ? "" : String(source.creditCost),
     isDefault: Boolean(source.modelName && source.modelName === config.default_model),
   };
+}
+
+function creditCostFromDraft(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const cost = Number(value);
+  return Number.isFinite(cost) && cost >= 0 ? Math.round(cost) : undefined;
 }
 
 function buildModelFromDraft(draft: ModelEditorDraft): VendorModelDefinition | null {
   const name = draft.name.trim();
   const modelName = draft.modelName.trim();
   if (!name || !modelName) return null;
+  const creditCost = creditCostFromDraft(draft.creditCost);
   if (draft.type === "text") {
-    return { name, modelName, type: "text", think: draft.think };
+    return { name, modelName, type: "text", creditCost, think: draft.think };
   }
   if (draft.type === "image") {
-    return { name, modelName, type: "image", mode: draft.imageModes.length ? draft.imageModes : ["text"] };
+    return { name, modelName, type: "image", creditCost, mode: draft.imageModes.length ? draft.imageModes : ["text"] };
   }
   if (draft.type === "video") {
     const mode = draft.videoModes.filter((item) => item !== "multiReference");
@@ -385,16 +426,18 @@ function buildModelFromDraft(draft: ModelEditorDraft): VendorModelDefinition | n
       name,
       modelName,
       type: "video",
+      creditCost,
       mode: mixed.length ? [...mode, mixed] : mode.length ? mode : ["text"],
       audio: draft.audio,
       durationResolutionMap: durationResolutionMap.length ? durationResolutionMap : [{ duration: [5], resolution: ["720p"] }],
     };
   }
-  return { name, modelName, type: "audio" };
+  return { name, modelName, type: "audio", creditCost };
 }
 
 function modelTags(model: VendorModelDefinition, config: ProviderConfig) {
   const tags = [SERVICE_LABELS[model.type] ?? SERVICE_LABELS[config.service_type]];
+  tags.push(`积分 ${getModelCreditCost(config, model.modelName, model)}/次`);
   if (config.default_model === model.modelName) tags.push("默认模型");
   if (model.type === "text" && model.think) tags.push("深度思考");
   (model.mode ?? []).forEach((mode) => {
@@ -411,6 +454,38 @@ function modelTags(model: VendorModelDefinition, config: ProviderConfig) {
   if (!model.mode?.length && model.type === "video") tags.push("视频 ×3");
   if (model.type === "audio") tags.push("音频 ×3");
   return tags;
+}
+
+function syncModelCreditCostsIntoSchema(schema: ModelParameterSchema, models: VendorModelDefinition[]): ModelParameterSchema {
+  const nextModels: Record<string, ModelParameterSchema> = { ...(schema.models ?? {}) };
+  const activeModelNames = new Set(models.map((model) => model.modelName));
+  Object.keys(nextModels).forEach((modelName) => {
+    if (!activeModelNames.has(modelName)) delete nextModels[modelName];
+  });
+  models.forEach((model) => {
+    const existing = nextModels[model.modelName] ?? {};
+    if (model.creditCost === undefined) {
+      const { credit_cost: _creditCost, ...rest } = existing;
+      if (Object.keys(rest).length > 0) {
+        nextModels[model.modelName] = rest;
+      } else {
+        delete nextModels[model.modelName];
+      }
+      return;
+    }
+    nextModels[model.modelName] = {
+      ...existing,
+      credit_cost: model.creditCost,
+    };
+  });
+  if (Object.keys(nextModels).length === 0) {
+    const { models: _models, ...rest } = schema;
+    return rest;
+  }
+  return {
+    ...schema,
+    models: nextModels,
+  };
 }
 
 type AgentEditorDraft = {
@@ -1439,11 +1514,11 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
 
   const saveModelsForConfig = async (config: ProviderConfig, models: VendorModelDefinition[], defaultModel?: string) => {
     const modelList = models.map((item) => item.modelName).filter(Boolean);
-    const parameterSchema = {
+    const parameterSchema = syncModelCreditCostsIntoSchema({
       ...(config.parameter_schema ?? {}),
       vendor_models: models,
       vendor_all_models: models,
-    };
+    }, models);
     const capabilities = Array.from(new Set<ServiceType>([config.service_type, ...models.map((item) => item.type)]));
     const updated = await updateProviderConfig(config.id, {
       ...providerPayloadFromConfig(config),
@@ -1871,6 +1946,18 @@ function ModelEditorModal({
             设为默认模型
           </label>
         </div>
+
+        <SettingsField label="积分 / 次（留空继承供应商默认）">
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={draft.creditCost}
+            onChange={(event) => update({ creditCost: event.target.value })}
+            className={SETTINGS_INPUT}
+            placeholder={`继承 ${getModelCreditCost(editor.config, draft.modelName || editor.originalModelName || "")}/次`}
+          />
+        </SettingsField>
 
         {draft.type === "text" ? (
           <label className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-sm text-neutral-300">

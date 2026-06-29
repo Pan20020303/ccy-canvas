@@ -33,20 +33,35 @@ import (
 // TaskType for the generation pipeline. Asynq routes incoming tasks to
 // handlers keyed by this string, so changing it is a breaking change
 // for any in-flight queued task already in Redis.
-const TaskTypeGeneration = "generation:run"
+const (
+	TaskTypeGeneration   = "generation:run"
+	TaskTypeAssetPersist = "asset:persist"
+)
 
 // GenerationPayload is the JSON blob enqueued with each task. Worker
 // uses LogID to reload the full request from generation_logs; we keep a
 // small subset inline for routing decisions (priority queue by service
 // type) and for asynqmon UI display.
 type GenerationPayload struct {
-	LogID       string `json:"log_id"`        // generation_logs.id (UUID)
-	RequestID   string `json:"request_id"`    // client-side UUID for idempotency
+	LogID       string `json:"log_id"`     // generation_logs.id (UUID)
+	RequestID   string `json:"request_id"` // client-side UUID for idempotency
 	UserID      string `json:"user_id"`
-	ServiceType string `json:"service_type"`  // image / video / text / audio
+	ServiceType string `json:"service_type"` // image / video / text / audio
 	Model       string `json:"model"`
 	NodeID      string `json:"node_id"`
-	EnqueuedAt  int64  `json:"enqueued_at"`   // unix sec, for queue-time metric
+	EnqueuedAt  int64  `json:"enqueued_at"` // unix sec, for queue-time metric
+}
+
+type AssetPersistPayload struct {
+	LogID       string `json:"log_id"`
+	UserID      string `json:"user_id"`
+	NodeID      string `json:"node_id"`
+	ServiceType string `json:"service_type"`
+	StagingPath string `json:"staging_path"`
+	StagingURL  string `json:"staging_url"`
+	COSKey      string `json:"cos_key"`
+	ContentType string `json:"content_type"`
+	EnqueuedAt  int64  `json:"enqueued_at"`
 }
 
 // Queue is the producer-side helper. Wraps an *asynq.Client and exposes
@@ -156,6 +171,32 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 		// rather than surfacing a 5xx for a harmless retry / double-click.
 		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
 			return p.RequestID, nil
+		}
+		return "", err
+	}
+	return info.ID, nil
+}
+
+func (q *Queue) EnqueueAssetPersist(ctx context.Context, p AssetPersistPayload) (string, error) {
+	if !q.Enabled() {
+		return "", fmt.Errorf("tasks queue not configured (REDIS_ADDR empty)")
+	}
+	p.EnqueuedAt = time.Now().Unix()
+	body, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("marshal asset persist payload: %w", err)
+	}
+	task := asynq.NewTask(TaskTypeAssetPersist, body,
+		asynq.Queue("asset"),
+		asynq.MaxRetry(12),
+		asynq.Timeout(10*time.Minute),
+		asynq.Retention(24*time.Hour),
+		asynq.TaskID("asset:"+p.LogID),
+	)
+	info, err := q.client.EnqueueContext(ctx, task)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
+			return "asset:" + p.LogID, nil
 		}
 		return "", err
 	}

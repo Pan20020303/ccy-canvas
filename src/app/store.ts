@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { toast } from 'sonner';
 import {
   Connection,
   Edge,
@@ -16,6 +17,7 @@ import {
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
+import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
@@ -474,6 +476,24 @@ const normalizeHistoryItem = (
   };
 };
 
+const insufficientCreditsMessages: Record<Language, string> = {
+  zh: '积分不足请联系管理员',
+  en: 'Insufficient credits. Please contact an administrator.',
+};
+
+function isInsufficientCreditsError(err: unknown): boolean {
+  return err instanceof ApiClientError
+    && (err.status === 402 || /insufficient/i.test(err.code));
+}
+
+function getGenerationErrorMessage(err: unknown, language: Language): string {
+  if (isInsufficientCreditsError(err)) {
+    return insufficientCreditsMessages[language];
+  }
+
+  return err instanceof Error ? err.message : 'Generation failed';
+}
+
 const createReferenceNodeFromHistoryItem = (
   item: HistoryItem,
   index: number,
@@ -550,7 +570,7 @@ let taskPollerTimer: ReturnType<typeof setInterval> | null = null;
 // node list is the source of truth but we don't want to scan all nodes
 // every tick; the set is the working subset.
 const trackedTaskNodes = new Set<string>();
-const activeTaskStatuses = new Set(['queued', 'pending', 'running', 'retrying']);
+const activeTaskStatuses = new Set(['queued', 'pending', 'running', 'retrying', 'persisting']);
 const successTaskStatuses = new Set(['success', 'succeeded', 'completed', 'done']);
 const errorTaskStatuses = new Set(['error', 'failed', 'failure', 'cancelled', 'canceled']);
 
@@ -574,7 +594,24 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       if (targetNode && (!nodeTaskId || nodeTaskId === task.id)) {
         setStore((state) => {
           const nodes = state.nodes.map((node) => node.id === task.node_id
-            ? { ...node, data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined } }
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  status: 'running',
+                  taskId: task.id,
+                  queuedAfterTimeout: true,
+                  error: undefined,
+                  ...(task.result_url
+                    ? {
+                        url: resolveRenderableMediaUrl(task.result_url),
+                        output: resolveRenderableMediaUrl(task.result_url),
+                        assetStatus: task.status,
+                        assetSyncing: true,
+                      }
+                    : {}),
+                },
+              }
             : node);
           const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
           return {
@@ -677,6 +714,8 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             taskId: task.id,
             queuedAfterTimeout: false,
             error: undefined,
+            assetStatus: 'ready',
+            assetSyncing: false,
             ...(isUrl
               ? {
                   url: resultUrl,
@@ -1094,6 +1133,18 @@ function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<stri
   return out;
 }
 
+function stripHeavyFromSavedAssets(savedAssets: unknown): SavedAsset[] {
+  if (!Array.isArray(savedAssets)) {
+    return [];
+  }
+
+  return savedAssets.slice(0, MAX_PERSISTED_SAVED_ASSETS).map((asset) => ({
+    ...asset,
+    thumbnail: isHeavyMediaString(asset.thumbnail) ? '' : asset.thumbnail,
+    url: isHeavyMediaString(asset.url) ? '' : asset.url,
+  }));
+}
+
 function sanitizePersistedAppState<T extends {
   nodes?: Node[];
   history?: HistoryItem[];
@@ -1111,13 +1162,7 @@ function sanitizePersistedAppState<T extends {
     spaceSnapshotsById: persistedState.spaceSnapshotsById
       ? stripHeavyFromSpaceSnapshots(persistedState.spaceSnapshotsById)
       : persistedState.spaceSnapshotsById,
-    savedAssets: Array.isArray(persistedState.savedAssets)
-      ? persistedState.savedAssets.slice(0, MAX_PERSISTED_SAVED_ASSETS).map((asset) => ({
-          ...asset,
-          thumbnail: isHeavyMediaString(asset.thumbnail) ? '' : asset.thumbnail,
-          url: isHeavyMediaString(asset.url) ? '' : asset.url,
-        }))
-      : persistedState.savedAssets,
+    savedAssets: stripHeavyFromSavedAssets(persistedState.savedAssets),
   };
 }
 
@@ -1155,6 +1200,39 @@ export function bindStorageToUser(userId: string) {
   useStore.persist.rehydrate();
 }
 
+function extractProxyMediaOriginalUrl(url: string): string {
+  if (!url) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    if (parsed.pathname === '/api/app/proxy-media') {
+      return parsed.searchParams.get('url') ?? '';
+    }
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+function resolveReferenceTransportUrl(data: Record<string, unknown>, payloadValue: string): string {
+  const rawUrl = typeof data.url === 'string' ? data.url : '';
+  const originalUrl = typeof data.originalUrl === 'string' ? data.originalUrl : '';
+  const proxyOriginalUrl = extractProxyMediaOriginalUrl(rawUrl);
+  const publicHttpUrl = [originalUrl, proxyOriginalUrl, rawUrl].find(isPublicHttpAssetUrl) ?? '';
+  if (publicHttpUrl) {
+    return publicHttpUrl;
+  }
+
+  // Render URLs may be proxy-media links; provider payloads must use either the
+  // original public URL or a backend-readable /uploads path.
+  const uploadSource = rawUrl || originalUrl || proxyOriginalUrl;
+  const uploadsPath = uploadSource.match(/\/uploads\/[^\s?#]+/)?.[0] ?? '';
+  return uploadsPath || payloadValue;
+}
+
 function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeId: string): UpstreamReferenceMedia {
   const upstreamIds = new Set(
     edges
@@ -1171,15 +1249,8 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
     }
 
     const data = (node.data ?? {}) as Record<string, unknown>;
-    const rawUrl = typeof data.url === 'string' ? data.url : '';
     const payloadValue = getReferencePayloadValue(node.id, data);
-    // Public object-storage URLs (COS/S3/etc.) must stay intact. Stripping them
-    // down to /uploads/... makes chat-image providers lose the reference.
-    const publicHttpUrl = isPublicHttpAssetUrl(rawUrl) ? rawUrl : '';
-    // For local/backend uploads, prefer the backend-relative path so the
-    // backend can read the file from disk and convert it for external providers.
-    const uploadsPath = publicHttpUrl ? '' : rawUrl.match(/\/uploads\/[^\s?#]+/)?.[0] ?? '';
-    const url = publicHttpUrl || uploadsPath || payloadValue;
+    const url = resolveReferenceTransportUrl(data, payloadValue);
     if (!url) {
       continue;
     }
@@ -1963,10 +2034,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       createdAt: Date.now(),
       ...asset,
     };
-    set((state) => ({ savedAssets: [created, ...state.savedAssets] }));
+    set((state) => ({ savedAssets: [created, ...stripHeavyFromSavedAssets(state.savedAssets)] }));
     return created;
   },
-  removeAsset: (id) => set((state) => ({ savedAssets: state.savedAssets.filter((asset) => asset.id !== id) })),
+  removeAsset: (id) => set((state) => ({ savedAssets: stripHeavyFromSavedAssets(state.savedAssets).filter((asset) => asset.id !== id) })),
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
   closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
@@ -2622,7 +2693,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       if (!isCurrentRun()) return;
       // eslint-disable-next-line no-console
       console.error('[runNode] generation request failed', { nodeId, error: err });
-      const message = err instanceof Error ? err.message : 'Generation failed';
+      const message = getGenerationErrorMessage(err, get().language);
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       const isTimeoutLike = isAbort || /timeout|timed out|aborted|deadline/i.test(message);
 
@@ -2646,6 +2717,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       } else {
         // Real, non-timeout failure (4xx, network down, etc.). Surface
         // the error directly and stop tracking.
+        if (isInsufficientCreditsError(err)) {
+          toast.warning(message, { id: 'insufficient-credits', duration: 3200 });
+        }
         set((snapshot) => {
           const nodes = snapshot.nodes.map((node) => node.id === nodeId
             ? { ...node, data: { ...node.data, status: 'error', error: message } }
@@ -2751,6 +2825,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     return sanitizePersistedAppState(persistedState);
   },
+  merge: (persistedState, currentState) => ({
+    ...currentState,
+    ...(persistedState && typeof persistedState === 'object'
+      ? sanitizePersistedAppState(persistedState as Partial<AppState>)
+      : {}),
+  }),
   partialize: (state) => ({
     language: state.language,
     theme: state.theme,
@@ -2767,12 +2847,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     spaceMembers: state.spaceMembers,
     invitations: state.invitations,
     groups: state.groups,
-    savedAssets: state.savedAssets.slice(0, MAX_PERSISTED_SAVED_ASSETS).map((asset) => ({
-      ...asset,
-      // Drop heavy inline thumbnails/urls; keep only network-hosted ones.
-      thumbnail: isHeavyMediaString(asset.thumbnail) ? '' : asset.thumbnail,
-      url: isHeavyMediaString(asset.url) ? '' : asset.url,
-    })),
+    savedAssets: stripHeavyFromSavedAssets(state.savedAssets),
     shortcuts: state.shortcuts,
     isTaskQueueCollapsed: state.isTaskQueueCollapsed,
     showMiniMap: state.showMiniMap,

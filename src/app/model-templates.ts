@@ -349,28 +349,32 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
-  // 图生：仅首帧（无尾帧；无 ratio，自动跟首帧）
+  // 图生：仅首帧，允许显式选择输出比例。
   "happyhorse-1.1-i2v": {
     vendor: "Alibaba",
     serviceType: "video",
     modelName: "happyhorse-1.1-i2v",
     supportsResolution: true,
+    supportsAspectRatio: true,
     supportsDuration: true,
     resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     referenceModes: ["first-frame"] as ReferenceModeKey[],
-    defaults: { resolution: "1080P" },
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
   "happyhorse-1.0-i2v": {
     vendor: "Alibaba",
     serviceType: "video",
     modelName: "happyhorse-1.0-i2v",
     supportsResolution: true,
+    supportsAspectRatio: true,
     supportsDuration: true,
     resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     referenceModes: ["first-frame"] as ReferenceModeKey[],
-    defaults: { resolution: "1080P" },
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
   // 参考生：多图（1～9 张）+ ratio
   "happyhorse-1.1-r2v": {

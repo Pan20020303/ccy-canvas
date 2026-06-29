@@ -470,4 +470,49 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(document.body.textContent).toContain("network timeout");
     expect(requests.some((request) => request.method === "POST" && request.url.endsWith("/test"))).toBe(true);
   });
+
+  it("saves a per-model credit cost from the model editor", async () => {
+    const requests = stubAdminApis([makeProviderConfig()]);
+    const rendered = await renderPage();
+    root = rendered.root;
+
+    const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "编辑",
+    );
+    expect(editButton).not.toBeNull();
+
+    await act(async () => {
+      editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const numberInput = Array.from(document.body.querySelectorAll("input[type='number']")).find((item) =>
+      (item as HTMLInputElement).min === "0",
+    ) as HTMLInputElement | undefined;
+    expect(numberInput).toBeTruthy();
+    if (!numberInput) return;
+
+    await act(async () => {
+      setInputValue(numberInput!, "7");
+    });
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "保存",
+    );
+    expect(saveButton).not.toBeNull();
+
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/provider-configs/provider-1"));
+    expect(update?.body).toMatchObject({
+      parameter_schema: {
+        models: {
+          "gpt-image-2": {
+            credit_cost: 7,
+          },
+        },
+      },
+    });
+  });
 });

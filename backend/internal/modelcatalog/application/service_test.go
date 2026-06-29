@@ -26,6 +26,44 @@ import (
 	"ccy-canvas/backend/internal/platform/crypto"
 )
 
+func TestMain(m *testing.M) {
+	previousClient := assetCacheHTTPClient
+	assetCacheHTTPClient = &http.Client{
+		Timeout: 70 * time.Second,
+		Transport: testAssetCacheTransport{
+			base: http.DefaultTransport,
+		},
+	}
+	code := m.Run()
+	assetCacheHTTPClient = previousClient
+	os.Exit(code)
+}
+
+type testAssetCacheTransport struct {
+	base http.RoundTripper
+}
+
+func (t testAssetCacheTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	switch req.URL.Host {
+	case "example.com", "cdn.example", "manjuapi.com":
+		contentType := "image/png"
+		body := "fake"
+		if strings.HasSuffix(req.URL.Path, ".mp4") {
+			contentType = "video/mp4"
+			body = "fake video"
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	default:
+		return t.base.RoundTrip(req)
+	}
+}
+
 // verifyCachedAsset asserts that a cached `/uploads/generated/...` URL
 // points to a real file on disk whose bytes match `want`. Also cleans
 // the file up so the test doesn't leave artifacts on the filesystem.
@@ -103,6 +141,91 @@ func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
 
 	if got := body["model"]; got != "gemini-3.0-pro-image 4K" {
 		t.Fatalf("model = %v, want gemini-3.0-pro-image 4K", got)
+	}
+}
+
+func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2V(t *testing.T) {
+	media, err := buildDashScopeVideoMedia(GenerateRequest{
+		Model:           "happyhorse-1.1-r2v",
+		ReferenceMode:   "image_reference",
+		ReferenceImages: []string{"https://example.com/ref.png"},
+	})
+	if err != nil {
+		t.Fatalf("buildDashScopeVideoMedia returned error: %v", err)
+	}
+	if len(media) != 1 {
+		t.Fatalf("media length = %d, want 1", len(media))
+	}
+	if got := media[0]["type"]; got != "reference_image" {
+		t.Fatalf("media[0].type = %v, want reference_image", got)
+	}
+}
+
+func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2VMultiImage(t *testing.T) {
+	media, err := buildDashScopeVideoMedia(GenerateRequest{
+		Model:           "happyhorse-1.0-r2v",
+		ReferenceMode:   "image_reference",
+		ReferenceImages: []string{"https://example.com/ref-1.png", "https://example.com/ref-2.png"},
+	})
+	if err != nil {
+		t.Fatalf("buildDashScopeVideoMedia returned error: %v", err)
+	}
+	if len(media) != 2 {
+		t.Fatalf("media length = %d, want 2", len(media))
+	}
+	for i, item := range media {
+		if got := item["type"]; got != "reference_image" {
+			t.Fatalf("media[%d].type = %v, want reference_image", i, got)
+		}
+	}
+}
+
+func TestBuildDashScopeVideoMediaKeepsFirstFrameForHappyHorseI2V(t *testing.T) {
+	media, err := buildDashScopeVideoMedia(GenerateRequest{
+		Model:           "happyhorse-1.1-i2v",
+		ReferenceMode:   "first_frame",
+		ReferenceImages: []string{"https://example.com/first.png"},
+	})
+	if err != nil {
+		t.Fatalf("buildDashScopeVideoMedia returned error: %v", err)
+	}
+	if len(media) != 1 {
+		t.Fatalf("media length = %d, want 1", len(media))
+	}
+	if got := media[0]["type"]; got != "first_frame" {
+		t.Fatalf("media[0].type = %v, want first_frame", got)
+	}
+}
+
+func TestBuildDashScopeVideoParametersIncludesAspectRatio(t *testing.T) {
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model:       "happyhorse-1.1-i2v",
+		Resolution:  "1080P",
+		Duration:    5,
+		AspectRatio: "9:16",
+	})
+
+	if got := params["resolution"]; got != "1080P" {
+		t.Fatalf("resolution = %v, want 1080P", got)
+	}
+	if got := params["duration"]; got != 5 {
+		t.Fatalf("duration = %v, want 5", got)
+	}
+	if got := params["aspect_ratio"]; got != "9:16" {
+		t.Fatalf("aspect_ratio = %v, want 9:16", got)
+	}
+}
+
+func TestResolveCreditCostUsesPerModelOverrideCaseInsensitive(t *testing.T) {
+	schema := []byte(`{
+		"credit_cost": 2,
+		"models": {
+			"gpt-image-2": { "credit_cost": 7 }
+		}
+	}`)
+
+	if got := resolveCreditCost(schema, "GPT-IMAGE-2"); got != 7 {
+		t.Fatalf("resolveCreditCost = %d, want per-model override 7", got)
 	}
 }
 
@@ -701,6 +824,15 @@ func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([
 func (r *fakeRepository) UpdateGenerationLogResult(context.Context, string, string, string, string, int32, bool) error {
 	return nil
 }
+func (r *fakeRepository) MarkGenerationLogPersisting(context.Context, string, StagedAsset, int32) error {
+	return nil
+}
+func (r *fakeRepository) MarkGenerationLogAssetReady(context.Context, string, string, int32) error {
+	return nil
+}
+func (r *fakeRepository) MarkGenerationLogAssetFailed(context.Context, string, string, string) error {
+	return nil
+}
 func (r *fakeRepository) ListStaleActiveGenerations(context.Context, time.Time) ([]domain.StaleGeneration, error) {
 	return nil, nil
 }
@@ -920,6 +1052,48 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
+func TestGenerateImageFailsWhenGeneratedAssetCannotBeStaged(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	assetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "signed url expired", http.StatusForbidden)
+	}))
+	defer assetServer.Close()
+
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"data":[{"url":%q}]}`, assetServer.URL+"/expired.png?X-Tos-Expires=86400")))
+	}))
+	defer providerServer.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-asset-cache-required",
+			ServiceType:     "image",
+			Status:          "enabled",
+			BaseURL:         providerServer.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"gpt-image-2"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	result, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "image",
+		Model:       "gpt-image-2",
+		Prompt:      "draw a durable image",
+	})
+	if err == nil {
+		t.Fatalf("Generate returned nil error with result %#v; want asset persistence failure", result)
+	}
+	if !strings.Contains(err.Error(), "asset staging failed") {
+		t.Fatalf("Generate error = %v, want asset staging failure", err)
+	}
+}
+
 func TestGenerateImageTextOnlyNormalizesConfiguredQualityOptions(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
@@ -1047,8 +1221,8 @@ func TestGenerateImageViaChatCompletionsUsesMultimodalContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://manjuapi.com/generated/example.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1109,8 +1283,8 @@ func TestGenerateImageReferenceFormatUsesChatCompletionsOnlyForRefs(t *testing.T
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/generated.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1156,8 +1330,8 @@ func TestGenerateImageChatCompletionsParsesDataURLResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/generated-from-data.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1271,8 +1445,8 @@ func TestGenerateImageChatCompletionsPollsTaskURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/generated-from-poll.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1463,8 +1637,8 @@ func TestGenerateUsesRequestedProviderConfigID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/selected-provider.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1579,8 +1753,8 @@ func TestGenerateImageUsesConfiguredSubmitAndQueryEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/generated.png" {
-		t.Fatalf("result.Content = %q, want https://example.com/generated.png", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1638,8 +1812,8 @@ func TestGenerateImageVolcengineMapsAspectRatioToSupportedSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/seedream.png" {
-		t.Fatalf("result.Content = %q", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".png") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...png", result.Content)
 	}
 }
 
@@ -1720,8 +1894,8 @@ func TestGenerateVideoCustomSoraProviderKeepsPromptShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate returned error: %v", err)
 	}
-	if result.Content != "https://example.com/final.mp4" {
-		t.Fatalf("result.Content = %q, want https://example.com/final.mp4", result.Content)
+	if !strings.HasPrefix(result.Content, "/uploads/generated/") || !strings.HasSuffix(result.Content, ".mp4") {
+		t.Fatalf("result.Content = %q, want /uploads/generated/...mp4", result.Content)
 	}
 }
 

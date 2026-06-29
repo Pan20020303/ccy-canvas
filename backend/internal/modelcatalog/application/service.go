@@ -102,6 +102,9 @@ type Repository interface {
 	// Generation log lifecycle — needed by the detached task runner so the
 	// goroutine can write its own outcome even after the client has hung up.
 	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32, cacheHit bool) error
+	MarkGenerationLogPersisting(ctx context.Context, logID string, staged StagedAsset, durationMs int32) error
+	MarkGenerationLogAssetReady(ctx context.Context, logID, cosURL string, durationMs int32) error
+	MarkGenerationLogAssetFailed(ctx context.Context, logID, status, errMsg string) error
 
 	// Reaper (F3): find active rows older than the cutoff, and mark a single
 	// still-active row as timed-out. MarkGenerationTimedOut returns false
@@ -122,6 +125,22 @@ type Cache interface {
 	DeletePattern(ctx context.Context, pattern string)
 }
 
+type AssetPersistPayload struct {
+	LogID       string
+	UserID      string
+	NodeID      string
+	ServiceType string
+	StagingPath string
+	StagingURL  string
+	COSKey      string
+	ContentType string
+	EnqueuedAt  int64
+}
+
+type AssetPersistEnqueuer interface {
+	EnqueueAssetPersist(ctx context.Context, p AssetPersistPayload) (string, error)
+}
+
 // Service provides model catalog use cases.
 type Service struct {
 	repo          Repository
@@ -140,7 +159,8 @@ type Service struct {
 	// credits is optional. When set, each generation reserves credits at
 	// submit and refunds them on terminal failure. nil → no charging (the
 	// legacy behavior). Wired in main from the credits bounded context.
-	credits creditcharger
+	credits    creditcharger
+	assetQueue AssetPersistEnqueuer
 }
 
 // creditcharger mirrors credits/application.Charger as a local interface so
@@ -183,8 +203,16 @@ func resolveCreditCost(schemaRaw []byte, model string) int32 {
 	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
 		return defaultCreditCost
 	}
-	if m, ok := schema.Models[model]; ok && m.CreditCost != nil {
-		return clampCreditCost(*m.CreditCost)
+	if len(schema.Models) > 0 {
+		if m, ok := schema.Models[model]; ok && m.CreditCost != nil {
+			return clampCreditCost(*m.CreditCost)
+		}
+		lowerModel := strings.ToLower(strings.TrimSpace(model))
+		for key, modelSchema := range schema.Models {
+			if strings.ToLower(strings.TrimSpace(key)) == lowerModel && modelSchema.CreditCost != nil {
+				return clampCreditCost(*modelSchema.CreditCost)
+			}
+		}
 	}
 	if schema.CreditCost != nil {
 		return clampCreditCost(*schema.CreditCost)
@@ -366,6 +394,11 @@ func (s *Service) WithCache(cache Cache) *Service {
 // service for chaining.
 func (s *Service) WithNewAPI(client *NewAPIClient) *Service {
 	s.newAPI = client
+	return s
+}
+
+func (s *Service) WithAssetPersistQueue(q AssetPersistEnqueuer) *Service {
+	s.assetQueue = q
 	return s
 }
 
@@ -1098,6 +1131,75 @@ func maxRuntimeForType(serviceType string) time.Duration {
 	return def
 }
 
+type generatedAssetPersistenceOutcome struct {
+	cacheHit bool
+	pending  bool
+}
+
+func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req GenerateRequest, result *GenerateResult, startedAt time.Time) (generatedAssetPersistenceOutcome, error) {
+	out := generatedAssetPersistenceOutcome{cacheHit: true}
+	if result == nil || result.Type != "url" || strings.TrimSpace(result.Content) == "" {
+		return out, nil
+	}
+
+	originalURL := strings.TrimSpace(result.Content)
+	staged, err := StageRemoteAsset(ctx, originalURL)
+	if err != nil {
+		return out, fmt.Errorf("asset staging failed: generated media could not be downloaded to local staging: %w", err)
+	}
+	if staged.LocalPath == "" {
+		if staged.StagingURL == originalURL && isTemporaryGeneratedAssetURL(originalURL) {
+			return out, fmt.Errorf("asset staging failed: generated media stayed on a temporary upstream URL")
+		}
+		result.Content = staged.StagingURL
+		return out, nil
+	}
+	cachedURL, err := PromoteStagedAssetToStore(ctx, staged)
+	if err == nil {
+		result.Content = cachedURL
+		return out, nil
+	}
+
+	out.cacheHit = false
+	out.pending = true
+	result.Content = staged.StagingURL
+	duration := time.Since(startedAt)
+	if s.repo != nil && req.GenerationLogID != "" {
+		if perr := s.repo.MarkGenerationLogPersisting(ctx, req.GenerationLogID, staged, int32(duration.Milliseconds())); perr != nil {
+			return out, fmt.Errorf("asset persistence failed: generated media staged locally but persisting status could not be saved: %w", perr)
+		}
+		if s.cache != nil {
+			s.cache.Delete(ctx, generationTaskCacheKey(req.GenerationLogID))
+		}
+	}
+	s.publishTaskEventWithStatus(req, result, nil, duration, "persisting")
+	if s.assetQueue != nil && req.GenerationLogID != "" {
+		_, qerr := s.assetQueue.EnqueueAssetPersist(context.Background(), AssetPersistPayload{
+			LogID:       req.GenerationLogID,
+			UserID:      req.UserID,
+			NodeID:      req.NodeID,
+			ServiceType: req.ServiceType,
+			StagingPath: staged.LocalPath,
+			StagingURL:  staged.StagingURL,
+			COSKey:      staged.COSKey,
+			ContentType: staged.ContentType,
+		})
+		if qerr != nil {
+			log.Printf("[modelcatalog] WARNING asset persist enqueue failed for log %s; staged file retained: %v", req.GenerationLogID, qerr)
+		}
+	}
+	log.Printf("[modelcatalog] asset staged for log %s but COS promotion failed; queued background persist: %v", req.GenerationLogID, err)
+	return out, nil
+}
+
+func isTemporaryGeneratedAssetURL(rawURL string) bool {
+	trimmed := strings.TrimSpace(rawURL)
+	return strings.HasPrefix(trimmed, "http://") ||
+		strings.HasPrefix(trimmed, "https://") ||
+		strings.HasPrefix(trimmed, "data:") ||
+		strings.HasPrefix(trimmed, "blob:")
+}
+
 func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	candidates, err := s.buildCandidates(req)
 	if err != nil {
@@ -1125,18 +1227,19 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 
 		result, runErr := s.runCandidateLoop(detachedCtx, candidates, req)
 
-		// Cache the upstream URL to local disk so the asset survives
-		// after the provider's signed URL expires. Best-effort: on
-		// failure the original URL is kept. Skipped for inline-text
-		// results (no URL to download) and for already-cached / data:
-		// URLs. See PersistRemoteAsset for the full skip rules.
+		// Cache the upstream URL to configured storage before surfacing success.
+		// If this fails, do not persist/publish the provider's temporary URL:
+		// the task must fail loudly instead of saving an expiring asset.
 		cacheHit := true
-		if runErr == nil && result != nil && result.Type == "url" && result.Content != "" {
-			if cachedURL, cacheErr := PersistRemoteAsset(detachedCtx, result.Content); cacheErr == nil {
-				result.Content = cachedURL
-			} else {
-				cacheHit = false
-				log.Printf("[modelcatalog] WARNING asset cache failed for log %s, keeping ephemeral URL (may expire): %v", req.GenerationLogID, cacheErr)
+		assetPending := false
+		if runErr == nil {
+			assetOutcome, cacheErr := s.persistGeneratedAssetForResult(detachedCtx, req, result, startedAt)
+			cacheHit = assetOutcome.cacheHit
+			assetPending = assetOutcome.pending
+			if cacheErr != nil {
+				runErr = cacheErr
+				result = nil
+				log.Printf("[modelcatalog] ERROR asset staging failed for log %s: %v", req.GenerationLogID, cacheErr)
 			}
 		}
 
@@ -1146,6 +1249,10 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		duration := time.Since(startedAt)
 		// Gate the SSE push on a durable write (F8) so we never emit an
 		// event that disagrees with the persisted source of truth.
+		if assetPending {
+			doneCh <- genResult{result: result, err: nil}
+			return
+		}
 		if perr := s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration, cacheHit); perr == nil {
 			s.publishTaskEvent(req, result, runErr, duration)
 		}
@@ -1203,7 +1310,16 @@ func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*Gen
 		return result, runErr
 	}
 	cacheHit := true
-	if result != nil && result.Type == "url" && result.Content != "" {
+	assetOutcome, cacheErr := s.persistGeneratedAssetForResult(ctx, req, result, startedAt)
+	cacheHit = assetOutcome.cacheHit
+	if cacheErr != nil {
+		log.Printf("[modelcatalog] ERROR asset staging failed for log %s: %v", req.GenerationLogID, cacheErr)
+		return nil, cacheErr
+	}
+	if assetOutcome.pending {
+		return result, nil
+	}
+	if false && result != nil && result.Type == "url" && result.Content != "" {
 		if cachedURL, cacheErr := PersistRemoteAsset(ctx, result.Content); cacheErr == nil {
 			result.Content = cachedURL
 		} else {
@@ -1241,6 +1357,40 @@ func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.
 	// failures that will be retried never reach here, so we never refund a
 	// generation that's still in flight.)
 	s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+}
+
+func (s *Service) PromoteStagedAssetForLog(ctx context.Context, p AssetPersistPayload) error {
+	if p.LogID == "" {
+		return fmt.Errorf("missing generation log id")
+	}
+	staged := StagedAsset{
+		LocalPath:   p.StagingPath,
+		StagingURL:  p.StagingURL,
+		COSKey:      p.COSKey,
+		ContentType: p.ContentType,
+	}
+	cosURL, err := PromoteStagedAssetToStore(ctx, staged)
+	if err != nil {
+		if s.repo != nil {
+			_ = s.repo.MarkGenerationLogAssetFailed(context.Background(), p.LogID, "persisting", err.Error())
+		}
+		return err
+	}
+	if s.repo != nil {
+		if err := s.repo.MarkGenerationLogAssetReady(ctx, p.LogID, cosURL, 0); err != nil {
+			return err
+		}
+		if s.cache != nil {
+			s.cache.Delete(ctx, generationTaskCacheKey(p.LogID))
+		}
+	}
+	s.publishTaskEvent(GenerateRequest{
+		GenerationLogID: p.LogID,
+		UserID:          p.UserID,
+		NodeID:          p.NodeID,
+		ServiceType:     p.ServiceType,
+	}, &GenerateResult{Type: "url", Content: cosURL}, nil, 0)
+	return nil
 }
 
 // reaperFloor is the smallest per-type runtime budget; the reaper's DB
@@ -1363,6 +1513,10 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 // who initiated this generation. Skips silently when no event bus is
 // wired or no userID was attached (e.g. anonymous-tested generations).
 func (s *Service) publishTaskEvent(req GenerateRequest, result *GenerateResult, err error, duration time.Duration) {
+	s.publishTaskEventWithStatus(req, result, err, duration, "")
+}
+
+func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *GenerateResult, err error, duration time.Duration, forcedStatus string) {
 	if s.eventBus == nil || req.UserID == "" {
 		return
 	}
@@ -1374,6 +1528,9 @@ func (s *Service) publishTaskEvent(req GenerateRequest, result *GenerateResult, 
 		errMsg = err.Error()
 	} else if result != nil {
 		resultURL = result.Content
+	}
+	if forcedStatus != "" {
+		status = forcedStatus
 	}
 	s.eventBus.Publish(req.UserID, TaskEvent{
 		TaskID:      req.GenerationLogID,
@@ -3281,29 +3438,14 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 		input["prompt"] = req.Prompt
 	}
 	if len(req.ReferenceImages) > 0 {
-		media := make([]map[string]interface{}, 0, len(req.ReferenceImages))
-		for i, raw := range req.ReferenceImages {
-			du, err := localPathToDataURL(raw)
-			if err != nil {
-				return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
-			}
-			media = append(media, map[string]interface{}{
-				"type": "first_frame",
-				"url":  du,
-			})
+		media, err := buildDashScopeVideoMedia(req)
+		if err != nil {
+			return nil, err
 		}
 		input["media"] = media
 	}
 
-	parameters := map[string]interface{}{
-		"watermark": false,
-	}
-	if req.Resolution != "" {
-		parameters["resolution"] = req.Resolution
-	}
-	if req.Duration > 0 {
-		parameters["duration"] = req.Duration
-	}
+	parameters := buildDashScopeVideoParameters(req)
 
 	body := map[string]interface{}{
 		"model":      req.Model,
@@ -3367,6 +3509,59 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 	}
 
 	return s.pollVideoDashScopeTask(ctx, baseURL, queryPath, apiKey, taskID)
+}
+
+func buildDashScopeVideoParameters(req GenerateRequest) map[string]interface{} {
+	parameters := map[string]interface{}{
+		"watermark": false,
+	}
+	if req.Resolution != "" {
+		parameters["resolution"] = req.Resolution
+	}
+	if req.Duration > 0 {
+		parameters["duration"] = req.Duration
+	}
+	if req.AspectRatio != "" && req.AspectRatio != "auto" {
+		parameters["aspect_ratio"] = req.AspectRatio
+	}
+	return parameters
+}
+
+func buildDashScopeVideoMedia(req GenerateRequest) ([]map[string]interface{}, error) {
+	mediaType := dashScopeReferenceImageMediaType(req)
+	media := make([]map[string]interface{}, 0, len(req.ReferenceImages))
+	for i, raw := range req.ReferenceImages {
+		du, err := localPathToDataURL(raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
+		}
+		media = append(media, map[string]interface{}{
+			"type": mediaType,
+			"url":  du,
+		})
+	}
+	return media, nil
+}
+
+func dashScopeReferenceImageMediaType(req GenerateRequest) string {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	switch {
+	case strings.HasPrefix(model, "happyhorse-") && strings.HasSuffix(model, "-r2v"):
+		return "reference_image"
+	case strings.HasPrefix(model, "happyhorse-") && strings.HasSuffix(model, "-i2v"):
+		return "first_frame"
+	case strings.HasPrefix(model, "happyhorse-") && strings.HasSuffix(model, "-video-edit"):
+		return "reference_image"
+	}
+
+	switch strings.ToLower(strings.TrimSpace(req.ReferenceMode)) {
+	case "image_reference":
+		return "reference_image"
+	case "first_frame", "start_frame":
+		return "first_frame"
+	default:
+		return "first_frame"
+	}
 }
 
 // pollVideoDashScopeTask polls a DashScope-style async task until

@@ -149,6 +149,101 @@ func (q *Queries) MarkGenerationLogCancelled(ctx context.Context, id pgtype.UUID
 	return err
 }
 
+type MarkGenerationLogPersistingParams struct {
+	ID          pgtype.UUID `json:"id"`
+	StagingPath string      `json:"staging_path"`
+	StagingUrl  string      `json:"staging_url"`
+	CosKey      string      `json:"cos_key"`
+	ContentType string      `json:"content_type"`
+	DurationMs  int32       `json:"duration_ms"`
+}
+
+const markGenerationLogPersisting = `
+UPDATE generation_logs
+SET status = 'persisting',
+    result_url = $2,
+    error_msg = '',
+    duration_ms = $6,
+    cache_hit = false,
+    staging_path = $3,
+    staging_url = $2,
+    cos_key = $4,
+    asset_status = 'persisting',
+    asset_error = '',
+    asset_last_attempt_at = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) MarkGenerationLogPersisting(ctx context.Context, arg MarkGenerationLogPersistingParams) error {
+	_, err := q.db.Exec(ctx, markGenerationLogPersisting,
+		arg.ID, arg.StagingUrl, arg.StagingPath, arg.CosKey, arg.ContentType, arg.DurationMs)
+	return err
+}
+
+type MarkGenerationLogAssetReadyParams struct {
+	ID         pgtype.UUID `json:"id"`
+	CosUrl     string      `json:"cos_url"`
+	DurationMs int32       `json:"duration_ms"`
+}
+
+const markGenerationLogAssetReady = `
+UPDATE generation_logs
+SET status = 'success',
+    result_url = $2,
+    cos_url = $2,
+    asset_status = 'ready',
+    asset_error = '',
+    cache_hit = true,
+    duration_ms = CASE WHEN $3 > 0 THEN $3 ELSE duration_ms END
+WHERE id = $1
+`
+
+func (q *Queries) MarkGenerationLogAssetReady(ctx context.Context, arg MarkGenerationLogAssetReadyParams) error {
+	_, err := q.db.Exec(ctx, markGenerationLogAssetReady, arg.ID, arg.CosUrl, arg.DurationMs)
+	return err
+}
+
+const markGenerationLogAssetFailed = `
+UPDATE generation_logs
+SET asset_status = $2,
+    asset_error = $3,
+    asset_retry_count = asset_retry_count + 1,
+    asset_last_attempt_at = NOW(),
+    error_msg = CASE WHEN $2 = 'cos_failed' THEN $3 ELSE error_msg END,
+    status = CASE WHEN $2 = 'cos_failed' THEN 'error' ELSE status END
+WHERE id = $1
+`
+
+func (q *Queries) MarkGenerationLogAssetFailed(ctx context.Context, id pgtype.UUID, status string, errMsg string) error {
+	_, err := q.db.Exec(ctx, markGenerationLogAssetFailed, id, status, errMsg)
+	return err
+}
+
+type LoadGenerationAssetRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	NodeID      string             `json:"node_id"`
+	ServiceType string             `json:"service_type"`
+	StagingPath string             `json:"staging_path"`
+	StagingUrl  string             `json:"staging_url"`
+	CosKey      string             `json:"cos_key"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+const loadGenerationAsset = `
+SELECT id, user_id, node_id, service_type, staging_path, staging_url, cos_key, status, created_at
+FROM generation_logs
+WHERE id = $1
+`
+
+func (q *Queries) LoadGenerationAsset(ctx context.Context, id pgtype.UUID) (LoadGenerationAssetRow, error) {
+	row := q.db.QueryRow(ctx, loadGenerationAsset, id)
+	var i LoadGenerationAssetRow
+	err := row.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.StagingPath, &i.StagingUrl, &i.CosKey, &i.Status, &i.CreatedAt)
+	return i, err
+}
+
 // ─── Frontend reconnect: list active tasks for a user ─────────────────
 
 type ListActiveGenerationsForUserRow struct {
@@ -158,6 +253,8 @@ type ListActiveGenerationsForUserRow struct {
 	Model       string             `json:"model"`
 	Prompt      string             `json:"prompt"`
 	Status      string             `json:"status"`
+	ResultUrl   string             `json:"result_url"`
+	ErrorMsg    string             `json:"error_msg"`
 	AsynqTaskID string             `json:"asynq_task_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
@@ -227,10 +324,10 @@ func (q *Queries) MarkGenerationLogTimedOut(ctx context.Context, id pgtype.UUID,
 }
 
 const listActiveGenerationsForUser = `
-SELECT id, node_id, service_type, model, prompt, status, asynq_task_id, created_at
+SELECT id, node_id, service_type, model, prompt, status, result_url, error_msg, asynq_task_id, created_at
 FROM generation_logs
 WHERE user_id = $1
-  AND status IN ('pending', 'queued', 'running', 'retrying')
+  AND status IN ('pending', 'queued', 'running', 'retrying', 'persisting')
 ORDER BY created_at DESC
 LIMIT 100
 `
@@ -244,7 +341,7 @@ func (q *Queries) ListActiveGenerationsForUser(ctx context.Context, userID pgtyp
 	items := []ListActiveGenerationsForUserRow{}
 	for rows.Next() {
 		var i ListActiveGenerationsForUserRow
-		if err := rows.Scan(&i.ID, &i.NodeID, &i.ServiceType, &i.Model, &i.Prompt, &i.Status, &i.AsynqTaskID, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.NodeID, &i.ServiceType, &i.Model, &i.Prompt, &i.Status, &i.ResultUrl, &i.ErrorMsg, &i.AsynqTaskID, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

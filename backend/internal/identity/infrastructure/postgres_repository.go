@@ -52,7 +52,7 @@ func (r Repository) GetUserByEmail(ctx context.Context, email string) (applicati
 	row, err := r.queries.GetUserByEmail(ctx, email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return application.UserWithPasswordDTO{}, err
+			return application.UserWithPasswordDTO{}, apperror.New(apperror.CodeNotFound, "User not found")
 		}
 		return application.UserWithPasswordDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load user", err)
 	}
@@ -61,6 +61,68 @@ func (r Repository) GetUserByEmail(ctx context.Context, email string) (applicati
 		PasswordHash: row.PasswordHash,
 		Status:       row.Status,
 	}, nil
+}
+
+func (r Repository) GetUserByOAuth(ctx context.Context, provider string, providerUserID string) (application.UserWithPasswordDTO, error) {
+	const query = `
+SELECT u.id, u.email, u.password_hash, u.name, u.role, u.status, u.email_verified_at, u.last_login_at, u.created_at, u.updated_at
+FROM user_oauth_accounts oa
+JOIN users u ON u.id = oa.user_id
+WHERE oa.provider = $1 AND oa.provider_user_id = $2
+LIMIT 1`
+	var row sqlc.User
+	err := r.pool.QueryRow(ctx, query, provider, providerUserID).Scan(
+		&row.ID,
+		&row.Email,
+		&row.PasswordHash,
+		&row.Name,
+		&row.Role,
+		&row.Status,
+		&row.EmailVerifiedAt,
+		&row.LastLoginAt,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return application.UserWithPasswordDTO{}, apperror.New(apperror.CodeNotFound, "OAuth account not found")
+		}
+		return application.UserWithPasswordDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load OAuth account", err)
+	}
+	return application.UserWithPasswordDTO{
+		UserDTO:      toUserDTO(row),
+		PasswordHash: row.PasswordHash,
+		Status:       row.Status,
+	}, nil
+}
+
+func (r Repository) LinkOAuthAccount(ctx context.Context, userID string, provider string, providerUserID string, email string) error {
+	userUUID, err := parseUUID(userID)
+	if err != nil {
+		return apperror.New(apperror.CodeInvalidInput, "Invalid user ID")
+	}
+	const query = `
+INSERT INTO user_oauth_accounts (user_id, provider, provider_user_id, email)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (provider, provider_user_id) DO NOTHING`
+	tag, err := r.pool.Exec(ctx, query, userUUID, provider, providerUserID, email)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return apperror.New(apperror.CodeEmailAlreadyExists, "OAuth account is already linked")
+		}
+		return apperror.Wrap(apperror.CodeInternal, "Could not link OAuth account", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	existing, err := r.GetUserByOAuth(ctx, provider, providerUserID)
+	if err == nil && existing.ID == userID {
+		return nil
+	}
+	if err != nil && !isAppNotFound(err) {
+		return err
+	}
+	return apperror.New(apperror.CodeEmailAlreadyExists, "OAuth account is already linked")
 }
 
 func (r Repository) GetUserByID(ctx context.Context, id string) (application.UserDTO, error) {
@@ -207,4 +269,9 @@ func uuidFromPg(value pgtype.UUID) string {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func isAppNotFound(err error) bool {
+	var appErr *apperror.Error
+	return errors.As(err, &appErr) && appErr.Code == apperror.CodeNotFound
 }

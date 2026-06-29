@@ -195,6 +195,8 @@ func toHTTPError(err error) error {
 			return huma.Error401Unauthorized(appErr.Message)
 		case apperror.CodeForbidden:
 			return huma.Error403Forbidden(appErr.Message)
+		case apperror.CodeNotFound:
+			return huma.Error404NotFound(appErr.Message)
 		case apperror.CodeInvalidInput, apperror.CodeInvitationInvalid, apperror.CodeEmailAlreadyExists:
 			return huma.Error400BadRequest(appErr.Message)
 		default:
@@ -1376,7 +1378,7 @@ func taskCacheKey(id string) string {
 
 func isActiveTaskStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "queued", "pending", "running", "retrying":
+	case "queued", "pending", "running", "retrying", "persisting":
 		return true
 	default:
 		return false
@@ -1464,6 +1466,8 @@ func (h *Handler) listActiveTasks(ctx context.Context, _ *struct{}) (*batchTasks
 			ServiceType: row.ServiceType,
 			Model:       row.Model,
 			Status:      row.Status,
+			ResultURL:   row.ResultUrl,
+			ErrorMsg:    row.ErrorMsg,
 			CreatedAt:   createdAt,
 		})
 	}

@@ -41,12 +41,12 @@ func TestMediaTimeoutIsTerminal(t *testing.T) {
 
 func TestIsGenerationTimeout(t *testing.T) {
 	cases := map[string]bool{
-		"Image generation timed out after polling":                                        true,
-		"generation timed out":                                                            true,
+		"Image generation timed out after polling": true,
+		"generation timed out":                     true,
 		`Post "x": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`: true,
-		"Provider returned empty image content":                                           false,
-		"Provider HTTP 502: server overloaded":                                            false,
-		"":                                                                                false,
+		"Provider returned empty image content":                                                false,
+		"Provider HTTP 502: server overloaded":                                                 false,
+		"":                                                                                     false,
 	}
 	for msg, want := range cases {
 		var err error
@@ -56,6 +56,13 @@ func TestIsGenerationTimeout(t *testing.T) {
 		if got := isGenerationTimeout(err); got != want {
 			t.Errorf("isGenerationTimeout(%q) = %v, want %v", msg, got, want)
 		}
+	}
+}
+
+func TestAssetPersistenceFailureIsPermanent(t *testing.T) {
+	err := errors.New("asset persistence failed: generated media could not be saved to configured storage")
+	if !isPermanentError(err) {
+		t.Fatal("asset persistence failures must not retry the whole generation")
 	}
 }
 
