@@ -569,6 +569,123 @@ describe("workspace control bar state", () => {
     expect(useStore.getState().activeRun).toBeNull();
   });
 
+  it("settles a running node from a task stream event even when the task id was not persisted", async () => {
+    let eventSource: { onmessage: ((message: MessageEvent) => void) | null } | null = null;
+    class MockEventSource {
+      onmessage: ((message: MessageEvent) => void) | null = null;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      close = vi.fn();
+
+      constructor() {
+        eventSource = this;
+      }
+    }
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/api/app/tasks/active") {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ data: [], request_id: "req-active-empty" }),
+        } as Response);
+      }
+      return Promise.reject(new Error(`unexpected fetch ${String(input)}`));
+    }));
+
+    try {
+      const { useStore } = await loadStore();
+      useStore.getState().updateNodeData("2", {
+        status: "running",
+        taskId: undefined,
+        queuedAfterTimeout: true,
+        runningStartedAt: Date.now(),
+      });
+
+      const stream = eventSource as { onmessage: ((message: MessageEvent) => void) | null } | null;
+      expect(stream).not.toBeNull();
+      stream!.onmessage?.({
+        data: JSON.stringify({
+          task_id: "task-stream-lost-binding",
+          node_id: "2",
+          service_type: "image",
+          status: "success",
+          result_url: "https://example.com/stream-result.png",
+          error_msg: "",
+          duration_ms: 161000,
+        }),
+      } as MessageEvent);
+
+      const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+      expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
+      expect((imageNode?.data as Record<string, unknown>)?.taskId).toBe("task-stream-lost-binding");
+      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fstream-result.png");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("recovers a running node without a task id from the batch task poller", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T10:00:00.000Z"));
+    const taskCreatedAt = new Date(Date.now() - 5000).toISOString();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/app/tasks/active") {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ data: [], request_id: "req-active-empty" }),
+        } as Response);
+      }
+      if (url === "/api/app/tasks/batch") {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({
+            data: [
+              {
+                id: "task-batch-lost-binding",
+                node_id: "2",
+                service_type: "image",
+                model: "gpt-image-2",
+                status: "success",
+                result_url: "https://example.com/batch-result.png",
+                error_msg: "",
+                duration_ms: 161000,
+                created_at: taskCreatedAt,
+              },
+            ],
+            request_id: "req-batch-success",
+          }),
+        } as Response);
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { useStore } = await loadStore();
+      useStore.getState().updateNodeData("2", {
+        status: "running",
+        taskId: undefined,
+        queuedAfterTimeout: true,
+        runningStartedAt: Date.now(),
+      });
+
+      await vi.advanceTimersByTimeAsync(8000);
+
+      const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
+      expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
+      expect((imageNode?.data as Record<string, unknown>)?.taskId).toBe("task-batch-lost-binding");
+      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fbatch-result.png");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("upgrades uploaded reference images to public urls for chat-image providers", async () => {
     vi.stubEnv("VITE_API_BASE_URL", "https://canvas.example.com");
     try {

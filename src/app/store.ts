@@ -553,6 +553,7 @@ const seedInvitations: AdminInvitation[] = [
 const runAborters: Record<string, AbortController> = {};
 const runTokens: Record<string, string> = {};
 const generationTimeoutMs = 900 * 1000;
+const TASK_RESULT_RECOVERY_WINDOW_MS = generationTimeoutMs + 60 * 1000;
 
 // ─── Task recovery polling (Stage 2) ─────────────────────────────────────
 //
@@ -644,7 +645,11 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   if (!nodeTaskId) {
     const runningStartedAt = typeof targetData?.runningStartedAt === 'number' ? targetData.runningStartedAt : 0;
     const taskCreatedAt = task.created_at ? Date.parse(task.created_at) : NaN;
-    const taskMatchesCurrentRunWindow = Number.isFinite(taskCreatedAt) && taskCreatedAt + 2000 >= runningStartedAt;
+    const taskHasComparableTimestamp = Number.isFinite(taskCreatedAt);
+    const taskMatchesCurrentRunWindow =
+      runningStartedAt <= 0 ||
+      (taskHasComparableTimestamp && taskCreatedAt + TASK_RESULT_RECOVERY_WINDOW_MS >= runningStartedAt) ||
+      (!taskHasComparableTimestamp && targetData?.queuedAfterTimeout === true);
     if ((currentStatus !== 'running' && currentStatus !== 'generating') || !taskMatchesCurrentRunWindow) {
       return;
     }
