@@ -24,7 +24,7 @@ const sampleItem: HistoryItem = {
   mediaType: "image",
   timestamp: 1735660000000,
   thumbnail: "https://example.com/w.png",
-  aspectRatio: "1:1",
+  aspectRatio: "square",
   promptExcerpt: "a whale",
 };
 
