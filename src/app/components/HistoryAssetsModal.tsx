@@ -55,6 +55,13 @@ export const HistoryAssetsModal = () => {
   const setOpen = useStore((state) => state.setHistoryAssetsOpen);
   const removeHistoryItems = useStore((state) => state.removeHistoryItems);
   const reuseHistoryItems = useStore((state) => state.reuseHistoryItems);
+  const hydrateHistory = useStore((state) => state.hydrateHistory);
+
+  // Pull the server-persisted history when the panel opens, so it shows up even
+  // after a localStorage wipe or on a different device. Best-effort + local-first.
+  useEffect(() => {
+    if (isOpen) hydrateHistory();
+  }, [isOpen, hydrateHistory]);
 
   const [activeTab, setActiveTab] = useState<HistoryAssetsTab>("image");
   const [zoom, setZoom] = useState<(typeof ZOOM_OPTIONS)[number]>(100);

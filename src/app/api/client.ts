@@ -243,7 +243,10 @@ export const apiClient = {
       body: payload === undefined ? undefined : JSON.stringify(payload),
     });
   },
-  delete<T>(input: string) {
-    return request<T>(input, { method: "DELETE" });
+  delete<T>(input: string, payload?: unknown) {
+    return request<T>(input, {
+      method: "DELETE",
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
   },
 };

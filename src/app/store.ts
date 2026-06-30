@@ -19,6 +19,7 @@ import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import { generate as apiGenerate } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
+import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
@@ -211,6 +212,7 @@ type AppState = {
   addHistory: (item: HistoryDraft) => void;
   removeHistoryItems: (ids: string[]) => void;
   reuseHistoryItems: (ids: string[]) => void;
+  hydrateHistory: () => void;
   spaces: WorkspaceSpace[];
   activeSpaceId: string;
   activeSpaceType: SpaceType;
@@ -1476,20 +1478,48 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setHistoryAssetsOpen: (open) => set({ isHistoryAssetsOpen: open }),
 
   history: [],
-  addHistory: (item) => set((state) => ({
-    history: [normalizeHistoryItem(item, state.activeSpaceId, state.activeSpaceType, state.activeProjectId), ...state.history].slice(0, 200),
-    ...syncActiveSpaceSnapshot(state, {
-      history: [normalizeHistoryItem(item, state.activeSpaceId, state.activeSpaceType, state.activeProjectId), ...state.history].slice(0, 200),
-    }),
-  })),
-  removeHistoryItems: (ids) => set((state) => {
-    const idSet = new Set(ids);
-    const history = state.history.filter((item) => !idSet.has(item.id));
+  addHistory: (item) => set((state) => {
+    const normalized = normalizeHistoryItem(item, state.activeSpaceId, state.activeSpaceType, state.activeProjectId);
+    const history = [normalized, ...state.history].slice(0, 200);
+    // Persist to the backend (best-effort) so history survives a localStorage
+    // wipe and follows the user across devices. Local-first: never blocks UI.
+    void saveHistoryToServer(normalized).catch(() => {});
     return {
       history,
       ...syncActiveSpaceSnapshot(state, { history }),
     };
   }),
+  removeHistoryItems: (ids) => set((state) => {
+    const idSet = new Set(ids);
+    const history = state.history.filter((item) => !idSet.has(item.id));
+    void deleteHistoryFromServer(ids).catch(() => {});
+    return {
+      history,
+      ...syncActiveSpaceSnapshot(state, { history }),
+    };
+  }),
+  hydrateHistory: async () => {
+    const { activeSpaceId } = get();
+    let remote: HistoryItem[];
+    try {
+      remote = await listHistoryFromServer({ spaceId: activeSpaceId });
+    } catch {
+      return; // best-effort; keep whatever is local
+    }
+    set((state) => {
+      // Merge server items with any local-only items, newest-first, dedup by id.
+      const byId = new Map<string, HistoryItem>();
+      for (const it of remote) byId.set(it.id, it);
+      for (const it of state.history) if (!byId.has(it.id)) byId.set(it.id, it);
+      const history = Array.from(byId.values())
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 200);
+      return {
+        history,
+        ...syncActiveSpaceSnapshot(state, { history }),
+      };
+    });
+  },
   reuseHistoryItems: (ids) => set((state) => {
     const selectedById = new Set(ids);
     const appendedNodes = state.history
