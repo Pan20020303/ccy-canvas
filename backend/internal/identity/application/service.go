@@ -29,6 +29,10 @@ type Repository interface {
 	UpdateLastLogin(ctx context.Context, id string) error
 	CreateInvitation(ctx context.Context, input CreateInvitationInput) (InvitationDTO, error)
 	RedeemInvitation(ctx context.Context, codeHash string, email string, createUser func(ctx context.Context, role domain.Role, dailyQuota int32) (string, error)) error
+	// WithTx runs fn inside a single DB transaction, exposing the tx-scoped
+	// queries via the context so repo and credits calls inside fn commit
+	// atomically (or roll back together).
+	WithTx(ctx context.Context, fn func(txCtx context.Context) error) error
 }
 
 const DefaultDailyQuota int32 = 100
@@ -116,20 +120,28 @@ func (s Service) Register(ctx context.Context, email string, rawPassword string,
 	}
 
 	if trimmedCode == "" {
-		user, err := s.repo.CreateUser(ctx, CreateUserInput{
-			Email:        email,
-			PasswordHash: passwordHash,
-			Name:         trimmedName,
-			Role:         domain.RoleMember,
+		var created UserDTO
+		err := s.repo.WithTx(ctx, func(txCtx context.Context) error {
+			user, err := s.repo.CreateUser(txCtx, CreateUserInput{
+				Email:        email,
+				PasswordHash: passwordHash,
+				Name:         trimmedName,
+				Role:         domain.RoleMember,
+			})
+			if err != nil {
+				return err
+			}
+			created = user
+			createdBy := user.ID
+			if err := s.credits.CreateInitialAccount(txCtx, user.ID, s.defaultDailyQuota, &createdBy); err != nil {
+				return apperror.Wrap(apperror.CodeInternal, "Could not create credit account", err)
+			}
+			return nil
 		})
 		if err != nil {
 			return UserDTO{}, err
 		}
-		createdBy := user.ID
-		if err := s.credits.CreateInitialAccount(ctx, user.ID, s.defaultDailyQuota, &createdBy); err != nil {
-			return UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not create credit account", err)
-		}
-		return user, nil
+		return created, nil
 	}
 
 	var created UserDTO
@@ -206,26 +218,34 @@ func (s Service) LoginWithOAuth(ctx context.Context, input OAuthLoginInput) (Use
 			name = email[:at]
 		}
 	}
-	user, err := s.repo.CreateUser(ctx, CreateUserInput{
-		Email:        email,
-		PasswordHash: "oauth:" + provider,
-		Name:         name,
-		Role:         domain.RoleMember,
+	var created UserDTO
+	err = s.repo.WithTx(ctx, func(txCtx context.Context) error {
+		user, err := s.repo.CreateUser(txCtx, CreateUserInput{
+			Email:        email,
+			PasswordHash: "oauth:" + provider,
+			Name:         name,
+			Role:         domain.RoleMember,
+		})
+		if err != nil {
+			return err
+		}
+		created = user
+		createdBy := user.ID
+		if err := s.credits.CreateInitialAccount(txCtx, user.ID, s.defaultDailyQuota, &createdBy); err != nil {
+			return apperror.Wrap(apperror.CodeInternal, "Could not create credit account", err)
+		}
+		if err := s.repo.LinkOAuthAccount(txCtx, user.ID, provider, providerUserID, email); err != nil {
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		return UserDTO{}, err
 	}
-	createdBy := user.ID
-	if err := s.credits.CreateInitialAccount(ctx, user.ID, s.defaultDailyQuota, &createdBy); err != nil {
-		return UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not create credit account", err)
-	}
-	if err := s.repo.LinkOAuthAccount(ctx, user.ID, provider, providerUserID, email); err != nil {
+	if err := s.repo.UpdateLastLogin(ctx, created.ID); err != nil {
 		return UserDTO{}, err
 	}
-	if err := s.repo.UpdateLastLogin(ctx, user.ID); err != nil {
-		return UserDTO{}, err
-	}
-	return user, nil
+	return created, nil
 }
 
 func (s Service) Login(ctx context.Context, email string, rawPassword string) (UserDTO, error) {

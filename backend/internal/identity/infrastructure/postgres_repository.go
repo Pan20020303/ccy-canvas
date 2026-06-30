@@ -27,6 +27,26 @@ func NewRepository(pool *pgxpool.Pool, queries *sqlc.Queries) Repository {
 	return Repository{pool: pool, queries: queries}
 }
 
+// WithTx runs fn inside a single transaction, exposing the tx-scoped queries
+// via the context (sqlctx) so repo and credits calls inside fn share the tx
+// and commit/roll back together. Mirrors the wiring used by RedeemInvitation.
+func (r Repository) WithTx(ctx context.Context, fn func(txCtx context.Context) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return apperror.Wrap(apperror.CodeInternal, "Could not start transaction", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txCtx := sqlctx.WithQueries(ctx, r.queries.WithTx(tx))
+	if err := fn(txCtx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return apperror.Wrap(apperror.CodeInternal, "Could not commit transaction", err)
+	}
+	return nil
+}
+
 func (r Repository) CreateUser(ctx context.Context, input application.CreateUserInput) (application.UserDTO, error) {
 	queries := r.queries
 	if scopedQueries, ok := sqlctx.FromContext(ctx); ok {
