@@ -112,6 +112,11 @@ type Repository interface {
 	// when the guarded UPDATE matched no row (task already finished).
 	ListStaleActiveGenerations(ctx context.Context, olderThan time.Time) ([]domain.StaleGeneration, error)
 	MarkGenerationTimedOut(ctx context.Context, logID, errMsg string) (bool, error)
+	// MarkGenerationLogFailed guard-transitions a still-active row to 'error'
+	// and returns true only when this call performed the transition (false if
+	// the row was already terminal). Lets a refund fire exactly once even when
+	// the worker's FinalizeFailure and the reaper race on the same task.
+	MarkGenerationLogFailed(ctx context.Context, logID, errMsg string, durationMs int32) (bool, error)
 	CreateAdminAlert(ctx context.Context, alert domain.AdminAlert) error
 	ListAdminAlerts(ctx context.Context, status string, limit, offset int32) ([]domain.AdminAlert, error)
 	CountUnreadAdminAlerts(ctx context.Context) (int32, error)
@@ -1208,8 +1213,11 @@ func isTemporaryGeneratedAssetURL(rawURL string) bool {
 func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	candidates, err := s.buildCandidates(req)
 	if err != nil {
-		// No provider → terminal before any work; refund the reserve.
-		s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: no provider "+req.GenerationLogID)
+		// No provider → terminal before any work. Guard the transition so the
+		// reaper can't also refund this same (still-'pending') row later.
+		if s.persistTerminalFailure(req.GenerationLogID, err.Error(), 0) {
+			s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: no provider "+req.GenerationLogID)
+		}
 		return nil, err
 	}
 
@@ -1259,13 +1267,17 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 			doneCh <- genResult{result: result, err: nil}
 			return
 		}
-		if perr := s.persistGenerationOutcome(req.GenerationLogID, result, runErr, duration, cacheHit); perr == nil {
-			s.publishTaskEvent(req, result, runErr, duration)
-		}
 		// Legacy inline path runs once (no Asynq retry), so any error here is
-		// terminal → refund the reserved credits.
+		// terminal. Route the failure through the guarded transition so the
+		// refund fires exactly once (the reaper may also try if our write was
+		// lost); the success path keeps the unconditional outcome write.
 		if runErr != nil {
-			s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+			if s.persistTerminalFailure(req.GenerationLogID, runErr.Error(), duration) {
+				s.publishTaskEvent(req, nil, runErr, duration)
+				s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+			}
+		} else if perr := s.persistGenerationOutcome(req.GenerationLogID, result, nil, duration, cacheHit); perr == nil {
+			s.publishTaskEvent(req, result, nil, duration)
 		}
 
 		doneCh <- genResult{result: result, err: runErr}
@@ -1354,15 +1366,43 @@ func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*Gen
 // exhausted. Keeping this out of GenerateInline lets transient failures be
 // retried silently without flashing the node to 'error' first.
 func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.Duration) {
-	// Gate SSE on a durable write (F8). If the write fails, the reaper /
-	// recovery poller still surfaces the terminal state from the DB.
-	if perr := s.persistGenerationOutcome(req.GenerationLogID, nil, err, duration, false); perr == nil {
+	// Guard-transition the row to 'error'. We publish SSE and refund ONLY when
+	// this call actually performed the transition. If the reaper (or any other
+	// terminal path) already finalized this row, the guarded UPDATE is a no-op
+	// and we skip the refund — closing the worker-vs-reaper double-refund.
+	if s.persistTerminalFailure(req.GenerationLogID, err.Error(), duration) {
 		s.publishTaskEvent(req, nil, err, duration)
+		s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 	}
-	// Terminal failure → return the credits reserved at submit. (Transient
-	// failures that will be retried never reach here, so we never refund a
-	// generation that's still in flight.)
-	s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+}
+
+// persistTerminalFailure writes a guarded terminal-failure outcome and reports
+// whether THIS call transitioned the row from an active state to 'error'. The
+// status-guarded UPDATE is a no-op when the row is already terminal, so a
+// refund gated on the returned bool fires exactly once even when several
+// failure paths (the worker's FinalizeFailure and the reaper) race on the same
+// task. Returns true when no persistence is wired (logID=="" / no repo) so
+// legacy and unit-test refund behavior is preserved. On a persistent write
+// error it returns false: we don't know whether we own the transition, so we
+// decline the refund and let the reaper's guarded path own it later — never
+// double-refunding.
+func (s *Service) persistTerminalFailure(logID, errMsg string, duration time.Duration) bool {
+	if logID == "" || s.repo == nil {
+		return true
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		transitioned, err := s.repo.MarkGenerationLogFailed(ctx, logID, errMsg, int32(duration.Milliseconds()))
+		if s.cache != nil {
+			s.cache.Delete(ctx, generationTaskCacheKey(logID))
+		}
+		cancel()
+		if err == nil {
+			return transitioned
+		}
+		log.Printf("[modelcatalog] mark-failed write failed for log %s (attempt %d/2): %v", logID, attempt, err)
+	}
+	return false
 }
 
 func (s *Service) PromoteStagedAssetForLog(ctx context.Context, p AssetPersistPayload) error {

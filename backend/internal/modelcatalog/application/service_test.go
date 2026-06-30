@@ -428,6 +428,12 @@ type fakeRepository struct {
 	lastLogStatus   string
 	lastLogResult   string
 	lastLogCacheHit bool
+
+	// MarkGenerationLogFailed controls: whether the guarded transition reports
+	// success (markFailedTransitioned), an optional error, and a call counter.
+	markFailedTransitioned bool
+	markFailedErr          error
+	markFailedCalls        int
 }
 
 func (r *fakeRepository) GetRelayProvider(context.Context) (*domain.RelayProvider, error) {
@@ -848,6 +854,10 @@ func (r *fakeRepository) ListStaleActiveGenerations(context.Context, time.Time) 
 func (r *fakeRepository) MarkGenerationTimedOut(context.Context, string, string) (bool, error) {
 	return false, nil
 }
+func (r *fakeRepository) MarkGenerationLogFailed(context.Context, string, string, int32) (bool, error) {
+	r.markFailedCalls++
+	return r.markFailedTransitioned, r.markFailedErr
+}
 func (r *fakeRepository) MarkChannelTimeout(context.Context, string) error { return nil }
 
 func (r *fakeRepository) CreateAdminAlert(context.Context, domain.AdminAlert) error { return nil }
@@ -857,6 +867,73 @@ func (r *fakeRepository) ListAdminAlerts(context.Context, string, int32, int32) 
 func (r *fakeRepository) CountUnreadAdminAlerts(context.Context) (int32, error) { return 0, nil }
 func (r *fakeRepository) MarkAdminAlertRead(context.Context, string) error      { return nil }
 func (r *fakeRepository) MarkAllAdminAlertsRead(context.Context) error          { return nil }
+
+// fakeCharger is an in-memory creditcharger that counts reserves/refunds so
+// tests can assert the billing orchestration without a database.
+type fakeCharger struct {
+	reserves     int
+	refunds      int
+	refundAmount int32
+}
+
+func (c *fakeCharger) Reserve(context.Context, string, int32, string) error { c.reserves++; return nil }
+func (c *fakeCharger) Refund(_ context.Context, _ string, amount int32, _ string) error {
+	c.refunds++
+	c.refundAmount += amount
+	return nil
+}
+
+func newCreditTestService(repo Repository, charger creditcharger) *Service {
+	return NewService(repo, []byte("01234567890123456789012345678901")).WithCredits(charger)
+}
+
+// FinalizeFailure must refund exactly once, and only when it actually
+// transitioned the row to terminal — so the worker and the reaper can't both
+// refund the same task (the double-refund this fix targets).
+func TestFinalizeFailureRefundsOnlyWhenItWinsTheTransition(t *testing.T) {
+	req := GenerateRequest{UserID: "u1", CreditCost: 5, GenerationLogID: "log-1"}
+
+	t.Run("transition won -> refund once", func(t *testing.T) {
+		charger := &fakeCharger{}
+		repo := &fakeRepository{markFailedTransitioned: true}
+		svc := newCreditTestService(repo, charger)
+
+		svc.FinalizeFailure(req, fmt.Errorf("boom"), time.Second)
+
+		if repo.markFailedCalls != 1 {
+			t.Fatalf("markFailedCalls = %d, want 1", repo.markFailedCalls)
+		}
+		if charger.refunds != 1 || charger.refundAmount != 5 {
+			t.Fatalf("refunds = %d (amount %d), want 1 (amount 5)", charger.refunds, charger.refundAmount)
+		}
+	})
+
+	t.Run("already terminal -> no refund", func(t *testing.T) {
+		charger := &fakeCharger{}
+		repo := &fakeRepository{markFailedTransitioned: false}
+		svc := newCreditTestService(repo, charger)
+
+		svc.FinalizeFailure(req, fmt.Errorf("boom"), time.Second)
+
+		if charger.refunds != 0 {
+			t.Fatalf("refunds = %d, want 0 when the row was already finalized", charger.refunds)
+		}
+	})
+}
+
+// A persistent write failure must NOT refund — the reaper's guarded path owns
+// the refund later, so we never double-credit.
+func TestFinalizeFailureDoesNotRefundOnWriteError(t *testing.T) {
+	charger := &fakeCharger{}
+	repo := &fakeRepository{markFailedErr: fmt.Errorf("db down")}
+	svc := newCreditTestService(repo, charger)
+
+	svc.FinalizeFailure(GenerateRequest{UserID: "u1", CreditCost: 5, GenerationLogID: "log-1"}, fmt.Errorf("boom"), time.Second)
+
+	if charger.refunds != 0 {
+		t.Fatalf("refunds = %d, want 0 when the terminal write never succeeded", charger.refunds)
+	}
+}
 
 func TestSyncModelsCountsOnlyNewDrafts(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
