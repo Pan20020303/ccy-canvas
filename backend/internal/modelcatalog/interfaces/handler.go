@@ -1699,6 +1699,13 @@ func (h *Handler) enqueueGeneration(
 		// UUIDs collide ~never, so this is defense-in-depth for P6.)
 		if errors.Is(err, pgx.ErrNoRows) {
 			row, err = h.q.GetGenerationLogByRequestID(ctx, pgReqID)
+			// Idempotent replay: a task already exists for this request_id and
+			// no new work will run, but generate() already reserved credits
+			// up-front for this duplicate submit. Refund that reserve so a
+			// double-click / client retry is charged exactly once.
+			if err == nil && req.CreditCost > 0 {
+				h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: idempotent replay (duplicate request_id)")
+			}
 		}
 		if err != nil {
 			return nil, huma.Error500InternalServerError("Failed to persist queued task: " + err.Error())

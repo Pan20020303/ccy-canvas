@@ -618,6 +618,18 @@ func (r *Repository) MarkGenerationTimedOut(ctx context.Context, logID, errMsg s
 	return n > 0, nil
 }
 
+func (r *Repository) MarkGenerationLogFailed(ctx context.Context, logID, errMsg string, durationMs int32) (bool, error) {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return false, err
+	}
+	n, err := r.q.MarkGenerationLogFailed(ctx, pgID, errMsg, durationMs)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (r *Repository) InsertGenerationAttempt(ctx context.Context, attempt domain.GenerationAttempt) error {
 	var logID pgtype.UUID
 	if attempt.GenerationLogID != "" {

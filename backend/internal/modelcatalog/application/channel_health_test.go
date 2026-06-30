@@ -219,6 +219,9 @@ func (r *healthFakeRepo) ListStaleActiveGenerations(_ context.Context, _ time.Ti
 func (r *healthFakeRepo) MarkGenerationTimedOut(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }
+func (r *healthFakeRepo) MarkGenerationLogFailed(_ context.Context, _, _ string, _ int32) (bool, error) {
+	return false, nil
+}
 func (r *healthFakeRepo) CreateAdminAlert(_ context.Context, _ domain.AdminAlert) error {
 	panic("nope")
 }

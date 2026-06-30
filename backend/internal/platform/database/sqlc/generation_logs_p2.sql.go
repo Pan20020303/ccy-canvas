@@ -323,6 +323,26 @@ func (q *Queries) MarkGenerationLogTimedOut(ctx context.Context, id pgtype.UUID,
 	return tag.RowsAffected(), nil
 }
 
+const markGenerationLogFailed = `
+UPDATE generation_logs
+SET status = 'error', error_msg = $2, duration_ms = $3
+WHERE id = $1 AND status IN ('pending', 'queued', 'running', 'retrying', 'persisting')
+`
+
+// MarkGenerationLogFailed flips a still-active row to 'error' with the given
+// message and duration. The status guard makes it a no-op (0 rows) when the
+// row is already terminal, so a refund gated on RowsAffected()>0 fires exactly
+// once even when multiple terminal-failure paths (the Asynq worker's
+// FinalizeFailure and the reaper) race on the same task. Returns the number of
+// rows affected.
+func (q *Queries) MarkGenerationLogFailed(ctx context.Context, id pgtype.UUID, errMsg string, durationMs int32) (int64, error) {
+	tag, err := q.db.Exec(ctx, markGenerationLogFailed, id, errMsg, durationMs)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 const listActiveGenerationsForUser = `
 SELECT id, node_id, service_type, model, prompt, status, result_url, error_msg, asynq_task_id, created_at
 FROM generation_logs
