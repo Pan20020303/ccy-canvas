@@ -51,7 +51,7 @@ import {
 
 import clsx from 'clsx';
 import { useStore, type HistoryItem } from '../store';
-import { resolveApiUrl } from '../api/client';
+import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
   getReferenceNodeTypeFromMimeType,
@@ -248,6 +248,7 @@ const InnerCanvas = () => {
     onEdgesChange,
     onConnect: connectEdge,
     addNode,
+    updateNodeData,
     createGroup,
     showMiniMap,
     setShowMiniMap,
@@ -830,90 +831,49 @@ const InnerCanvas = () => {
       const nodeType = getReferenceNodeTypeFromMimeType(file?.type);
       if (!nodeType) continue;
 
-      const form = new FormData();
-      form.append('file', file);
+      const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const position = snapToGrid
+        ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+        : { x: flowPos.x, y: flowPos.y + offsetY };
+      offsetY += 320;
 
-      try {
-        const referenceValuePromise = readFileAsDataUrl(file);
-        const resp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
-        if (!resp.ok) {
-          const bodyText = await resp.text();
-          addNode({
-            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            type: nodeType,
-            position: snapToGrid
-              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-              : { x: flowPos.x, y: flowPos.y + offsetY },
-            data: {
-              status: 'error',
-              sourceName: file.name,
-              sourceKind: 'upload',
-              error: `Upload failed (${resp.status}): ${bodyText || file.name}`,
-            },
-          });
-          offsetY += 320;
-          continue;
-        }
-
-        const json = await resp.json();
-        const rawUrl = json?.data?.url as string;
-        if (!rawUrl) {
-          addNode({
-            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            type: nodeType,
-            position: snapToGrid
-              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-              : { x: flowPos.x, y: flowPos.y + offsetY },
-            data: {
-              status: 'error',
-              sourceName: file.name,
-              sourceKind: 'upload',
-              error: `Upload response missing file url: ${file.name}`,
-            },
-          });
-          offsetY += 320;
-          continue;
-        }
-
-        const url = resolveBackendAssetUrl(rawUrl, import.meta.env.VITE_API_BASE_URL ?? '');
-        if (!url) continue;
-
-        const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const position = snapToGrid
-          ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-          : { x: flowPos.x, y: flowPos.y + offsetY };
-        const referenceValue = await referenceValuePromise;
-
-        addNode({
-          id,
-          type: nodeType,
-          position,
-          data: { url, status: 'done', sourceName: file.name, sourceKind: 'upload' },
-        });
-
-        if (referenceValue) {
-          setReferencePayloadValue(id, referenceValue);
-        }
-
-        offsetY += 320;
-      } catch (error) {
-        addNode({
-          id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          type: nodeType,
-          position: snapToGrid
-            ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-            : { x: flowPos.x, y: flowPos.y + offsetY },
-        data: {
-          status: 'error',
-          sourceName: file.name,
-          sourceKind: 'upload',
-          error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
-        },
+      // 1. Create the node up-front with a local preview so it appears
+      //    instantly, with an "上传中 (X%)" overlay while the upload runs.
+      const previewUrl = URL.createObjectURL(file);
+      addNode({
+        id,
+        type: nodeType,
+        position,
+        data: { url: previewUrl, status: 'uploading', progress: 0, sourceName: file.name, sourceKind: 'upload' },
       });
-        offsetY += 320;
-      }
+
+      // 2. Upload with progress; uploads run concurrently so every dropped
+      //    file gets its node immediately. Swap in the real URL on success.
+      void (async () => {
+        try {
+          const data = await uploadFileWithProgress(file, file.name, (percent) => {
+            updateNodeData(id, { progress: percent });
+          });
+          const url = resolveBackendAssetUrl(data.url, import.meta.env.VITE_API_BASE_URL ?? '');
+          if (!url) {
+            updateNodeData(id, { status: 'error', url: '', error: `Upload response missing file url: ${file.name}` });
+            return;
+          }
+          updateNodeData(id, { url, status: 'done', progress: 100 });
+          const referenceValue = await readFileAsDataUrl(file);
+          if (referenceValue) setReferencePayloadValue(id, referenceValue);
+        } catch (error) {
+          updateNodeData(id, {
+            status: 'error',
+            url: '',
+            error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
+          });
+        } finally {
+          URL.revokeObjectURL(previewUrl);
+        }
+      })();
     }
-  }, [addNode, snapToGrid]);
+  }, [addNode, updateNodeData, snapToGrid]);
 
   const openUploadDialog = useCallback(() => {
     fileInputRef.current?.click();
