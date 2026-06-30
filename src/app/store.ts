@@ -2575,13 +2575,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         return;
       }
 
-      // eslint-disable-next-line no-console
-      console.log('[runNode] generate response', {
-        nodeId,
-        type: result.type,
-        contentPreview: typeof result.content === 'string' ? result.content.slice(0, 120) : '(non-string)',
-        task_id: result.task_id,
-      });
       const persistedContent = await persistGeneratedMediaUrl(result);
       if (!isCurrentRun()) return;
 
