@@ -167,8 +167,8 @@ export const HistoryAssetsModal = () => {
 
   return (
     <div className="fixed inset-0 z-[110] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/72 backdrop-blur-md" onClick={closeModal} />
-      <div className="relative z-10 flex h-[78vh] w-[min(1660px,calc(100vw-48px))] flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#262626]/96 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+      <div className="ccy-fade-in absolute inset-0 bg-black/72 backdrop-blur-md" onClick={closeModal} />
+      <div className="ccy-modal-in relative z-10 flex h-[78vh] w-[min(1660px,calc(100vw-48px))] flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#262626]/96 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
           <div className="text-[15px] font-medium text-neutral-100">
             {language === "zh" ? "历史资产" : "History Assets"}
@@ -302,10 +302,20 @@ export const HistoryAssetsModal = () => {
                                 setPreviewItem(item);
                               }
                             }}
-                            className={`group overflow-hidden rounded-2xl border bg-[#1f1f1f] transition ${
+                            onMouseMove={(event) => {
+                              const r = event.currentTarget.getBoundingClientRect();
+                              event.currentTarget.style.setProperty("--spot-x", `${event.clientX - r.left}px`);
+                              event.currentTarget.style.setProperty("--spot-y", `${event.clientY - r.top}px`);
+                            }}
+                            className={`group relative overflow-hidden rounded-2xl border bg-[#1f1f1f] transition ${
                               selected ? "border-cyan-400/40 shadow-[0_0_0_1px_rgba(34,211,238,0.18)]" : "border-white/8 hover:border-white/15"
                             } ${!bulkMode && previewable ? "cursor-pointer" : ""}`}
                           >
+                            {/* Spotlight glow following the cursor (React Bits "Spotlight Card"). */}
+                            <div
+                              className="pointer-events-none absolute inset-0 z-[1] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+                              style={{ background: "radial-gradient(190px circle at var(--spot-x, 50%) var(--spot-y, 50%), rgba(34, 211, 238, 0.14), transparent 60%)" }}
+                            />
                             <div className="relative">
                               {bulkMode ? (
                                 <button

@@ -364,6 +364,22 @@ html.theme-light .prompt-editor-scroll {
   cursor: grabbing !important;
 }
 
+/* Modal entrance — backdrop fade + panel rise/scale. Plays each time the
+   element mounts (used by the History Assets modal). */
+@keyframes ccy-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ccy-modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+.ccy-fade-in { animation: ccy-fade-in 0.2s ease-out; }
+.ccy-modal-in { animation: ccy-modal-in 0.24s cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .ccy-fade-in, .ccy-modal-in { animation: none; }
+}
+
 /* Multi-select bounding box: give it breathing room so the dashed frame sits
    a bit outside the selected nodes instead of hugging them tightly. The outline
    (with offset) draws the visible border padding without changing node bounds. */

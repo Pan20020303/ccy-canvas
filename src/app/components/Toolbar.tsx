@@ -23,6 +23,7 @@ import {
 
 import { t } from '../i18n';
 import { useStore, ASSET_CATEGORIES, type SavedAssetCategory, type SavedAsset } from '../store';
+import { Dock, DockItem } from './reactbits/Dock';
 
 type PanelKey = 'add' | 'projects' | 'assets' | 'files' | null;
 type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode';
@@ -195,36 +196,40 @@ export const Toolbar = () => {
 
   return (
     <div ref={rootRef} className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col-reverse items-center gap-3">
-      <div className="flex flex-row items-center gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
-        <button
-          onClick={() => toggle('add')}
-          className="group relative flex items-center justify-center rounded-full p-2.5 transition-all hover:bg-white/10"
-        >
-          <Plus
-            className={`h-4 w-4 transition-transform duration-300 ease-out ${
-              open === 'add' ? 'rotate-45 text-cyan-300' : 'text-cyan-400 group-hover:rotate-45'
-            }`}
-          />
-        </button>
+      <Dock className="flex flex-row items-end gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+        <DockItem>
+          <button
+            onClick={() => toggle('add')}
+            className="group relative flex items-center justify-center rounded-full p-2.5 transition-all hover:bg-white/10"
+          >
+            <Plus
+              className={`h-4 w-4 transition-transform duration-300 ease-out ${
+                open === 'add' ? 'rotate-45 text-cyan-300' : 'text-cyan-400 group-hover:rotate-45'
+              }`}
+            />
+          </button>
+        </DockItem>
 
-        <div className="mx-1 h-4 w-px bg-white/10" />
+        <div className="mx-1 h-4 w-px self-center bg-white/10" />
 
-        <SideBtn k="projects" icon={Layers} label={language === 'zh' ? '空间 / 项目' : 'Spaces / Projects'} />
-        <SideBtn k="assets" icon={Package} label={language === 'zh' ? '资源库' : 'Assets'} />
-        <SideBtn k="files" icon={FolderOpen} label={language === 'zh' ? '文件 / 历史' : 'Files / History'} />
+        <DockItem><SideBtn k="projects" icon={Layers} label={language === 'zh' ? '空间 / 项目' : 'Spaces / Projects'} /></DockItem>
+        <DockItem><SideBtn k="assets" icon={Package} label={language === 'zh' ? '资源库' : 'Assets'} /></DockItem>
+        <DockItem><SideBtn k="files" icon={FolderOpen} label={language === 'zh' ? '文件 / 历史' : 'Files / History'} /></DockItem>
 
-        <div className="mx-1 h-4 w-px bg-white/10" />
+        <div className="mx-1 h-4 w-px self-center bg-white/10" />
 
-        <button
-          onClick={() => setSettingsOpen(true)}
-          className="group relative flex items-center justify-center rounded-full p-2.5 text-neutral-400 transition-all hover:bg-white/10 hover:text-cyan-300"
-        >
-          <SettingsIcon className="h-4 w-4" />
-          <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
-            {dict.settings}
-          </div>
-        </button>
-      </div>
+        <DockItem>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="group relative flex items-center justify-center rounded-full p-2.5 text-neutral-400 transition-all hover:bg-white/10 hover:text-cyan-300"
+          >
+            <SettingsIcon className="h-4 w-4" />
+            <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+              {dict.settings}
+            </div>
+          </button>
+        </DockItem>
+      </Dock>
 
       {open ? (
         <div ref={panelRef} className="max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
