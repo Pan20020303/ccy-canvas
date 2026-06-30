@@ -93,10 +93,14 @@ func Client(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext:           guardedDialContext(dialer),
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
+			DialContext: guardedDialContext(dialer),
+			// Some upstreams (notably Tencent COS) intermittently reset a reused
+			// keep-alive connection, surfacing as a sporadic "EOF" on the next
+			// request. This is a one-shot fetch-and-stream proxy, not a hot
+			// client, so use a fresh connection per request (and HTTP/1.1) to
+			// trade a little latency for reliability.
+			DisableKeepAlives:     true,
+			ForceAttemptHTTP2:     false,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
