@@ -702,6 +702,8 @@ func TestVideoPollMaxAttemptsMatchesTimeoutBudget(t *testing.T) {
 }
 
 func TestFetchRemoteReferenceBytes(t *testing.T) {
+	// httptest serves from loopback; allow internal targets like a LAN deploy.
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("fake-image-bytes"))
@@ -718,6 +720,7 @@ func TestFetchRemoteReferenceBytes(t *testing.T) {
 }
 
 func TestFetchRemoteReferenceBytesReturnsStatusDetails(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "blocked", http.StatusForbidden)
 	}))

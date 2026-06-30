@@ -39,6 +39,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/crypto"
 	"ccy-canvas/backend/internal/shared/apperror"
+	"ccy-canvas/backend/internal/shared/safehttp"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
@@ -3024,6 +3025,9 @@ func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, erro
 	fetchCtx, cancel := context.WithTimeout(ctx, remoteReferenceFetchTimeout)
 	defer cancel()
 
+	if err := safehttp.ValidatePublicURL(rawURL); err != nil {
+		return nil, fmt.Errorf("refusing to fetch remote reference: %w", err)
+	}
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build remote reference request: %w", err)
@@ -3031,7 +3035,7 @@ func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, erro
 	req.Header.Set("User-Agent", "ccy-canvas/1.0")
 	req.Header.Set("Accept", "image/*,*/*;q=0.8")
 
-	resp, err := (&http.Client{Timeout: remoteReferenceFetchTimeout}).Do(req)
+	resp, err := safehttp.Client(remoteReferenceFetchTimeout).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch remote reference: %w", err)
 	}

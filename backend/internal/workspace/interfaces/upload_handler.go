@@ -12,6 +12,7 @@ import (
 	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/platform/session"
 	"ccy-canvas/backend/internal/shared/httpx"
+	"ccy-canvas/backend/internal/shared/safehttp"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -54,6 +55,24 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 		contentType := header.Header.Get("Content-Type")
 		if !strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(contentType, "video/") {
 			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Only image and video files are allowed"})
+			return
+		}
+		// Defense against stored XSS: never trust the client-declared type for
+		// safety decisions. Sniff the real bytes and reject anything a browser
+		// could execute as an active document (SVG/HTML/XML) when later served
+		// from /uploads on our own origin.
+		sniff := make([]byte, 512)
+		sn, _ := io.ReadFull(file, sniff)
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to read file"})
+			return
+		}
+		detected := http.DetectContentType(sniff[:sn])
+		if strings.Contains(contentType, "svg") ||
+			strings.Contains(detected, "svg") ||
+			strings.Contains(detected, "xml") ||
+			strings.HasPrefix(detected, "text/html") {
+			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Unsupported file content"})
 			return
 		}
 
@@ -104,8 +123,15 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			http.Error(w, "Missing or invalid url parameter", http.StatusBadRequest)
 			return
 		}
+		// SSRF guard: reject obviously-internal targets up front; the hardened
+		// client additionally validates the resolved IP at dial time, defeating
+		// DNS rebinding and redirects to internal hosts.
+		if err := safehttp.ValidatePublicURL(target); err != nil {
+			http.Error(w, "Refusing to proxy that url", http.StatusBadRequest)
+			return
+		}
 
-		client := &http.Client{Timeout: 60 * time.Second}
+		client := safehttp.Client(60 * time.Second)
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 		if err != nil {
 			http.Error(w, "Failed to build request", http.StatusBadRequest)
@@ -156,6 +182,13 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", ct)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// SVG can carry <script>; served same-origin it is a stored-XSS vector
+		// on direct navigation. Force download for it — inline <img> rendering
+		// is unaffected by Content-Disposition.
+		if strings.Contains(ct, "svg") {
+			w.Header().Set("Content-Disposition", "attachment")
+		}
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		if cl := resp.Header.Get("Content-Length"); cl != "" {

@@ -1372,8 +1372,11 @@ func toTaskItem(row sqlc.GenerationLog) TaskItem {
 	}
 }
 
-func taskCacheKey(id string) string {
-	return "generation_task:" + id
+func taskCacheKey(userID, id string) string {
+	// Scope the cache entry to the owning user. The cache is read before the
+	// per-user DB ownership filter, so an un-scoped key would let any
+	// authenticated caller read another user's task by guessing its id (IDOR).
+	return "generation_task:" + userID + ":" + id
 }
 
 func isActiveTaskStatus(status string) bool {
@@ -1390,7 +1393,9 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 		return nil, huma.Error500InternalServerError("Database unavailable")
 	}
 	var userID pgtype.UUID
+	var userIDStr string
 	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		userIDStr = claims.UserID
 		_ = userID.Scan(claims.UserID)
 	}
 	if !userID.Valid {
@@ -1398,7 +1403,7 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	}
 	if h.cache != nil {
 		var cached TaskItem
-		if h.cache.Get(ctx, taskCacheKey(input.ID), &cached) {
+		if h.cache.Get(ctx, taskCacheKey(userIDStr, input.ID), &cached) {
 			if !isActiveTaskStatus(cached.Status) {
 				out := &taskOutput{}
 				out.Body.Data = cached
@@ -1422,9 +1427,9 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	out.Body.Data = toTaskItem(row)
 	if h.cache != nil {
 		if isActiveTaskStatus(out.Body.Data.Status) {
-			h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 2*time.Second)
+			h.cache.Set(ctx, taskCacheKey(userIDStr, input.ID), out.Body.Data, 2*time.Second)
 		} else {
-			h.cache.Set(ctx, taskCacheKey(input.ID), out.Body.Data, 5*time.Minute)
+			h.cache.Set(ctx, taskCacheKey(userIDStr, input.ID), out.Body.Data, 5*time.Minute)
 		}
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
@@ -1729,7 +1734,7 @@ func (h *Handler) enqueueGeneration(
 	}
 	out.Body.Data.TaskID = logIDStr
 	if h.cache != nil {
-		h.cache.Set(ctx, taskCacheKey(logIDStr), TaskItem{
+		h.cache.Set(ctx, taskCacheKey(userIDStr, logIDStr), TaskItem{
 			ID:          logIDStr,
 			NodeID:      input.Body.NodeId,
 			ServiceType: input.Body.ServiceType,
