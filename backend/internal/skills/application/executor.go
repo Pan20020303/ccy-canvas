@@ -27,6 +27,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/shared/apperror"
+	"ccy-canvas/backend/internal/shared/safehttp"
 )
 
 // Executor runs Skill.spec definitions on demand.
@@ -40,7 +41,10 @@ type Executor struct {
 func NewExecutor(generateSvc *application.Service) *Executor {
 	return &Executor{
 		generateSvc: generateSvc,
-		httpClient:  &http.Client{Timeout: 60 * time.Second},
+		// Hardened client: validates the resolved IP at dial time and re-checks
+		// every redirect hop, so the assertExternalURL pre-check cannot be
+		// bypassed via a redirect or DNS rebinding to an internal address.
+		httpClient: safehttp.Client(60 * time.Second),
 	}
 }
 

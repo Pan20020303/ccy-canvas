@@ -172,6 +172,9 @@ func main() {
 	fileServer := http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads")))
 	router.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000")
+		// Prevent MIME sniffing of stored assets — defense-in-depth alongside
+		// the upload-time content sniffing that rejects active document types.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		fileServer.ServeHTTP(w, r)
 	})
 
