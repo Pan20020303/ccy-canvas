@@ -148,6 +148,10 @@ func (s cosStore) Save(ctx context.Context, key string, body io.Reader, contentT
 		key = s.keyPrefix + "/" + key
 	}
 	opt := &cos.ObjectPutOptions{
+		// Assets are served via public URLs (publicBase), so each object must be
+		// publicly readable. Without this they inherit the bucket's (private)
+		// default ACL and every generated/uploaded asset 403s on GET.
+		ACLHeaderOptions: &cos.ACLHeaderOptions{XCosACL: "public-read"},
 		ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
 			ContentType:  contentType,
 			CacheControl: "public, max-age=31536000",
@@ -172,6 +176,9 @@ func (s cosStore) UploadFile(ctx context.Context, key string, localPath string, 
 		ThreadPoolSize: 3,
 		CheckPoint:     true,
 		OptIni: &cos.InitiateMultipartUploadOptions{
+			// Publicly readable — see the note in Save(). Generated videos use
+			// the multipart path, so they need the same ACL or they 403.
+			ACLHeaderOptions: &cos.ACLHeaderOptions{XCosACL: "public-read"},
 			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
 				ContentType:        contentType,
 				CacheControl:       "public, max-age=31536000",
