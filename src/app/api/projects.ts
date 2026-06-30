@@ -74,3 +74,45 @@ export async function uploadFile(file: Blob, filename: string): Promise<UploadDa
   }
   return body.data;
 }
+
+// uploadFileWithProgress is uploadFile's XHR twin: fetch can't report upload
+// progress, XHR can (xhr.upload.onprogress). Used by the canvas uploader so a
+// node can show a live "上传中 (X%)" indicator. onProgress reports 0-100.
+export function uploadFileWithProgress(
+  file: Blob,
+  filename: string,
+  onProgress?: (percent: number) => void,
+): Promise<UploadData> {
+  return new Promise<UploadData>((resolve, reject) => {
+    const form = new FormData();
+    form.append("file", file, filename);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", resolveApiUrl("/api/app/upload"));
+    xhr.withCredentials = true;
+
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+        }
+      };
+    }
+    xhr.onload = () => {
+      let body: { data?: UploadData; error?: string } = {};
+      try {
+        body = xhr.responseText.trim() ? JSON.parse(xhr.responseText) : {};
+      } catch {
+        body = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && body.data) {
+        resolve(body.data);
+      } else {
+        reject(new Error(body.error || `Upload failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Upload failed (network error)"));
+    xhr.onabort = () => reject(new Error("Upload aborted"));
+    xhr.send(form);
+  });
+}

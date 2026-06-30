@@ -249,6 +249,24 @@ function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: strin
   );
 }
 
+// UploadingOverlay covers a node's local preview while its file uploads,
+// blurring the preview and showing a centered "上传中 (X%)" label with a gentle
+// pulse. Rendered for nodes with data.status === 'uploading'.
+function UploadingOverlay({ progress }: { progress?: number }) {
+  const language = useStore((state) => state.language);
+  const pct = typeof progress === 'number' ? Math.max(0, Math.min(100, Math.round(progress))) : undefined;
+  const label = language === 'zh'
+    ? `上传中${pct != null ? ` (${pct}%)` : ''} …`
+    : `Uploading${pct != null ? ` (${pct}%)` : ''} …`;
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/35 backdrop-blur-[10px]">
+      <span className="animate-pulse text-[12.5px] font-medium tracking-wide text-neutral-100 drop-shadow">
+        {label}
+      </span>
+    </div>
+  );
+}
+
 // HappyHorse 快乐马家族 helpers — 把真实模型名 `happyhorse-{ver}-{suffix}`
 // 拆成「版本 + 模式」两个维度，UI 上以 dropdown 暴露给用户，提交时再合成
 // 真实模型名。视频编辑只在 1.0 存在。
@@ -3954,7 +3972,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
-      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       {data.url ? (
@@ -4313,7 +4331,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
       headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
-      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
@@ -4354,6 +4372,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
             compact
           />
         ) : null}
+        {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
       </div>
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
@@ -4385,7 +4404,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
       headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
-      topFloatingPanel={data.url ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
@@ -4425,6 +4444,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
             <Video className="h-6 w-6 text-sky-100/40" />
           </div>
         )}
+        {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
       </div>
       {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
@@ -4479,7 +4499,7 @@ export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
-      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
@@ -4951,7 +4971,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       tone="image"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
-      topFloatingPanel={data.url ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
@@ -5082,7 +5102,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.error}
-      topFloatingPanel={data.url ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>

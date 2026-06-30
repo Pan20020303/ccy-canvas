@@ -51,7 +51,7 @@ import {
 
 import clsx from 'clsx';
 import { useStore, type HistoryItem } from '../store';
-import { resolveApiUrl } from '../api/client';
+import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
   getReferenceNodeTypeFromMimeType,
@@ -248,6 +248,7 @@ const InnerCanvas = () => {
     onEdgesChange,
     onConnect: connectEdge,
     addNode,
+    updateNodeData,
     createGroup,
     showMiniMap,
     setShowMiniMap,
@@ -830,107 +831,84 @@ const InnerCanvas = () => {
       const nodeType = getReferenceNodeTypeFromMimeType(file?.type);
       if (!nodeType) continue;
 
-      const form = new FormData();
-      form.append('file', file);
+      const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const position = snapToGrid
+        ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
+        : { x: flowPos.x, y: flowPos.y + offsetY };
+      offsetY += 320;
 
-      try {
-        const referenceValuePromise = readFileAsDataUrl(file);
-        const resp = await fetch(resolveApiUrl('/api/app/upload'), { method: 'POST', body: form, credentials: 'include' });
-        if (!resp.ok) {
-          const bodyText = await resp.text();
-          addNode({
-            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            type: nodeType,
-            position: snapToGrid
-              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-              : { x: flowPos.x, y: flowPos.y + offsetY },
-            data: {
-              status: 'error',
-              sourceName: file.name,
-              sourceKind: 'upload',
-              error: `Upload failed (${resp.status}): ${bodyText || file.name}`,
-            },
-          });
-          offsetY += 320;
-          continue;
-        }
-
-        const json = await resp.json();
-        const rawUrl = json?.data?.url as string;
-        if (!rawUrl) {
-          addNode({
-            id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            type: nodeType,
-            position: snapToGrid
-              ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-              : { x: flowPos.x, y: flowPos.y + offsetY },
-            data: {
-              status: 'error',
-              sourceName: file.name,
-              sourceKind: 'upload',
-              error: `Upload response missing file url: ${file.name}`,
-            },
-          });
-          offsetY += 320;
-          continue;
-        }
-
-        const url = resolveBackendAssetUrl(rawUrl, import.meta.env.VITE_API_BASE_URL ?? '');
-        if (!url) continue;
-
-        const id = `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        const position = snapToGrid
-          ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-          : { x: flowPos.x, y: flowPos.y + offsetY };
-        const referenceValue = await referenceValuePromise;
-
-        addNode({
-          id,
-          type: nodeType,
-          position,
-          data: { url, status: 'done', sourceName: file.name, sourceKind: 'upload' },
-        });
-
-        if (referenceValue) {
-          setReferencePayloadValue(id, referenceValue);
-        }
-
-        offsetY += 320;
-      } catch (error) {
-        addNode({
-          id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          type: nodeType,
-          position: snapToGrid
-            ? snapPosition({ x: flowPos.x, y: flowPos.y + offsetY })
-            : { x: flowPos.x, y: flowPos.y + offsetY },
-        data: {
-          status: 'error',
-          sourceName: file.name,
-          sourceKind: 'upload',
-          error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
-        },
+      // 1. Create the node up-front with a local preview so it appears
+      //    instantly, with an "上传中 (X%)" overlay while the upload runs.
+      const previewUrl = URL.createObjectURL(file);
+      addNode({
+        id,
+        type: nodeType,
+        position,
+        data: { url: previewUrl, status: 'uploading', progress: 0, sourceName: file.name, sourceKind: 'upload' },
       });
-        offsetY += 320;
-      }
-    }
-  }, [addNode, snapToGrid]);
 
-  const openUploadDialog = useCallback(() => {
+      // 2. Upload with progress; uploads run concurrently so every dropped
+      //    file gets its node immediately. Swap in the real URL on success.
+      void (async () => {
+        try {
+          const data = await uploadFileWithProgress(file, file.name, (percent) => {
+            updateNodeData(id, { progress: percent });
+          });
+          const url = resolveBackendAssetUrl(data.url, import.meta.env.VITE_API_BASE_URL ?? '');
+          if (!url) {
+            updateNodeData(id, { status: 'error', url: '', error: `Upload response missing file url: ${file.name}` });
+            return;
+          }
+          updateNodeData(id, { url, status: 'done', progress: 100 });
+          const referenceValue = await readFileAsDataUrl(file);
+          if (referenceValue) setReferencePayloadValue(id, referenceValue);
+        } catch (error) {
+          updateNodeData(id, {
+            status: 'error',
+            url: '',
+            error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
+          });
+        } finally {
+          URL.revokeObjectURL(previewUrl);
+        }
+      })();
+    }
+  }, [addNode, updateNodeData, snapToGrid]);
+
+  /** Flow-coord drop point for the next file-dialog upload. Captured when the
+   *  dialog opens — by the time the user picks a file, contextMenu is already
+   *  cleared, so we can't read it in handleFileInputChange. */
+  const pendingUploadFlowPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  /** Center of the visible canvas in flow coords, so an uploaded node always
+   *  lands in view regardless of pan/zoom (previously a hardcoded 240,180 put
+   *  it off-screen — the node "disappeared" until you tidied the canvas). */
+  const viewportCenterFlowPos = useCallback(() => {
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    return screenToFlowPosition({ x: cx, y: cy });
+  }, [screenToFlowPosition]);
+
+  const openUploadDialog = useCallback((flowPos?: { x: number; y: number }) => {
+    pendingUploadFlowPosRef.current = flowPos ?? viewportCenterFlowPos();
     fileInputRef.current?.click();
-  }, []);
+  }, [viewportCenterFlowPos]);
 
   const handleMenuUpload = useCallback(() => {
-    openUploadDialog();
+    // Capture the right-click point BEFORE clearing the menu.
+    openUploadDialog(contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : undefined);
     setContextMenu(null);
-  }, [openUploadDialog]);
+  }, [openUploadDialog, contextMenu]);
 
   const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     if (!files.length) return;
-    const targetPosition = contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : { x: 240, y: 180 };
+    const targetPosition = pendingUploadFlowPosRef.current ?? viewportCenterFlowPos();
+    pendingUploadFlowPosRef.current = null;
     await uploadFilesAtPosition(files, targetPosition);
     event.target.value = '';
-  }, [contextMenu, uploadFilesAtPosition]);
+  }, [uploadFilesAtPosition, viewportCenterFlowPos]);
 
   const insertHistoryImages = useCallback((selectedItems: HistoryItem[]) => {
     if (!selectedItems.length) return;
