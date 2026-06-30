@@ -875,22 +875,40 @@ const InnerCanvas = () => {
     }
   }, [addNode, updateNodeData, snapToGrid]);
 
-  const openUploadDialog = useCallback(() => {
+  /** Flow-coord drop point for the next file-dialog upload. Captured when the
+   *  dialog opens — by the time the user picks a file, contextMenu is already
+   *  cleared, so we can't read it in handleFileInputChange. */
+  const pendingUploadFlowPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  /** Center of the visible canvas in flow coords, so an uploaded node always
+   *  lands in view regardless of pan/zoom (previously a hardcoded 240,180 put
+   *  it off-screen — the node "disappeared" until you tidied the canvas). */
+  const viewportCenterFlowPos = useCallback(() => {
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    return screenToFlowPosition({ x: cx, y: cy });
+  }, [screenToFlowPosition]);
+
+  const openUploadDialog = useCallback((flowPos?: { x: number; y: number }) => {
+    pendingUploadFlowPosRef.current = flowPos ?? viewportCenterFlowPos();
     fileInputRef.current?.click();
-  }, []);
+  }, [viewportCenterFlowPos]);
 
   const handleMenuUpload = useCallback(() => {
-    openUploadDialog();
+    // Capture the right-click point BEFORE clearing the menu.
+    openUploadDialog(contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : undefined);
     setContextMenu(null);
-  }, [openUploadDialog]);
+  }, [openUploadDialog, contextMenu]);
 
   const handleFileInputChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
     if (!files.length) return;
-    const targetPosition = contextMenu ? { x: contextMenu.flowX, y: contextMenu.flowY } : { x: 240, y: 180 };
+    const targetPosition = pendingUploadFlowPosRef.current ?? viewportCenterFlowPos();
+    pendingUploadFlowPosRef.current = null;
     await uploadFilesAtPosition(files, targetPosition);
     event.target.value = '';
-  }, [contextMenu, uploadFilesAtPosition]);
+  }, [uploadFilesAtPosition, viewportCenterFlowPos]);
 
   const insertHistoryImages = useCallback((selectedItems: HistoryItem[]) => {
     if (!selectedItems.length) return;
