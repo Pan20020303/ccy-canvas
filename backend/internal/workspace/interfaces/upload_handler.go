@@ -130,13 +130,11 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			http.Error(w, "Refusing to proxy that url", http.StatusBadRequest)
 			return
 		}
-		// If the target is one of our own (possibly private) COS objects, sign
-		// the request so a private bucket is still readable for the player and
-		// downloads. Non-owned URLs fall through and are fetched as-is.
-		if signed, perr := assetstore.PresignGet(r.Context(), target, 15*time.Minute); perr == nil && signed != "" {
-			target = signed
-		}
-
+		// NOTE: we deliberately do NOT presign own-bucket objects here. Assets
+		// are uploaded public-read and the generation pipeline hands raw COS
+		// URLs to third-party providers, so objects must be publicly readable
+		// regardless — and the presign+fetch step proved flaky (intermittent
+		// EOF from COS) and redundant. Fetch the URL as-is.
 		client := safehttp.Client(60 * time.Second)
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
 		if err != nil {
