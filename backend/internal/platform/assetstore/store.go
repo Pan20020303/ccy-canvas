@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tencentyun/cos-go-sdk-v5"
 )
@@ -17,6 +18,10 @@ import (
 type Store interface {
 	Save(ctx context.Context, key string, body io.Reader, contentType string) (string, error)
 	UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error)
+	// PresignGet returns a short-lived, signed GET URL for an object this store
+	// owns (matched by its public base URL), so private objects can be fetched
+	// server-side. Returns "" when rawURL isn't one of this store's objects.
+	PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (string, error)
 }
 
 var (
@@ -39,6 +44,14 @@ func UploadFile(ctx context.Context, key string, localPath string, contentType s
 		return "", err
 	}
 	return store.UploadFile(ctx, key, localPath, contentType)
+}
+
+func PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (string, error) {
+	store, err := Default()
+	if err != nil {
+		return "", err
+	}
+	return store.PresignGet(ctx, rawURL, expiry)
 }
 
 func Default() (Store, error) {
@@ -88,6 +101,8 @@ func fromEnv() (Store, error) {
 		client:     client,
 		publicBase: publicBase,
 		keyPrefix:  cleanObjectKey(os.Getenv("COS_KEY_PREFIX")),
+		secretID:   secretID,
+		secretKey:  secretKey,
 	}, nil
 }
 
@@ -133,10 +148,37 @@ func (s localStore) UploadFile(ctx context.Context, key string, localPath string
 	return s.Save(ctx, key, file, contentType)
 }
 
+// PresignGet is a no-op for local storage: objects are served by the app's own
+// /uploads route, so there's nothing to sign.
+func (s localStore) PresignGet(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "", nil
+}
+
 type cosStore struct {
 	client     *cos.Client
 	publicBase string
 	keyPrefix  string
+	secretID   string
+	secretKey  string
+}
+
+func (s cosStore) PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (string, error) {
+	prefix := s.publicBase + "/"
+	if s.publicBase == "" || !strings.HasPrefix(rawURL, prefix) {
+		return "", nil // not one of our objects — caller fetches it directly
+	}
+	key := strings.TrimPrefix(rawURL, prefix)
+	if i := strings.IndexAny(key, "?#"); i >= 0 {
+		key = key[:i]
+	}
+	if key == "" {
+		return "", nil
+	}
+	u, err := s.client.Object.GetPresignedURL(ctx, http.MethodGet, key, s.secretID, s.secretKey, expiry, nil)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 func (s cosStore) Save(ctx context.Context, key string, body io.Reader, contentType string) (string, error) {
