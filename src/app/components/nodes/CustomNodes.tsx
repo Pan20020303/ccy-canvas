@@ -84,6 +84,36 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
+// downloadAsset fetches media through the backend proxy (which signs requests
+// to our own — possibly private — COS bucket) into a Blob, then saves it with a
+// real filename. Going through fetch+Blob avoids the cross-origin `<a download>`
+// problem where the browser ignores the filename and a failed request gets
+// saved as "proxy-media.txt". Falls back to a direct link if the proxy fails.
+async function downloadAsset(src: string, filename: string) {
+  if (!src) return;
+  const base = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const proxied = `${base}/api/app/proxy-media?url=${encodeURIComponent(src)}`;
+  try {
+    const res = await fetch(proxied, { credentials: 'include' });
+    if (!res.ok) throw new Error(`download failed (${res.status})`);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+  } catch {
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = filename;
+    a.target = '_blank';
+    a.click();
+  }
+}
+
 // ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
 
 /** Water sweep �?left-to-right fill inside the node (lives inside overflow-hidden container). */
@@ -2175,11 +2205,7 @@ const PreviewModal = ({ kind, src, onClose }: { kind: 'image' | 'video'; src: st
   const onPointerUp = () => { dragging.current = false; };
 
   const handleDownload = () => {
-    const a = document.createElement('a');
-    a.href = src;
-    a.download = kind === 'image' ? 'generated-image.png' : 'generated-video.mp4';
-    a.target = '_blank';
-    a.click();
+    void downloadAsset(src, kind === 'image' ? 'generated-image.png' : 'generated-video.mp4');
   };
 
   return createPortal(
@@ -3429,10 +3455,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <CopyIcon className="h-4 w-4" />
         </Button>
         <Button variant="ghost" size="icon" onClick={() => {
-          const a = document.createElement('a');
-          a.href = sourceUrl;
-          a.download = `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'image'}.png`;
-          a.click();
+          void downloadAsset(sourceUrl, `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'image'}.png`);
         }} title={language === 'zh' ? '下载' : 'Download'}>
           <Download className="h-4 w-4" />
         </Button>
@@ -3800,10 +3823,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           variant="ghost"
           size="icon"
           onClick={() => {
-            const a = document.createElement('a');
-            a.href = sourceUrl;
-            a.download = `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'video'}.mp4`;
-            a.click();
+            void downloadAsset(sourceUrl, `${(sourceData.customTitle || sourceNodeId).replace(/[^a-z0-9_-]+/gi, '-') || 'video'}.mp4`);
           }}
           title={language === 'zh' ? '下载' : 'Download'}
         >
