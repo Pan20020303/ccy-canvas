@@ -39,12 +39,7 @@ import {
   Wrench,
   Group as GroupIcon,
   Lock as LockIcon,
-  AlignStartHorizontal,
-  AlignCenterHorizontal,
-  AlignEndHorizontal,
-  AlignStartVertical,
-  AlignCenterVertical,
-  AlignEndVertical,
+  ChevronDown,
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
 } from 'lucide-react';
@@ -268,8 +263,7 @@ const InnerCanvas = () => {
   const ungroupNodes = useStore((state) => state.ungroupNodes);
   const setGroupMembers = useStore((state) => state.setGroupMembers);
   const moveGroup = useStore((state) => state.moveGroup);
-  const alignSelectedNodes = useStore((state) => state.alignSelectedNodes);
-  const distributeSelectedNodes = useStore((state) => state.distributeSelectedNodes);
+  const arrangeSelectedNodes = useStore((state) => state.arrangeSelectedNodes);
   const tidyCanvas = useStore((state) => state.tidyCanvas);
   const toggleNodeLock = useStore((state) => state.toggleNodeLock);
   const bringNodeForward = useStore((state) => state.bringNodeForward);
@@ -1348,13 +1342,11 @@ const InnerCanvas = () => {
               </button>
             )}
 
-            {/* Alignment & distribution shortcuts. Distribute only useful for
-                3+ selected nodes; alignment works at 2+. */}
+            {/* Arrange the selection: grid / horizontal / vertical, always
+                spaced out so nodes never overlap. */}
             <div className="h-4 w-px bg-white/10" />
-            <AlignmentToolbarButtons
-              count={selectedIds.length}
-              onAlign={(mode) => alignSelectedNodes(mode)}
-              onDistribute={(axis) => distributeSelectedNodes(axis)}
+            <ArrangeMenu
+              onArrange={(mode) => arrangeSelectedNodes(mode)}
               zh={language === 'zh'}
             />
           </div>
@@ -1820,48 +1812,49 @@ function ContextMenuButton({
   );
 }
 
-/** Inline alignment cluster shown inside the multi-select toolbar. The
- *  6 alignment buttons map to a shared edge / center; the 2 distribute
- *  buttons (only enabled with 3+ nodes) spread the selection evenly. */
-function AlignmentToolbarButtons({
-  count,
-  onAlign,
-  onDistribute,
+/** Arrange dropdown shown inside the multi-select toolbar. Three layouts —
+ *  grid / horizontal / vertical — each spaces nodes out so they never overlap. */
+function ArrangeMenu({
+  onArrange,
   zh,
 }: {
-  count: number;
-  onAlign: (mode: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => void;
-  onDistribute: (axis: 'horizontal' | 'vertical') => void;
+  onArrange: (mode: 'grid' | 'horizontal' | 'vertical') => void;
   zh: boolean;
 }) {
-  const distributeEnabled = count >= 3;
-  const btn = 'flex h-7 w-7 items-center justify-center rounded text-neutral-300 transition hover:bg-white/8 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-neutral-300';
+  const [open, setOpen] = useState(false);
+  const items: { mode: 'grid' | 'horizontal' | 'vertical'; Icon: typeof LayoutGrid; label: string }[] = [
+    { mode: 'grid', Icon: LayoutGrid, label: zh ? '宫格排列' : 'Grid' },
+    { mode: 'horizontal', Icon: AlignHorizontalDistributeCenter, label: zh ? '水平排列' : 'Horizontal' },
+    { mode: 'vertical', Icon: AlignVerticalDistributeCenter, label: zh ? '垂直排列' : 'Vertical' },
+  ];
   return (
-    <div className="flex items-center gap-0.5">
-      <button onClick={() => onAlign('left')}     className={btn} title={zh ? '左对齐' : 'Align left'}>             <AlignStartVertical className="h-3.5 w-3.5" /></button>
-      <button onClick={() => onAlign('center-h')} className={btn} title={zh ? '水平居中' : 'Align center (H)'}>    <AlignCenterVertical className="h-3.5 w-3.5" /></button>
-      <button onClick={() => onAlign('right')}    className={btn} title={zh ? '右对齐' : 'Align right'}>            <AlignEndVertical className="h-3.5 w-3.5" /></button>
-      <div className="mx-1 h-4 w-px bg-white/10" />
-      <button onClick={() => onAlign('top')}      className={btn} title={zh ? '顶端对齐' : 'Align top'}>           <AlignStartHorizontal className="h-3.5 w-3.5" /></button>
-      <button onClick={() => onAlign('center-v')} className={btn} title={zh ? '垂直居中' : 'Align middle (V)'}>    <AlignCenterHorizontal className="h-3.5 w-3.5" /></button>
-      <button onClick={() => onAlign('bottom')}   className={btn} title={zh ? '底端对齐' : 'Align bottom'}>         <AlignEndHorizontal className="h-3.5 w-3.5" /></button>
-      <div className="mx-1 h-4 w-px bg-white/10" />
+    <div className="relative">
       <button
-        onClick={() => onDistribute('horizontal')}
-        disabled={!distributeEnabled}
-        className={btn}
-        title={zh ? '水平等距分布（需选 3+）' : 'Distribute horizontally (3+ needed)'}
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
+        title={zh ? '排列' : 'Arrange'}
       >
-        <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+        <LayoutGrid className="h-3.5 w-3.5 text-neutral-400" />
+        {zh ? '排列' : 'Arrange'}
+        <ChevronDown className="h-3 w-3 text-neutral-500" />
       </button>
-      <button
-        onClick={() => onDistribute('vertical')}
-        disabled={!distributeEnabled}
-        className={btn}
-        title={zh ? '垂直等距分布（需选 3+）' : 'Distribute vertically (3+ needed)'}
-      >
-        <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
-      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-1/2 z-50 mb-2 min-w-[148px] -translate-x-1/2 overflow-hidden rounded-xl border border-white/10 bg-[#1e2026]/95 p-1 shadow-2xl backdrop-blur-xl">
+            {items.map(({ mode, Icon, label }) => (
+              <button
+                key={mode}
+                onClick={() => { onArrange(mode); setOpen(false); }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs text-neutral-200 transition hover:bg-white/8 hover:text-cyan-100"
+              >
+                <Icon className="h-4 w-4 text-neutral-400" />
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

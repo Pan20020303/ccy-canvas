@@ -252,6 +252,7 @@ type AppState = {
   // selected node to a shared edge; distribute spreads them evenly.
   alignSelectedNodes: (mode: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => void;
   distributeSelectedNodes: (axis: 'horizontal' | 'vertical') => void;
+  arrangeSelectedNodes: (mode: 'grid' | 'horizontal' | 'vertical') => void;
   // Auto-arrange the whole canvas into a tidy left-to-right layered flow
   // based on edges (sources on the left, derived nodes flow rightward).
   // Disconnected nodes are packed into their own trailing column. Group
@@ -1811,6 +1812,53 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+  arrangeSelectedNodes: (mode) => set((state) => {
+    const selected = state.nodes.filter((n) => n.selected);
+    if (selected.length < 2) return {};
+
+    const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
+    const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
+    const GAP = 48; // breathing room between arranged nodes — never overlap.
+
+    // Anchor at the selection's current top-left, then re-flow from there.
+    const originX = Math.min(...selected.map((n) => n.position.x));
+    const originY = Math.min(...selected.map((n) => n.position.y));
+    // Stable reading order: roughly top-to-bottom, then left-to-right.
+    const ordered = [...selected].sort((a, b) =>
+      Math.abs(a.position.y - b.position.y) > 24 ? a.position.y - b.position.y : a.position.x - b.position.x,
+    );
+
+    const nextPos = new Map<string, { x: number; y: number }>();
+    if (mode === 'horizontal') {
+      let x = originX;
+      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + GAP; }
+    } else if (mode === 'vertical') {
+      let y = originY;
+      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + GAP; }
+    } else {
+      // Grid: uniform cells sized to the largest node so nothing overlaps.
+      const cols = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+      const cellW = Math.max(...ordered.map(nodeWidth)) + GAP;
+      const cellH = Math.max(...ordered.map(nodeHeight)) + GAP;
+      ordered.forEach((n, i) => {
+        nextPos.set(n.id, {
+          x: originX + (i % cols) * cellW,
+          y: originY + Math.floor(i / cols) * cellH,
+        });
+      });
+    }
+
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((n) => (nextPos.has(n.id) ? { ...n, position: nextPos.get(n.id)! } : n));
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
   alignSelectedNodes: (mode) => set((state) => {
     const selected = state.nodes.filter((n) => n.selected);
     if (selected.length < 2) return {};
