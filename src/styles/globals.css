@@ -364,6 +364,17 @@ html.theme-light .prompt-editor-scroll {
   cursor: grabbing !important;
 }
 
+/* Multi-select bounding box: give it breathing room so the dashed frame sits
+   a bit outside the selected nodes instead of hugging them tightly. The outline
+   (with offset) draws the visible border padding without changing node bounds. */
+.react-flow__nodesselection-rect {
+  border: none !important;
+  border-radius: 14px;
+  outline: 1.5px dashed rgba(255, 255, 255, 0.4);
+  outline-offset: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
 /* Rich text editor — restore semantic styles inside contentEditable. */
 .rich-text-editor h1 { font-size: 1.5rem; font-weight: 600; margin: 0.5em 0 0.25em; }
 .rich-text-editor h2 { font-size: 1.25rem; font-weight: 600; margin: 0.5em 0 0.25em; }
