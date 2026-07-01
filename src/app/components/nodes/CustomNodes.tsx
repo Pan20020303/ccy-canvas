@@ -763,20 +763,18 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
   return parts.map((part, i) => {
     const mention = mentions.find((m) => m.tag === part);
     if (mention) {
-      // CRITICAL: the chip span occupies the EXACT same character width as
-      // the underlying tag in the textarea. Earlier we put an inline
-      // thumbnail + padding inside the chip — the extra ~20px shifted
-      // every subsequent character, making the visible caret drift away
-      // from the true text position by the end of a line.
-      //
-      // Trick to keep the thumbnail: position it ABSOLUTELY above the
-      // chip, only on hover. It floats over neighboring chars while
-      // hovered (which is brief and intentional), and disappears
-      // immediately — text layout is never disturbed.
+      // The overlay is a plain TEXT MIRROR of the textarea — every character
+      // must line up with the real caret. So the chip is text-only (a colored
+      // highlight occupying the exact same width as the tag); we do NOT render
+      // an absolutely-positioned thumbnail here. An earlier hover-thumbnail
+      // could leak/残留 as a stack of overlapping images over the text, and it
+      // never actually worked anyway (the overlay is pointer-events-none, so
+      // the chip can't receive :hover). `mention.thumb` is still used elsewhere
+      // (the @ picker) — the resolved reference images go to the backend.
       return (
         <span
           key={i}
-          className="group relative rounded-sm text-cyan-300"
+          className="rounded-sm text-cyan-300"
           style={{
             backgroundColor: 'rgba(34, 211, 238, 0.10)',
             boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.15)',
@@ -784,20 +782,6 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
           title={mention.tag}
         >
           {part}
-          {mention.thumb ? (
-            <span
-              aria-hidden
-              className="pointer-events-none invisible absolute left-1/2 top-0 z-50 -translate-x-1/2 -translate-y-[110%] rounded-lg border border-white/15 bg-[#1a1d22]/95 p-1 shadow-2xl backdrop-blur-md group-hover:visible"
-            >
-              <img
-                src={mention.thumb}
-                alt=""
-                className="block h-20 w-20 rounded-md object-cover"
-                draggable={false}
-              />
-              <span className="mt-1 block text-center text-[10px] text-neutral-400">{part}</span>
-            </span>
-          ) : null}
         </span>
       );
     }
