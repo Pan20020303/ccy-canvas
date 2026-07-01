@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import { t } from '../i18n';
+import { toRenderableMediaUrl } from '../reference-media';
 import { useStore, ASSET_CATEGORIES, type SavedAssetCategory, type SavedAsset } from '../store';
 import { Dock, DockItem } from './reactbits/Dock';
 
@@ -437,9 +438,9 @@ export const Toolbar = () => {
                         >
                           <div className="aspect-square overflow-hidden bg-black/40">
                             {asset.kind === 'image' && asset.thumbnail ? (
-                              <img src={asset.thumbnail} alt="" className="h-full w-full object-cover" />
+                              <img src={toRenderableMediaUrl(asset.thumbnail)} alt="" className="h-full w-full object-cover" />
                             ) : asset.kind === 'video' && asset.url ? (
-                              <video src={asset.url} className="h-full w-full object-cover" muted />
+                              <video src={toRenderableMediaUrl(asset.url)} className="h-full w-full object-cover" muted />
                             ) : asset.kind === 'text' ? (
                               <div className="flex h-full items-center justify-center p-2 text-center text-[10px] text-neutral-400">
                                 <span className="line-clamp-4">{asset.text || asset.name}</span>

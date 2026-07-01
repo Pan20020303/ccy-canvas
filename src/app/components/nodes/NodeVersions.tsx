@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronDown, X, CheckCircle2, ImageOff } from 'lucide-react';
 import clsx from 'clsx';
 
+import { toRenderableMediaUrl } from '../../reference-media';
 import { useStore, type NodeVersion } from '../../store';
 
 /**
@@ -171,7 +172,7 @@ function VersionCard({
         {card.url ? (
           mediaKind === 'video' ? (
             <video
-              src={card.url}
+              src={toRenderableMediaUrl(card.url)}
               className="absolute inset-0 h-full w-full object-cover"
               muted
               playsInline
@@ -181,7 +182,7 @@ function VersionCard({
             />
           ) : (
             <img
-              src={card.url}
+              src={toRenderableMediaUrl(card.url)}
               alt={indexLabel}
               className="absolute inset-0 h-full w-full object-cover"
             />

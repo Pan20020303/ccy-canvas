@@ -63,7 +63,6 @@ import { SaveAssetDialog } from './SaveAssetDialog';
 const DirectorStageOverlay = lazy(() =>
   import('./nodes/DirectorStageOverlay').then((m) => ({ default: m.DirectorStageOverlay })),
 );
-import { AgentRunPanel } from './AgentRunPanel';
 
 const edgeTypes = { flow: FlowEdge };
 const defaultEdgeOptions = { type: 'flow' as const };
@@ -300,7 +299,8 @@ const InnerCanvas = () => {
   // surrounding UI (we use it to hide the multi-select toolbar/bounds while
   // the group is being moved).
   const [groupDragging, setGroupDragging] = useState(false);
-  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const agentPanelOpen = useStore((s) => s.agentPanelOpen);
+  const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
@@ -1007,6 +1007,20 @@ const InnerCanvas = () => {
     await uploadFilesAtPosition(files, flowPos);
   }, [screenToFlowPosition, uploadFilesAtPosition]);
 
+  // Breakdown of canvas nodes by media kind for the bottom-right stats pill.
+  const nodeTypeStats = useMemo(() => {
+    let img = 0, vid = 0, aud = 0, txt = 0, other = 0;
+    for (const n of nodes) {
+      const t = String(n.type ?? '');
+      if (/image/i.test(t)) img += 1;
+      else if (/video/i.test(t)) vid += 1;
+      else if (/audio/i.test(t)) aud += 1;
+      else if (/text/i.test(t)) txt += 1;
+      else if (t !== 'groupNode') other += 1;
+    }
+    return { img, vid, aud, txt, other };
+  }, [nodes]);
+
   return (
     <div
       ref={wrapperRef}
@@ -1083,6 +1097,7 @@ const InnerCanvas = () => {
       </div>
 
       <ReactFlow
+        proOptions={{ hideAttribution: true }}
         nodes={nodes}
         edges={normalizedEdges}
         onNodesChange={handleNodesChange}
@@ -1092,7 +1107,16 @@ const InnerCanvas = () => {
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
-        onPaneClick={() => setSelectedGroupId(null)}
+        onPaneClick={() => {
+          setSelectedGroupId(null);
+          if (useStore.getState().agentNodePickActive) useStore.getState().cancelAgentNodePick();
+        }}
+        onNodeClick={(_event, node) => {
+          // Agent "pick from canvas" mode: capture this node as a reference.
+          if (useStore.getState().agentNodePickActive) {
+            useStore.getState().resolveAgentNodePick(node.id);
+          }
+        }}
         onNodeDragStart={() => setNodeDragging(true)}
         onNodeDragStop={(_event, _node, draggedNodes) => {
           setNodeDragging(false);
@@ -1568,10 +1592,16 @@ const InnerCanvas = () => {
           pill in the bottom-right corner. Sits to the left of the Agent
           FAB so they don't overlap. */}
       <div className="pointer-events-none absolute bottom-6 right-24 z-30 flex items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl">
-        <span className="tabular-nums">
+        <span className="tabular-nums font-medium text-neutral-200">
           {language === 'zh' ? '节点' : 'Nodes'} {nodes.length}
         </span>
-        <span className="text-neutral-600">/</span>
+        <span className="flex items-center gap-1.5 tabular-nums text-neutral-500">
+          {nodeTypeStats.img > 0 ? <span title={language === 'zh' ? '图片' : 'Images'}>{language === 'zh' ? '图' : 'I'} {nodeTypeStats.img}</span> : null}
+          {nodeTypeStats.vid > 0 ? <span title={language === 'zh' ? '视频' : 'Videos'}>{language === 'zh' ? '视' : 'V'} {nodeTypeStats.vid}</span> : null}
+          {nodeTypeStats.aud > 0 ? <span title={language === 'zh' ? '音频' : 'Audio'}>{language === 'zh' ? '音' : 'A'} {nodeTypeStats.aud}</span> : null}
+          {nodeTypeStats.txt > 0 ? <span title={language === 'zh' ? '文本' : 'Text'}>{language === 'zh' ? '文' : 'T'} {nodeTypeStats.txt}</span> : null}
+        </span>
+        <span className="text-neutral-600">·</span>
         <span className="tabular-nums">
           {language === 'zh' ? '边' : 'Edges'} {edges.length}
         </span>
@@ -1592,14 +1622,13 @@ const InnerCanvas = () => {
 
       {/* Agent run panel + toggle FAB (bottom-right) */}
       <button
-        onClick={() => setAgentPanelOpen((v) => !v)}
+        onClick={() => setAgentPanelOpen(true)}
         className="absolute bottom-6 right-6 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/15 text-cyan-200 shadow-2xl backdrop-blur-xl transition hover:bg-cyan-500/25"
         title={language === 'zh' ? '智能体' : 'Agent'}
         style={{ display: agentPanelOpen ? 'none' : undefined }}
       >
         <BotIcon className="h-5 w-5" />
       </button>
-      <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
     </div>
   );
 };

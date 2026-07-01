@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -65,6 +66,11 @@ type agentRunRequest struct {
 	ProjectID   string                `json:"project_id,omitempty"`
 	WorkspaceID string                `json:"workspace_id,omitempty"`
 	TaskContext json.RawMessage       `json:"task_context,omitempty"`
+	// Optional per-message model override (from the composer model picker).
+	// When set, it replaces the agent's configured model for this turn only.
+	// If no provider serves it, ResolveModelEndpoints returns an error and the
+	// turn is rejected with a clear 400 — same as any unconfigured model.
+	Model string `json:"model,omitempty"`
 }
 
 type agentRunHistoryTurn struct {
@@ -112,6 +118,10 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// fall back across them on transient errors.
 	route := rt.resolveAgentRoute(r.Context(), agent)
 	catalogModel := skillsapp.ResolveCatalogModelName(route)
+	// Per-message model override (composer model picker), when provided.
+	if override := strings.TrimSpace(req.Model); override != "" {
+		catalogModel = override
+	}
 	resolved, err := rt.catalogSvc.ResolveModelEndpoints(r.Context(), catalogModel)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -166,6 +176,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildCreatorSuiteSubAgentTools(rt.q, rt.executor, agent)...)
+	tools = append(tools, skillsapp.BuildAskUserTool(emitter.Emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
 	if invokedSkill != "" {
 		emitter.Emit("thought", map[string]string{
@@ -182,9 +193,21 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
+	// Inject a complete canvas snapshot into the system prompt so the agent
+	// already knows every node up-front and won't遍历-read each node via read_node.
+	// This is re-built per run, so every new conversation / turn sees the latest
+	// canvas state.
+	systemPrompt := agent.SystemPrompt
+	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges); overview != "" {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n（以下是本次对话最新的画布状态）\n" + overview)
+	}
+	// Interaction guide: analyse intent first; for ambiguous requests offer a
+	// multiple-choice question via ask_user instead of guessing.
+	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+
 	startedAt := time.Now()
 	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
-		SystemPrompt: agent.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Model:        catalogModel,
 		UserMessage:  resolvedMessage,
 		History:      toRunHistoryFromMessages(historyMessages),

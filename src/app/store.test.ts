@@ -563,8 +563,9 @@ describe("workspace control bar state", () => {
 
     imageNode = useStore.getState().nodes.find((node) => node.id === "2");
     expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
-    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fqueued-wolf.png");
-    expect((imageNode?.data as Record<string, unknown>)?.output).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fqueued-wolf.png");
+    // Persisted value is the raw upstream URL; proxy wrapping happens at render time.
+    expect((imageNode?.data as Record<string, unknown>)?.url).toBe("https://example.com/queued-wolf.png");
+    expect((imageNode?.data as Record<string, unknown>)?.output).toBe("https://example.com/queued-wolf.png");
     expect((imageNode?.data as Record<string, unknown>)?.originalUrl).toBe("https://example.com/queued-wolf.png");
     expect(useStore.getState().activeRun).toBeNull();
   });
@@ -619,7 +620,7 @@ describe("workspace control bar state", () => {
       const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
       expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
       expect((imageNode?.data as Record<string, unknown>)?.taskId).toBe("task-stream-lost-binding");
-      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fstream-result.png");
+      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("https://example.com/stream-result.png");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -678,7 +679,7 @@ describe("workspace control bar state", () => {
       const imageNode = useStore.getState().nodes.find((node) => node.id === "2");
       expect((imageNode?.data as Record<string, unknown>)?.status).toBe("done");
       expect((imageNode?.data as Record<string, unknown>)?.taskId).toBe("task-batch-lost-binding");
-      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("/api/app/proxy-media?url=https%3A%2F%2Fexample.com%2Fbatch-result.png");
+      expect((imageNode?.data as Record<string, unknown>)?.url).toBe("https://example.com/batch-result.png");
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

@@ -9,6 +9,7 @@ import {
   type HistoryAssetsTab,
 } from "../history-assets";
 import type { HistoryItem } from "../store";
+import { toRenderableMediaUrl } from "../reference-media";
 
 const MEDIA_TABS: HistoryAssetsTab[] = ["image", "video", "audio"];
 
@@ -156,7 +157,7 @@ export function HistoryImagePickerModal({
                             >
                               <div className="relative aspect-[3/4] overflow-hidden bg-black/30">
                                 {assetUrl ? (
-                                  <img src={assetUrl} alt={item.title} className="h-full w-full object-cover" />
+                                  <img src={toRenderableMediaUrl(assetUrl)} alt={item.title} className="h-full w-full object-cover" />
                                 ) : (
                                   <div className="flex h-full items-center justify-center text-sm text-neutral-600">No Preview</div>
                                 )}

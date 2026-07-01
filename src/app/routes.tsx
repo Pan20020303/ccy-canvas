@@ -11,6 +11,7 @@ import { AdminMembersPage } from "./components/admin/AdminMembersPage";
 import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
 import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
+import { AgentRunPanel } from "./components/AgentRunPanel";
 import { Canvas } from "./components/Canvas";
 import { LoginPage } from "./components/LoginPage";
 import { Modals } from "./components/Modals";
@@ -21,8 +22,12 @@ import { SettingsModal } from "./components/SettingsModal";
 import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
 
+const AGENT_PANEL_WIDTH = 480;
+
 const Workspace = () => {
   const setBackendModels = useStore((state) => state.setBackendModels);
+  const agentPanelOpen = useStore((state) => state.agentPanelOpen);
+  const setAgentPanelOpen = useStore((state) => state.setAgentPanelOpen);
 
   useEffect(() => {
     let ignore = false;
@@ -45,13 +50,17 @@ const Workspace = () => {
   }, [setBackendModels]);
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 selection:bg-cyan-500/30">
+    <div
+      className="relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 transition-[padding] duration-200 ease-out selection:bg-cyan-500/30"
+      style={{ paddingRight: agentPanelOpen ? AGENT_PANEL_WIDTH : 0 }}
+    >
       <Navbar />
       <Toolbar />
       <Canvas />
       <RunTimer />
       <Modals />
       <SettingsModal />
+      <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
     </div>
   );
 };

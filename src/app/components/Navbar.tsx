@@ -13,6 +13,7 @@ export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const { user, creditSummary, logout, refresh } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
@@ -107,7 +108,11 @@ export const Navbar = () => {
   const pillBase = "rounded-full border border-white/[0.10] bg-black/55 backdrop-blur-xl shadow-[0_10px_32px_-12px_rgba(0,0,0,0.65)]";
 
   return (
-    <div ref={rootRef} className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4">
+    <div
+      ref={rootRef}
+      style={{ right: agentPanelOpen ? 480 : 0 }}
+      className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 transition-[right] duration-200 ease-out"
+    >
       {/* Left: logo pill */}
       <div className={`pointer-events-auto flex items-center gap-2 ${pillBase} px-3 py-1.5`}>
         <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />

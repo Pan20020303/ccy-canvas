@@ -16,7 +16,7 @@ import type { AgentConversationTurn } from "../components/agent-conversation";
 export type AgentSSEEventType =
   | "thought" | "tool_call" | "tool_result"
   | "message" | "message_delta" | "canvas_patch"
-  | "conversation" | "error" | "done";
+  | "conversation" | "ask_user" | "error" | "done";
 
 export type AgentSSEEvent =
   | { type: "thought";       data: { content: string } }
@@ -26,6 +26,7 @@ export type AgentSSEEvent =
   | { type: "message";       data: { content: string } }
   | { type: "canvas_patch";  data: CanvasPatch }
   | { type: "conversation";  data: { id: string } }
+  | { type: "ask_user";      data: { question: string; options: string[]; allow_custom?: boolean } }
   | { type: "error";         data: { message: string } }
   | { type: "done";          data: { steps: number } };
 
@@ -50,6 +51,7 @@ export async function runAgent(
     edges: unknown[];
     history?: AgentConversationTurn[];
     conversation_id?: string;
+    model?: string;
   },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {

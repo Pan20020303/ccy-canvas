@@ -196,6 +196,18 @@ type AppState = {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
+  // Agent "pick from canvas" mode: when active, the next canvas node click is
+  // captured as a reference for the agent composer instead of normal selection.
+  // Whether the agent side-drawer is open (lifted here so the app shell can
+  // push the canvas left / pull the navbar in to make room — no overlap).
+  agentPanelOpen: boolean;
+  setAgentPanelOpen: (open: boolean) => void;
+  agentNodePickActive: boolean;
+  agentPickedNode: { id: string; label: string; thumb: string } | null;
+  startAgentNodePick: () => void;
+  cancelAgentNodePick: () => void;
+  resolveAgentNodePick: (nodeId: string) => void;
+  clearAgentPickedNode: () => void;
   nodes: Node[];
   edges: Edge[];
   onNodesChange: OnNodesChange;
@@ -608,8 +620,12 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
                   error: undefined,
                   ...(task.result_url
                     ? {
-                        url: resolveRenderableMediaUrl(task.result_url),
-                        output: resolveRenderableMediaUrl(task.result_url),
+                        // Store the raw upstream URL. Wrapping for proxy-based
+                        // rendering happens at the render boundary, so the
+                        // persisted value stays env-agnostic and download /
+                        // capture paths don't double-wrap it.
+                        url: task.result_url,
+                        output: task.result_url,
                         assetStatus: task.status,
                         assetSyncing: true,
                       }
@@ -692,7 +708,8 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         }
         // 把当前 url (如果有) 压进 versions 顶端, 把新 url 提为当前.
         // 只对 image / video / audio 这种 url 型节点维护历史.
-        const resultUrl = isUrl ? resolveRenderableMediaUrl(task.result_url) : task.result_url;
+        // Persist the raw upstream URL; proxy wrapping is applied at render time.
+        const resultUrl = task.result_url;
         const prevData = (node.data ?? {}) as Record<string, unknown>;
         let nextVersions: NodeVersion[] | undefined;
         let nextActiveVersionId: string | undefined;
@@ -1328,12 +1345,6 @@ function findReferenceProviderForRequest(
   return preferredProvider ?? matchingProviders[0] ?? null;
 }
 
-function resolveRenderableMediaUrl(url: string): string {
-  if (!/^https?:\/\//.test(url)) return url;
-  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
-  return `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(url)}`;
-}
-
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
   if (result.type !== 'url') {
     return result.content;
@@ -1384,6 +1395,22 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   theme: 'dark' as Theme,
   setTheme: (theme) => set({ theme }),
   toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
+
+  agentPanelOpen: false,
+  setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
+  agentNodePickActive: false,
+  agentPickedNode: null,
+  startAgentNodePick: () => set({ agentNodePickActive: true, agentPickedNode: null }),
+  cancelAgentNodePick: () => set({ agentNodePickActive: false }),
+  resolveAgentNodePick: (nodeId) => set((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    if (!node) return { agentNodePickActive: false };
+    const d = (node.data ?? {}) as Record<string, unknown>;
+    const label = String(d.customTitle || d.sourceName || node.type || node.id);
+    const thumb = String(d.url || d.poster || ''); // raw URL; UI wraps for proxy
+    return { agentNodePickActive: false, agentPickedNode: { id: nodeId, label, thumb } };
+  }),
+  clearAgentPickedNode: () => set({ agentPickedNode: null }),
 
   spaces: seedSpaces,
   activeSpaceId: 'space-personal',

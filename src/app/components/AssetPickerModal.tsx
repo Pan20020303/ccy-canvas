@@ -4,6 +4,7 @@ import { Check, LayoutGrid, X } from 'lucide-react';
 import clsx from 'clsx';
 
 import { getHistoryItemAssetUrl } from '../history-assets';
+import { toRenderableMediaUrl } from '../reference-media';
 import { useStore, type HistoryItem } from '../store';
 
 /** Tabs match NeoWOW's 选择素材 modal. Tabs we can't back yet are
@@ -302,7 +303,7 @@ export function AssetPickerModal({
                     <div className="relative aspect-square overflow-hidden bg-black/40">
                       {item.kind === 'video' ? (
                         <video
-                          src={item.url}
+                          src={toRenderableMediaUrl(item.url)}
                           className="h-full w-full object-cover"
                           muted
                           loop
@@ -322,7 +323,7 @@ export function AssetPickerModal({
                       ) : item.kind === 'audio' ? (
                         <div className="flex h-full items-center justify-center text-2xl text-neutral-500">♪</div>
                       ) : (
-                        <img src={item.url} alt={item.title || ''} className="h-full w-full object-cover" />
+                        <img src={toRenderableMediaUrl(item.url)} alt={item.title || ''} className="h-full w-full object-cover" />
                       )}
                       <div
                         className={clsx(

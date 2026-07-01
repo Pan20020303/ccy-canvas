@@ -13,6 +13,7 @@ import {
 
 import type { GenerationLog } from "../../api/admin";
 import { listLogs } from "../../api/admin";
+import { toRenderableMediaUrl } from "../../reference-media";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -176,7 +177,7 @@ function ResultPreview({ url, serviceType }: { url: string; serviceType: string 
   if (serviceType === "video") {
     return (
       <video
-        src={url}
+        src={toRenderableMediaUrl(url)}
         controls
         preload="metadata"
         onError={() => setFailed(true)}
@@ -186,14 +187,14 @@ function ResultPreview({ url, serviceType }: { url: string; serviceType: string 
   }
 
   if (serviceType === "audio") {
-    return <audio src={url} controls onError={() => setFailed(true)} className="w-full" />;
+    return <audio src={toRenderableMediaUrl(url)} controls onError={() => setFailed(true)} className="w-full" />;
   }
 
   // image (and any url-bearing default): show the actual picture.
   return (
-    <a href={url} target="_blank" rel="noreferrer" className="block">
+    <a href={toRenderableMediaUrl(url)} target="_blank" rel="noreferrer" className="block">
       <img
-        src={url}
+        src={toRenderableMediaUrl(url)}
         alt="生成结果预览"
         loading="lazy"
         onError={() => setFailed(true)}

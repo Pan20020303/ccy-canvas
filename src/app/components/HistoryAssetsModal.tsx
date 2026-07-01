@@ -28,6 +28,7 @@ import {
   groupHistoryByDate,
   type HistoryAssetsTab,
 } from "../history-assets";
+import { toRenderableMediaUrl } from "../reference-media";
 import { useStore, type HistoryItem } from "../store";
 
 const TAB_LABELS: Record<HistoryAssetsTab, { zh: string; en: string }> = {
@@ -362,10 +363,10 @@ export const HistoryAssetsModal = () => {
                               ) : null}
 
                               {item.mediaType === "image" && assetUrl ? (
-                                <img src={assetUrl} alt={item.title} className={`${layout.previewClassName} h-full w-full object-cover`} />
+                                <img src={toRenderableMediaUrl(assetUrl)} alt={item.title} className={`${layout.previewClassName} h-full w-full object-cover`} />
                               ) : null}
                               {item.mediaType === "video" && assetUrl ? (
-                                <video src={assetUrl} className={`${layout.previewClassName} h-full w-full object-cover`} muted />
+                                <video src={toRenderableMediaUrl(assetUrl)} className={`${layout.previewClassName} h-full w-full object-cover`} muted />
                               ) : null}
                               {item.mediaType === "audio" ? (
                                 <div className={`${layout.previewClassName} flex items-center justify-center bg-gradient-to-br from-neutral-800 to-neutral-900`}>
@@ -454,10 +455,10 @@ export const HistoryAssetsModal = () => {
               </div>
 
               {previewItem.mediaType === "image" ? (
-                <img src={previewUrl} alt={previewItem.title} className="mx-auto max-h-[68vh] max-w-full rounded-2xl object-contain" />
+                <img src={toRenderableMediaUrl(previewUrl)} alt={previewItem.title} className="mx-auto max-h-[68vh] max-w-full rounded-2xl object-contain" />
               ) : null}
               {previewItem.mediaType === "video" ? (
-                <video src={previewUrl} className="mx-auto max-h-[68vh] max-w-full rounded-2xl bg-black" controls autoPlay />
+                <video src={toRenderableMediaUrl(previewUrl)} className="mx-auto max-h-[68vh] max-w-full rounded-2xl bg-black" controls autoPlay />
               ) : null}
               {previewItem.mediaType === "audio" ? (
                 <div className="flex min-h-[320px] flex-col items-center justify-center gap-6 rounded-3xl border border-white/8 bg-gradient-to-br from-neutral-900 to-neutral-950 p-10">
@@ -468,7 +469,7 @@ export const HistoryAssetsModal = () => {
                       <div className="mt-2 max-w-xl text-sm leading-6 text-neutral-500">{previewItem.promptExcerpt}</div>
                     ) : null}
                   </div>
-                  <audio src={previewUrl} controls className="w-full max-w-xl" autoPlay />
+                  <audio src={toRenderableMediaUrl(previewUrl)} controls className="w-full max-w-xl" autoPlay />
                 </div>
               ) : null}
             </div>

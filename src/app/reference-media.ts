@@ -56,6 +56,65 @@ export function isTransientBrowserMediaUrl(url?: string | null): boolean {
   return url.startsWith("data:") || url.startsWith("blob:");
 }
 
+const PROXY_MEDIA_PATH = "/api/app/proxy-media";
+
+function apiBaseUrlPrefix(): string {
+  return (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+}
+
+/** True when the URL already targets our media proxy endpoint, regardless of
+ *  its origin (absolute `http://host:9090/api/app/proxy-media?...` or the bare
+ *  relative `/api/app/proxy-media?...`). */
+export function isProxyMediaUrl(url?: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+  try {
+    return new URL(url, "http://localhost").pathname === PROXY_MEDIA_PATH;
+  } catch {
+    return false;
+  }
+}
+
+/** Peel any (possibly nested) proxy-media wrapper and return the real upstream
+ *  URL. Idempotent: a non-proxy URL is returned unchanged. The loop guards
+ *  against historical double-wrapped values that leaked into persisted state. */
+export function extractOriginalMediaUrl(url?: string | null): string {
+  let current = url ?? "";
+  for (let i = 0; i < 5 && isProxyMediaUrl(current); i++) {
+    try {
+      const inner = new URL(current, "http://localhost").searchParams.get("url");
+      if (!inner) {
+        break;
+      }
+      current = inner;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+/** Produce a URL the browser can load through our media proxy (sidesteps
+ *  CORS / referer / mixed-content for remote hosts). Idempotent and
+ *  double-wrap-safe: data:/blob: and relative paths pass through unchanged,
+ *  and any remote http(s) URL — including one that is already wrapped in
+ *  proxy-media — collapses to exactly one proxy layer. */
+export function toRenderableMediaUrl(url?: string | null): string {
+  if (!url) {
+    return "";
+  }
+  if (isTransientBrowserMediaUrl(url)) {
+    return url;
+  }
+  const origin = extractOriginalMediaUrl(url);
+  if (!/^https?:\/\//i.test(origin)) {
+    // Relative path (e.g. /uploads/..) — leave as-is for the page/backend to serve.
+    return origin;
+  }
+  return `${apiBaseUrlPrefix()}${PROXY_MEDIA_PATH}?url=${encodeURIComponent(origin)}`;
+}
+
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

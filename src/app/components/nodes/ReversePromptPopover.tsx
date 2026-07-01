@@ -1,3 +1,5 @@
+import { toRenderableMediaUrl } from '../../reference-media';
+
 export function ReversePromptPopover({
   isOpen,
   imageUrl,
@@ -28,7 +30,7 @@ export function ReversePromptPopover({
   return (
     <div className="nodrag nopan absolute left-0 top-full z-50 mt-3 w-[520px] rounded-[24px] border border-white/12 bg-[#1f1f1f] p-4 shadow-2xl">
       <div className="mb-3 flex items-start gap-3">
-        {imageUrl ? <img src={imageUrl} alt="" className="h-12 w-12 rounded-xl object-cover" /> : null}
+        {imageUrl ? <img src={toRenderableMediaUrl(imageUrl)} alt="" className="h-12 w-12 rounded-xl object-cover" /> : null}
         <p className="text-sm text-neutral-200">
           根据图片生成结构化中文提示词，包括主体描述、环境、光影、镜头语言、风格关键词。
         </p>

@@ -130,13 +130,18 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			http.Error(w, "Refusing to proxy that url", http.StatusBadRequest)
 			return
 		}
-		// NOTE: we deliberately do NOT presign own-bucket objects here. Assets
-		// are uploaded public-read and the generation pipeline hands raw COS
-		// URLs to third-party providers, so objects must be publicly readable
-		// regardless — and the presign+fetch step proved flaky (intermittent
-		// EOF from COS) and redundant. Fetch the URL as-is.
+		// Own-bucket objects are private (the bucket blocks public access, so the
+		// upload-time public-read ACL is overridden and a raw GET 403s). Presign
+		// the URL server-side so the proxy can read it; PresignGet returns "" for
+		// anything that isn't one of our objects, in which case we fetch as-is.
+		// The presigned URL keeps the same (already-validated, public) COS host,
+		// and the hardened client re-checks the dialed IP, so SSRF posture holds.
+		fetchURL := target
+		if signed, perr := assetstore.PresignGet(r.Context(), target, 10*time.Minute); perr == nil && signed != "" {
+			fetchURL = signed
+		}
 		client := safehttp.Client(60 * time.Second)
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
 		if err != nil {
 			http.Error(w, "Failed to build request", http.StatusBadRequest)
 			return
@@ -193,7 +198,12 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		if strings.Contains(ct, "svg") {
 			w.Header().Set("Content-Disposition", "attachment")
 		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// NOTE: do NOT set Access-Control-Allow-Origin here. The global
+		// CORSMiddleware already emitted the specific request origin plus
+		// Access-Control-Allow-Credentials: true. Overwriting it with "*"
+		// makes the browser reject any credentialed fetch (credentials:'include'
+		// + ACAO "*" is invalid), which is exactly how download / capture /
+		// re-upload calls to this proxy fail on the success path.
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)

@@ -43,7 +43,7 @@ import {
 import clsx from 'clsx';
 import { useStore } from '../../store';
 import { resolveApiUrl } from '../../api/client';
-import { resolveBackendAssetUrl } from '../../reference-media';
+import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
@@ -84,15 +84,18 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 
-// downloadAsset fetches media through the backend proxy (which signs requests
-// to our own — possibly private — COS bucket) into a Blob, then saves it with a
-// real filename. Going through fetch+Blob avoids the cross-origin `<a download>`
+// downloadAsset fetches media through the backend proxy (which can read our
+// own — possibly private — COS bucket) into a Blob, then saves it with a real
+// filename. Going through fetch+Blob avoids the cross-origin `<a download>`
 // problem where the browser ignores the filename and a failed request gets
-// saved as "proxy-media.txt". Falls back to a direct link if the proxy fails.
+// saved as "proxy-media.txt". `src` may be a raw URL or one that is already
+// proxy-wrapped (legacy persisted data) — toRenderableMediaUrl collapses both
+// to exactly one proxy layer, so the request can never double-wrap (which the
+// backend would reject with 401→502).
 async function downloadAsset(src: string, filename: string) {
   if (!src) return;
-  const base = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
-  const proxied = `${base}/api/app/proxy-media?url=${encodeURIComponent(src)}`;
+  const proxied = toRenderableMediaUrl(src);
+  if (!proxied) return;
   try {
     const res = await fetch(proxied, { credentials: 'include' });
     if (!res.ok) throw new Error(`download failed (${res.status})`);
@@ -105,12 +108,12 @@ async function downloadAsset(src: string, filename: string) {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
-  } catch {
-    const a = document.createElement('a');
-    a.href = src;
-    a.download = filename;
-    a.target = '_blank';
-    a.click();
+  } catch (err) {
+    // No silent <a download> fallback: navigating to the proxy URL on failure
+    // just saved a mis-named "proxy-media.txt" error page. Tell the user instead.
+    // eslint-disable-next-line no-console
+    console.error('[downloadAsset] failed', err);
+    toast.error('下载失败，请稍后重试');
   }
 }
 
@@ -1449,6 +1452,37 @@ const PromptPanel = ({
     };
   }, [availableModels]);
 
+  // Whether a HappyHorse suffix is valid for the current upstream refs.
+  // Mirrors the per-tab gating in happyHorseTabs below: 文生(t2v) needs NO
+  // reference, 图生(i2v)/参考生(r2v) need ≥1 image, 视频编辑(video-edit) ≥1 video.
+  const isHappyHorseSuffixSatisfied = (suffix: string): boolean => {
+    if (suffix === 't2v') return refCounts.images === 0 && refCounts.videos === 0;
+    if (suffix === 'i2v') return refCounts.images >= 1;
+    if (suffix === 'r2v') return refCounts.images >= 1;
+    if (suffix === 'video-edit') return refCounts.videos >= 1;
+    return true;
+  };
+
+  // HappyHorse mode auto-correction. Unlike the standard referenceTabs (whose
+  // mode lives in generationParams.referenceVariant and is auto-resolved by the
+  // effect above), the HappyHorse mode is baked into the model-name suffix, so
+  // nothing was keeping it consistent with the upstream refs: attaching a 垫图
+  // while on 文生(t2v), or removing the last image while on 图生(i2v), left the
+  // node sitting in an illegal mode with the wrong tab still lit. When the
+  // active suffix is no longer satisfiable, recompose the model to the first
+  // suffix that IS — so 文生 only stays lit when there is no 垫图.
+  useEffect(() => {
+    if (!happyHorse || !happyHorseFamily) return;
+    if (isHappyHorseSuffixSatisfied(happyHorse.suffix)) return;
+    const avail = happyHorseFamily.suffixesByVersion.get(happyHorse.version) ?? new Set<string>();
+    const order: Array<'t2v' | 'i2v' | 'r2v' | 'video-edit'> = ['t2v', 'i2v', 'r2v', 'video-edit'];
+    const next = order.find((s) => avail.has(s) && isHappyHorseSuffixSatisfied(s));
+    if (next && next !== happyHorse.suffix) {
+      handleModelChange(composeHappyHorseModel(happyHorse.version, next));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [happyHorse?.suffix, happyHorse?.version, happyHorseFamily, refCounts.images, refCounts.videos]);
+
   // 收编模型列表给底部 Dropdown 用：非 HappyHorse 模型原样保留；HappyHorse
   // 折叠成每个版本一项 `HappyHorse X.Y`（虚拟值），点击时映射回真实模型名。
   // 真实变体的切换由顶部 happyHorseTabs 完成。
@@ -1510,28 +1544,27 @@ const PromptPanel = ({
         {visible.map((suffix) => {
           const isActive = suffix === happyHorse.suffix;
           const labelMap = language === 'zh' ? HAPPYHORSE_SUFFIX_TO_MODE_ZH : HAPPYHORSE_SUFFIX_TO_MODE_EN;
-          let satisfied = true;
+          // Gating shares one source of truth with the auto-correction effect.
+          const satisfied = isHappyHorseSuffixSatisfied(suffix);
           let hint = '';
-          if (suffix === 't2v' && (refCounts.images > 0 || refCounts.videos > 0)) {
-            satisfied = false;
-            hint = language === 'zh'
-              ? '文生不接受参考节点，请先断开所有上游引用'
-              : 'Text-to-video does not accept references; disconnect upstream first';
-          } else if (suffix === 'i2v' && refCounts.images < 1) {
-            satisfied = false;
-            hint = language === 'zh'
-              ? '图生需要 1 张首帧图，请先连接一张参考图'
-              : 'Image-to-video needs 1 first-frame image; connect a reference first';
-          } else if (suffix === 'r2v' && refCounts.images < 1) {
-            satisfied = false;
-            hint = language === 'zh'
-              ? '参考生需要至少 1 张参考图，请先连接参考节点'
-              : 'Reference-to-video needs 1+ reference images; connect a reference first';
-          } else if (suffix === 'video-edit' && refCounts.videos < 1) {
-            satisfied = false;
-            hint = language === 'zh'
-              ? '视频编辑需要 1 段视频，请先连接一个视频节点'
-              : 'Video edit needs 1 reference video; connect a video first';
+          if (!satisfied) {
+            if (suffix === 't2v') {
+              hint = language === 'zh'
+                ? '文生不接受参考节点，请先断开所有上游引用'
+                : 'Text-to-video does not accept references; disconnect upstream first';
+            } else if (suffix === 'i2v') {
+              hint = language === 'zh'
+                ? '图生需要 1 张首帧图，请先连接一张参考图'
+                : 'Image-to-video needs 1 first-frame image; connect a reference first';
+            } else if (suffix === 'r2v') {
+              hint = language === 'zh'
+                ? '参考生需要至少 1 张参考图，请先连接参考节点'
+                : 'Reference-to-video needs 1+ reference images; connect a reference first';
+            } else if (suffix === 'video-edit') {
+              hint = language === 'zh'
+                ? '视频编辑需要 1 段视频，请先连接一个视频节点'
+                : 'Video edit needs 1 reference video; connect a video first';
+            }
           }
           return (
             <button
@@ -1547,7 +1580,10 @@ const PromptPanel = ({
               }}
               className={clsx(
                 'shrink-0 rounded-full px-3 py-1 text-xs transition',
-                isActive
+                // Only light a tab when it is BOTH active and currently valid —
+                // an active-but-unsatisfied mode (transient, or a model with no
+                // satisfiable alternative) shows dimmed instead of lit.
+                isActive && satisfied
                   ? 'bg-white/15 text-white ring-1 ring-white/30'
                   : satisfied
                     ? 'bg-white/[0.03] text-neutral-400 ring-1 ring-white/8 hover:bg-white/[0.06] hover:text-neutral-200'
@@ -1767,7 +1803,7 @@ const PromptPanel = ({
                 className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
               >
                 {up.thumb ? (
-                  <img src={up.thumb} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
+                  <img src={toRenderableMediaUrl(up.thumb)} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
                 ) : (
                   <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
                 )}
@@ -2240,14 +2276,14 @@ const PreviewModal = ({ kind, src, onClose }: { kind: 'image' | 'video'; src: st
       >
         {kind === 'image' ? (
           <img
-            src={src}
+            src={toRenderableMediaUrl(src)}
             alt=""
             draggable={false}
             className="max-h-[92vh] max-w-[92vw] rounded-lg object-contain shadow-2xl select-none transition-transform duration-150"
             style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${zoom})` }}
           />
         ) : (
-          <video src={src} controls autoPlay className="max-h-[92vh] max-w-[92vw] rounded-lg shadow-2xl" />
+          <video src={toRenderableMediaUrl(src)} controls autoPlay className="max-h-[92vh] max-w-[92vw] rounded-lg shadow-2xl" />
         )}
       </div>
     </div>,
@@ -2310,18 +2346,30 @@ const LIGHTING_KEY_LIGHTS = [
   { id: 'back', labelZh: '后方', labelEn: 'Back' },
 ] as const;
 
-const ANGLE_PRESETS = [
-  { id: 'front-side-back', labelZh: '正侧背', labelEn: 'Front / Side / Back', prompt: '输出正面、侧面、背面三视图，保持主体一致，背景简洁。', outputs: 3 },
-  { id: 'top-front-side', labelZh: '俯视/平视/仰视', labelEn: 'Top / Eye / Low', prompt: '输出俯视、平视、仰视三种机位，保持主体一致，构图统一。', outputs: 3 },
-  { id: 'three-view', labelZh: '三视图', labelEn: 'Three-view', prompt: '输出三视图表现，主体一致，角度清晰。', outputs: 3 },
-];
+// Smart-mode lighting style templates. `filter` is a CSS filter applied to the
+// source image to give a quick in-editor preview thumbnail (no extra assets).
+const SMART_LIGHTING_PRESETS = [
+  { id: 'overexposed-film', labelZh: '过曝胶片', labelEn: 'Overexposed', prompt: '保持主体不变，高调过曝胶片质感，柔和泛白高光，轻微胶片颗粒，整体明亮通透。', filter: 'brightness(1.35) contrast(0.9) saturate(0.85) sepia(0.1)' },
+  { id: 'blue-backlight', labelZh: '蓝色逆光', labelEn: 'Blue rim', prompt: '保持主体不变，冷蓝色逆光，强烈轮廓光勾边，暗部偏冷调，氛围清冷。', filter: 'brightness(0.85) contrast(1.2) saturate(1.3) hue-rotate(190deg)' },
+  { id: 'rembrandt', labelZh: '伦勃朗光', labelEn: 'Rembrandt', prompt: '保持主体不变，伦勃朗布光，单侧主光形成三角光斑，暗部厚重，古典油画质感。', filter: 'brightness(0.9) contrast(1.35) saturate(1.05) sepia(0.18)' },
+  { id: 'cyberpunk', labelZh: '赛博朋克', labelEn: 'Cyberpunk', prompt: '保持主体不变，赛博朋克霓虹双色光，品红与青色对冲，强对比，潮湿反光。', filter: 'brightness(1.0) contrast(1.4) saturate(1.6) hue-rotate(280deg)' },
+  { id: 'sunset-dream', labelZh: '落日迷幻', labelEn: 'Sunset', prompt: '保持主体不变，落日暖金色侧逆光，朦胧迷幻光晕，柔和耀斑，梦幻氛围。', filter: 'brightness(1.1) contrast(0.95) saturate(1.4) sepia(0.3) hue-rotate(-15deg)' },
+  { id: 'mysterious-dark', labelZh: '神秘暗调', labelEn: 'Moody dark', prompt: '保持主体不变，低调暗部为主，神秘氛围，微弱边缘光，大面积阴影。', filter: 'brightness(0.7) contrast(1.45) saturate(0.9)' },
+  { id: 'golden-hour', labelZh: '黄金时刻', labelEn: 'Golden hour', prompt: '保持主体不变，黄金时刻暖阳顺光，柔和金色光线，温暖通透。', filter: 'brightness(1.12) contrast(1.05) saturate(1.25) sepia(0.22)' },
+  { id: 'nolan-grey', labelZh: '诺兰冷灰', labelEn: 'Cold grey', prompt: '保持主体不变，诺兰式冷灰电影调，去饱和，冷峻硬光，高级感。', filter: 'brightness(0.95) contrast(1.2) saturate(0.6) hue-rotate(180deg)' },
+] as const;
 
-const LIGHTING_PRESETS = [
-  { id: 'studio-key', labelZh: '棚拍主光', labelEn: 'Studio key light', prompt: '保持主体和构图不变，使用棚拍主光，轮廓清晰，质感高级。' },
-  { id: 'side-light', labelZh: '侧光', labelEn: 'Side light', prompt: '保持主体不变，改为侧光照明，增强体积感与阴影层次。' },
-  { id: 'rim-light', labelZh: '逆光 / 轮廓光', labelEn: 'Back / rim light', prompt: '保持主体不变，改为逆光与轮廓光，突出边缘高光。' },
-  { id: 'soft-light', labelZh: '柔光', labelEn: 'Soft light', prompt: '保持主体不变，改为柔和漫射光，减少硬阴影，画面更通透。' },
-];
+// 2D anchor points (x right, y down, normalized -1..1) for the 6 key-light
+// directions — used to position the draggable light dot and to snap a drag to
+// the nearest direction.
+const LIGHT_ANCHORS = [
+  { id: 'left', x: -1, y: 0 },
+  { id: 'right', x: 1, y: 0 },
+  { id: 'top', x: 0, y: -1 },
+  { id: 'bottom', x: 0, y: 1 },
+  { id: 'front', x: 0, y: 0.5 },
+  { id: 'back', x: 0, y: -0.5 },
+] as const;
 
 const GRID_COMPOSE_PRESETS = [
   { id: '4', labelZh: '4宫格 (2×2)', labelEn: '4 grid (2×2)', value: '2x2' },
@@ -2405,11 +2453,7 @@ function parseRatioValue(ratio: string) {
 }
 
 async function loadImageElement(src: string): Promise<HTMLImageElement> {
-  const target = /^data:/.test(src)
-    ? src
-    : (/^https?:\/\//.test(src)
-      ? `/api/app/proxy-media?url=${encodeURIComponent(src)}`
-      : resolveBackendAssetUrl(src));
+  const target = toRenderableMediaUrl(src);
   const response = await fetch(target, { credentials: 'include' });
   if (!response.ok) {
     throw new Error(`Failed to load image: ${response.status}`);
@@ -2780,8 +2824,43 @@ function AngleActionEditor({
   const selectedPreset = ANGLE_EDITOR_PRESETS.some((preset) => preset.id === draft.anglePreset) ? draft.anglePreset : 'custom';
   const updateDraft = (patch: Partial<ImageActionDraft>) => setSession({ ...session, draft: { ...draft, ...patch } });
   const frameScale = 0.72 + (zoom / 100) * 0.38;
-  const frameX = clampNumber((yaw / 180) * 54, -54, 54);
-  const frameY = clampNumber((-pitch / 60) * 42, -42, 42);
+
+  // The subject stays centered; the camera orbits it. Place the camera on the
+  // wireframe from yaw (horizontal) + pitch (vertical), and fade/shrink it with
+  // depth so front vs. behind reads correctly.
+  const yawRad = (yaw * Math.PI) / 180;
+  const pitchRad = (pitch * Math.PI) / 180;
+  const orbitR = 84;
+  const camX = orbitR * Math.sin(yawRad) * Math.cos(pitchRad);
+  const camY = -orbitR * Math.sin(pitchRad);
+  const camDepth = Math.cos(yawRad) * Math.cos(pitchRad); // 1 = front … -1 = behind
+  const camScale = 0.6 + 0.45 * ((camDepth + 1) / 2);
+  const camOpacity = 0.45 + 0.55 * ((camDepth + 1) / 2);
+
+  // Drag anywhere on the sphere to orbit the camera; this writes back to
+  // yaw/pitch so it stays in sync with the sliders (bidirectional). Anchor on
+  // the values captured at drag-start so a fast drag doesn't accumulate stale
+  // state between renders.
+  const dragRef = useRef<{ px: number; py: number; yaw: number; pitch: number } | null>(null);
+  const onSpherePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = { px: e.clientX, py: e.clientY, yaw, pitch };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* */ }
+  };
+  const onSpherePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragRef.current;
+    if (!start) return;
+    const dx = e.clientX - start.px;
+    const dy = e.clientY - start.py;
+    updateDraft({
+      angleYaw: clampNumber(Math.round(start.yaw + dx * 0.6), -180, 180),
+      anglePitch: clampNumber(Math.round(start.pitch - dy * 0.5), -60, 60),
+      anglePreset: 'custom',
+    });
+  };
+  const onSpherePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* */ }
+  };
 
   return (
     <div className="space-y-4">
@@ -2808,46 +2887,40 @@ function AngleActionEditor({
         ))}
       </div>
       <div className="grid gap-5 md:grid-cols-[240px_1fr]">
-        <div className="relative flex h-60 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-950/90">
-          <div className="absolute h-44 w-44 rounded-full border border-white/20" />
-          <div className="absolute h-44 w-28 rounded-[999px] border border-white/14" />
-          <div className="absolute h-28 w-44 rounded-[999px] border border-white/12" />
-          <div className="absolute h-px w-44 bg-white/16" />
-          <div className="absolute h-44 w-px bg-white/16" />
-          <button
-            type="button"
-            onClick={() => updateDraft({ angleYaw: clampNumber(yaw - 15, -180, 180) })}
-            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            onClick={() => updateDraft({ angleYaw: clampNumber(yaw + 15, -180, 180) })}
-            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
-          >
-            ›
-          </button>
-          <button
-            type="button"
-            onClick={() => updateDraft({ anglePitch: clampNumber(pitch + 8, -60, 60) })}
-            className="absolute top-3 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
-          >
-            ⌃
-          </button>
-          <button
-            type="button"
-            onClick={() => updateDraft({ anglePitch: clampNumber(pitch - 8, -60, 60) })}
-            className="absolute bottom-3 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10"
-          >
-            ⌄
-          </button>
+        <div
+          onPointerDown={onSpherePointerDown}
+          onPointerMove={onSpherePointerMove}
+          onPointerUp={onSpherePointerUp}
+          onPointerCancel={onSpherePointerUp}
+          className="relative flex h-60 cursor-grab touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-950/90 active:cursor-grabbing"
+        >
+          <div className="pointer-events-none absolute h-44 w-44 rounded-full border border-white/20" />
+          <div className="pointer-events-none absolute h-44 w-28 rounded-[999px] border border-white/14" />
+          <div className="pointer-events-none absolute h-28 w-44 rounded-[999px] border border-white/12" />
+          <div className="pointer-events-none absolute h-px w-44 bg-white/16" />
+          <div className="pointer-events-none absolute h-44 w-px bg-white/16" />
+          {/* Subject stays centered; 景别缩放 (zoom) scales it. */}
           <div
-            className="relative h-24 w-20 overflow-hidden rounded-xl border border-white/25 bg-black/35 shadow-[0_18px_45px_rgba(0,0,0,0.4)] transition-transform duration-200"
-            style={{ transform: `translate(${frameX}px, ${frameY}px) scale(${frameScale}) rotateY(${yaw / 7}deg) rotateX(${pitch / 8}deg)` }}
+            className="pointer-events-none relative h-24 w-20 overflow-hidden rounded-xl border border-white/25 bg-black/35 shadow-[0_18px_45px_rgba(0,0,0,0.4)] transition-transform duration-150"
+            style={{ transform: `scale(${frameScale})` }}
           >
             <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
           </div>
+          {/* Camera marker orbiting the subject, driven by yaw/pitch. */}
+          <div
+            className="pointer-events-none absolute z-10 transition-transform duration-150"
+            style={{ transform: `translate(${camX}px, ${camY}px) scale(${camScale})`, opacity: camOpacity }}
+          >
+            <div className="flex h-6 w-7 items-center justify-center rounded-[6px] border border-cyan-200/50 bg-neutral-900 shadow-[0_6px_16px_rgba(0,0,0,0.55)]">
+              <div className="h-3 w-3 rounded-full border border-cyan-200/60 bg-neutral-600" />
+            </div>
+            <div className="mx-auto -mt-px h-1.5 w-2 rounded-b-[3px] bg-neutral-900" />
+          </div>
+          {/* Step arrows; stopPropagation so a click doesn't begin a drag. */}
+          <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={() => updateDraft({ angleYaw: clampNumber(yaw - 15, -180, 180), anglePreset: 'custom' })} className="absolute left-3 top-1/2 z-20 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10">‹</button>
+          <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={() => updateDraft({ angleYaw: clampNumber(yaw + 15, -180, 180), anglePreset: 'custom' })} className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10">›</button>
+          <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={() => updateDraft({ anglePitch: clampNumber(pitch + 8, -60, 60), anglePreset: 'custom' })} className="absolute top-2 z-20 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10">⌃</button>
+          <button type="button" onPointerDown={(e) => e.stopPropagation()} onClick={() => updateDraft({ anglePitch: clampNumber(pitch - 8, -60, 60), anglePreset: 'custom' })} className="absolute bottom-2 z-20 rounded-full px-2 py-1 text-lg text-white/70 hover:bg-white/10">⌄</button>
         </div>
         <div className="space-y-5 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
           <ActionRange
@@ -2907,14 +2980,46 @@ function LightingActionEditor({
   const updateDraft = (patch: Partial<ImageActionDraft>) => setSession({ ...session, draft: { ...draft, ...patch } });
   const brightness = draft.lightingBrightness ?? 50;
   const keyLight = draft.lightingKeyLight ?? 'front';
-  const lightDotClass = {
-    left: 'left-4 top-1/2 -translate-y-1/2',
-    top: 'left-1/2 top-4 -translate-x-1/2',
-    right: 'right-4 top-1/2 -translate-y-1/2',
-    front: 'left-1/2 bottom-4 -translate-x-1/2',
-    bottom: 'left-1/2 bottom-4 -translate-x-1/2',
-    back: 'left-1/2 top-4 -translate-x-1/2',
-  }[keyLight] ?? 'left-1/2 bottom-4 -translate-x-1/2';
+  const smart = Boolean(draft.lightingSmart);
+  const lightAnchor = LIGHT_ANCHORS.find((a) => a.id === keyLight) ?? LIGHT_ANCHORS[4];
+  const dotX = lightAnchor.x * 70;
+  const dotY = lightAnchor.y * 70;
+
+  // Drag the light dot around the sphere → snap to the nearest of the 6 key-light
+  // directions, keeping it in sync with the 主光源 buttons (bidirectional).
+  // Disabled in smart mode, where lighting is driven by the chosen template.
+  const sphereRef = useRef<HTMLDivElement>(null);
+  const draggingLight = useRef(false);
+  const applyLightFromPointer = (clientX: number, clientY: number) => {
+    const el = sphereRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const r = Math.min(rect.width, rect.height) / 2;
+    if (r <= 0) return;
+    const nx = clampNumber((clientX - (rect.left + rect.width / 2)) / r, -1.3, 1.3);
+    const ny = clampNumber((clientY - (rect.top + rect.height / 2)) / r, -1.3, 1.3);
+    let best: (typeof LIGHT_ANCHORS)[number] = LIGHT_ANCHORS[0];
+    let bestD = Infinity;
+    for (const a of LIGHT_ANCHORS) {
+      const d = (a.x - nx) ** 2 + (a.y - ny) ** 2;
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    if (best.id !== keyLight) updateDraft({ lightingKeyLight: best.id });
+  };
+  const onLightPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (smart) return;
+    draggingLight.current = true;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* */ }
+    applyLightFromPointer(e.clientX, e.clientY);
+  };
+  const onLightPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingLight.current) return;
+    applyLightFromPointer(e.clientX, e.clientY);
+  };
+  const onLightPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    draggingLight.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* */ }
+  };
 
   return (
     <div className="grid gap-5 md:grid-cols-[240px_1fr]">
@@ -2936,12 +3041,25 @@ function LightingActionEditor({
             </button>
           ))}
         </div>
-        <div className="relative flex h-48 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-200/10 to-slate-950">
-          <div className="absolute h-40 w-40 rounded-full border border-white/18 bg-[radial-gradient(circle_at_35%_25%,rgba(255,255,255,0.35),rgba(148,163,184,0.13)_42%,rgba(15,23,42,0.45)_100%)]" />
-          <div className="absolute h-40 w-px bg-white/10" />
-          <div className="absolute h-px w-40 bg-white/10" />
-          <span className={clsx('absolute h-3.5 w-3.5 rounded-full border border-white/50 bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]', lightDotClass)} />
-          <div className="relative h-24 w-20 -rotate-6 overflow-hidden rounded-lg border border-white/20 bg-black/35 opacity-80 shadow-xl">
+        <div
+          ref={sphereRef}
+          onPointerDown={onLightPointerDown}
+          onPointerMove={onLightPointerMove}
+          onPointerUp={onLightPointerUp}
+          onPointerCancel={onLightPointerUp}
+          className={clsx(
+            'relative flex h-48 touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-200/10 to-slate-950',
+            smart ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
+          )}
+        >
+          <div className="pointer-events-none absolute h-40 w-40 rounded-full border border-white/18 bg-[radial-gradient(circle_at_35%_25%,rgba(255,255,255,0.35),rgba(148,163,184,0.13)_42%,rgba(15,23,42,0.45)_100%)]" />
+          <div className="pointer-events-none absolute h-40 w-px bg-white/10" />
+          <div className="pointer-events-none absolute h-px w-40 bg-white/10" />
+          <span
+            className="pointer-events-none absolute z-10 h-3.5 w-3.5 rounded-full border border-white/50 bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)] transition-transform duration-150"
+            style={{ transform: `translate(${dotX}px, ${dotY}px)` }}
+          />
+          <div className="pointer-events-none relative h-24 w-20 -rotate-6 overflow-hidden rounded-lg border border-white/20 bg-black/35 opacity-80 shadow-xl">
             <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
           </div>
         </div>
@@ -2954,6 +3072,32 @@ function LightingActionEditor({
             <MiniSwitch checked={Boolean(draft.lightingSmart)} onChange={(checked) => updateDraft({ lightingSmart: checked })} />
           </label>
         </div>
+        {smart ? (
+          <div className="space-y-2">
+            <div className="text-xs text-neutral-300">{language === 'zh' ? '预设' : 'Presets'}</div>
+            <div className="grid grid-cols-4 gap-2">
+              {SMART_LIGHTING_PRESETS.map((preset) => {
+                const active = draft.lightingPreset === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => updateDraft({ lightingPreset: preset.id, prompt: preset.prompt })}
+                    className={clsx(
+                      'overflow-hidden rounded-lg border text-left transition',
+                      active ? 'border-cyan-300/60 ring-1 ring-cyan-300/40' : 'border-white/10 hover:border-white/25',
+                    )}
+                  >
+                    <div className="aspect-square w-full overflow-hidden bg-black/30" style={{ filter: preset.filter }}>
+                      <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+                    </div>
+                    <span className="block truncate px-1.5 py-1 text-[10px] text-neutral-200">{language === 'zh' ? preset.labelZh : preset.labelEn}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
         <ActionRange
           label={language === 'zh' ? '亮度' : 'Brightness'}
           value={brightness}
@@ -2974,8 +3118,8 @@ function LightingActionEditor({
             <span className="font-mono text-neutral-400">{draft.lightingColor ?? '#ffffff'}</span>
           </div>
         </div>
-        <div className="space-y-2">
-          <div className="text-xs text-neutral-300">{language === 'zh' ? '主光源' : 'Key light'}</div>
+        <div className={clsx('space-y-2', smart && 'pointer-events-none opacity-40')}>
+          <div className="text-xs text-neutral-300">{language === 'zh' ? '主光源' : 'Key light'}{smart ? (language === 'zh' ? '（智能模式由预设接管）' : ' (driven by preset)') : ''}</div>
           <div className="grid grid-cols-3 gap-2">
             {LIGHTING_KEY_LIGHTS.map((item) => (
               <button
@@ -3359,54 +3503,14 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <Globe className="h-3.5 w-3.5" />
           {language === 'zh' ? '全景' : 'Panorama'}
         </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={actionButtonClass}>
-              <Sparkles className="h-3.5 w-3.5" />
-              {language === 'zh' ? '多角度' : 'Angles'}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {ANGLE_PRESETS.map((preset) => (
-              <DropdownMenuItem
-                key={preset.id}
-                onClick={() => openDraft('angles', { anglePreset: 'custom', prompt: preset.prompt, outputCount: 1, anglePromptEnabled: true })}
-              >
-                <div className="flex w-full items-center justify-between gap-3">
-                  <span>{language === 'zh' ? preset.labelZh : preset.labelEn}</span>
-                  <span className="text-[10px] text-neutral-500">{preset.outputs}</span>
-                </div>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={actionButtonClass}>
-              <Highlighter className="h-3.5 w-3.5" />
-              {language === 'zh' ? '打光' : 'Lighting'}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {LIGHTING_PRESETS.map((preset) => (
-              <DropdownMenuItem
-                key={preset.id}
-                onClick={() => openDraft('lighting', {
-                  lightingPreset: preset.id,
-                  prompt: preset.prompt,
-                  lightingKeyLight: preset.id === 'side-light' ? 'left' : preset.id === 'rim-light' ? 'back' : 'front',
-                  lightingBrightness: preset.id === 'soft-light' ? 62 : 50,
-                  lightingSmart: preset.id === 'soft-light',
-                  lightingRim: preset.id === 'rim-light',
-                })}
-              >
-                {language === 'zh' ? preset.labelZh : preset.labelEn}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button variant="ghost" size="sm" onClick={() => openDraft('angles')} className={actionButtonClass}>
+          <Sparkles className="h-3.5 w-3.5" />
+          {language === 'zh' ? '多角度' : 'Angles'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => openDraft('lighting')} className={actionButtonClass}>
+          <Highlighter className="h-3.5 w-3.5" />
+          {language === 'zh' ? '打光' : 'Lighting'}
+        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className={actionButtonClass}>
@@ -3539,11 +3643,11 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <div className="text-xs text-neutral-400">{language === 'zh' ? '原图' : 'Source'}</div>
-              <img src={sourceUrl} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
+              <img src={toRenderableMediaUrl(sourceUrl)} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
             </div>
             <div className="space-y-2">
               <div className="text-xs text-neutral-400">{language === 'zh' ? '最新派生' : 'Latest derived'}</div>
-              <img src={latestDerivedUrl || sourceUrl} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
+              <img src={toRenderableMediaUrl(latestDerivedUrl || sourceUrl)} alt="" className="max-h-[62vh] w-full rounded-2xl object-contain bg-black/20" />
             </div>
           </div>
         </DialogContent>
@@ -4054,7 +4158,7 @@ function captureVideoFrame(video: HTMLVideoElement): string | null {
 
 async function captureViaProxy(videoUrl: string, time: number): Promise<string | null> {
   try {
-    const proxyUrl = `/api/app/proxy-media?url=${encodeURIComponent(videoUrl)}`;
+    const proxyUrl = toRenderableMediaUrl(videoUrl);
     const resp = await fetch(proxyUrl, { credentials: 'include' });
     if (!resp.ok) return null;
     const blob = await resp.blob();
@@ -4178,6 +4282,117 @@ const VideoHoverControls = ({
   );
 };
 
+// SmartVideo — gallery-style hover preview for canvas video nodes (NeoWow-like).
+//   • out of view  → the <video> is UNMOUNTED (no decode, no buffering); the
+//                    poster is shown dimmed + grayscale, or a neutral grey box
+//                    when there is no poster yet.
+//   • in view, idle → first frame: a cheap poster <img> when available, else a
+//                    paused <video preload="metadata"> painting frame 0.
+//   • in view, hover → the <video> plays muted + looped.
+// An IntersectionObserver with a 300px rootMargin warms items just before they
+// scroll into view so hover-to-play feels instant; once fetched the browser's
+// HTTP cache (proxy sends Cache-Control: max-age) makes re-entry instant too.
+// The element is exposed via `videoRef` so frame-capture / hover-controls work.
+function SmartVideo({
+  src,
+  poster,
+  hovered: controlledHovered,
+  videoRef: externalVideoRef,
+  onLoadedMetadata,
+}: {
+  src: string;
+  poster?: string;
+  // Controlled by the parent when it also needs hover (e.g. to show capture
+  // controls); otherwise omit and SmartVideo manages hover itself.
+  hovered?: boolean;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+  onLoadedMetadata?: (event: React.SyntheticEvent<HTMLVideoElement>) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const internalVideoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = externalVideoRef ?? internalVideoRef;
+  const [inView, setInView] = useState(false);
+  const [internalHovered, setInternalHovered] = useState(false);
+  const selfManageHover = controlledHovered === undefined;
+  const hovered = controlledHovered ?? internalHovered;
+  const renderable = toRenderableMediaUrl(src);
+  const posterSrc = poster ? toRenderableMediaUrl(poster) : '';
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => setInView(entries[0]?.isIntersecting ?? false),
+      { root: null, rootMargin: '300px', threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  const playing = inView && hovered;
+  // Mount the <video> when it should play, or when in view without a poster (so
+  // the first frame can still paint). With a poster, idle-in-view stays a cheap
+  // <img> and the decoder is only spun up on hover.
+  const mountVideo = inView && (hovered || !posterSrc);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (playing) {
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+      try { v.currentTime = 0; } catch { /* */ }
+    }
+  }, [playing, mountVideo, videoRef]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute inset-0"
+      onMouseEnter={selfManageHover ? () => setInternalHovered(true) : undefined}
+      onMouseLeave={selfManageHover ? () => setInternalHovered(false) : undefined}
+    >
+      {posterSrc ? (
+        <img
+          src={posterSrc}
+          alt=""
+          draggable={false}
+          className={clsx(
+            'absolute inset-0 h-full w-full object-cover select-none transition-opacity duration-200',
+            playing ? 'opacity-0' : inView ? 'opacity-100' : 'opacity-50 grayscale',
+          )}
+        />
+      ) : !inView ? (
+        <div className="absolute inset-0 bg-white/[0.03]" />
+      ) : null}
+      {mountVideo ? (
+        <video
+          ref={videoRef}
+          src={renderable}
+          draggable={false}
+          className="absolute inset-0 h-full w-full object-cover select-none"
+          muted
+          loop
+          playsInline
+          preload={playing ? 'auto' : 'metadata'}
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            // Nudge the playhead a hair past zero so the browser paints exactly
+            // one frame even when not playing (avoids a black idle tile).
+            try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
+            if (playing) video.play().catch(() => {});
+            onLoadedMetadata?.(event);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export const VideoNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
@@ -4282,34 +4497,21 @@ export const VideoNode = ({ id, data, selected }: any) => {
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
-            <video
-              ref={videoRef}
+            <SmartVideo
               src={data.url}
-              draggable={false}
-              className="absolute inset-0 h-full w-full object-cover select-none"
-              autoPlay
-              muted
-              loop
-              playsInline
-              // `auto` (not `metadata`) buffers enough to paint the first
-              // frame even when autoplay is blocked. Without this the node
-              // renders black until you double-click into the preview modal.
-              preload="auto"
+              poster={data.poster}
+              hovered={hovered}
+              videoRef={videoRef}
               onLoadedMetadata={(event) => {
                 const video = event.currentTarget;
                 const { videoWidth, videoHeight } = video;
                 if (videoWidth && videoHeight && (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight)) {
                   updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
                 }
-                // Force first-frame paint when autoplay is blocked: nudge
-                // the playhead a hair past zero so the browser must draw
-                // exactly one frame.
-                try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
-                video.play().catch(() => {});
               }}
             />
           ) : data.poster ? (
-            <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
+            <img src={toRenderableMediaUrl(data.poster)} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
           {!data.url ? (
             <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">
@@ -4436,15 +4638,9 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
         onDoubleClick={() => data.url && setPreview(true)}
       >
         {data.url ? (
-          <video
+          <SmartVideo
             src={data.url}
-            draggable={false}
-            className="absolute inset-0 h-full w-full object-cover select-none"
-            autoPlay
-            loop
-            muted
-            playsInline
-            preload="auto"
+            poster={data.poster}
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
               const { videoWidth, videoHeight } = video;
@@ -4455,8 +4651,6 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
               ) {
                 updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
               }
-              try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
-              video.play().catch(() => {});
             }}
           />
         ) : (
@@ -4592,14 +4786,16 @@ function ResilientImage({
   const [useProxy, setUseProxy] = useState(false);
   const [bust, setBust] = useState(0);
 
-  // First load: try the URL directly. If that fails and it's a remote URL,
-  // automatically retry via the backend's /api/app/proxy-media endpoint —
+  // First load: try the raw asset directly. If that fails and it's a remote
+  // URL, automatically retry via the backend's /api/app/proxy-media endpoint —
   // sidesteps CORS, referrer policy, and mixed-content blocks in one shot.
-  const isRemote = /^https?:\/\//.test(src);
-  const proxiedSrc = isRemote
-    ? `${(import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "")}/api/app/proxy-media?url=${encodeURIComponent(src)}`
-    : src;
-  const baseSrc = useProxy ? proxiedSrc : src;
+  // `src` may itself already be proxy-wrapped (legacy persisted data); peel it
+  // for the direct attempt and use the idempotent helper for the proxy retry
+  // so neither path can double-wrap.
+  const directSrc = extractOriginalMediaUrl(src) || src;
+  const isRemote = /^https?:\/\//.test(directSrc);
+  const proxiedSrc = toRenderableMediaUrl(src);
+  const baseSrc = useProxy ? proxiedSrc : directSrc;
   const finalSrc = bust > 0 ? `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}_r=${bust}` : baseSrc;
 
   useEffect(() => {
@@ -4711,12 +4907,6 @@ function PanoramaPreviewModal({
   const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number; width: number; height: number } | null>(null);
   const glRef = useRef<THREE.WebGLRenderer | null>(null);
   const sourceNode = nodes.find((node) => node.id === nodeId);
-  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
-  const displaySrc = /^data:/.test(src)
-    ? src
-    : (/^https?:\/\//.test(src)
-      ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(src)}`
-      : resolveBackendAssetUrl(src));
 
   // Load the panorama as a Three.js texture. We go through loadImageElement
   // (which fetches via the proxy-media endpoint into a blob: URL) — blob
@@ -5137,19 +5327,11 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
-            <video
-              ref={videoRef}
+            <SmartVideo
               src={data.url}
-              draggable={false}
-              className="absolute inset-0 h-full w-full object-cover select-none"
-              autoPlay
-              muted
-              loop
-              playsInline
-              // `auto` (not `metadata`) buffers enough to paint the first
-              // frame even when autoplay is blocked. Without this the node
-              // renders black until you double-click into the preview modal.
-              preload="auto"
+              poster={data.poster}
+              hovered={hovered}
+              videoRef={videoRef}
               onLoadedMetadata={(event) => {
                 const video = event.currentTarget;
                 const { videoWidth, videoHeight } = video;
@@ -5159,15 +5341,10 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
                 if (video.duration && data.mediaDuration !== video.duration) {
                   updateNodeData(id, { mediaDuration: video.duration });
                 }
-                // Force first-frame paint when autoplay is blocked: nudge
-                // the playhead a hair past zero so the browser must draw
-                // exactly one frame.
-                try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
-                video.play().catch(() => {});
               }}
             />
           ) : data.poster ? (
-            <img src={data.poster} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
+            <img src={toRenderableMediaUrl(data.poster)} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
           {!data.url ? (
             <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">

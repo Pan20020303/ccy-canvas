@@ -114,6 +114,95 @@ func (t *listNodesTool) Execute(_ context.Context, _ json.RawMessage) (string, e
 	return string(raw), nil
 }
 
+// BuildCanvasOverview renders a compact, complete snapshot of the canvas to
+// inject into the agent's system prompt. Giving the model the full node list
+// up-front stops it from "exploring" the canvas by calling read_node on every
+// node one-by-one (which floods the run with dozens of tool calls).
+func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge) string {
+	if len(nodes) == 0 {
+		return "【画布快照】当前画布为空（没有任何节点）。"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "【画布快照】共 %d 个节点、%d 条连线。以下是完整节点清单（id · 类型 · 名称 · 产物 · 内容摘要）：\n", len(nodes), len(edges))
+	for _, n := range nodes {
+		name := ""
+		if v, ok := n.Data["sourceName"].(string); ok && v != "" {
+			name = v
+		} else if v, ok := n.Data["customTitle"].(string); ok && v != "" {
+			name = v
+		}
+		hasURL := false
+		if v, ok := n.Data["url"].(string); ok && v != "" {
+			hasURL = true
+		}
+		content := ""
+		if v, ok := n.Data["content"].(string); ok && v != "" {
+			if r := []rune(v); len(r) > 60 {
+				content = string(r[:60]) + "…"
+			} else {
+				content = v
+			}
+		}
+		b.WriteString("- " + n.ID + " · " + n.Type)
+		if name != "" {
+			b.WriteString(" · " + name)
+		}
+		if hasURL {
+			b.WriteString(" · [有产物]")
+		}
+		if content != "" {
+			b.WriteString(" · " + content)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("说明：以上已是完整画布快照，你已经掌握画布上的全部节点，**不要逐个调用 read_node 去遍历所有节点**。仅当确实需要某个具体节点的完整 prompt / url 等细节时，才对那一个节点调用 read_node；需要按类型或关键词筛选时用 find_nodes。")
+	return b.String()
+}
+
+// askUserTool lets the agent pause and ask the user a clarifying question with
+// concrete options (a "选择题") instead of guessing. It emits an `ask_user`
+// SSE event the frontend renders as clickable choices; the user's pick becomes
+// the next turn.
+type askUserTool struct{ emit func(string, any) }
+
+func (t *askUserTool) Name() string { return "ask_user" }
+func (t *askUserTool) Description() string {
+	return "Ask the user a clarifying multiple-choice question before proceeding. Use when the request is ambiguous or has several reasonable interpretations/paths. Provide 2-4 concrete options. After calling this, END your turn and wait for the user's choice — do NOT keep acting."
+}
+func (t *askUserTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"question":{"type":"string","description":"the clarifying question to show the user"},"options":{"type":"array","items":{"type":"string"},"description":"2-4 concrete, mutually-distinct choices"},"allow_custom":{"type":"boolean","description":"whether the user may also type a custom answer (default true)"}},"required":["question","options"],"additionalProperties":false}`)
+}
+func (t *askUserTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Question    string   `json:"question"`
+		Options     []string `json:"options"`
+		AllowCustom *bool    `json:"allow_custom"`
+	}
+	_ = json.Unmarshal(args, &p)
+	allowCustom := p.AllowCustom == nil || *p.AllowCustom
+	if t.emit != nil {
+		t.emit("ask_user", map[string]any{
+			"question":     p.Question,
+			"options":      p.Options,
+			"allow_custom": allowCustom,
+		})
+	}
+	return "已向用户展示选择题并等待其选择。请立即结束本轮，不要再调用任何工具或继续执行，直到用户在下一轮给出选择。", nil
+}
+
+// BuildAskUserTool wires the ask_user tool to the SSE emitter.
+func BuildAskUserTool(emit func(string, any)) Tool { return &askUserTool{emit: emit} }
+
+// AgentInteractionGuide is appended to every agent's system prompt. It makes the
+// agent (1) analyse intent first, (2) answer/execute directly when the request
+// is clear, and (3) offer a multiple-choice question (ask_user) when ambiguous,
+// instead of guessing — and not遍历 the canvas via read_node.
+const AgentInteractionGuide = `【交互准则】
+1. 先用一句话简要分析用户意图（要做什么、涉及画布哪些节点）。
+2. 如果意图明确，直接正常回答或执行，不要画蛇添足地反问。
+3. 如果请求存在多种合理理解或多条可行路径（例如"优化一下""做个视频"这类宽泛需求），不要擅自假设：调用 ask_user 工具，给出 2-4 个具体、互斥的选项（options），allow_custom 设为 true 允许用户补充其他意见；调用后立即结束本轮，等待用户选择。
+4. 已经为你提供了完整的画布快照，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；只有需要某个节点的完整细节时才单独 read_node。`
+
 type createNodeTool struct{ state *CanvasState }
 
 func (t *createNodeTool) Name() string { return "create_node" }

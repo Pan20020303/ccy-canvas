@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X, Image as ImageIcon, Video as VideoIcon, Type } from 'lucide-react';
 import clsx from 'clsx';
+import { toRenderableMediaUrl } from '../reference-media';
 import { useStore, ASSET_CATEGORIES, type SavedAssetCategory } from '../store';
 
 const SAVABLE_CATEGORIES = ASSET_CATEGORIES.filter((c) => c.key !== 'all') as { key: SavedAssetCategory; zh: string; en: string }[];
@@ -74,9 +75,9 @@ export function SaveAssetDialog() {
             <div className="mb-2 text-sm text-neutral-300">{language === 'zh' ? '封面' : 'Cover'}</div>
             <div className="aspect-video overflow-hidden rounded-xl border border-white/8 bg-black/40">
               {kind === 'image' && url ? (
-                <img src={url} alt="" className="h-full w-full object-cover" />
+                <img src={toRenderableMediaUrl(url)} alt="" className="h-full w-full object-cover" />
               ) : kind === 'video' && url ? (
-                <video src={url} className="h-full w-full object-cover" muted />
+                <video src={toRenderableMediaUrl(url)} className="h-full w-full object-cover" muted />
               ) : kind === 'text' ? (
                 <div className="flex h-full items-center justify-center p-4 text-center text-xs text-neutral-400">
                   <Type className="mr-2 h-4 w-4" />
