@@ -1288,6 +1288,8 @@ type generateInput struct {
 		OutputFormat     string                      `json:"output_format,omitempty" doc:"Requested output format hint"`
 		Parameters       map[string]any              `json:"parameters,omitempty" doc:"Provider-specific extra parameters"`
 		ReferenceMode    string                      `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
+		AudioSetting     string                      `json:"audio_setting,omitempty" doc:"HappyHorse video-edit audio: auto / origin"`
+		Seed             *int                        `json:"seed,omitempty" doc:"Random seed [0, 2147483647] for reproducible generation"`
 	}
 }
 
@@ -1550,6 +1552,8 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		OutputFormat:     input.Body.OutputFormat,
 		Parameters:       input.Body.Parameters,
 		ReferenceMode:    input.Body.ReferenceMode,
+		AudioSetting:     input.Body.AudioSetting,
+		Seed:             input.Body.Seed,
 		UserID:           userIDStr,
 		NodeID:           input.Body.NodeId,
 		RequestID:        input.Body.RequestID,

@@ -1,4 +1,7 @@
-export type ReferenceNodeType = "referenceImageNode" | "referenceVideoNode";
+export type ReferenceNodeType =
+  | "referenceImageNode"
+  | "referenceVideoNode"
+  | "referenceAudioNode";
 
 const transientReferencePayloadValues = new Map<string, string>();
 
@@ -13,6 +16,10 @@ export function getReferenceNodeTypeFromMimeType(mimeType?: string | null): Refe
 
   if (mimeType.startsWith("video/")) {
     return "referenceVideoNode";
+  }
+
+  if (mimeType.startsWith("audio/")) {
+    return "referenceAudioNode";
   }
 
   return null;

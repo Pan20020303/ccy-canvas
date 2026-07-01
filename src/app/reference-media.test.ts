@@ -19,6 +19,11 @@ describe("reference media helpers", () => {
     expect(getReferenceNodeTypeFromMimeType("video/mp4")).toBe("referenceVideoNode");
   });
 
+  it("maps audio mime types to reference audio nodes", () => {
+    expect(getReferenceNodeTypeFromMimeType("audio/mpeg")).toBe("referenceAudioNode");
+    expect(getReferenceNodeTypeFromMimeType("audio/wav")).toBe("referenceAudioNode");
+  });
+
   it("returns null for unsupported mime types", () => {
     expect(getReferenceNodeTypeFromMimeType("application/pdf")).toBeNull();
   });

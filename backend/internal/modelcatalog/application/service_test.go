@@ -145,7 +145,7 @@ func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
 }
 
 func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2V(t *testing.T) {
-	media, err := buildDashScopeVideoMedia(GenerateRequest{
+	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
 		Model:           "happyhorse-1.1-r2v",
 		ReferenceMode:   "image_reference",
 		ReferenceImages: []string{"https://example.com/ref.png"},
@@ -162,7 +162,7 @@ func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2V(t *testing.
 }
 
 func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2VMultiImage(t *testing.T) {
-	media, err := buildDashScopeVideoMedia(GenerateRequest{
+	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
 		Model:           "happyhorse-1.0-r2v",
 		ReferenceMode:   "image_reference",
 		ReferenceImages: []string{"https://example.com/ref-1.png", "https://example.com/ref-2.png"},
@@ -181,7 +181,7 @@ func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2VMultiImage(t
 }
 
 func TestBuildDashScopeVideoMediaKeepsFirstFrameForHappyHorseI2V(t *testing.T) {
-	media, err := buildDashScopeVideoMedia(GenerateRequest{
+	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
 		Model:           "happyhorse-1.1-i2v",
 		ReferenceMode:   "first_frame",
 		ReferenceImages: []string{"https://example.com/first.png"},
@@ -197,7 +197,76 @@ func TestBuildDashScopeVideoMediaKeepsFirstFrameForHappyHorseI2V(t *testing.T) {
 	}
 }
 
-func TestBuildDashScopeVideoParametersIncludesAspectRatio(t *testing.T) {
+// video-edit must emit the source video as a type:"video" element (first),
+// followed by the reference images as type:"reference_image". A public http URL
+// passes through unchanged (PresignGet returns "" for non-COS URLs).
+func TestBuildDashScopeVideoMediaEmitsVideoElementForVideoEdit(t *testing.T) {
+	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
+		Model:           "happyhorse-1.0-video-edit",
+		ReferenceMode:   "video_edit",
+		ReferenceVideo:  "https://example.com/source.mp4",
+		ReferenceImages: []string{"https://example.com/ref.png"},
+	})
+	if err != nil {
+		t.Fatalf("buildDashScopeVideoMedia returned error: %v", err)
+	}
+	if len(media) != 2 {
+		t.Fatalf("media length = %d, want 2 (1 video + 1 image)", len(media))
+	}
+	if got := media[0]["type"]; got != "video" {
+		t.Fatalf("media[0].type = %v, want video", got)
+	}
+	if got := media[0]["url"]; got != "https://example.com/source.mp4" {
+		t.Fatalf("media[0].url = %v, want the source video url", got)
+	}
+	if got := media[1]["type"]; got != "reference_image" {
+		t.Fatalf("media[1].type = %v, want reference_image", got)
+	}
+}
+
+// video-edit with only a source video (no reference images) still emits the
+// video element — the old images-only guard silently dropped it.
+func TestBuildDashScopeVideoMediaVideoEditWithoutReferenceImages(t *testing.T) {
+	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
+		Model:          "happyhorse-1.0-video-edit",
+		ReferenceMode:  "video_edit",
+		ReferenceVideo: "https://example.com/source.mp4",
+	})
+	if err != nil {
+		t.Fatalf("buildDashScopeVideoMedia returned error: %v", err)
+	}
+	if len(media) != 1 || media[0]["type"] != "video" {
+		t.Fatalf("media = %v, want a single type:video element", media)
+	}
+}
+
+// video-edit without any source video is a hard error (media can't be built).
+func TestBuildDashScopeVideoMediaVideoEditRequiresVideo(t *testing.T) {
+	_, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
+		Model:         "happyhorse-1.0-video-edit",
+		ReferenceMode: "video_edit",
+	})
+	if err == nil {
+		t.Fatal("expected an error when video-edit has no source video, got nil")
+	}
+}
+
+// A base64/data-URL video is rejected — the doc mandates a public URL.
+func TestBuildDashScopeVideoMediaVideoEditRejectsDataURLVideo(t *testing.T) {
+	_, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
+		Model:          "happyhorse-1.0-video-edit",
+		ReferenceMode:  "video_edit",
+		ReferenceVideo: "data:video/mp4;base64,AAAA",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a base64 video, got nil")
+	}
+}
+
+// 首帧(i2v) output aspect auto-follows the first frame; the DashScope docs say
+// i2v does NOT accept aspect_ratio, so the parameters builder must OMIT it even
+// when a caller passes one (stale genParams, direct API client, etc.).
+func TestBuildDashScopeVideoParametersOmitsAspectRatioForI2V(t *testing.T) {
 	params := buildDashScopeVideoParameters(GenerateRequest{
 		Model:       "happyhorse-1.1-i2v",
 		Resolution:  "1080P",
@@ -211,8 +280,123 @@ func TestBuildDashScopeVideoParametersIncludesAspectRatio(t *testing.T) {
 	if got := params["duration"]; got != 5 {
 		t.Fatalf("duration = %v, want 5", got)
 	}
-	if got := params["aspect_ratio"]; got != "9:16" {
-		t.Fatalf("aspect_ratio = %v, want 9:16", got)
+	if _, ok := params["ratio"]; ok {
+		t.Fatalf("ratio must be omitted for i2v, got %v", params["ratio"])
+	}
+}
+
+// 参考生(r2v) DOES accept ratio, so the builder must forward it.
+func TestBuildDashScopeVideoParametersIncludesAspectRatioForR2V(t *testing.T) {
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model:       "happyhorse-1.1-r2v",
+		Resolution:  "1080P",
+		Duration:    5,
+		AspectRatio: "9:16",
+	})
+
+	// DashScope's video param key is "ratio" (NOT "aspect_ratio").
+	if got := params["ratio"]; got != "9:16" {
+		t.Fatalf("ratio = %v, want 9:16 for r2v", got)
+	}
+	if _, ok := params["aspect_ratio"]; ok {
+		t.Fatalf("must use 'ratio' key, not 'aspect_ratio'")
+	}
+}
+
+// video-edit follows the source video; ratio must be omitted like i2v.
+func TestBuildDashScopeVideoParametersOmitsAspectRatioForVideoEdit(t *testing.T) {
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model:       "happyhorse-1.0-video-edit",
+		Resolution:  "1080P",
+		AspectRatio: "16:9",
+	})
+
+	if _, ok := params["ratio"]; ok {
+		t.Fatalf("ratio must be omitted for video-edit, got %v", params["ratio"])
+	}
+}
+
+// video-edit follows the source video; duration must also be omitted, and
+// audio_setting must be emitted (default auto).
+func TestBuildDashScopeVideoParametersVideoEditAudioAndNoDuration(t *testing.T) {
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model:      "happyhorse-1.0-video-edit",
+		Resolution: "1080P",
+		Duration:   5,
+	})
+	if _, ok := params["duration"]; ok {
+		t.Fatalf("duration must be omitted for video-edit, got %v", params["duration"])
+	}
+	if got := params["audio_setting"]; got != "auto" {
+		t.Fatalf("audio_setting = %v, want auto (default)", got)
+	}
+
+	origin := buildDashScopeVideoParameters(GenerateRequest{
+		Model:        "happyhorse-1.0-video-edit",
+		AudioSetting: "origin",
+	})
+	if got := origin["audio_setting"]; got != "origin" {
+		t.Fatalf("audio_setting = %v, want origin", got)
+	}
+}
+
+// audio_setting must NOT leak into non-video-edit modes.
+func TestBuildDashScopeVideoParametersNoAudioSettingForR2V(t *testing.T) {
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model:        "happyhorse-1.1-r2v",
+		AudioSetting: "origin",
+	})
+	if _, ok := params["audio_setting"]; ok {
+		t.Fatalf("audio_setting must be omitted for r2v, got %v", params["audio_setting"])
+	}
+}
+
+// seed is forwarded across all modes when provided.
+func TestBuildDashScopeVideoParametersIncludesSeed(t *testing.T) {
+	seed := 42
+	params := buildDashScopeVideoParameters(GenerateRequest{
+		Model: "happyhorse-1.1-t2v",
+		Seed:  &seed,
+	})
+	if got := params["seed"]; got != 42 {
+		t.Fatalf("seed = %v, want 42", got)
+	}
+}
+
+func TestValidateDashScopeVideoRequest(t *testing.T) {
+	bad := 5000000000
+	cases := []struct {
+		name    string
+		req     GenerateRequest
+		wantErr bool
+	}{
+		{"i2v exactly 1 ok", GenerateRequest{Model: "happyhorse-1.1-i2v", ReferenceImages: []string{"a"}}, false},
+		{"i2v two images", GenerateRequest{Model: "happyhorse-1.1-i2v", ReferenceImages: []string{"a", "b"}}, true},
+		{"i2v with video", GenerateRequest{Model: "happyhorse-1.1-i2v", ReferenceImages: []string{"a"}, ReferenceVideo: "v"}, true},
+		{"r2v 1-9 ok", GenerateRequest{Model: "happyhorse-1.1-r2v", ReferenceImages: []string{"a", "b", "c"}}, false},
+		{"r2v ten images", GenerateRequest{Model: "happyhorse-1.1-r2v", ReferenceImages: make([]string, 10)}, true},
+		{"r2v with video", GenerateRequest{Model: "happyhorse-1.1-r2v", ReferenceImages: []string{"a"}, ReferenceVideos: []string{"v"}}, true},
+		{"video-edit 1 video 5 images ok", GenerateRequest{Model: "happyhorse-1.0-video-edit", ReferenceVideo: "v", ReferenceImages: make([]string, 5)}, false},
+		{"video-edit 6 images", GenerateRequest{Model: "happyhorse-1.0-video-edit", ReferenceVideo: "v", ReferenceImages: make([]string, 6)}, true},
+		{"video-edit no video", GenerateRequest{Model: "happyhorse-1.0-video-edit", ReferenceImages: make([]string, 2)}, true},
+		{"video-edit two videos", GenerateRequest{Model: "happyhorse-1.0-video-edit", ReferenceVideos: []string{"a", "b"}}, true},
+		{"t2v with image", GenerateRequest{Model: "happyhorse-1.1-t2v", ReferenceImages: []string{"a"}}, true},
+		{"bad resolution", GenerateRequest{Model: "happyhorse-1.1-t2v", Resolution: "4K"}, true},
+		{"bad ratio r2v", GenerateRequest{Model: "happyhorse-1.1-r2v", ReferenceImages: []string{"a"}, AspectRatio: "7:3"}, true},
+		{"duration out of range", GenerateRequest{Model: "happyhorse-1.1-t2v", Duration: 30}, true},
+		{"seed out of range", GenerateRequest{Model: "happyhorse-1.1-t2v", Seed: &bad}, true},
+		{"non-happyhorse skipped", GenerateRequest{Model: "some-other-video", ReferenceImages: make([]string, 20)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateDashScopeVideoRequest(tc.req)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

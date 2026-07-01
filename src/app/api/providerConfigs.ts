@@ -828,7 +828,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       submitEndpoint: "/services/aigc/video-generation/video-synthesis",
       queryEndpoint: "/tasks/{taskId}",
       parameterSchema: {
-        allowed_parameters: ["model", "prompt", "resolution", "ratio", "duration", "watermark", "seed"],
+        allowed_parameters: ["model", "prompt", "resolution", "ratio", "duration", "watermark", "seed", "audio_setting"],
         resolution_options: ["720P", "1080P"],
         // duration_options 故意不设；前端按模型模板里的 durationRange (3–15s, step 1) 渲染成滑块。
         supports_resolution: true,
@@ -1042,6 +1042,10 @@ export type GeneratePayload = {
   reference_mode?: string;
   reference_video?: string;
   reference_videos?: string[];
+  /** HappyHorse video-edit audio control: "auto" (default) / "origin" (keep source audio). */
+  audio_setting?: string;
+  /** Random seed [0, 2147483647] for reproducible generation. */
+  seed?: number;
   edit_operation?: string;
   mask_image?: string;
   output_count?: number;

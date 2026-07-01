@@ -163,6 +163,10 @@ export type NodeGenerationParams = {
   quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+  /** HappyHorse video-edit audio: "auto" (default) / "origin" (keep source audio). */
+  audioSetting?: string;
+  /** Random seed [0, 2147483647]; unset → provider picks a random seed. */
+  seed?: number;
   editOperation?: string;
   maskImage?: string;
   outputCount?: number;
@@ -297,8 +301,12 @@ type AppState = {
   isAssetLibraryOpen: boolean;
   setAssetLibraryOpen: (open: boolean) => void;
   undoStack: ProjectCanvasState[];
+  redoStack: ProjectCanvasState[];
   pushUndoSnapshot: () => void;
   undoCanvas: () => void;
+  redoCanvas: () => void;
+  /** Delete the currently-selected node(s) + their edges (Del / Backspace). */
+  deleteSelectedNodes: () => void;
   copiedCanvasSelection: CanvasClipboardSelection | null;
   copySelectedNodes: () => void;
   pasteCopiedNodes: () => void;
@@ -344,9 +352,40 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   drag_clone: 'Alt',
   paste_node: 'Ctrl+V',
   undo: 'Ctrl+Z',
-  redo: 'Shift+Ctrl+Z',
-  delete_node: 'D',
+  redo: 'Ctrl+Y',
+  delete_node: 'Delete',
   select_all: 'Ctrl+A',
+};
+
+/**
+ * Serialize a keyboard event into a canonical combo string ("Ctrl+Shift+Z",
+ * "Delete", "F"). This is the SINGLE source of truth shared by the settings
+ * recorder and the live canvas handler, so a recorded shortcut and a live
+ * keypress compare equal. Order is always Ctrl → Shift → Alt → Key, and
+ * ctrl/meta both normalize to "Ctrl" (cross-platform).
+ */
+export const formatShortcutCombo = (e: KeyboardEvent): string => {
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+  if (e.shiftKey) parts.push('Shift');
+  if (e.altKey) parts.push('Alt');
+  const key = e.key;
+  if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
+    parts.push(key.length === 1 ? key.toUpperCase() : key);
+  }
+  return parts.join('+');
+};
+
+/** Whether a keyboard event matches the (possibly user-customized) combo for
+ *  `action`. Falls back to the default binding when unset. */
+export const eventMatchesShortcut = (
+  e: KeyboardEvent,
+  action: string,
+  shortcuts: Record<string, string>,
+): boolean => {
+  const combo = shortcuts[action] || DEFAULT_SHORTCUTS[action];
+  if (!combo) return false;
+  return formatShortcutCombo(e) === combo;
 };
 
 const initialNodes: Node[] = [
@@ -389,8 +428,15 @@ const cloneCanvasState = (state: Pick<AppState, 'nodes' | 'edges' | 'groups'>): 
 
 const pushUndoState = (state: AppState) => [...state.undoStack, cloneCanvasState(state)];
 
+// Position + dimension changes are NOT auto-captured for undo: a single drag
+// emits dozens of per-frame 'position' changes, and capturing each one made
+// Ctrl+Z crawl the node back frame-by-frame. Instead, a drag is snapshotted
+// exactly once at drag START (Canvas.onNodeDragStart → pushUndoSnapshot), so a
+// whole drag collapses to one undo step. (select/dimensions are never edits.)
 const shouldCaptureNodeChangesForUndo = (changes: NodeChange[]) =>
-  changes.some((change) => change.type !== 'select');
+  changes.some((change) =>
+    change.type !== 'select' && change.type !== 'position' && change.type !== 'dimensions',
+  );
 
 const shouldCaptureEdgeChangesForUndo = (changes: EdgeChange[]) =>
   changes.some((change) => change.type !== 'select');
@@ -517,7 +563,9 @@ const createReferenceNodeFromHistoryItem = (
     ? 'referenceImageNode'
     : item.mediaType === 'video'
       ? 'referenceVideoNode'
-      : null;
+      : item.mediaType === 'audio'
+        ? 'referenceAudioNode'
+        : null;
   const url = item.thumbnail || item.content;
 
   if (!type || !url) {
@@ -1290,6 +1338,53 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
   return { imageUrls, videoUrls };
 }
 
+/** Flatten rich-text-editor HTML (or already-plain text) to plain text, keeping
+ *  paragraph/line breaks. Used to reference an upstream 文本节点's content. */
+function htmlToPlainText(html: string): string {
+  if (!html) return '';
+  if (typeof document !== 'undefined') {
+    const el = document.createElement('div');
+    el.innerHTML = html;
+    el.querySelectorAll('br').forEach((br) => br.replaceWith('\n'));
+    el.querySelectorAll('p, div, li, h1, h2, h3').forEach((b) => b.append('\n'));
+    return (el.textContent ?? '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-3])>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** Concatenated plain-text content of upstream 文本节点 wired into `targetNodeId`.
+ *  Powers "connect = auto-reference": a text node connected upstream feeds its
+ *  content into the downstream node's prompt without a manual @mention.
+ *  Nodes already referenced via an @mention in `prompt` are SKIPPED so their
+ *  text isn't emitted twice (once prepended here, once resolved from the
+ *  mention). Returns '' when there are no eligible text nodes with content. */
+function collectUpstreamText(nodes: Node[], edges: Edge[], targetNodeId: string, prompt = ''): string {
+  const upstreamIds = new Set(
+    edges.filter((edge) => edge.target === targetNodeId).map((edge) => edge.source),
+  );
+  // Refs already @mentioned in the prompt — those resolve on their own path.
+  const mentionedRefs = new Set<string>();
+  prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_m, ref) => { mentionedRefs.add(ref); return _m; });
+  const isMentioned = (nodeId: string) => {
+    for (const ref of mentionedRefs) if (nodeId.startsWith(ref)) return true;
+    return false;
+  };
+  const parts: string[] = [];
+  for (const node of nodes) {
+    if (node.type !== 'textNode' || !upstreamIds.has(node.id) || isMentioned(node.id)) continue;
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    const raw = typeof data.content === 'string' ? data.content : '';
+    const text = htmlToPlainText(raw);
+    if (text) parts.push(text);
+  }
+  return parts.join('\n\n');
+}
+
 function usesPublicHttpReferenceImages(provider: AppProviderConfig | null | undefined): boolean {
   if (!provider || provider.service_type !== 'image') {
     return false;
@@ -1419,6 +1514,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   nodes: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].nodes,
   edges: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].edges,
   undoStack: [],
+  redoStack: [],
   copiedCanvasSelection: null,
 
   onNodesChange: (changes: NodeChange[]) => {
@@ -1437,12 +1533,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         : state.groups
             .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !removedIds.has(id)) }))
             .filter((group) => group.nodeIds.length > 0);
-      const undoStack = shouldCaptureNodeChangesForUndo(changes) ? pushUndoState(state) : state.undoStack;
+      const captured = shouldCaptureNodeChangesForUndo(changes);
+      const undoStack = captured ? pushUndoState(state) : state.undoStack;
       const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
       return {
         nodes,
         groups,
         undoStack,
+        // A fresh edit invalidates the redo stack (standard undo/redo).
+        redoStack: captured ? [] : state.redoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -1452,11 +1551,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   onEdgesChange: (changes: EdgeChange[]) => {
     set((state) => {
       const edges = applyEdgeChanges(changes, state.edges);
-      const undoStack = shouldCaptureEdgeChangesForUndo(changes) ? pushUndoState(state) : state.undoStack;
+      const captured = shouldCaptureEdgeChangesForUndo(changes);
+      const undoStack = captured ? pushUndoState(state) : state.undoStack;
       const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
       return {
         edges,
         undoStack,
+        redoStack: captured ? [] : state.redoStack,
         projectStateById,
         ...syncActiveSpaceSnapshot(state, { projectStateById }),
       };
@@ -1824,18 +1925,63 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   groups: seedSpaceSnapshotsById['space-personal'].projectStateById[seedSpaceSnapshotsById['space-personal'].activeProjectId].groups,
   pushUndoSnapshot: () => set((state) => ({
     undoStack: pushUndoState(state),
+    redoStack: [],
   })),
   undoCanvas: () => set((state) => {
     const previous = state.undoStack.at(-1);
     if (!previous) return {};
 
     const undoStack = state.undoStack.slice(0, -1);
+    // Snapshot the CURRENT canvas onto the redo stack so redo can restore it.
+    const redoStack = [...state.redoStack, cloneCanvasState(state)];
     const projectStateById = syncActiveProjectState(state, previous).projectStateById;
     return {
       nodes: previous.nodes,
       edges: previous.edges,
       groups: previous.groups,
       undoStack,
+      redoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
+  redoCanvas: () => set((state) => {
+    const next = state.redoStack.at(-1);
+    if (!next) return {};
+
+    const redoStack = state.redoStack.slice(0, -1);
+    // Push the current canvas back onto the undo stack so undo still works.
+    const undoStack = [...state.undoStack, cloneCanvasState(state)];
+    const projectStateById = syncActiveProjectState(state, next).projectStateById;
+    return {
+      nodes: next.nodes,
+      edges: next.edges,
+      groups: next.groups,
+      undoStack,
+      redoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+
+  deleteSelectedNodes: () => set((state) => {
+    const doomed = new Set(state.nodes.filter((node) => node.selected).map((node) => node.id));
+    if (doomed.size === 0) return {};
+
+    const nodes = state.nodes.filter((node) => !doomed.has(node.id));
+    const edges = state.edges.filter((edge) => !doomed.has(edge.source) && !doomed.has(edge.target));
+    const groups = state.groups
+      .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }))
+      .filter((group) => group.nodeIds.length > 0);
+    const undoStack = pushUndoState(state);
+    const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
+    return {
+      nodes,
+      edges,
+      groups,
+      undoStack,
+      redoStack: [],
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
@@ -1865,6 +2011,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       nodes,
       edges,
       undoStack,
+      redoStack: [],
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
@@ -2468,13 +2615,23 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     });
       return;
     }
+    // "Connect = auto-reference": prepend the plain-text content of any upstream
+    // 文本节点 wired into this node, so a connected text node feeds the prompt
+    // without a manual @mention. Skipped when the text is already present in the
+    // prompt (e.g. the user inlined it) to avoid duplication. The user's own
+    // typed prompt is stored/displayed unchanged — only the RESOLVED prompt sent
+    // to the backend carries the reference.
+    const upstreamText = collectUpstreamText(state.nodes, state.edges, nodeId, payload.prompt);
+    const effectivePrompt = upstreamText && !payload.prompt.includes(upstreamText)
+      ? (payload.prompt.trim() ? `${upstreamText}\n\n${payload.prompt}` : upstreamText)
+      : payload.prompt;
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
     // For media-generation routes that send structured references, strip @mentions
     // from the prompt instead of inlining raw upload paths.
     const strippedForMedia = shouldStripMentions
-      ? payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, '').trim()
+      ? effectivePrompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, '').trim()
       : null;
     // When the prompt only contained @mentions, keep a sane natural-language fallback
     // so backend validation and third-party relays receive a usable prompt.
@@ -2489,7 +2646,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             ? 'Generate an image using the provided reference media.'
             : 'Generate audio.')
       )
-      : payload.prompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
+      : effectivePrompt.replace(/@([a-zA-Z0-9_-]{1,12})/g, (_match, ref) => {
           const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
           if (!upstreamNode) return `@${ref}`;
           const data = (upstreamNode.data ?? {}) as Record<string, string>;
@@ -2605,6 +2762,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ? crypto.randomUUID()
       : `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+    // Active model's template — used to gate capability-scoped params (seed,
+    // audio_setting) so a value that persisted from a previous model doesn't
+    // ride along to a sibling that doesn't support it.
+    const activeTemplate = getModelTemplate(payload.model ?? '');
+
     // Make sure the recovery poller is running. Idempotent — first call
     // wires up the interval, subsequent calls are no-ops.
     ensureTaskPollerStarted(get, set as never);
@@ -2643,6 +2805,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             : undefined),
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
+        // Gate on the ACTIVE model's declared capability so a stale value set
+        // on a previous model (genParams persists across model switches) never
+        // rides along to a sibling that doesn't support it. audio_setting only
+        // for templates that expose it (video-edit); seed only for supportsSeed.
+        audio_setting: serviceType === 'video' && activeTemplate?.audioSettingOptions?.length ? genParams?.audioSetting : undefined,
+        seed: serviceType === 'video' && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
       }, aborter.signal);
 
       if (!isCurrentRun()) return;

@@ -39,6 +39,25 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* ── NeoWow-aligned agent UI tokens ─────────────────────────────────────
+     The agent side-drawer + its menus are always dark regardless of app
+     theme, so these live in :root (not gated by .dark). Extracted from a
+     live NeoWow capture: near-black neutral panels, hairline borders, a
+     slightly-lighter raised surface for menus, muted grey labels, near-white
+     titles, and a single sparingly-used cyan accent. Change here → the whole
+     agent surface set restyles. */
+  --agent-bg: #0f0f11;            /* panel background */
+  --agent-surface: #191a1d;       /* raised surface: menus / cards / composer */
+  --agent-surface-soft: rgba(255, 255, 255, 0.035); /* chips / inputs */
+  --agent-border: rgba(255, 255, 255, 0.08);         /* hairline */
+  --agent-border-strong: rgba(255, 255, 255, 0.14);  /* emphasized */
+  --agent-text: #ededef;          /* titles / active */
+  --agent-text-muted: #8b8b91;    /* labels */
+  --agent-text-dim: #5c5c62;      /* placeholder / meta */
+  --agent-accent: #22d3ee;        /* active / checkmark, used sparingly */
+  --agent-radius: 16px;           /* cards / composer */
+  --agent-radius-sm: 12px;        /* menus */
 }
 
 .dark {
@@ -178,4 +197,29 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+}
+
+/* Canvas click ripple — an expanding, fading ring at the click point. */
+@keyframes canvas-ripple {
+  0%   { transform: translate(-50%, -50%) scale(0.25); opacity: 0.55; }
+  100% { transform: translate(-50%, -50%) scale(1);    opacity: 0; }
+}
+.canvas-ripple {
+  position: absolute;
+  width: 68px;
+  height: 68px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  animation: canvas-ripple 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  will-change: transform, opacity;
+}
+
+/* Node highlighted as a valid drop target while a connection is being dragged
+   toward it — a soft cyan pulse so the user sees where the wire will land. */
+@keyframes node-connect-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(103, 232, 249, 0.7), 0 0 16px 2px rgba(103, 232, 249, 0.25); }
+  50%      { box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.95), 0 0 30px 6px rgba(103, 232, 249, 0.5); }
+}
+.node-connect-target {
+  animation: node-connect-pulse 1s ease-in-out infinite;
 }

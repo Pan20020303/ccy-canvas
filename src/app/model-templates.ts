@@ -24,6 +24,11 @@ export type ModelTemplate = {
   supportsAutoAspect?: boolean;
   supportsDuration?: boolean;
   supportsOutputFormat?: boolean;
+  /** When set, exposes an audio-control selector (HappyHorse video-edit:
+   *  ["auto","origin"] — auto lets the model decide, origin keeps source audio). */
+  audioSettingOptions?: string[];
+  /** When true, exposes a numeric seed input (0..2147483647) for reproducible runs. */
+  supportsSeed?: boolean;
   durationRange?: DurationRange;
   /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
   durationOptions?: number[];
@@ -332,6 +337,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsResolution: true,
     supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
@@ -344,37 +350,38 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsResolution: true,
     supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
-  // 图生：仅首帧，允许显式选择输出比例。
+  // 图生：仅首帧。不支持 ratio —— 输出宽高比自动跟随首帧图（DashScope 文档明确
+  // i2v 不接受 ratio 参数）。故不声明 supportsAspectRatio / aspectRatioOptions，
+  // 也不给 defaults.aspectRatio，避免向后端发出被禁的 aspect_ratio。
   "happyhorse-1.1-i2v": {
     vendor: "Alibaba",
     serviceType: "video",
     modelName: "happyhorse-1.1-i2v",
     supportsResolution: true,
-    supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
-    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     referenceModes: ["first-frame"] as ReferenceModeKey[],
-    defaults: { resolution: "1080P", aspectRatio: "16:9" },
+    defaults: { resolution: "1080P" },
   },
   "happyhorse-1.0-i2v": {
     vendor: "Alibaba",
     serviceType: "video",
     modelName: "happyhorse-1.0-i2v",
     supportsResolution: true,
-    supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
-    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     referenceModes: ["first-frame"] as ReferenceModeKey[],
-    defaults: { resolution: "1080P", aspectRatio: "16:9" },
+    defaults: { resolution: "1080P" },
   },
   // 参考生：多图（1～9 张）+ ratio
   "happyhorse-1.1-r2v": {
@@ -384,6 +391,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsResolution: true,
     supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
@@ -397,18 +405,22 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsResolution: true,
     supportsAspectRatio: true,
     supportsDuration: true,
+    supportsSeed: true,
     resolutionOptions: ["720P", "1080P"],
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     referenceModes: ["multi-image"] as ReferenceModeKey[],
     defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
-  // 视频编辑：只在 1.0；无 duration / ratio（输出时长跟随输入视频）
+  // 视频编辑：只在 1.0；无 duration / ratio（输出时长跟随输入视频）。
+  // 独有 audio_setting（自动 / 保留原声）。
   "happyhorse-1.0-video-edit": {
     vendor: "Alibaba",
     serviceType: "video",
     modelName: "happyhorse-1.0-video-edit",
     supportsResolution: true,
+    supportsSeed: true,
+    audioSettingOptions: ["auto", "origin"],
     resolutionOptions: ["720P", "1080P"],
     referenceModes: ["video-edit"] as ReferenceModeKey[],
     defaults: { resolution: "1080P" },

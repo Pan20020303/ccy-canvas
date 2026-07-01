@@ -4,10 +4,42 @@ import {
   isModeSatisfied,
   modesForModel,
   firstSatisfiedMode,
+  happyHorseSuffixSatisfied,
   REFERENCE_MODE_SPECS,
   REFERENCE_MODE_ORDER,
   type ReferenceModeKey,
 } from "./reference-modes";
+
+describe("happyHorseSuffixSatisfied", () => {
+  it("t2v accepts no references", () => {
+    expect(happyHorseSuffixSatisfied("t2v", { images: 0, videos: 0 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("t2v", { images: 1, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("t2v", { images: 0, videos: 1 })).toBe(false);
+  });
+
+  it("i2v needs exactly 1 image and no video", () => {
+    expect(happyHorseSuffixSatisfied("i2v", { images: 0, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("i2v", { images: 1, videos: 0 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("i2v", { images: 2, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("i2v", { images: 1, videos: 1 })).toBe(false);
+  });
+
+  it("r2v needs 1-9 images and no video", () => {
+    expect(happyHorseSuffixSatisfied("r2v", { images: 0, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("r2v", { images: 1, videos: 0 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("r2v", { images: 9, videos: 0 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("r2v", { images: 10, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("r2v", { images: 1, videos: 1 })).toBe(false);
+  });
+
+  it("video-edit needs exactly 1 video and at most 5 images", () => {
+    expect(happyHorseSuffixSatisfied("video-edit", { images: 0, videos: 1 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("video-edit", { images: 5, videos: 1 })).toBe(true);
+    expect(happyHorseSuffixSatisfied("video-edit", { images: 6, videos: 1 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("video-edit", { images: 0, videos: 0 })).toBe(false);
+    expect(happyHorseSuffixSatisfied("video-edit", { images: 0, videos: 2 })).toBe(false);
+  });
+});
 
 describe("isModeSatisfied", () => {
   it("first-last needs 1-2 images and no videos", () => {

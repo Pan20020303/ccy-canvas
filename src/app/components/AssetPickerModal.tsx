@@ -114,7 +114,7 @@ export function AssetPickerModal({
           const type = node.type ?? '';
           const isImage = type === 'imageNode' || type === 'referenceImageNode';
           const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
-          const isAudio = type === 'audioNode';
+          const isAudio = type === 'audioNode' || type === 'referenceAudioNode';
           if (!isImage && !isVideo && !isAudio) return null;
           const kind: PickedAsset['kind'] = isImage ? 'image' : isVideo ? 'video' : 'audio';
           if (subFilter === 'image' && kind !== 'image') return null;

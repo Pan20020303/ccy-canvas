@@ -940,6 +940,13 @@ type GenerateRequest struct {
 	ReferenceVideo   string
 	ReferenceVideos  []string
 	ReferenceMode    string // auto / start_frame / start_end / image_reference / motion_mimic / video_edit
+	// AudioSetting controls HappyHorse video-edit audio: "auto" (model decides,
+	// default) or "origin" (keep the source video's audio). Ignored by other
+	// modes/models.
+	AudioSetting string
+	// Seed is the optional random seed [0, 2147483647] for reproducible video
+	// generation. nil → the provider picks a random seed.
+	Seed *int
 	// GenerationLogID is the parent row in generation_logs (when the caller
 	// pre-creates the log before invoking Generate). Used to link each
 	// per-attempt row in generation_attempts back to the request. Empty

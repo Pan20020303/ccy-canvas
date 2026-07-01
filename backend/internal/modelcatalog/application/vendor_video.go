@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"ccy-canvas/backend/internal/modelcatalog/domain"
+	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/shared/apperror"
 	"context"
 	"encoding/json"
@@ -399,15 +400,23 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 		queryPath = "/" + queryPath
 	}
 
+	// Defense-in-depth: reject documented-constraint violations locally.
+	if err := validateDashScopeVideoRequest(req); err != nil {
+		return nil, err
+	}
+
 	input := map[string]interface{}{}
 	if strings.TrimSpace(req.Prompt) != "" {
 		input["prompt"] = req.Prompt
 	}
-	if len(req.ReferenceImages) > 0 {
-		media, err := buildDashScopeVideoMedia(req)
-		if err != nil {
-			return nil, err
-		}
+	// Build the input.media array. Unlike a pure images check, video-edit may
+	// carry ONLY a source video (0 reference images), so we always build and
+	// then attach media when non-empty. t2v yields an empty slice → no media.
+	media, err := buildDashScopeVideoMedia(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if len(media) > 0 {
 		input["media"] = media
 	}
 
@@ -479,23 +488,157 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 
 func buildDashScopeVideoParameters(req GenerateRequest) map[string]interface{} {
 	parameters := map[string]interface{}{
+		// Intentional product choice: HappyHorse's default is watermark=true
+		// ("Happy Horse" bottom-right), but we deliberately ship watermark-free
+		// output. This overrides the doc default on purpose — not a bug.
 		"watermark": false,
 	}
 	if req.Resolution != "" {
 		parameters["resolution"] = req.Resolution
 	}
-	if req.Duration > 0 {
+
+	// Per the DashScope HappyHorse docs, ratio is accepted ONLY by 文生(t2v)
+	// and 参考生(r2v). 首帧(i2v) output aspect auto-follows the first frame and
+	// 视频编辑(video-edit) follows the source video — both REJECT aspect_ratio.
+	// duration is accepted by t2v/i2v/r2v but NOT video-edit (follows source).
+	// audio_setting is video-edit-ONLY. Gate each per mode.
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	isI2V := strings.HasPrefix(model, "happyhorse-") && strings.HasSuffix(model, "-i2v")
+	// Share the video-edit predicate with the media builder + validator so all
+	// three agree on suffix OR reference_mode==video_edit.
+	isVideoEdit := isDashScopeVideoEdit(req)
+
+	if req.Duration > 0 && !isVideoEdit {
 		parameters["duration"] = req.Duration
 	}
-	if req.AspectRatio != "" && req.AspectRatio != "auto" {
-		parameters["aspect_ratio"] = req.AspectRatio
+	if req.AspectRatio != "" && req.AspectRatio != "auto" && !isI2V && !isVideoEdit {
+		// DashScope's video-synthesis parameter is "ratio" (NOT "aspect_ratio").
+		// Sending the wrong key made DashScope ignore it and fall back to its
+		// 16:9 default — the cause of "picked 9:16 but got 16:9".
+		parameters["ratio"] = req.AspectRatio
+	}
+	if isVideoEdit {
+		// Default "auto"; only "origin" is the other valid value.
+		audio := strings.ToLower(strings.TrimSpace(req.AudioSetting))
+		if audio != "origin" {
+			audio = "auto"
+		}
+		parameters["audio_setting"] = audio
+	}
+	if req.Seed != nil {
+		parameters["seed"] = *req.Seed
 	}
 	return parameters
 }
 
-func buildDashScopeVideoMedia(req GenerateRequest) ([]map[string]interface{}, error) {
+var happyHorseResolutions = map[string]bool{"720p": true, "1080p": true}
+
+var happyHorseRatios = map[string]bool{
+	"16:9": true, "9:16": true, "1:1": true, "4:3": true, "3:4": true,
+	"4:5": true, "5:4": true, "9:21": true, "21:9": true,
+}
+
+// validateDashScopeVideoRequest is defense-in-depth for the documented
+// HappyHorse constraints, so a malformed direct API call (or a frontend bug)
+// fails locally with a clear message instead of spending an upstream request.
+// Only HappyHorse models carry these constraints; other DashScope video models
+// pass through untouched.
+func validateDashScopeVideoRequest(req GenerateRequest) error {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if !strings.HasPrefix(model, "happyhorse-") {
+		return nil
+	}
+	isT2V := strings.HasSuffix(model, "-t2v")
+	isI2V := strings.HasSuffix(model, "-i2v")
+	isR2V := strings.HasSuffix(model, "-r2v")
+	isVideoEdit := strings.HasSuffix(model, "-video-edit")
+
+	if res := strings.ToLower(strings.TrimSpace(req.Resolution)); res != "" && !happyHorseResolutions[res] {
+		return apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("分辨率 %q 无效，仅支持 720P / 1080P", req.Resolution))
+	}
+	if isT2V || isR2V {
+		if r := strings.TrimSpace(req.AspectRatio); r != "" && !strings.EqualFold(r, "auto") && !happyHorseRatios[r] {
+			return apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("宽高比 %q 无效", req.AspectRatio))
+		}
+	}
+	if !isVideoEdit && req.Duration > 0 && (req.Duration < 3 || req.Duration > 15) {
+		return apperror.New(apperror.CodeInvalidInput, "视频时长需为 3~15 秒之间的整数")
+	}
+	if req.Seed != nil && (*req.Seed < 0 || *req.Seed > 2147483647) {
+		return apperror.New(apperror.CodeInvalidInput, "seed 需在 0~2147483647 之间")
+	}
+
+	imgs := len(req.ReferenceImages)
+	hasVideo := strings.TrimSpace(req.ReferenceVideo) != "" || len(req.ReferenceVideos) > 0
+	switch {
+	case isT2V:
+		if imgs > 0 || hasVideo {
+			return apperror.New(apperror.CodeInvalidInput, "文生不接受任何参考媒体")
+		}
+	case isI2V:
+		if imgs != 1 {
+			return apperror.New(apperror.CodeInvalidInput, "首帧模式需要且仅需 1 张图片")
+		}
+		if hasVideo {
+			return apperror.New(apperror.CodeInvalidInput, "首帧模式不接受视频参考")
+		}
+	case isR2V:
+		if imgs < 1 || imgs > 9 {
+			return apperror.New(apperror.CodeInvalidInput, "参考生需要 1~9 张参考图")
+		}
+		if hasVideo {
+			return apperror.New(apperror.CodeInvalidInput, "参考生只接受参考图，不接受视频")
+		}
+	case isVideoEdit:
+		if imgs > 5 {
+			return apperror.New(apperror.CodeInvalidInput, "视频编辑最多 5 张参考图")
+		}
+		vids := len(req.ReferenceVideos)
+		if strings.TrimSpace(req.ReferenceVideo) != "" {
+			vids++
+		}
+		if vids != 1 {
+			return apperror.New(apperror.CodeInvalidInput, "视频编辑需要且仅需 1 段源视频")
+		}
+	}
+	return nil
+}
+
+// videoEditPresignTTL bounds how long the signed source-video URL stays valid.
+// DashScope's async video-edit runs ~1-5min, then the model fetches the media;
+// 1h comfortably covers submit → queue → fetch without over-exposing the object.
+const videoEditPresignTTL = time.Hour
+
+func buildDashScopeVideoMedia(ctx context.Context, req GenerateRequest) ([]map[string]interface{}, error) {
+	media := make([]map[string]interface{}, 0, len(req.ReferenceImages)+1)
+
+	// 视频编辑(video-edit): the DashScope contract requires exactly 1
+	// {type:"video"} element (the clip to edit) plus 0-5 {type:"reference_image"}.
+	// The video must be a PUBLIC, fetchable URL — never base64 (doc forbids it and
+	// a 100MB clip is unencodable via the image-only localPathToDataURL). Our
+	// uploads live in a private COS bucket, so presign the object to a
+	// time-limited signed URL DashScope can GET.
+	if isDashScopeVideoEdit(req) {
+		videoURL := strings.TrimSpace(req.ReferenceVideo)
+		if videoURL == "" && len(req.ReferenceVideos) > 0 {
+			videoURL = strings.TrimSpace(req.ReferenceVideos[0])
+		}
+		if videoURL == "" {
+			return nil, apperror.New(apperror.CodeInvalidInput, "视频编辑需要连接 1 段待编辑视频")
+		}
+		publicURL, err := resolveDashScopePublicVideoURL(ctx, videoURL)
+		if err != nil {
+			return nil, err
+		}
+		media = append(media, map[string]interface{}{
+			"type": "video",
+			"url":  publicURL,
+		})
+	}
+
+	// Reference images: first_frame (i2v) / reference_image (r2v, video-edit).
+	// Images may be base64 data URLs (<=20MB) — localPathToDataURL handles that.
 	mediaType := dashScopeReferenceImageMediaType(req)
-	media := make([]map[string]interface{}, 0, len(req.ReferenceImages))
 	for i, raw := range req.ReferenceImages {
 		du, err := localPathToDataURL(raw)
 		if err != nil {
@@ -507,6 +650,36 @@ func buildDashScopeVideoMedia(req GenerateRequest) ([]map[string]interface{}, er
 		})
 	}
 	return media, nil
+}
+
+// isDashScopeVideoEdit reports whether the request targets HappyHorse video-edit,
+// keying off either the model suffix or the resolved reference_mode.
+func isDashScopeVideoEdit(req GenerateRequest) bool {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if strings.HasPrefix(model, "happyhorse-") && strings.HasSuffix(model, "-video-edit") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(req.ReferenceMode), "video_edit")
+}
+
+// resolveDashScopePublicVideoURL turns a source-video reference into a URL
+// DashScope can fetch. Private COS objects are presigned; already-public URLs
+// pass through. base64/local paths are rejected — the doc requires a public URL.
+func resolveDashScopePublicVideoURL(ctx context.Context, rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "data:") {
+		return "", apperror.New(apperror.CodeInvalidInput, "视频编辑的待编辑视频必须是可公开访问的 URL，不支持 base64/本地文件")
+	}
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return "", apperror.New(apperror.CodeInvalidInput, "视频编辑的待编辑视频必须是公网可访问的 URL")
+	}
+	// PresignGet returns "" for non-COS / already-public URLs (caller fetches
+	// directly) and a signed URL for our private COS objects. A presign error is
+	// non-fatal — fall back to the raw URL (mirrors the proxy-media handler).
+	if signed, err := assetstore.PresignGet(ctx, rawURL, videoEditPresignTTL); err == nil && signed != "" {
+		return signed, nil
+	}
+	return rawURL, nil
 }
 
 func dashScopeReferenceImageMediaType(req GenerateRequest) string {
@@ -521,7 +694,9 @@ func dashScopeReferenceImageMediaType(req GenerateRequest) string {
 	}
 
 	switch strings.ToLower(strings.TrimSpace(req.ReferenceMode)) {
-	case "image_reference":
+	case "image_reference", "video_edit":
+		// video_edit tags its images as reference_image (the source video is a
+		// separate type:"video" element added by buildDashScopeVideoMedia).
 		return "reference_image"
 	case "first_frame", "start_frame":
 		return "first_frame"

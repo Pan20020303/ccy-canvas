@@ -194,6 +194,8 @@ func generateRequestPayload(req GenerateRequest) map[string]any {
 		"reference_video":     req.ReferenceVideo,
 		"reference_videos":    req.ReferenceVideos,
 		"reference_mode":      req.ReferenceMode,
+		"audio_setting":       req.AudioSetting,
+		"seed":                req.Seed,
 		"generation_log_id":   req.GenerationLogID,
 		"user_id":             req.UserID,
 		"node_id":             req.NodeID,

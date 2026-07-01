@@ -66,8 +66,23 @@ describe("model templates", () => {
     });
   });
 
-  it("exposes aspect ratio controls for HappyHorse image-to-video models", () => {
+  it("hides aspect ratio controls for HappyHorse first-frame (i2v) models", () => {
+    // Per the DashScope docs, i2v output aspect auto-follows the first frame and
+    // the model REJECTS a ratio param — so the template must not expose one.
     for (const model of ["happyhorse-1.1-i2v", "happyhorse-1.0-i2v"]) {
+      const template = getModelTemplate(model);
+      expect(template?.supportsAspectRatio).toBeFalsy();
+      expect(template?.aspectRatioOptions).toBeUndefined();
+      expect(template?.defaults?.aspectRatio).toBeUndefined();
+      // resolution + duration are still supported.
+      expect(template?.supportsResolution).toBe(true);
+      expect(template?.supportsDuration).toBe(true);
+    }
+  });
+
+  it("exposes aspect ratio controls for HappyHorse reference (r2v) models", () => {
+    // r2v DOES accept ratio (unlike i2v) — the tab must keep the ratio picker.
+    for (const model of ["happyhorse-1.1-r2v", "happyhorse-1.0-r2v"]) {
       const template = getModelTemplate(model);
       expect(template?.supportsAspectRatio).toBe(true);
       expect(template?.aspectRatioOptions).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"]);

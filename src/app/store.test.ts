@@ -314,7 +314,7 @@ describe("workspace history state", () => {
     expect(useStore.getState().history.map((item) => item.id)).toEqual(["team-1"]);
   });
 
-  it("reuses selected image and video history items as reference nodes", async () => {
+  it("reuses selected image, video and audio history items as reference nodes", async () => {
     const { useStore } = await loadStore();
 
     useStore.getState().addHistory({
@@ -343,9 +343,14 @@ describe("workspace history state", () => {
     useStore.getState().reuseHistoryItems(["hist-image", "hist-video", "hist-audio"]);
     const appendedNodes = useStore.getState().nodes.slice(beforeCount);
 
-    expect(appendedNodes).toHaveLength(2);
-    expect(appendedNodes.map((node) => node.type).sort()).toEqual(["referenceImageNode", "referenceVideoNode"]);
+    expect(appendedNodes).toHaveLength(3);
+    expect(appendedNodes.map((node) => node.type).sort()).toEqual([
+      "referenceAudioNode",
+      "referenceImageNode",
+      "referenceVideoNode",
+    ]);
     expect(appendedNodes.map((node) => (node.data as Record<string, unknown>)?.url).sort()).toEqual([
+      "https://example.com/reuse-audio.mp3",
       "https://example.com/reuse-image.png",
       "https://example.com/reuse-video.mp4",
     ]);
@@ -1160,7 +1165,10 @@ describe("workspace control bar state", () => {
     await useStore.getState().runNode("2", { prompt: "make it glossy @ref-image-st", model: "gpt-image-2" });
 
     const [, init] = fetchMock.mock.calls[0];
-    expect(String(init.body)).toContain("\"prompt\":\"make it glossy\"");
+    // Node "2" has the default upstream text node ("1") wired in, so its content
+    // is auto-referenced into the prompt (connect = auto-reference). The user's
+    // own prompt still survives and the @mention is still stripped.
+    expect(String(init.body)).toContain("make it glossy");
     expect(String(init.body)).not.toContain("/uploads/");
     expect(String(init.body)).not.toContain("@ref-image-st");
   });
@@ -1219,6 +1227,56 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).toContain("\"reference_video\":\"/uploads/2026-01/ref.mp4\"");
     expect(String(init.body)).not.toContain("data:image/png;base64,from-drop");
     expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
+  });
+
+  it("sends seed + audio_setting for a HappyHorse video-edit run that has them set", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.mp4" },
+        request_id: "req-vedit",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({ id: "vedit-gen", type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().addNode({
+      id: "vedit-src",
+      type: "referenceVideoNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/source.mp4" },
+    } as never);
+    useStore.getState().onConnect({ source: "vedit-src", target: "vedit-gen", sourceHandle: null, targetHandle: null });
+    useStore.getState().updateNodeGenerationParams("vedit-gen", { seed: 12345, audioSetting: "origin" });
+
+    await useStore.getState().runNode("vedit-gen", { prompt: "restyle it", model: "happyhorse-1.0-video-edit" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).toContain("\"seed\":12345");
+    expect(String(init.body)).toContain("\"audio_setting\":\"origin\"");
+  });
+
+  it("omits audio_setting for a mode that doesn't support it, and seed when unset", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/generated.mp4" },
+        request_id: "req-t2v",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // t2v supports seed but has NO audioSettingOptions; seed is left unset here.
+    useStore.getState().addNode({ id: "t2v-gen", type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    await useStore.getState().runNode("t2v-gen", { prompt: "a city at night", model: "happyhorse-1.1-t2v" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(String(init.body)).not.toContain("audio_setting");
+    expect(String(init.body)).not.toContain("\"seed\"");
   });
 
   it("uses original public urls instead of proxy media urls for video references", async () => {
@@ -1337,5 +1395,74 @@ describe("workspace control bar state", () => {
       reversePromptDraft: "draft content",
       customTitle: "自定义标题",
     });
+  });
+});
+
+describe("keyboard shortcuts + undo/redo/delete", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("eventMatchesShortcut honors defaults (Ctrl+Z undo, Ctrl+Y redo, Delete)", async () => {
+    const { DEFAULT_SHORTCUTS, eventMatchesShortcut, formatShortcutCombo } = await loadStore();
+    const sc = { ...DEFAULT_SHORTCUTS };
+    const ev = (o: Partial<KeyboardEvent>) =>
+      ({ ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...o } as KeyboardEvent);
+
+    expect(formatShortcutCombo(ev({ ctrlKey: true, key: "z" }))).toBe("Ctrl+Z");
+    expect(formatShortcutCombo(ev({ ctrlKey: true, shiftKey: true, key: "z" }))).toBe("Ctrl+Shift+Z");
+    expect(eventMatchesShortcut(ev({ ctrlKey: true, key: "z" }), "undo", sc)).toBe(true);
+    expect(eventMatchesShortcut(ev({ ctrlKey: true, key: "y" }), "redo", sc)).toBe(true);
+    expect(eventMatchesShortcut(ev({ key: "Delete" }), "delete_node", sc)).toBe(true);
+    // A custom binding is respected over the default.
+    expect(eventMatchesShortcut(ev({ ctrlKey: true, key: "d" }), "delete_node", { ...sc, delete_node: "Ctrl+D" })).toBe(true);
+    expect(eventMatchesShortcut(ev({ ctrlKey: true, key: "z" }), "redo", sc)).toBe(false);
+  });
+
+  it("delete → undo → redo round-trips the selected node", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().addNode({ id: "kbd-1", type: "textNode", position: { x: 0, y: 0 }, data: {} } as never);
+    // Mark it selected (Del acts on the current selection).
+    useStore.setState({ nodes: useStore.getState().nodes.map((n) => (n.id === "kbd-1" ? { ...n, selected: true } : n)) } as never);
+
+    useStore.getState().deleteSelectedNodes();
+    expect(useStore.getState().nodes.find((n) => n.id === "kbd-1")).toBeUndefined();
+
+    useStore.getState().undoCanvas();
+    expect(useStore.getState().nodes.find((n) => n.id === "kbd-1")).toBeDefined();
+
+    useStore.getState().redoCanvas();
+    expect(useStore.getState().nodes.find((n) => n.id === "kbd-1")).toBeUndefined();
+  });
+
+  it("a whole drag is one undo step (position changes don't spam the undo stack)", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().addNode({ id: "drag-1", type: "textNode", position: { x: 0, y: 0 }, data: {} } as never);
+    const baseUndo = useStore.getState().undoStack.length;
+
+    // Simulate a drag: pre-drag snapshot once, then many per-frame position changes.
+    useStore.getState().pushUndoSnapshot();
+    for (let i = 1; i <= 20; i++) {
+      useStore.getState().onNodesChange([
+        { type: "position", id: "drag-1", position: { x: i, y: i }, dragging: true } as never,
+      ]);
+    }
+    // Exactly one snapshot for the whole drag — not 20+.
+    expect(useStore.getState().undoStack.length).toBe(baseUndo + 1);
+    expect(useStore.getState().nodes.find((n) => n.id === "drag-1")?.position).toEqual({ x: 20, y: 20 });
+
+    // One undo restores the pre-drag position in a single step.
+    useStore.getState().undoCanvas();
+    expect(useStore.getState().nodes.find((n) => n.id === "drag-1")?.position).toEqual({ x: 0, y: 0 });
+  });
+
+  it("a fresh edit after undo clears the redo stack", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().addNode({ id: "kbd-a", type: "textNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().undoCanvas();
+    expect(useStore.getState().redoStack.length).toBeGreaterThan(0);
+    // Any node change (a fresh edit) invalidates redo.
+    useStore.getState().onNodesChange([{ type: "add", item: { id: "kbd-b", type: "textNode", position: { x: 10, y: 10 }, data: {} } } as never]);
+    expect(useStore.getState().redoStack.length).toBe(0);
   });
 });

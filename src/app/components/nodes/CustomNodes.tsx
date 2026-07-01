@@ -14,6 +14,7 @@ import {
   Globe,
   ChevronDown,
   ArrowUp,
+  Loader2,
   Zap,
   Download,
   LayoutTemplate,
@@ -39,9 +40,11 @@ import {
   Copy as CopyIcon,
   Highlighter,
   RotateCcw,
+  Palette,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
+import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
 import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
@@ -53,6 +56,7 @@ import {
   modesForModel,
   isModeSatisfied,
   firstSatisfiedMode,
+  happyHorseSuffixSatisfied,
   type ReferenceModeKey,
 } from '../../reference-modes';
 import { ModelBrandIcon } from '../ModelBrandIcon';
@@ -303,27 +307,29 @@ function UploadingOverlay({ progress }: { progress?: number }) {
 // HappyHorse 快乐马家族 helpers — 把真实模型名 `happyhorse-{ver}-{suffix}`
 // 拆成「版本 + 模式」两个维度，UI 上以 dropdown 暴露给用户，提交时再合成
 // 真实模型名。视频编辑只在 1.0 存在。
+// i2v 的产品定位是「首帧生成」——单张图作为视频首帧，而非通用图生。
+// 因此模式名用「首帧」，且校验为恰好 1 张图（见 isHappyHorseSuffixSatisfied）。
 const HAPPYHORSE_MODE_TO_SUFFIX: Record<string, string> = {
   '文生': 't2v',
-  '图生': 'i2v',
+  '首帧': 'i2v',
   '参考生': 'r2v',
   '视频编辑': 'video-edit',
 };
 const HAPPYHORSE_MODE_TO_SUFFIX_EN: Record<string, string> = {
   'Text-to-Video': 't2v',
-  'Image-to-Video': 'i2v',
+  'First-frame': 'i2v',
   'Reference-to-Video': 'r2v',
   'Video-Edit': 'video-edit',
 };
 const HAPPYHORSE_SUFFIX_TO_MODE_ZH: Record<string, string> = {
   't2v': '文生',
-  'i2v': '图生',
+  'i2v': '首帧',
   'r2v': '参考生',
   'video-edit': '视频编辑',
 };
 const HAPPYHORSE_SUFFIX_TO_MODE_EN: Record<string, string> = {
   't2v': 'Text-to-Video',
-  'i2v': 'Image-to-Video',
+  'i2v': 'First-frame',
   'r2v': 'Reference-to-Video',
   'video-edit': 'Video-Edit',
 };
@@ -432,6 +438,10 @@ const MediaParamsPopover = ({
   onAspectRatio,
   onDuration,
   onOutputFormat,
+  audioSetting,
+  seed,
+  onAudioSetting,
+  onSeed,
 }: {
   template: ModelTemplate;
   resolution: string;
@@ -439,11 +449,15 @@ const MediaParamsPopover = ({
   aspectRatio: string;
   duration: number;
   outputFormat: string;
+  audioSetting?: string;
+  seed?: number;
   onResolution: (v: string) => void;
   onQuality: (v: string) => void;
   onAspectRatio: (v: string) => void;
   onDuration: (v: number) => void;
   onOutputFormat: (v: string) => void;
+  onAudioSetting?: (v: string) => void;
+  onSeed?: (v: number | undefined) => void;
 }) => {
   const [open, setOpen] = useState(false);
   const language = useStore((state) => state.language);
@@ -453,7 +467,10 @@ const MediaParamsPopover = ({
     template.supportsResolution ? resolution : null,
     template.supportsQuality ? quality : null,
     template.supportsOutputFormat ? outputFormat : null,
-    template.supportsDuration ? `${duration}s` : null,
+    // Only show a duration chip when an actual duration control renders — the
+    // provider schema may set supportsDuration for the family while a specific
+    // mode (e.g. video-edit) has no range/options and doesn't send duration.
+    (template.supportsDuration && (template.durationRange || template.durationOptions?.length)) ? `${duration}s` : null,
   ].filter(Boolean);
 
   const hasAspect = template.supportsAspectRatio && template.aspectRatioOptions?.length;
@@ -465,6 +482,12 @@ const MediaParamsPopover = ({
   // absent) fall back to the explicit-options pill row.
   const hasDurationSlider = template.supportsDuration && template.durationRange;
   const hasDurationOptions = template.supportsDuration && template.durationOptions?.length && !template.durationRange;
+  const hasAudioSetting = (template.audioSettingOptions?.length ?? 0) > 0 && !!onAudioSetting;
+  const hasSeed = !!template.supportsSeed && !!onSeed;
+  const AUDIO_LABEL: Record<string, string> = {
+    auto: language === 'zh' ? '自动' : 'Auto',
+    origin: language === 'zh' ? '保留原声' : 'Keep source',
+  };
 
   // Some resolution labels carry a qualitative hint inline (Seedance style).
   // Falls back to just the raw value when no friendly label exists.
@@ -601,6 +624,52 @@ const MediaParamsPopover = ({
                 </div>
               </div>
             ) : null}
+
+            {/* ── Audio (HappyHorse video-edit only) ───────────────────── */}
+            {hasAudioSetting ? (
+              <div className="mt-5">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {template.audioSettingOptions!.map((option) => (
+                    <BlockButton key={option} active={option === audioSetting} onClick={() => onAudioSetting!(option)}>
+                      {AUDIO_LABEL[option] ?? option}
+                    </BlockButton>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Seed (reproducible generation) ───────────────────────── */}
+            {hasSeed ? (
+              <div className="mt-5">
+                <div className="mb-2 flex items-center justify-between text-[11px] text-neutral-400">
+                  <span>{language === 'zh' ? '随机种子' : 'Seed'}</span>
+                  {typeof seed === 'number' ? (
+                    <button
+                      type="button"
+                      className="text-neutral-500 transition hover:text-neutral-300"
+                      onClick={() => onSeed!(undefined)}
+                    >
+                      {language === 'zh' ? '改为随机' : 'Randomize'}
+                    </button>
+                  ) : null}
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={2147483647}
+                  value={typeof seed === 'number' ? seed : ''}
+                  placeholder={language === 'zh' ? '留空即随机' : 'Empty = random'}
+                  onChange={(event) => {
+                    const raw = event.target.value.trim();
+                    if (raw === '') { onSeed!(undefined); return; }
+                    const n = Math.floor(Number(raw));
+                    if (Number.isFinite(n)) onSeed!(Math.max(0, Math.min(2147483647, n)));
+                  }}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs tabular-nums text-neutral-200 outline-none transition focus:border-white/25"
+                />
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -729,19 +798,22 @@ function MediaEmptyPlaceholder({
   icon: Icon,
   zh,
   className,
+  style,
   caption,
 }: {
   icon: any;
   zh: boolean;
   className?: string;
+  style?: React.CSSProperties;
   caption: { zh: string; en: string };
 }) {
   return (
     <div
       className={clsx(
-        'flex flex-col items-center justify-center gap-3 rounded-[12px] border text-neutral-500',
+        'flex flex-col items-center justify-center gap-3 rounded-[12px] text-neutral-500',
         className,
       )}
+      style={style}
     >
       <Icon className="h-7 w-7 text-neutral-600" />
       <span className="text-[12px] text-neutral-500">
@@ -833,7 +905,10 @@ const getMediaAspectRatioStyle = (data: Record<string, any>): React.CSSPropertie
 // reads from value contrast rather than a stroked outline.
 const NEUTRAL_NODE_SHELL = {
   shell: 'border-white/8 shadow-[0_6px_20px_-14px_rgba(0,0,0,0.7)]',
-  selected: 'shadow-[inset_0_0_0_1.5px_rgba(255,255,255,0.38)]',
+  // "银丝" — a fine, bright silver thread outlining the selected node: a thin
+  // 1.5px cool-silver inset ring plus a faint silvery shine (no thick/heavy
+  // glow), so it reads delicate and metallic rather than a chunky white border.
+  selected: 'shadow-[inset_0_0_0_1.5px_rgba(226,232,240,0.95),inset_0_0_6px_-1px_rgba(226,232,240,0.35),0_0_10px_-2px_rgba(226,232,240,0.35)]',
   surface: 'border-white/8 bg-[#23242a]',
 } as const;
 
@@ -844,6 +919,40 @@ const NODE_TONE_STYLES = {
   audio: NEUTRAL_NODE_SHELL,
   neutral: NEUTRAL_NODE_SHELL,
 } as const;
+
+/**
+ * Media node sizing. The node WIDTH follows the media's aspect ratio so a 16:9
+ * card is wide-and-short while a 9:16 card is narrow-and-tall, but both keep a
+ * similar AREA (footprint) — matching the reference product. The media then
+ * fills the box exactly (object-cover on an aspect-matched box = no crop, no
+ * letterbox padding, no border). Returns explicit px so there's no CSS
+ * aspect-ratio/min-max ambiguity.
+ */
+const MEDIA_NODE_AREA = 66000; // ≈ the previous 300×220 footprint
+function mediaBoxFromAspect(aspect: number): { width: number; height: number } {
+  const MIN_W = 190, MAX_W = 380, MIN_H = 150, MAX_H = 390;
+  let width = Math.sqrt(MEDIA_NODE_AREA * aspect);
+  let height = width / aspect;
+  // Clamp both axes so extreme ratios stay reasonable (order matters little —
+  // a couple of passes converge for the ratios we see in practice).
+  if (height > MAX_H) { height = MAX_H; width = height * aspect; }
+  if (height < MIN_H) { height = MIN_H; width = height * aspect; }
+  if (width > MAX_W) { width = MAX_W; height = width / aspect; }
+  if (width < MIN_W) { width = MIN_W; height = width / aspect; }
+  return { width: Math.round(width), height: Math.round(height) };
+}
+/** Parse an aspect value ("16:9", "9/16", 1.7) into a numeric ratio. */
+function parseAspectRatio(value: unknown, fallback = 16 / 9): number {
+  if (typeof value === 'number' && value > 0) return value;
+  if (typeof value === 'string') {
+    const m = value.match(/(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)/);
+    if (m) {
+      const w = parseFloat(m[1]), h = parseFloat(m[2]);
+      if (w > 0 && h > 0) return w / h;
+    }
+  }
+  return fallback;
+}
 
 const getReferenceDisplayName = (data: any) => {
   if (typeof data?.sourceName === 'string' && data.sourceName.trim()) {
@@ -1118,6 +1227,8 @@ const PromptPanel = ({
     ?? (template?.supportsAutoAspect ? 'auto' : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0] ?? '');
   const currentDuration = params.durationSeconds ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
+  const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';
+  const currentSeed = typeof params.seed === 'number' ? params.seed : undefined;
 
   useEffect(() => {
     if (!template) {
@@ -1261,7 +1372,13 @@ const PromptPanel = ({
     });
   };
 
+  // Whether this node already has an in-flight generation. Used to spin +
+  // disable the submit button so rapid clicks can't fire multiple tasks
+  // (each click previously kicked off another billed generation).
+  const isBusy = nodeData.status === 'running' || nodeData.status === 'generating' || nodeData.status === 'uploading';
+
   const submit = () => {
+    if (isBusy) return; // guard the Enter-key path + any double fire
     const currentReferenceCounts = upstreamNodes.reduce(
       (counts, up) => {
         if (up.type === 'imageNode' || up.type === 'referenceImageNode') counts.images += 1;
@@ -1436,22 +1553,18 @@ const PromptPanel = ({
     };
   }, [availableModels]);
 
-  // Whether a HappyHorse suffix is valid for the current upstream refs.
-  // Mirrors the per-tab gating in happyHorseTabs below: 文生(t2v) needs NO
-  // reference, 图生(i2v)/参考生(r2v) need ≥1 image, 视频编辑(video-edit) ≥1 video.
-  const isHappyHorseSuffixSatisfied = (suffix: string): boolean => {
-    if (suffix === 't2v') return refCounts.images === 0 && refCounts.videos === 0;
-    if (suffix === 'i2v') return refCounts.images >= 1;
-    if (suffix === 'r2v') return refCounts.images >= 1;
-    if (suffix === 'video-edit') return refCounts.videos >= 1;
-    return true;
-  };
+  // Whether a HappyHorse suffix is valid for the current upstream refs. The
+  // rule set lives in reference-modes.ts (happyHorseSuffixSatisfied) so it is
+  // unit-tested independently: 文生(t2v) = no refs; 首帧(i2v) = exactly 1 image;
+  // 参考生(r2v) = 1~9 images, no video; 视频编辑(video-edit) = exactly 1 video + ≤5 images.
+  const isHappyHorseSuffixSatisfied = (suffix: string): boolean =>
+    happyHorseSuffixSatisfied(suffix, refCounts);
 
   // HappyHorse mode auto-correction. Unlike the standard referenceTabs (whose
   // mode lives in generationParams.referenceVariant and is auto-resolved by the
   // effect above), the HappyHorse mode is baked into the model-name suffix, so
   // nothing was keeping it consistent with the upstream refs: attaching a 垫图
-  // while on 文生(t2v), or removing the last image while on 图生(i2v), left the
+  // while on 文生(t2v), or removing the last image while on 首帧(i2v), left the
   // node sitting in an illegal mode with the wrong tab still lit. When the
   // active suffix is no longer satisfiable, recompose the model to the first
   // suffix that IS — so 文生 only stays lit when there is no 垫图.
@@ -1511,12 +1624,13 @@ const PromptPanel = ({
     handleModelChange(display);
   };
 
-  // HappyHorse 顶部模式 tab strip：文生 / 图生 / 参考生 / 视频编辑，
+  // HappyHorse 顶部模式 tab strip：文生 / 首帧 / 参考生 / 视频编辑，
   // 替代标准 referenceTabs。点击直接切换真实模型名（保留 version）。
   // 门控：
   //   - t2v 不能有任何参考节点（有就禁用，提示用户先断开引用）
-  //   - i2v / r2v 需要 ≥1 张参考图
-  //   - video-edit 需要 ≥1 段参考视频
+  //   - i2v（首帧）需要恰好 1 张图（作视频首帧，多于一张即禁用）
+  //   - r2v 需要 1~9 张参考图（不接受视频）
+  //   - video-edit 需要恰好 1 段源视频（+ 0~5 张参考图）
   // 不满足时点击不切换，弹一个 top-center toast 告诉用户为什么。
   const happyHorseTabs = (() => {
     if (!happyHorse || !happyHorseFamily) return null;
@@ -1537,17 +1651,50 @@ const PromptPanel = ({
                 ? '文生不接受参考节点，请先断开所有上游引用'
                 : 'Text-to-video does not accept references; disconnect upstream first';
             } else if (suffix === 'i2v') {
-              hint = language === 'zh'
-                ? '图生需要 1 张首帧图，请先连接一张参考图'
-                : 'Image-to-video needs 1 first-frame image; connect a reference first';
+              // 首帧 = 恰好 1 张图。区分「没有」与「多于一张」两种未满足原因。
+              if (refCounts.videos > 0) {
+                hint = language === 'zh'
+                  ? '首帧模式不接受视频，请断开视频参考'
+                  : 'First-frame mode does not accept video; disconnect the video reference';
+              } else if (refCounts.images > 1) {
+                hint = language === 'zh'
+                  ? `首帧只能连接 1 张图片，当前有 ${refCounts.images} 张，请断开多余的`
+                  : `First-frame takes exactly 1 image; you have ${refCounts.images}, disconnect the extras`;
+              } else {
+                hint = language === 'zh'
+                  ? '首帧需要连接 1 张图片作为视频首帧'
+                  : 'First-frame needs exactly 1 image as the video’s opening frame';
+              }
             } else if (suffix === 'r2v') {
-              hint = language === 'zh'
-                ? '参考生需要至少 1 张参考图，请先连接参考节点'
-                : 'Reference-to-video needs 1+ reference images; connect a reference first';
+              // 1~9 图、不接受视频。区分：连了视频 / 超 9 张 / 没有图。
+              if (refCounts.videos > 0) {
+                hint = language === 'zh'
+                  ? '参考生只接受参考图，请断开视频引用'
+                  : 'Reference-to-video only accepts images; disconnect the video';
+              } else if (refCounts.images > 9) {
+                hint = language === 'zh'
+                  ? `参考生最多 9 张参考图，当前有 ${refCounts.images} 张，请断开多余的`
+                  : `Reference-to-video takes at most 9 images; you have ${refCounts.images}`;
+              } else {
+                hint = language === 'zh'
+                  ? '参考生需要至少 1 张参考图，请先连接参考节点'
+                  : 'Reference-to-video needs 1+ reference images; connect a reference first';
+              }
             } else if (suffix === 'video-edit') {
-              hint = language === 'zh'
-                ? '视频编辑需要 1 段视频，请先连接一个视频节点'
-                : 'Video edit needs 1 reference video; connect a video first';
+              // 恰好 1 视频 + 0~5 图。区分：视频数不对 / 图超 5 张。
+              if (refCounts.videos > 1) {
+                hint = language === 'zh'
+                  ? `视频编辑只支持 1 段源视频，当前有 ${refCounts.videos} 段`
+                  : `Video edit takes exactly 1 source video; you have ${refCounts.videos}`;
+              } else if (refCounts.images > 5) {
+                hint = language === 'zh'
+                  ? `视频编辑最多 5 张参考图，当前有 ${refCounts.images} 张`
+                  : `Video edit takes at most 5 reference images; you have ${refCounts.images}`;
+              } else {
+                hint = language === 'zh'
+                  ? '视频编辑需要 1 段源视频，请先连接一个视频节点'
+                  : 'Video edit needs 1 source video; connect a video first';
+              }
             }
           }
           return (
@@ -1856,6 +2003,10 @@ const PromptPanel = ({
             onAspectRatio={(value) => updateNodeGenerationParams(nodeId, { aspectRatio: value })}
             onDuration={(value) => updateNodeGenerationParams(nodeId, { durationSeconds: value })}
             onOutputFormat={(value) => updateNodeGenerationParams(nodeId, { outputFormat: value })}
+            audioSetting={currentAudioSetting}
+            seed={currentSeed}
+            onAudioSetting={(value) => updateNodeGenerationParams(nodeId, { audioSetting: value })}
+            onSeed={(value) => updateNodeGenerationParams(nodeId, { seed: value })}
           />
         ) : null}
       </div>
@@ -1869,6 +2020,8 @@ const PromptPanel = ({
         </div>
         <button
           type="button"
+          disabled={isBusy}
+          title={isBusy ? (language === 'zh' ? '生成中…' : 'Generating…') : undefined}
           onPointerDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1876,9 +2029,14 @@ const PromptPanel = ({
             event.stopPropagation();
             submit();
           }}
-          className="nodrag nopan flex h-8 w-8 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/20 text-cyan-200 transition hover:bg-cyan-500/40"
+          className={clsx(
+            'nodrag nopan flex h-8 w-8 items-center justify-center rounded-full border transition',
+            isBusy
+              ? 'cursor-not-allowed border-white/10 bg-white/5 text-neutral-400'
+              : 'border-cyan-400/30 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/40',
+          )}
         >
-          <ArrowUp className="h-4 w-4" />
+          {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
         </button>
       </div>
     </div>
@@ -1962,6 +2120,8 @@ const BaseNode = ({
   loadingOverlay,
   error,
   tone = 'neutral',
+  width,
+  shellBackground,
 }: {
   icon: any;
   title: React.ReactNode;
@@ -1976,10 +2136,25 @@ const BaseNode = ({
   loadingOverlay?: React.ReactNode;
   error?: string;
   tone?: keyof typeof NODE_TONE_STYLES;
+  /** Explicit node width (px). Media nodes size to their aspect ratio; other
+   *  nodes omit this and fall back to the default 300px. */
+  width?: number;
+  /** Optional override for the media/content shell background (e.g. the text
+   *  node's user-picked background color). Inline style beats the tone class. */
+  shellBackground?: string;
 }) => {
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
+  // The quick-connect `+` bubbles only show on hover / sole-selection; gate the
+  // magnet effect to those states so the global mousemove listeners aren't
+  // attached for every off-screen node's bubbles.
+  const [hovered, setHovered] = useState(false);
+  const magnetDisabled = !hovered && !(selected && !multiSelectActive);
+  // While a connection is being dragged AND the pointer is over this node, it is
+  // the drop target — pulse it (the full-area target handle lets the wire land
+  // anywhere on the card).
+  const connectTarget = isConnectionDragging && hovered;
   // Counter-scale the top floating toolbar so it keeps a constant screen size
   // across canvas zoom, matching the prompt panel's behaviour.
   const baseViewport = useViewport();
@@ -2013,7 +2188,12 @@ const BaseNode = ({
   }, [loading]);
 
   return (
-    <div className="group w-[300px]">
+    <div
+      className="group"
+      style={{ width: width ?? 300 }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {selected && !multiSelectActive && topFloatingPanel ? (
         <div className="absolute left-1/2 top-0 z-30" style={{ height: 0, width: 0 }}>
           <div
@@ -2029,22 +2209,30 @@ const BaseNode = ({
           </div>
         </div>
       ) : null}
-      <div className="mb-1.5 flex items-center justify-between gap-3 text-[11.5px] text-neutral-200">
+      {/* Name label ABOVE the media (top-left, outside the frame) — the media
+          below is a borderless full-bleed card ("全面屏"). */}
+      <div className={clsx(
+        'mb-1.5 flex items-center justify-between gap-3 text-[11.5px]',
+        selected ? 'text-white' : 'text-neutral-100',
+      )}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <Icon className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-          <div className="min-w-0 font-medium tracking-wide">{title}</div>
+          <Icon className={clsx('h-3.5 w-3.5 shrink-0', selected ? 'text-neutral-100' : 'text-neutral-300')} />
+          <div className="min-w-0 truncate font-medium tracking-wide">{title}</div>
         </div>
-        {headerRight ? <div className="shrink-0 text-[10px] text-neutral-500">{headerRight}</div> : null}
+        {headerRight ? <div className="shrink-0 text-[10px] text-neutral-400">{headerRight}</div> : null}
       </div>
 
       <div className="relative">
         <div
           ref={shellRef}
           className={clsx(
-            'relative overflow-hidden rounded-[14px] border bg-[#1e1f24] text-neutral-100 transition-shadow duration-150',
+            // Borderless full-bleed media: the node IS the media, no outer frame.
+            'relative overflow-hidden rounded-[14px] text-neutral-100 transition-shadow duration-150',
             toneStyles.shell,
             selected && toneStyles.selected,
+            connectTarget && 'node-connect-target',
           )}
+          style={shellBackground ? { backgroundColor: shellBackground } : undefined}
           >
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
@@ -2058,6 +2246,27 @@ const BaseNode = ({
           position={Position.Left}
           className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
           style={{ transform: 'none', pointerEvents: isConnectionDragging ? 'auto' : 'none' }}
+        />
+        {/* Flush render anchors. A FINISHED wire is drawn to these — they sit
+            exactly ON the node's right/left edge (vertical center), courtesy of
+            React Flow's default Position.Right/Left placement — so a connected
+            edge reads as joined to the node, not to the floating `+` bubble that
+            hovers ~20px outside. Pure 1px position anchors: pointer-events none
+            so they never steal a drag; the visible `+` bubbles below remain the
+            grab points, which is why a wire is still PULLED from the `+`. */}
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="edge-source-right"
+          className="!h-px !w-px !min-h-0 !min-w-0 !cursor-default !border-0 !bg-transparent !opacity-0"
+          style={{ pointerEvents: 'none' }}
+        />
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="edge-target-left"
+          className="!h-px !w-px !min-h-0 !min-w-0 !cursor-default !border-0 !bg-transparent !opacity-0"
+          style={{ pointerEvents: 'none' }}
         />
         {/* Four-way quick-connect. Each side gets a source Handle (drag to
             connect) wrapping a `+` bubble that, on click, spawns a default
@@ -2080,22 +2289,27 @@ const BaseNode = ({
           )}
           style={{ transform: 'translate(0, -50%)' }}
         >
-          <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
-            <Plus className="h-3 w-3 text-neutral-300" />
-          </div>
+          <Magnet disabled={magnetDisabled} outward="left" padding={150} magnetStrength={3}>
+            <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+              <Plus className="h-3 w-3 text-slate-50" />
+            </div>
+          </Magnet>
         </Handle>
         <Handle
           type="source"
           position={Position.Right}
+          id="qc-source-right"
           className={clsx(
             '!h-6 !w-6 !-right-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
             selected && !multiSelectActive && '!opacity-100',
           )}
           style={{ transform: 'translate(0, -50%)' }}
         >
-          <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
-            <Plus className="h-3 w-3 text-neutral-300" />
-          </div>
+          <Magnet disabled={magnetDisabled} padding={150} magnetStrength={3}>
+            <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+              <Plus className="h-3 w-3 text-slate-50" />
+            </div>
+          </Magnet>
         </Handle>
       </div>
 
@@ -4048,7 +4262,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
 
   // Use the actual loaded image ratio if available, otherwise fall back to param.
   const effectiveAspect = naturalRatio ?? paramAspect;
-  const aspectClass = getAspectRatioClass(effectiveAspect, 'aspect-video');
+  const genBox = mediaBoxFromAspect(parseAspectRatio(effectiveAspect));
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
@@ -4080,12 +4294,14 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
+      width={genBox.width}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       {data.url ? (
         <div
-          className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
+          style={{ height: genBox.height }}
           onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
           <ResilientImage
@@ -4109,7 +4325,8 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
         <MediaEmptyPlaceholder
           icon={ImageIcon}
           zh={language === 'zh'}
-          className={clsx(NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('w-full', NODE_TONE_STYLES.image.surface)}
+          style={{ height: genBox.height }}
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
       )}
@@ -4516,10 +4733,10 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
-  const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
+  const mediaBox = data.mediaWidth && data.mediaHeight ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight) : null;
   const isPanorama = isLikelyPanoramaData(data);
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
@@ -4537,15 +4754,19 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
       headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
+      width={mediaBox?.width}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[12px] border cursor-zoom-in",
+          // Node width follows the image aspect (wide 16:9 / narrow 9:16) at a
+          // similar footprint; the box matches the aspect exactly so the image
+          // fills it with no crop, no letterbox padding, no border.
+          "relative w-full overflow-hidden rounded-[12px] cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
-          mediaAspectRatio ? "min-h-[120px]" : "aspect-video",
+          mediaBox ? undefined : "aspect-video",
         )}
-        style={mediaAspectRatio ? { aspectRatio: mediaAspectRatio } : undefined}
+        style={mediaBox ? { height: mediaBox.height } : undefined}
         onDoubleClick={() => data.url && (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
       >
         {data.url ? (
@@ -4590,10 +4811,10 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
-  const mediaAspectRatio = data.mediaWidth && data.mediaHeight ? `${data.mediaWidth} / ${data.mediaHeight}` : undefined;
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
+  const mediaBox = data.mediaWidth && data.mediaHeight ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight) : null;
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
     : data.sourceKind === 'derived'
@@ -4610,15 +4831,18 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
       headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
       error={data.error}
+      width={mediaBox?.width}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
     >
       <div
         className={clsx(
-          "relative overflow-hidden rounded-[12px] border cursor-zoom-in",
+          // Node width follows the video aspect; the box matches it exactly
+          // (borderless, no padding). See ReferenceImageNode.
+          "relative w-full overflow-hidden rounded-[12px] cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
-          mediaAspectRatio ? "min-h-[120px]" : "aspect-video",
+          mediaBox ? undefined : "aspect-video",
         )}
-        style={mediaAspectRatio ? { aspectRatio: mediaAspectRatio } : undefined}
+        style={mediaBox ? { height: mediaBox.height } : undefined}
         onDoubleClick={() => data.url && setPreview(true)}
       >
         {data.url ? (
@@ -4682,6 +4906,180 @@ export const AudioNode = ({ id, data, selected }: any) => {
   );
 };
 
+// Audio time as m:ss.s (tenths) to match the reference design's readout.
+// Guards NaN/Infinity — an <audio> reports NaN duration until metadata loads,
+// which otherwise rendered "NaN:0NaN" in the total-time slot.
+const formatAudioTime = (s: number) => {
+  if (!Number.isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  const tenth = Math.floor((s * 10) % 10);
+  return `${m}:${String(sec).padStart(2, '0')}.${tenth}`;
+};
+
+// Deterministic per-node waveform bar heights (0.28..1.0). We don't decode the
+// actual PCM (cheap + avoids CORS on remote audio); a stable pseudo-random
+// silhouette reads as a waveform and never reflows between renders.
+const AUDIO_BAR_COUNT = 34;
+function audioBarHeights(seed: string): number[] {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619) >>> 0;
+  const out: number[] = [];
+  for (let i = 0; i < AUDIO_BAR_COUNT; i++) {
+    h = (Math.imul(h, 1103515245) + 12345) & 0x7fffffff;
+    out.push(0.28 + (h % 1000) / 1000 * 0.72);
+  }
+  return out;
+}
+
+/**
+ * Uploaded-audio reference node — an MP3/WAV/etc. dropped onto the canvas.
+ * Renders a real, seekable waveform player (play/pause, m:ss.s readout, a
+ * moving playhead, format badge, download) mirroring the reference design.
+ * Distinct from AudioNode (the decorative TTS "generate audio" node).
+ */
+export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
+  const language = useStore((state) => state.language);
+  const displayName = getReferenceDisplayName(data);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const bars = useMemo(() => audioBarHeights(id), [id]);
+
+  const playableUrl = data.url ? toRenderableMediaUrl(data.url) : '';
+  const formatBadge = (String(data.sourceName ?? '').split('.').pop() || 'audio')
+    .toUpperCase()
+    .slice(0, 4);
+  const sourceKindLabel = data.sourceKind === 'upload'
+    ? (language === 'zh' ? '上传' : 'Upload')
+    : data.sourceKind === 'derived'
+      ? (language === 'zh' ? '派生' : 'Derived')
+      : data.sourceKind === 'generated'
+        ? (language === 'zh' ? '生成' : 'Generated')
+        : '';
+
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    const onTime = () => setCurrentTime(a.currentTime);
+    const onMeta = () => { if (Number.isFinite(a.duration)) setDuration(a.duration); };
+    const onEnd = () => { setPlaying(false); setCurrentTime(0); };
+    a.addEventListener('play', onPlay);
+    a.addEventListener('pause', onPause);
+    a.addEventListener('timeupdate', onTime);
+    a.addEventListener('loadedmetadata', onMeta);
+    a.addEventListener('durationchange', onMeta);
+    a.addEventListener('ended', onEnd);
+    if (Number.isFinite(a.duration)) setDuration(a.duration);
+    return () => {
+      a.removeEventListener('play', onPlay);
+      a.removeEventListener('pause', onPause);
+      a.removeEventListener('timeupdate', onTime);
+      a.removeEventListener('loadedmetadata', onMeta);
+      a.removeEventListener('durationchange', onMeta);
+      a.removeEventListener('ended', onEnd);
+    };
+  }, [playableUrl]);
+
+  const togglePlay = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) a.play().catch(() => {});
+    else a.pause();
+  };
+
+  const seek = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    const bar = barRef.current;
+    const a = audioRef.current;
+    if (!bar || !a || !duration) return;
+    const rect = bar.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    a.currentTime = ratio * duration;
+    setCurrentTime(a.currentTime);
+  };
+
+  const progress = duration > 0 ? currentTime / duration : 0;
+  const playedBars = Math.round(progress * bars.length);
+
+  return (
+    <BaseNode
+      icon={Music}
+      tone="audio"
+      title={<EditableNodeTitle nodeId={id} value={displayName || 'Audio'} field="sourceName" preserveExtension />}
+      headerRight={sourceKindLabel}
+      selected={selected}
+      error={data.error}
+    >
+      <div className={clsx('relative rounded-[12px] border p-3 pt-2.5 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+        {playableUrl ? <audio ref={audioRef} src={playableUrl} preload="metadata" className="hidden" /> : null}
+
+        {/* download — mirrors the reference's top-right affordance */}
+        {playableUrl && data.status !== 'uploading' ? (
+          <button
+            type="button"
+            className="nodrag absolute right-2.5 top-2.5 z-10 flex h-6 w-6 items-center justify-center rounded-md text-white/45 transition hover:bg-white/10 hover:text-white/80"
+            title={language === 'zh' ? '下载' : 'Download'}
+            onClick={(event) => {
+              event.stopPropagation();
+              void downloadAsset(data.url, displayName || `audio.${formatBadge.toLowerCase()}`);
+            }}
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+
+        {/* seekable waveform */}
+        <div
+          ref={barRef}
+          className="nodrag mt-3 flex h-12 cursor-pointer items-center gap-[2px]"
+          onClick={seek}
+        >
+          {bars.map((height, index) => (
+            <div
+              key={index}
+              className={clsx(
+                'flex-1 rounded-full transition-colors',
+                index < playedBars ? 'bg-emerald-300/85' : 'bg-white/18',
+              )}
+              style={{ height: `${Math.round(height * 100)}%` }}
+            />
+          ))}
+        </div>
+
+        {/* transport: time · play · format */}
+        <div className="mt-2.5 flex items-center gap-3">
+          <span className="shrink-0 text-[11px] tabular-nums text-neutral-400">
+            {formatAudioTime(currentTime)} / {formatAudioTime(duration)}
+          </span>
+          <div className="flex flex-1 justify-center">
+            <button
+              type="button"
+              onClick={togglePlay}
+              disabled={!playableUrl}
+              className="nodrag flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/90 transition hover:bg-white/15 disabled:opacity-40"
+              title={playing ? (language === 'zh' ? '暂停' : 'Pause') : (language === 'zh' ? '播放' : 'Play')}
+            >
+              {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="ml-0.5 h-3.5 w-3.5" />}
+            </button>
+          </div>
+          <span className="shrink-0 rounded-md bg-white/8 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-neutral-400">
+            {formatBadge}
+          </span>
+        </div>
+
+        {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
+      </div>
+    </BaseNode>
+  );
+};
+
 export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
@@ -4701,7 +5099,7 @@ export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
-        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
         onDoubleClick={() => data.url && setPanoramaPreview(true)}
       >
         {data.url ? (
@@ -5137,7 +5535,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   const paramAspect = getNodeParams(data).aspectRatio;
   const title = data.customTitle || (language === 'zh' ? '生成图像' : 'Generate Image');
   const effectiveAspect = naturalRatio ?? paramAspect;
-  const aspectClass = getAspectRatioClass(effectiveAspect, 'aspect-video');
+  const genBox = mediaBoxFromAspect(parseAspectRatio(effectiveAspect));
   const isPanorama = isLikelyPanoramaData(data);
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -5165,6 +5563,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       tone="image"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
+      width={genBox.width}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
@@ -5174,7 +5573,8 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative overflow-hidden rounded-[12px] border cursor-zoom-in', NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
+          style={{ height: genBox.height }}
           onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
           <ResilientImage
@@ -5205,7 +5605,8 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
         <MediaEmptyPlaceholder
           icon={ImageIcon}
           zh={language === 'zh'}
-          className={clsx(NODE_TONE_STYLES.image.surface, aspectClass)}
+          className={clsx('w-full', NODE_TONE_STYLES.image.surface)}
+          style={{ height: genBox.height }}
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
       )}
@@ -5224,8 +5625,9 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const mediaAspectStyle = getMediaAspectRatioStyle(data);
-  const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
+  const videoBox = data.mediaWidth && data.mediaHeight
+    ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight)
+    : mediaBoxFromAspect(parseAspectRatio(getNodeParams(data).aspectRatio));
   const title = data.customTitle || (language === 'zh' ? '生成视频' : 'Generate Video');
 
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5296,18 +5698,18 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.error}
+      width={videoBox.width}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>
         <div
           className={clsx(
-            'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
+            'relative flex w-full items-center justify-center overflow-hidden rounded-[12px] text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
-            mediaAspectStyle ? 'min-h-[120px]' : aspectClass,
             data.url && 'cursor-zoom-in',
           )}
-          style={mediaAspectStyle}
+          style={{ height: videoBox.height }}
           onDoubleClick={() => data.url && setPreview(true)}
         >
           {data.url ? (
@@ -5408,7 +5810,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
-        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px] border', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
         onDoubleClick={() => data.url && setPanoramaPreview(true)}
       >
         {data.url ? (
@@ -5438,6 +5840,22 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
   );
 };
 
+/** Text-node box sizing + background palette. The node is user-resizable from
+ *  its bottom-right corner (persisted as data.boxWidth / data.boxHeight) and its
+ *  shell background is user-pickable (data.bgColor). Backgrounds are translucent
+ *  tints so the light body text stays readable over the dark canvas. */
+const TEXT_NODE_DEFAULT_WIDTH = 320;
+const TEXT_NODE_MIN_WIDTH = 220;
+const TEXT_NODE_MIN_HEIGHT = 160;
+const TEXT_NODE_BG_COLORS: string[] = [
+  'rgba(244,63,94,0.28)', 'rgba(249,115,22,0.28)', 'rgba(245,158,11,0.28)',
+  'rgba(234,179,8,0.28)', 'rgba(132,204,22,0.28)', 'rgba(34,197,94,0.28)',
+  'rgba(16,185,129,0.28)', 'rgba(20,184,166,0.28)', 'rgba(6,182,212,0.28)',
+  'rgba(14,165,233,0.28)', 'rgba(59,130,246,0.30)', 'rgba(99,102,241,0.30)',
+  'rgba(139,92,246,0.30)', 'rgba(168,85,247,0.30)', 'rgba(217,70,239,0.28)',
+  'rgba(236,72,153,0.28)', 'rgba(100,116,139,0.32)',
+];
+
 const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
@@ -5452,6 +5870,60 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
   const fullscreenEditorRef = useRef<HTMLDivElement>(null);
+
+  // Background color + corner-resize. Live size is tracked locally during a
+  // drag and committed to node data ONCE on pointer-up (updateNodeData pushes an
+  // undo snapshot, so per-move writes would flood the undo stack).
+  const { zoom } = useViewport();
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const [showBgPalette, setShowBgPalette] = useState(false);
+  const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
+  const liveSizeRef = useRef(liveSize);
+  const contentBoxRef = useRef<HTMLDivElement>(null);
+  const bgColor = typeof data.bgColor === 'string' ? (data.bgColor as string) : undefined;
+  const boxWidth = liveSize?.width ?? (typeof data.boxWidth === 'number' ? (data.boxWidth as number) : TEXT_NODE_DEFAULT_WIDTH);
+  const boxHeight = liveSize?.height ?? (typeof data.boxHeight === 'number' ? (data.boxHeight as number) : undefined);
+
+  const resizeStartRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+
+  // Corner resize via POINTER CAPTURE: after setPointerCapture, pointermove/up
+  // fire on the grip element itself, so these are element-level React handlers —
+  // React detaches them on unmount and the browser auto-releases capture. This
+  // avoids the window-listener leak if the node is deleted mid-drag.
+  const startResize = useCallback((event: React.PointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* no-op */ }
+    resizeStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      w: typeof data.boxWidth === 'number' ? (data.boxWidth as number) : TEXT_NODE_DEFAULT_WIDTH,
+      h: typeof data.boxHeight === 'number' ? (data.boxHeight as number) : (contentBoxRef.current?.offsetHeight ?? TEXT_NODE_MIN_HEIGHT),
+    };
+  }, [data.boxWidth, data.boxHeight]);
+
+  const moveResize = useCallback((event: React.PointerEvent) => {
+    const start = resizeStartRef.current;
+    if (!start) return;
+    const z = zoomRef.current || 1;
+    const next = {
+      width: Math.round(Math.max(TEXT_NODE_MIN_WIDTH, start.w + (event.clientX - start.x) / z)),
+      height: Math.round(Math.max(TEXT_NODE_MIN_HEIGHT, start.h + (event.clientY - start.y) / z)),
+    };
+    liveSizeRef.current = next;
+    setLiveSize(next);
+  }, []);
+
+  const endResize = useCallback((event: React.PointerEvent) => {
+    if (!resizeStartRef.current) return;
+    resizeStartRef.current = null;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+    const final = liveSizeRef.current;
+    liveSizeRef.current = null;
+    if (final) updateNodeData(id, { boxWidth: final.width, boxHeight: final.height });
+    setLiveSize(null);
+  }, [id, updateNodeData]);
 
   /** One-way sync data.content → DOM ONLY when the editor isn't focused.
    *  Prevents React re-renders from overwriting the DOM while typing
@@ -5506,6 +5978,52 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
    *  the selected node and inside the fullscreen editor modal. */
   const renderEditorToolbar = () => (
     <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+      {/* Whole-box background color — a swatch palette that recolors the node
+          shell (data.bgColor). Distinct from the text-highlight tool below. */}
+      <div className="relative" onMouseDown={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          title={language === 'zh' ? '背景颜色' : 'Background color'}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setShowBgPalette((v) => !v)}
+          className={clsx(
+            'flex h-7 w-7 items-center justify-center rounded-md text-neutral-300 transition hover:bg-white/10 hover:text-white',
+            showBgPalette && 'bg-white/10 text-white',
+          )}
+        >
+          <Palette className="h-3.5 w-3.5" />
+        </button>
+        {showBgPalette ? (
+          <div
+            className="absolute left-0 top-9 z-30 w-[168px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="grid grid-cols-6 gap-1.5">
+              <button
+                type="button"
+                title={language === 'zh' ? '默认' : 'Default'}
+                onClick={() => { updateNodeData(id, { bgColor: undefined }); setShowBgPalette(false); }}
+                className={clsx(
+                  'relative flex h-5 w-5 items-center justify-center rounded-md border border-white/15 bg-[#111]',
+                  !bgColor && 'ring-2 ring-white/70',
+                )}
+              >
+                <span className="pointer-events-none text-[11px] leading-none text-white/45">/</span>
+              </button>
+              {TEXT_NODE_BG_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => { updateNodeData(id, { bgColor: c }); setShowBgPalette(false); }}
+                  className={clsx('h-5 w-5 rounded-md border border-white/10 transition hover:scale-110', bgColor === c && 'ring-2 ring-white')}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <div className="mx-0.5 h-4 w-px bg-white/10" />
       {([
         { Icon: Highlighter, key: 'bg', title: language === 'zh' ? '高亮背景色' : 'Highlight', onClick: () => exec('hiliteColor', '#fde68a') },
         { Icon: Heading1, key: 'h1', title: 'H1', onClick: () => exec('formatBlock', 'H1') },
@@ -5550,6 +6068,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       tone="text"
       selected={selected}
       error={data.error}
+      width={boxWidth}
+      shellBackground={bgColor}
       topFloatingPanel={editorToolbar}
       promptPanel={activeMode === 'chooser' ? <PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" /> : undefined}
     >
@@ -5613,7 +6133,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         ) : null}
 
         {activeMode === 'editor' ? (
-          <div className="relative">
+          <div ref={contentBoxRef} className="relative" style={boxHeight ? { height: boxHeight } : undefined}>
             <div
               ref={editorRef}
               contentEditable
@@ -5623,7 +6143,10 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
               onBlur={() => setIsEditing(false)}
               onMouseDown={stopNodeGesture}
               onPointerDown={stopNodeGesture}
-              className="nodrag nopan rich-text-editor min-h-[220px] w-full bg-transparent p-2 text-sm text-neutral-100 outline-none"
+              className={clsx(
+                'nodrag nopan rich-text-editor w-full bg-transparent p-2 text-sm text-neutral-100 outline-none',
+                boxHeight ? 'prompt-editor-scroll h-full overflow-auto' : 'min-h-[220px]',
+              )}
             />
             {!data.content ? (
               <div className="pointer-events-none absolute left-2 top-2 text-sm text-neutral-500">
@@ -5697,6 +6220,25 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
             {reverseDisabledReason ? <div className="text-xs text-rose-300">{reverseDisabledReason}</div> : null}
           </div>
         ) : null}
+
+        {/* Bottom-right corner grip — drag to resize the box (editor mode only).
+            Anchored to the BaseNode shell (the nearest positioned ancestor). */}
+        {activeMode === 'editor' && selected ? (
+          <div
+            className="nodrag nopan absolute bottom-1 right-1 z-20 flex h-4 w-4 cursor-nwse-resize items-center justify-center text-neutral-500 transition hover:text-neutral-200"
+            title={language === 'zh' ? '拖动调整大小' : 'Drag to resize'}
+            onPointerDown={startResize}
+            onPointerMove={moveResize}
+            onPointerUp={endResize}
+            onPointerCancel={endResize}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <svg viewBox="0 0 10 10" className="h-3 w-3" aria-hidden>
+              <path d="M2.5 9L9 2.5M5.5 9L9 5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" fill="none" />
+            </svg>
+          </div>
+        ) : null}
       </div>
       {isFullscreen ? createPortal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm" onClick={() => setIsFullscreen(false)}>
@@ -5746,6 +6288,7 @@ export const nodeTypes = {
   panoramaNode: RenamablePanoramaNode,
   referenceImageNode: ReferenceImageNode,
   referenceVideoNode: ReferenceVideoNode,
+  referenceAudioNode: AudioReferenceNode,
   agentNode: AgentNode,
   stickyNoteNode: StickyNoteNode,
   directorStageNode: DirectorStageNode,

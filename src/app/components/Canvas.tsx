@@ -22,6 +22,8 @@ import {
   Layers3,
   LayoutGrid,
   Map,
+  Maximize2,
+  Minimize2,
   Music,
   Pencil,
   Play,
@@ -45,7 +47,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, type HistoryItem } from '../store';
+import { useStore, eventMatchesShortcut, type HistoryItem } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -97,6 +99,11 @@ const FUTURE_NODE_OPTIONS = [
 
 const GRID_SIZE = 24;
 const GUIDE_THRESHOLD = 5;
+
+/** Node types that do NOT render through BaseNode and so lack the
+ *  `qc-source-right` / `qc-target-left` quick-connect ports. Edges touching
+ *  these keep their own default handles (see normalizedEdges). */
+const NON_PORT_NODE_TYPES = new Set(['agentNode', 'stickyNoteNode', 'directorStageNode', 'compositionPreviewNode']);
 
 const snapPosition = (position: { x: number; y: number }) => ({
   x: Math.round(position.x / GRID_SIZE) * GRID_SIZE,
@@ -257,6 +264,10 @@ const InnerCanvas = () => {
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const setConnectionDragging = useStore((state) => state.setConnectionDragging);
   const undoCanvas = useStore((state) => state.undoCanvas);
+  const redoCanvas = useStore((state) => state.redoCanvas);
+  const pushUndoSnapshot = useStore((state) => state.pushUndoSnapshot);
+  const deleteSelectedNodes = useStore((state) => state.deleteSelectedNodes);
+  const shortcuts = useStore((state) => state.shortcuts);
   const copySelectedNodes = useStore((state) => state.copySelectedNodes);
   const pasteCopiedNodes = useStore((state) => state.pasteCopiedNodes);
   const removeGroup = useStore((state) => state.removeGroup);
@@ -274,7 +285,7 @@ const InnerCanvas = () => {
   const directorStageNodeId = useStore((state) => state.directorStageNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter } = useReactFlow();
   const viewport = useViewport();
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -303,6 +314,31 @@ const InnerCanvas = () => {
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [minimapExpanded, setMinimapExpanded] = useState(false);
+  const [minimapHovered, setMinimapHovered] = useState(false);
+  const minimapHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Reveal the enlarge button only while the pointer is over the minimap (or
+  // the button). Debounced hide so moving between them doesn't flicker.
+  const enterMinimap = useCallback(() => {
+    if (minimapHideTimer.current) clearTimeout(minimapHideTimer.current);
+    setMinimapHovered(true);
+  }, []);
+  const leaveMinimap = useCallback(() => {
+    if (minimapHideTimer.current) clearTimeout(minimapHideTimer.current);
+    minimapHideTimer.current = setTimeout(() => setMinimapHovered(false), 120);
+  }, []);
+  const [ripples, setRipples] = useState<{ id: number; x: number; y: number }[]>([]);
+  const rippleIdRef = useRef(0);
+
+  // Spawn a short-lived click ripple at the pointer (canvas coords relative to
+  // the wrapper). Auto-removed after the animation so the list stays tiny.
+  const spawnRipple = useCallback((clientX: number, clientY: number) => {
+    const rect = wrapperRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const id = (rippleIdRef.current += 1);
+    setRipples((rs) => [...rs, { id, x: clientX - rect.left, y: clientY - rect.top }]);
+    window.setTimeout(() => setRipples((rs) => rs.filter((r) => r.id !== id)), 650);
+  }, []);
   const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [bulkRouting, setBulkRouting] = useState<{ startClient: { x: number; y: number }; currentClient: { x: number; y: number } } | null>(null);
@@ -339,6 +375,18 @@ const InnerCanvas = () => {
     return bounds;
   }, [nodes]);
 
+  // Block the BROWSER's Ctrl/⌘+wheel page zoom app-wide. Over the canvas,
+  // ReactFlow still zooms programmatically (it reads the wheel delta, not the
+  // default action); over the UI overlays (toolbar, minimap, header) Ctrl+wheel
+  // now does nothing instead of zooming the whole page.
+  useEffect(() => {
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) event.preventDefault();
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, []);
+
   /** Sanitize orphan groups: drop members whose nodes no longer exist, then drop empty groups.
    *  Catches stale data persisted from older sessions or paths that bypassed onNodesChange. */
   useEffect(() => {
@@ -371,23 +419,52 @@ const InnerCanvas = () => {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Delete / Backspace: remove the actively-selected group (members are kept on canvas).
-      if ((event.key === 'Delete' || event.key === 'Backspace') && !isEditableTarget(event.target) && selectedGroupId) {
-        event.preventDefault();
-        removeGroup(selectedGroupId);
-        setSelectedGroupId(null);
+      // Never hijack keys while the user is typing in an input/textarea/editor.
+      if (isEditableTarget(event.target)) return;
+
+      // ── Delete / Backspace ─────────────────────────────────────────────
+      // Office-standard: Del removes the current selection. A selected group
+      // takes priority (its members stay on canvas); otherwise remove the
+      // selected node(s). Backspace is always accepted as an alias, and the
+      // bound `delete_node` combo (default Delete) is honored too.
+      if (eventMatchesShortcut(event, 'delete_node', shortcuts) || event.key === 'Delete' || event.key === 'Backspace') {
+        if (selectedGroupId) {
+          event.preventDefault();
+          removeGroup(selectedGroupId);
+          setSelectedGroupId(null);
+          return;
+        }
+        if (nodesRef.current.some((n) => n.selected)) {
+          event.preventDefault();
+          deleteSelectedNodes();
+        }
         return;
       }
 
-      const modifier = event.ctrlKey || event.metaKey;
-      if (!modifier || isEditableTarget(event.target)) return;
-
-      const key = event.key.toLowerCase();
-      if (key === 'z') {
+      // ── Undo / Redo ────────────────────────────────────────────────────
+      // Config-aware (recording in settings actually rebinds these), with the
+      // universal office combos always accepted: Ctrl+Z undo; Ctrl+Y and
+      // Ctrl+Shift+Z redo.
+      if (eventMatchesShortcut(event, 'undo', shortcuts)) {
         event.preventDefault();
         undoCanvas();
         return;
       }
+      const mod = event.ctrlKey || event.metaKey;
+      const isRedoAlias = mod && (
+        (event.shiftKey && event.key.toLowerCase() === 'z') || // Ctrl+Shift+Z
+        (!event.shiftKey && event.key.toLowerCase() === 'y')   // Ctrl+Y
+      );
+      if (eventMatchesShortcut(event, 'redo', shortcuts) || isRedoAlias) {
+        event.preventDefault();
+        redoCanvas();
+        return;
+      }
+
+      const modifier = event.ctrlKey || event.metaKey;
+      if (!modifier) return;
+
+      const key = event.key.toLowerCase();
       if (key === 'c') {
         event.preventDefault();
         copySelectedNodes();
@@ -418,7 +495,7 @@ const InnerCanvas = () => {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [bringNodeForward, bringNodeToFront, copySelectedNodes, pasteCopiedNodes, removeGroup, selectedGroupId, sendNodeBackward, sendNodeToBack, toggleNodeLock, undoCanvas]);
+  }, [bringNodeForward, bringNodeToFront, copySelectedNodes, deleteSelectedNodes, pasteCopiedNodes, redoCanvas, removeGroup, selectedGroupId, sendNodeBackward, sendNodeToBack, shortcuts, toggleNodeLock, undoCanvas]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -563,8 +640,17 @@ const InnerCanvas = () => {
       // `.prompt-editor-scroll` class counts as "user-scrollable text".
       const inText = el.closest('textarea, input, [contenteditable="true"], .prompt-editor-scroll, .rich-text-editor');
       if (!inText) return;
-      // Stop propagation so ReactFlow never sees the wheel — the browser
-      // still applies its own scroll to the textarea/div.
+      // Ctrl/⌘+wheel over a text surface must NOT zoom the browser page (nor
+      // scroll the text). We stopPropagation here in the WINDOW CAPTURE phase,
+      // which by definition cancels the bubble phase too — so the bubble-phase
+      // page-zoom guard (onWheel above) never runs over text. Block the browser
+      // default right here instead, matching the "no effect over UI" behavior.
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      // Plain wheel: stop ReactFlow from zooming; browser still scrolls the text.
       event.stopPropagation();
     };
     window.addEventListener('wheel', handleWheel, { capture: true, passive: false });
@@ -922,11 +1008,35 @@ const InnerCanvas = () => {
     });
   }, [addNode, contextMenu, snapToGrid]);
 
-  /** Force every edge through the unified FlowEdge renderer. */
-  const normalizedEdges = useMemo(
-    () => edges.map((edge) => ({ ...edge, type: 'flow', animated: false, style: undefined })),
-    [edges],
-  );
+  /** Force every edge through the unified FlowEdge renderer AND pin a FINISHED
+   *  wire's endpoints to the flush edge anchors (`edge-source-right` /
+   *  `edge-target-left`) that sit exactly ON the node's right/left edge — so a
+   *  connected wire joins the node border, not the floating `+` bubble (~20px
+   *  outside) it was dragged from, and not the full-area drop handle (whose
+   *  center is the NODE center, which made wires attach mid-image). BaseNode
+   *  media/text nodes expose these anchors; agent/sticky/director/composition
+   *  nodes use their own default Left/Right handles, so those edges are left
+   *  untouched. Dragging still starts from the `+` bubble (its own handle); the
+   *  full-area target still catches drops anywhere on the card — we only reroute
+   *  how the committed wire is DRAWN. */
+  const normalizedEdges = useMemo(() => {
+    // NB: `Map` here would resolve to the lucide-react icon (imported above), so
+    // use a plain lookup object for id → node type.
+    const typeById: Record<string, string> = {};
+    nodes.forEach((node) => { typeById[node.id] = node.type ?? ''; });
+    return edges.map((edge) => {
+      const sourceHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.source] ?? '');
+      const targetHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.target] ?? '');
+      return {
+        ...edge,
+        type: 'flow',
+        animated: false,
+        style: undefined,
+        sourceHandle: sourceHasPorts ? 'edge-source-right' : (edge.sourceHandle ?? null),
+        targetHandle: targetHasPorts ? 'edge-target-left' : (edge.targetHandle ?? null),
+      };
+    });
+  }, [edges, nodes]);
 
   /** Export a group's bounding box as a PNG. Uses html-to-image to snapshot
    *  the ReactFlow viewport (which contains all nodes + edges), then crops
@@ -1034,7 +1144,7 @@ const InnerCanvas = () => {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,video/*"
+        accept="image/*,video/*,audio/*"
         className="hidden"
         onChange={handleFileInputChange}
       />
@@ -1098,6 +1208,15 @@ const InnerCanvas = () => {
 
       <ReactFlow
         proOptions={{ hideAttribution: true }}
+        onError={(code, message) => {
+          // Guardrail: React Flow error '008' = an edge's source/target handle id
+          // did not resolve to a measured handle, so the edge is silently NOT
+          // drawn (getEdgePosition returns null). normalizedEdges pins port nodes
+          // to edge-source-right/edge-target-left and passes non-port handles
+          // through — a stale/renamed handle id would otherwise vanish an edge
+          // with no trace. Surface it instead of hiding it.
+          if (code === '008') console.warn(`[ReactFlow] edge not drawn — handle not found (008): ${message}`);
+        }}
         nodes={nodes}
         edges={normalizedEdges}
         onNodesChange={handleNodesChange}
@@ -1107,7 +1226,8 @@ const InnerCanvas = () => {
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
-        onPaneClick={() => {
+        onPaneClick={(event) => {
+          spawnRipple(event.clientX, event.clientY);
           setSelectedGroupId(null);
           if (useStore.getState().agentNodePickActive) useStore.getState().cancelAgentNodePick();
         }}
@@ -1117,7 +1237,12 @@ const InnerCanvas = () => {
             useStore.getState().resolveAgentNodePick(node.id);
           }
         }}
-        onNodeDragStart={() => setNodeDragging(true)}
+        onNodeDragStart={() => {
+          // Snapshot the pre-drag state ONCE so the whole drag is a single
+          // undo step (position changes during the drag are not auto-captured).
+          pushUndoSnapshot();
+          setNodeDragging(true);
+        }}
         onNodeDragStop={(_event, _node, draggedNodes) => {
           setNodeDragging(false);
           setGuides([]);
@@ -1175,11 +1300,18 @@ const InnerCanvas = () => {
         panOnDrag={[1, 2]}
         selectionMode={"partial" as never}
         multiSelectionKeyCode={["Meta", "Shift", "Control"]}
+        deleteKeyCode={null}
         snapToGrid={snapToGrid}
         snapGrid={[GRID_SIZE, GRID_SIZE]}
         /* 关闭 xyflow 内置的 pane 双击缩放,让外层 wrapper 的
            onCanvasDoubleClick 能收到事件唤出"添加节点"菜单. */
         zoomOnDoubleClick={false}
+        /* 滚轮 = 上下/左右平移画布（设计工具惯例），而非缩放。
+           缩放走 Ctrl/⌘+滚轮、触控板双指捏合，或工具栏/快捷键。 */
+        zoomOnScroll={false}
+        panOnScroll={true}
+        panOnScrollMode={"free" as never}
+        zoomOnPinch={true}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="#3a3d44" />
         {showMiniMap ? (
@@ -1187,23 +1319,55 @@ const InnerCanvas = () => {
             position="bottom-left"
             pannable
             zoomable
-            maskColor="rgba(10,10,10,0.85)"
-            nodeColor="#0891b2"
-            nodeStrokeColor="#22d3ee"
+            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: viewport.zoom, duration: 400 })}
+            onMouseEnter={enterMinimap}
+            onMouseLeave={leaveMinimap}
+            maskColor="rgba(0,0,0,0.6)"
+            maskStrokeColor="rgba(255,255,255,0.35)"
+            maskStrokeWidth={3}
+            nodeColor="#3f4149"
+            nodeStrokeColor="rgba(255,255,255,0.14)"
+            nodeBorderRadius={3}
             style={{
-              width: 180,
-              height: 110,
+              width: minimapExpanded ? 320 : 180,
+              height: minimapExpanded ? 200 : 110,
               left: 16,
               right: 'auto',
               bottom: 76,
-              backgroundColor: 'rgba(12,14,17,0.88)',
+              backgroundColor: 'rgba(12,14,17,0.9)',
               border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 18,
+              borderRadius: 16,
+              transition: 'width 0.2s, height 0.2s',
             }}
           />
         ) : null}
         {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
+
+      {/* Enlarge/collapse the minimap. Overlaid at the minimap's top-right
+          corner (subtle by default, brightens on hover) — toggles its size. */}
+      {showMiniMap ? (
+        <button
+          type="button"
+          className={`nodrag absolute z-30 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white/75 backdrop-blur-sm transition-opacity duration-150 hover:bg-black/80 hover:text-white ${minimapHovered ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+          style={{ left: 16 + (minimapExpanded ? 320 : 180) - 30, bottom: 76 + (minimapExpanded ? 200 : 110) - 30 }}
+          title={minimapExpanded ? '收起小地图' : '放大小地图'}
+          onMouseEnter={enterMinimap}
+          onMouseLeave={leaveMinimap}
+          onClick={() => setMinimapExpanded((v) => !v)}
+        >
+          {minimapExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </button>
+      ) : null}
+
+      {/* Click ripples — a short expanding ring at each pane click. */}
+      {ripples.length > 0 ? (
+        <div className="pointer-events-none absolute inset-0 z-40 overflow-hidden">
+          {ripples.map((r) => (
+            <span key={r.id} className="canvas-ripple" style={{ left: r.x, top: r.y }} />
+          ))}
+        </div>
+      ) : null}
 
       {/* Lock indicators — one small Lock icon overlaid on every node whose
           `data.locked === true`. Lives at Canvas level so we don't have to

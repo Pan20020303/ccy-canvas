@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, Keyboard, Wrench, Bot } from 'lucide-react';
-import { useStore, DEFAULT_SHORTCUTS } from '../store';
+import { useStore, DEFAULT_SHORTCUTS, formatShortcutCombo } from '../store';
 import { SkillsSettingsTab } from './settings/SkillsSettingsTab';
 import { AgentsSettingsTab } from './settings/AgentsSettingsTab';
 
@@ -29,18 +29,6 @@ const ACTION_LABELS: Record<string, { zh: string; en: string }> = {
   redo: { zh: '重做', en: 'Redo' },
   delete_node: { zh: '删除节点', en: 'Delete node' },
   select_all: { zh: '全选', en: 'Select all' },
-};
-
-const formatCombo = (e: KeyboardEvent): string => {
-  const parts: string[] = [];
-  if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
-  if (e.shiftKey) parts.push('Shift');
-  if (e.altKey) parts.push('Alt');
-  const key = e.key;
-  if (!['Control', 'Shift', 'Alt', 'Meta'].includes(key)) {
-    parts.push(key.length === 1 ? key.toUpperCase() : key);
-  }
-  return parts.join('+');
 };
 
 const ShortcutKey = ({
@@ -90,7 +78,7 @@ export const SettingsModal = () => {
       if (e.key === 'Escape') { setRecording(null); return; }
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
       e.preventDefault();
-      const combo = formatCombo(e);
+      const combo = formatShortcutCombo(e);
       setShortcut(recording, combo);
       setRecording(null);
     };

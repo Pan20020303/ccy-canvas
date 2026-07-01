@@ -116,7 +116,8 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
   "video-edit": {
     key: "video-edit",
     label: { zh: "视频编辑", en: "Video edit" },
-    requires: { images: { min: 0, max: 2 }, videos: { min: 1, max: 1 } },
+    // DashScope video-edit: exactly 1 source video + 0~5 reference images.
+    requires: { images: { min: 0, max: 5 }, videos: { min: 1, max: 1 } },
     backendMode: "video_edit",
     slots: [
       { zh: "源视频", en: "Source video" },
@@ -163,6 +164,34 @@ export function isModeSatisfied(
 export function modesForModel(supported: string[] | undefined): ReferenceModeKey[] {
   if (!supported || supported.length === 0) return ["multi-image"];
   return REFERENCE_MODE_ORDER.filter((k) => supported.includes(k));
+}
+
+/**
+ * Whether a HappyHorse mode suffix (t2v / i2v / r2v / video-edit) is valid for
+ * the given upstream reference counts, per the DashScope contract:
+ *   - t2v:        no references at all.
+ *   - i2v:        EXACTLY 1 image, 0 video (the video's first frame).
+ *   - r2v:        1~9 images, 0 video.
+ *   - video-edit: EXACTLY 1 source video + 0~5 reference images.
+ * Pure + exported so the node UI gating and its unit tests share one source of
+ * truth (the component's isHappyHorseSuffixSatisfied just closes over refCounts).
+ */
+export function happyHorseSuffixSatisfied(
+  suffix: string,
+  counts: ReferenceInputCounts,
+): boolean {
+  switch (suffix) {
+    case "t2v":
+      return counts.images === 0 && counts.videos === 0;
+    case "i2v":
+      return counts.images === 1 && counts.videos === 0;
+    case "r2v":
+      return counts.images >= 1 && counts.images <= 9 && counts.videos === 0;
+    case "video-edit":
+      return counts.videos === 1 && counts.images <= 5;
+    default:
+      return true;
+  }
 }
 
 /** Pick the first satisfied mode from a candidate list, or the first

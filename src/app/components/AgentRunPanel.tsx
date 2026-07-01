@@ -784,7 +784,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     <div
       ref={panelRef}
       style={{ display: open ? "flex" : "none" }}
-      className="absolute inset-y-0 right-0 z-40 flex h-full w-[480px] flex-col overflow-hidden border-l border-white/8 bg-[#0b0c0e] shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+      className="absolute inset-y-0 right-0 z-40 flex h-full w-[480px] flex-col overflow-hidden border-l border-[var(--agent-border)] bg-[var(--agent-bg)] shadow-[0_0_40px_rgba(0,0,0,0.5)]"
     >
       {agentNodePickActive ? createPortal(
         <div className="fixed left-1/2 top-4 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-400/30 bg-[#15181d]/95 px-4 py-2 text-xs text-cyan-100 shadow-2xl backdrop-blur">
@@ -889,7 +889,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       </div>
 
       {/* Composer */}
-      <div className="relative border-t border-white/8 p-3">
+      <div className="relative border-t border-[var(--agent-border)] p-3">
         {/* Slash command popup — appears when the message starts with `/`. */}
         {slashSuggestions.length > 0 ? (
           <SlashMenu
@@ -911,7 +911,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         {referencedNodes.length > 0 ? (
           <div className="mb-1.5 flex flex-wrap gap-1.5">
             {referencedNodes.map((n) => (
-              <span key={n.id} className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] py-0.5 pl-0.5 pr-1.5 text-[10px] text-neutral-200">
+              <span key={n.id} className="inline-flex items-center gap-1 rounded-md border border-[var(--agent-border)] bg-white/[0.05] py-0.5 pl-0.5 pr-1.5 text-[10px] text-neutral-200">
                 {n.thumb ? (
                   <img src={toRenderableMediaUrl(n.thumb)} alt="" className="h-4 w-4 rounded object-cover" />
                 ) : (
@@ -942,7 +942,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                     key={skill.id}
                     type="button"
                     onClick={() => applyQuickChip(skill)}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] text-neutral-300 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-white"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-[var(--agent-border)] bg-white/[0.03] px-3 py-1.5 text-[11px] text-neutral-300 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-white"
                     title={skill.description || skill.name}
                   >
                     <Sparkles className="h-3 w-3 text-neutral-400" />
@@ -955,7 +955,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         ) : null}
 
         {/* Single rounded composer container. */}
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
+        <div className="rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
           <textarea
             ref={inputRef}
             value={message}
@@ -1004,7 +1004,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               onClick={() => setShowAttachMenu((v) => !v)}
               disabled={running}
               title={zh ? "添加：画布节点 / 技能" : "Add: canvas node / skill"}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 text-neutral-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--agent-border)] text-neutral-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -1017,7 +1017,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                     <>
                       <div className="fixed inset-0 z-30" onClick={() => setShowModelMenu(false)} />
                       <div
-                        className="prompt-editor-scroll absolute bottom-full right-0 z-40 mb-2 max-h-[280px] w-[220px] overflow-y-auto rounded-xl border border-white/10 bg-[#1a1d22]/98 p-1.5 shadow-2xl backdrop-blur-xl"
+                        className="prompt-editor-scroll absolute bottom-full right-0 z-40 mb-2 max-h-[280px] w-[220px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 shadow-2xl backdrop-blur-xl"
                         onWheel={(e) => e.stopPropagation()}
                       >
                         <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{zh ? "模型" : "Model"}</div>
@@ -1059,7 +1059,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   <button
                     type="button"
                     onClick={() => setShowModelMenu((v) => !v)}
-                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
                     title={zh ? "选择本次模型" : "Model for this message"}
                   >
                     {currentModel ? (
@@ -1123,7 +1123,7 @@ function AttachMenu({
     <>
       <div className="fixed inset-0 z-30" onClick={onClose} />
       <div
-        className="prompt-editor-scroll absolute bottom-full left-3 z-40 mb-2 max-h-[320px] w-[300px] overflow-y-auto rounded-xl border border-white/10 bg-[#1a1d22]/98 p-1.5 shadow-2xl backdrop-blur-xl"
+        className="prompt-editor-scroll absolute bottom-full left-3 z-40 mb-2 max-h-[320px] w-[300px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 shadow-2xl backdrop-blur-xl"
         onWheel={(e) => e.stopPropagation()}
       >
         {skills.length > 0 ? (
@@ -1157,7 +1157,7 @@ function ExecutionModeToggle({ mode, onToggle, zh }: { mode: "manual" | "auto"; 
       title={manual
         ? (zh ? "手动确认：执行生成前都会寻求你的确认（点击切换为自动）" : "Manual: confirm before each generation (click to switch to Auto)")
         : (zh ? "自动生成：自主规划并自动执行生成（点击切换为手动）" : "Auto: plan and run generations autonomously (click for Manual)")}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[10px] text-neutral-300 transition hover:bg-white/5"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-300 transition hover:bg-white/5"
     >
       {manual ? <Hand className="h-3 w-3" /> : <Zap className="h-3 w-3 text-cyan-300" />}
       {manual ? (zh ? "手动确认" : "Manual") : (zh ? "自动生成" : "Auto")}
@@ -1188,7 +1188,7 @@ function ConversationSidebar({
 }) {
   if (collapsed) return null;
   return (
-    <div className="flex w-[190px] shrink-0 flex-col border-r border-white/8 bg-black/20">
+    <div className="flex w-[190px] shrink-0 flex-col border-r border-[var(--agent-border)] bg-black/20">
       <div className="flex items-center justify-between px-3 py-2.5">
         <span className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-300">
           <MessagesSquare className="h-3 w-3" />
@@ -1325,7 +1325,7 @@ function AgentPicker({
         className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs outline-none transition ${
           open
             ? "border-cyan-400/35 bg-cyan-500/10 text-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.12)]"
-            : "border-white/10 bg-black/30 text-neutral-200 hover:border-white/18 hover:bg-white/[0.04]"
+            : "border-[var(--agent-border)] bg-black/30 text-neutral-200 hover:border-white/18 hover:bg-white/[0.04]"
         } disabled:cursor-not-allowed disabled:opacity-50`}
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -1341,7 +1341,7 @@ function AgentPicker({
       {open ? (
         <div
           ref={menuRef}
-          className="prompt-editor-scroll absolute left-0 right-0 top-[calc(100%+8px)] z-[60] max-h-[280px] overflow-y-auto rounded-xl border border-white/10 bg-[#171a20]/98 p-1.5 shadow-2xl shadow-black/45 backdrop-blur-xl"
+          className="prompt-editor-scroll absolute left-0 right-0 top-[calc(100%+8px)] z-[60] max-h-[280px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[#171a20]/98 p-1.5 shadow-2xl shadow-black/45 backdrop-blur-xl"
         >
           {agents.length === 0 ? (
             <div className="px-3 py-3 text-center text-[11px] text-neutral-500">
@@ -1498,7 +1498,7 @@ function ToolGroupRow({ name, tools, tick, zh }: { name: string; tools: ToolStep
   const done = tools.filter((t) => t.invocation.status === "success").length;
   const failed = tools.filter((t) => t.invocation.status === "error").length;
   return (
-    <div className="overflow-hidden rounded-lg border border-white/8 bg-white/[0.02]">
+    <div className="overflow-hidden rounded-lg border border-[var(--agent-border)] bg-white/[0.02]">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -1515,7 +1515,7 @@ function ToolGroupRow({ name, tools, tick, zh }: { name: string; tools: ToolStep
         </span>
       </button>
       {expanded ? (
-        <div className="space-y-1 border-t border-white/8 px-2 py-1.5">
+        <div className="space-y-1 border-t border-[var(--agent-border)] px-2 py-1.5">
           {tools.map((t) => (
             <ToolInvocationCard key={t.id} invocation={t.invocation} zh={zh} />
           ))}
@@ -1556,7 +1556,7 @@ function RunStepRow({
               key={i}
               type="button"
               onClick={() => onChoice(opt)}
-              className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-left text-[12px] text-neutral-200 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-white"
+              className="flex items-center gap-2 rounded-lg border border-[var(--agent-border)] bg-white/[0.03] px-2.5 py-1.5 text-left text-[12px] text-neutral-200 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-white"
             >
               <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/15 text-[9px] text-neutral-400">{String.fromCharCode(65 + i)}</span>
               <span>{opt}</span>
@@ -1627,7 +1627,7 @@ function PendingRunCard({
 
   if (step.status === "skipped") {
     return (
-      <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-500">
+      <div className="flex items-center gap-2 rounded-md border border-[var(--agent-border)] bg-white/[0.02] px-3 py-2 text-[11px] text-neutral-500">
         <Icon className="h-3.5 w-3.5" />
         {zh ? `已跳过 · ${typeLabel}` : `Skipped · ${typeLabel}`}
       </div>
@@ -1659,7 +1659,7 @@ function PendingRunCard({
         <select
           value={currentModel}
           onChange={(e) => onPickModel(e.target.value)}
-          className="flex-1 rounded border border-white/10 bg-black/40 px-2 py-1 text-[11px] text-neutral-100 outline-none focus:border-amber-400/40"
+          className="flex-1 rounded border border-[var(--agent-border)] bg-black/40 px-2 py-1 text-[11px] text-neutral-100 outline-none focus:border-amber-400/40"
           title={zh ? "可以选择任意已配置的模型" : "Pick any configured model"}
         >
           {step.availableModels.map((m, idx) => (
@@ -1833,7 +1833,7 @@ function SlashMenu({
   }, []);
 
   return (
-    <div ref={menuRef} className="prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-white/10 bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
+    <div ref={menuRef} className="prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
       <div className="px-2.5 pb-1 pt-1 text-[10px] uppercase tracking-wider text-neutral-500">
         {zh ? "技能" : "Skills"}
       </div>
@@ -1937,7 +1937,7 @@ function ConversationMenu({
   return (
     <div
       ref={rootRef}
-      className="prompt-editor-scroll absolute right-4 top-[58px] z-50 max-h-[360px] w-[300px] overflow-y-auto rounded-lg border border-white/10 bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl"
+      className="prompt-editor-scroll absolute right-4 top-[58px] z-50 max-h-[360px] w-[300px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl"
     >
       <button
         type="button"
