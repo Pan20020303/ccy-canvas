@@ -1622,11 +1622,11 @@ const InnerCanvas = () => {
             onClick={(_event, position) => setCenter(position.x, position.y, { zoom: viewport.zoom, duration: 400 })}
             onMouseEnter={enterMinimap}
             onMouseLeave={leaveMinimap}
-            maskColor="rgba(0,0,0,0.6)"
-            maskStrokeColor="rgba(255,255,255,0.35)"
+            maskColor={theme === 'light' ? 'rgba(228,231,236,0.7)' : 'rgba(0,0,0,0.6)'}
+            maskStrokeColor={theme === 'light' ? 'rgba(0,0,0,0.28)' : 'rgba(255,255,255,0.35)'}
             maskStrokeWidth={3}
-            nodeColor="#3f4149"
-            nodeStrokeColor="rgba(255,255,255,0.14)"
+            nodeColor={theme === 'light' ? '#c9ced6' : '#3f4149'}
+            nodeStrokeColor={theme === 'light' ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.14)'}
             nodeBorderRadius={3}
             style={{
               // Compact by default (reference proportions); expandable on demand.
@@ -1635,8 +1635,9 @@ const InnerCanvas = () => {
               left: 16,
               right: 'auto',
               bottom: 64,
-              backgroundColor: 'rgba(12,14,17,0.9)',
-              border: '1px solid rgba(255,255,255,0.1)',
+              // 内联样式 CSS 覆盖不到 — 白天模式按主题取色。
+              backgroundColor: theme === 'light' ? 'rgba(255,255,255,0.92)' : 'rgba(12,14,17,0.9)',
+              border: theme === 'light' ? '1px solid rgba(0,0,0,0.1)' : '1px solid rgba(255,255,255,0.1)',
               borderRadius: 14,
               transition: 'width 0.2s, height 0.2s',
             }}
@@ -2075,8 +2076,10 @@ const InnerCanvas = () => {
               className={clsx(
                 'absolute top-1/2 w-px -translate-y-1/2',
                 // 白天模式下白色刻度落在白色胶囊上会隐形 — 按主题取色。
+                // 注意用任意值写法：bg-black/30 会被 globals.css 里针对遮罩的
+                // 全局翻白规则（!important）打成白色，刻度就又隐形了。
                 theme === 'light'
-                  ? clsx('bg-black/30', i % 8 === 0 ? 'h-[11px] bg-black/50' : 'h-[6px]')
+                  ? (i % 8 === 0 ? 'h-[11px] bg-[rgba(0,0,0,0.5)]' : 'h-[6px] bg-[rgba(0,0,0,0.3)]')
                   : clsx('bg-white/25', i % 8 === 0 ? 'h-[11px] bg-white/40' : 'h-[6px]'),
               )}
               style={{ left: `${(i / 40) * 100}%` }}

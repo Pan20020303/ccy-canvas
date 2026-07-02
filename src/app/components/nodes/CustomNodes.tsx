@@ -252,10 +252,12 @@ function LoadingSpinner({
 
 function NodeLoadingCenterBadge({ nodeId: _nodeId }: { nodeId: string }) {
   const language = useStore((state) => state.language);
+  // 白天模式下徽章底翻白（globals.css），SVG 描边是内联色 — tone 跟随主题。
+  const light = useStore((state) => state.theme) === 'light';
   return (
     <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
       <div className="flex items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-        <LoadingSpinner size={18} tone="dark" />
+        <LoadingSpinner size={18} tone={light ? 'light' : 'dark'} />
         <span>{language === 'zh' ? '生成中' : 'Generating'}</span>
       </div>
     </div>
@@ -6792,6 +6794,8 @@ const HighlightChipIcon = ({ className }: { className?: string }) => (
 const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
+  // shellBackground 是内联样式，CSS 主题覆盖不到 — 按主题取底色。
+  const shellBase = useStore((state) => state.theme) === 'light' ? '#ffffff' : '#16181d';
   const nodes = useStore((state) => state.nodes);
   const edges = useStore((state) => state.edges);
   const backendModels = useStore((state) => state.backendModels);
@@ -7016,7 +7020,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       // Solid dark shell (the node used to be transparent over the canvas
       // grid). A user-picked tint layers OVER the solid base so pale tints
       // still read as opaque.
-      shellBackground={bgColor ? `linear-gradient(${bgColor}, ${bgColor}), #16181d` : '#16181d'}
+      shellBackground={bgColor ? `linear-gradient(${bgColor}, ${bgColor}), ${shellBase}` : shellBase}
       topFloatingPanel={editorToolbar}
       promptPanel={activeMode === 'chooser' ? <PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" /> : undefined}
     >

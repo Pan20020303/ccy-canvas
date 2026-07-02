@@ -525,3 +525,306 @@ html.theme-light .bg-\[radial-gradient\(rgba\(255\2c 255\2c 255\2c 0\.05\)_1px\2
 html.theme-light .border-white\/30 {
   border-color: rgba(0, 0, 0, 0.18) !important;
 }
+
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+   Light theme 鈥?second sweep (2026-07-02): minimap / ruler / node bodies /
+   agent panel / homepage avatar menu / admin modals & drawers & previews.
+   Appended LAST on purpose: several rules re-override earlier !important
+   rules (same specificity 鈫?source order wins).
+   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+/* 鈹€鈹€鈹€ Agent panel (鏅鸿兘浣? now follows the theme 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The --agent-* tokens in theme.css are dark-only by design; light mode
+   re-tokens the whole drawer (shell, borders, popovers) in one block. */
+html.theme-light {
+  --agent-bg: #ffffff;
+  --agent-surface: #ffffff;
+  --agent-surface-soft: rgba(0, 0, 0, 0.04);
+  --agent-border: rgba(0, 0, 0, 0.08);
+  --agent-border-strong: rgba(0, 0, 0, 0.14);
+  --agent-text: #1c1f24;
+  --agent-text-muted: #5a6270;
+  --agent-text-dim: #98a0ad;
+}
+
+/* 鈹€鈹€鈹€ Hover / focus variants (distinct class names 鈥?the base overrides
+   never match them, so hovers used to flash dark or go white-on-white) 鈹€鈹€鈹€ */
+html.theme-light .hover\:text-white:hover,
+html.theme-light .hover\:text-neutral-100:hover,
+html.theme-light .hover\:text-neutral-200:hover {
+  color: #1c1f24 !important;
+}
+html.theme-light .hover\:bg-black\/70:hover,
+html.theme-light .hover\:bg-black\/80:hover {
+  background-color: #ffffff !important;
+}
+html.theme-light .hover\:bg-white\/8:hover,
+html.theme-light .hover\:bg-white\/\[0\.07\]:hover,
+html.theme-light .hover\:bg-white\/\[0\.075\]:hover,
+html.theme-light .hover\:bg-white\/\[0\.08\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .hover\:bg-white\/\[0\.045\]:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+html.theme-light .hover\:bg-white\/\[0\.12\]:hover {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .hover\:border-white\/20:hover,
+html.theme-light .hover\:border-white\/25:hover,
+html.theme-light .hover\:border-white\/\[0\.16\]:hover {
+  border-color: rgba(0, 0, 0, 0.16) !important;
+}
+html.theme-light .hover\:border-white\/\[0\.18\]:hover {
+  border-color: rgba(0, 0, 0, 0.2) !important;
+}
+html.theme-light .focus\:border-white\/30:focus,
+html.theme-light .focus-within\:border-white\/25:focus-within {
+  border-color: rgba(0, 0, 0, 0.22) !important;
+}
+
+/* 鈹€鈹€鈹€ Canvas chrome 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Ruler 100% anchor: amber-500 is faint on the white pill */
+html.theme-light .bg-amber-500\/90 {
+  background-color: rgba(217, 119, 6, 0.95) !important;
+}
+/* Active toggle chip in the bottom-left strip (also AssetLibraryModal) */
+html.theme-light .bg-white\/12 {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Multi-select bounding box: white dashed outline on white ground */
+html.theme-light .react-flow__nodesselection-rect {
+  outline-color: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* 鈹€鈹€鈹€ Node action pills (鍏ㄦ櫙/澶氳搴?鈥?+ 瑙嗛宸ュ叿鏉? 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* text-neutral-100/88 is its own class 鈥?the /88-less override misses it */
+html.theme-light .text-neutral-100\/88 {
+  color: rgba(28, 31, 36, 0.88) !important;
+}
+html.theme-light .border-white\/12 {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Annotate color-popover swatch rim */
+html.theme-light .border-white\/40 {
+  border-color: rgba(0, 0, 0, 0.2) !important;
+}
+
+/* 鈹€鈹€鈹€ Node card bodies / dialogs (CustomNodes) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* THE node empty-state surface (鐢熸垚鍥惧儚/瑙嗛/闊抽/鍏ㄦ櫙鈥? */
+html.theme-light .bg-\[\#23242a\] {
+  background-color: #f2f3f5 !important;
+}
+/* 鐢熸垚涓?center badge */
+html.theme-light .bg-\[\#0e1116\]\/78 {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+}
+/* MediaParamsPopover (鏃堕暱/鍒嗚鲸鐜? 鈥?/85 opacity missing from the panel group */
+html.theme-light .bg-\[\#15181d\]\/85 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  color: var(--ccy-fg);
+}
+/* 浜屾鍒涗綔 / 瀵规瘮 dialogs */
+html.theme-light .bg-\[\#111318\] {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+/* 720掳 panorama preview chrome + sweep strip backing */
+html.theme-light .bg-\[\#0d1015\] {
+  background-color: #ffffff !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#0c1118\] {
+  background-color: #eef0f3 !important;
+}
+
+/* 鈹€鈹€鈹€ Prompt mirror textarea (transparent-overlay trick) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The generic `html.theme-light textarea` rule paints these white and
+   un-hides the raw text; restore the mirror and keep only a dark caret. */
+html.theme-light textarea.bg-transparent {
+  background-color: transparent !important;
+}
+html.theme-light textarea.text-transparent {
+  background-color: transparent !important;
+  color: transparent !important;
+  caret-color: #1c1f24 !important;
+}
+
+/* 鈹€鈹€鈹€ Agent panel odds and ends 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Slash-command menu (#1a1d23 鈮?#1a1d22 covered above) + agent picker */
+html.theme-light .bg-\[\#1a1d23\]\/98,
+html.theme-light .bg-\[\#171a20\]\/98 {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  color: var(--ccy-fg);
+}
+/* Assistant bubble / avatar rings vanish on white */
+html.theme-light .ring-white\/8,
+html.theme-light .ring-white\/10 {
+  --tw-ring-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Near-white accent text on light tinted cards */
+html.theme-light .text-cyan-50,
+html.theme-light .text-cyan-100 {
+  color: #0e7490 !important;
+}
+html.theme-light .text-amber-100,
+html.theme-light .text-amber-200 {
+  color: #b45309 !important;
+}
+html.theme-light .text-emerald-200 {
+  color: #047857 !important;
+}
+html.theme-light .text-rose-200 {
+  color: #be123c !important;
+}
+
+/* 鈹€鈹€鈹€ Primary "white pill" buttons (send / 鍒涘缓 / 纭畾 / 淇濆瓨) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* bg-white + text-black is the primary-button pair across the app; a white
+   button on a white surface has no affordance, flip it to dark ink. */
+html.theme-light .bg-white.text-black {
+  background-color: #1c1f24 !important;
+  color: #ffffff !important;
+}
+html.theme-light .bg-white.text-black:hover {
+  background-color: #343a44 !important;
+}
+html.theme-light .bg-white.text-black:disabled {
+  background-color: rgba(0, 0, 0, 0.16) !important;
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+html.theme-light .disabled\:bg-white\/15:disabled {
+  background-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 鈹€鈹€鈹€ Homepage leftovers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Avatar dropdown: /95 opacity variant of the already-covered #16171b */
+html.theme-light .bg-\[\#16171b\]\/95 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+/* Project-card busy overlay (澶勭悊涓€? 鈥?/50 was missing from the scrim group */
+html.theme-light .bg-black\/50 {
+  background-color: rgba(255, 255, 255, 0.78) !important;
+}
+
+/* 鈹€鈹€鈹€ Modal scrims: keep them scrims, not white sheets 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The tooltip-pill group turns bg-black/60|70|80 into opaque white cards;
+   fullscreen fixed scrims must stay dark-translucent (precedent: /90 above). */
+html.theme-light .fixed.inset-0.bg-black\/60 {
+  background-color: rgba(0, 0, 0, 0.35) !important;
+  backdrop-filter: blur(4px);
+}
+html.theme-light .fixed.inset-0.bg-black\/70 {
+  background-color: rgba(0, 0, 0, 0.4) !important;
+  backdrop-filter: blur(4px);
+}
+html.theme-light .fixed.inset-0.bg-black\/80 {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(6px);
+}
+
+/* 鈹€鈹€鈹€ Admin: CenterModal warm-dark palette (缂栬緫妯″瀷 / 鎻愮ず璇?/ Skill 缂栬緫) 鈹€ */
+html.theme-light .bg-\[\#171716\] {
+  background-color: #ffffff !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#181817\],
+html.theme-light .bg-\[\#1b1a18\],
+html.theme-light .bg-\[\#161615\] {
+  background-color: #f6f7f9 !important;
+}
+html.theme-light .bg-\[\#1d1d1b\] {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .bg-\[\#121211\] {
+  background-color: #fbfbfc !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .bg-\[\#2f2b23\] {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .bg-\[\#111110\] {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+html.theme-light .border-\[\#303030\],
+html.theme-light .border-\[\#2d2b28\],
+html.theme-light .border-\[\#2c2925\] {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+html.theme-light .hover\:bg-\[\#2a2926\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .hover\:text-\[\#f2eadf\]:hover {
+  color: #1c1f24 !important;
+}
+
+/* Warm near-white editor/preview text (MarkdownPreview + modal chrome).
+   These sit after the `.bg-black/70 *` force-dark rule so they win ties. */
+html.theme-light .text-\[\#d8d1c7\],
+html.theme-light .text-\[\#e7e0d6\],
+html.theme-light .text-\[\#e8e2d8\],
+html.theme-light .text-\[\#eee7dc\] {
+  color: #3b4250 !important;
+}
+html.theme-light .text-\[\#f2eadf\],
+html.theme-light .text-\[\#f5eee4\],
+html.theme-light .text-\[\#f6efe5\],
+html.theme-light .text-\[\#f4ede3\] {
+  color: #1c1f24 !important;
+}
+html.theme-light .text-\[\#928b82\],
+html.theme-light .text-\[\#a8a19a\],
+html.theme-light .text-\[\#8d867d\] {
+  color: #717a89 !important;
+}
+
+/* 鈹€鈹€鈹€ Admin: alerts drawer + skills preview + fraction fills 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+html.theme-light .bg-\[\#101014\]\/95 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-white\/\[0\.025\] {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+html.theme-light .bg-white\/\[0\.045\] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+html.theme-light .bg-white\/\[0\.075\] {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .bg-white\/\[0\.10\] {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .border-white\/\[0\.07\] {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .border-white\/\[0\.10\],
+html.theme-light .border-white\/\[0\.14\],
+html.theme-light .border-white\/\[0\.18\] {
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 鈹€鈹€鈹€ Native form controls the old rules missed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Attribute-less <input> (admin 鏄剧ず鍚嶇О/妯″瀷 ID, homepage rename鈥? never
+   matches input[type="text"] 鈥?cover it explicitly. */
+html.theme-light input:not([type]) {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+html.theme-light select {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  color-scheme: light;
+}
+html.theme-light select option {
+  background-color: #ffffff;
+  color: #1c1f24;
+}
+html.theme-light input[type="checkbox"] {
+  accent-color: #3b4250;
+}
+
