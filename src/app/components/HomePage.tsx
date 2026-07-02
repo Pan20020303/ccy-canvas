@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import {
   Check,
@@ -34,6 +34,9 @@ import BorderGlow from './reactbits/BorderGlow';
 import Galaxy from './reactbits/Galaxy';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
+
+// 3D 挂牌（three + rapier 物理）体积不小 — 懒加载，只在首页首帧后拉取。
+const Lanyard = lazy(() => import('./reactbits/Lanyard'));
 
 /** Shared BorderGlow tuning — cool silver light that fits the graphite theme. */
 const CARD_GLOW = {
@@ -272,6 +275,14 @@ export function HomePage() {
       {/* Ambient light: a soft top-center glow over layered charcoal — the
           "premium dark" read instead of flat black. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.08),transparent_70%)]" />
+
+      {/* CCY 挂牌 — 物理摆动的 3D 工牌，挂在最右侧的空档里（大屏才显示，
+          避免和居中网格打架）。可以抓着卡片甩。 */}
+      <div className="fixed right-0 top-0 z-10 hidden h-screen w-[400px] min-[1680px]:block">
+        <Suspense fallback={null}>
+          <Lanyard position={[0, 0, 22]} gravity={[0, -40, 0]} />
+        </Suspense>
+      </div>
 
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onCoverFile(e)} />
 

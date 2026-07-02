@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss()],
+    // 3D model assets (React Bits Lanyard card) imported as URLs.
+    assetsInclude: ["**/*.glb"],
     server: {
       port: 5173,
       proxy: {

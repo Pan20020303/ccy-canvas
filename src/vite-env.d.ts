@@ -7,3 +7,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// 3D model assets resolve to their bundled URL (vite assetsInclude "**/*.glb").
+declare module "*.glb" {
+  const src: string;
+  export default src;
+}
