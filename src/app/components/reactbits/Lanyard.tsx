@@ -6,16 +6,21 @@ import { BallCollider, CuboidCollider, Physics, RigidBody, useRopeJoint, useSphe
 import { MeshLineGeometry, MeshLineMaterial } from 'meshline';
 import * as THREE from 'three';
 
+import { useStore } from '../../store';
 import cardGLB from './lanyard/card.glb';
-import frontImage from './lanyard/front.png';
-import bandImage from './lanyard/band.png';
+import frontDarkImage from './lanyard/front.png';
+import frontLightImage from './lanyard/front-light.png';
+import bandDarkImage from './lanyard/band-dark.png';
+import bandLightImage from './lanyard/band-light.png';
 import './Lanyard.css';
 
 /** React Bits "Lanyard" (JS + CSS variant), typed for this codebase.
  *  A physics-simulated hanging badge (rapier rope joints + meshline band).
  *  Port changes: the card's texture atlas is REPLACED with our branded front
  *  face (front = left half of the atlas, back = right half, measured from
- *  card.glb), and the band uses a generated CCY strap texture. */
+ *  card.glb), the strap wears a generated CCY webbing texture, both come in a
+ *  dark and a light colorway following the app theme — and the badge doubles
+ *  as a pull-cord switch: yank it down and the theme toggles. */
 
 extend({ MeshLineGeometry, MeshLineMaterial });
 
@@ -34,6 +39,11 @@ declare module '@react-three/fiber' {
 // back face = right half.
 const FRONT_UV_RECT = { x: 0, y: 0, w: 0.5, h: 0.755 };
 const BACK_UV_RECT = { x: 0.5, y: 0, w: 0.5, h: 0.757 };
+
+// Pull-cord switch: dragging the badge this many world units DOWN from where
+// it was grabbed clicks the theme toggle (once per grab, like a real cord —
+// the viewport is ~10.6 units tall at fov 20 / z 30, so this is a firm yank).
+const PULL_TOGGLE_DISTANCE = 1.6;
 
 export default function Lanyard({
   position = [0, 0, 30] as readonly [number, number, number],
@@ -96,16 +106,24 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
     nodes: Record<string, THREE.Mesh>;
     materials: Record<string, THREE.MeshStandardMaterial & { map: THREE.Texture }>;
   };
-  const texture = useTexture(bandImage);
-  const frontTex = useTexture(frontImage);
+  // Both colorways load up front so the pull-toggle swaps without a suspense
+  // hiccup mid-drag.
+  const bandDarkTex = useTexture(bandDarkImage);
+  const bandLightTex = useTexture(bandLightImage);
+  const frontDarkTex = useTexture(frontDarkImage);
+  const frontLightTex = useTexture(frontLightImage);
+  const isLight = useStore((state) => state.theme) === 'light';
+  const bandTexture = isLight ? bandLightTex : bandDarkTex;
 
   // Composite our branded face(s) into the card's texture atlas: keep the
-  // baked atlas for card edges, draw the CCY front into the left half and a
-  // dimmed copy into the right half (the back face).
+  // baked atlas for card edges (whitened in the light colorway so the card
+  // rim matches), draw the CCY front into the left half and a dimmed copy
+  // into the right half (the back face).
   const [cardMap, setCardMap] = useState<THREE.Texture | null>(null);
   useEffect(() => {
     const baseMap = materials.base.map;
     const baseImg = baseMap.image as HTMLImageElement | undefined;
+    const frontTex = isLight ? frontLightTex : frontDarkTex;
     const faceImg = frontTex.image as HTMLImageElement | undefined;
     if (!baseImg || !faceImg) return;
     const W = baseImg.width;
@@ -116,6 +134,10 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(baseImg, 0, 0, W, H);
+    if (isLight) {
+      ctx.fillStyle = 'rgba(244,245,247,0.9)';
+      ctx.fillRect(0, 0, W, H);
+    }
 
     const drawCover = (img: HTMLImageElement, rect: { x: number; y: number; w: number; h: number }, alpha = 1) => {
       const rx = rect.x * W;
@@ -142,13 +164,18 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
     composite.anisotropy = 16;
     composite.needsUpdate = true;
     setCardMap(composite);
-  }, [materials.base.map, frontTex]);
+    return () => composite.dispose();
+  }, [materials.base.map, frontDarkTex, frontLightTex, isLight]);
 
   const [curve] = useState(
     () => new THREE.CatmullRomCurve3([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]),
   );
   const [dragged, drag] = useState<false | THREE.Vector3>(false);
   const [hovered, hover] = useState(false);
+  // Pull-cord bookkeeping: the card's world Y when grabbed, and whether this
+  // grab already clicked the switch (one toggle per pull, like a real cord).
+  const pullStartY = useRef(0);
+  const pullLatched = useRef(false);
 
   useRopeJoint(fixed, j1, [[0, 0, 0], [0, 0, 0], 1]);
   useRopeJoint(j1, j2, [[0, 0, 0], [0, 0, 0], 1]);
@@ -169,6 +196,11 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
       vec.add(dir.multiplyScalar(state.camera.position.length()));
       [card, j1, j2, j3, fixed].forEach((ref) => ref.current?.wakeUp());
       card.current?.setNextKinematicTranslation({ x: vec.x - dragged.x, y: vec.y - dragged.y, z: vec.z - dragged.z });
+      // Pull-cord switch: a firm downward yank clicks the theme toggle.
+      if (!pullLatched.current && pullStartY.current - (vec.y - dragged.y) > PULL_TOGGLE_DISTANCE) {
+        pullLatched.current = true;
+        useStore.getState().toggleTheme();
+      }
     }
     if (fixed.current && j1.current && j2.current && j3.current && card.current && band.current) {
       [j1, j2].forEach((ref) => {
@@ -188,7 +220,8 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
   });
 
   curve.curveType = 'chordal';
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  bandDarkTex.wrapS = bandDarkTex.wrapT = THREE.RepeatWrapping;
+  bandLightTex.wrapS = bandLightTex.wrapT = THREE.RepeatWrapping;
 
   return (
     <>
@@ -216,6 +249,8 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
             }}
             onPointerDown={(e) => {
               (e.target as Element).setPointerCapture(e.pointerId);
+              pullStartY.current = card.current!.translation().y;
+              pullLatched.current = false;
               drag(new THREE.Vector3().copy(e.point).sub(vec.copy(card.current!.translation() as unknown as THREE.Vector3)));
             }}
           >
@@ -236,12 +271,15 @@ function Band({ maxSpeed = 50, minSpeed = 0, isMobile = false }: { maxSpeed?: nu
       </group>
       <mesh ref={band}>
         <meshLineGeometry />
+        {/* key remounts the material on theme flips — meshline keeps its map
+            as a shader uniform, so a fresh material is the reliable swap. */}
         <meshLineMaterial
+          key={isLight ? 'band-light' : 'band-dark'}
           color="white"
           depthTest={false}
           resolution={isMobile ? [1000, 2000] : [1000, 1000]}
           useMap={1}
-          map={texture}
+          map={bandTexture}
           repeat={[-4, 1]}
           lineWidth={1}
         />

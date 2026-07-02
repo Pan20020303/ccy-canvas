@@ -21,14 +21,7 @@ export const Navbar = () => {
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Sync the chosen theme to <html data-theme=...> so CSS rules in globals.css
-  // can react. Default 'dark' matches the existing palette.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute("data-theme", theme);
-    if (theme === "light") root.classList.add("theme-light");
-    else root.classList.remove("theme-light");
-  }, [theme]);
+  // (theme → <html> sync lives in App.tsx now, so it works on every route.)
 
   useEffect(() => {
     const root = rootRef.current;

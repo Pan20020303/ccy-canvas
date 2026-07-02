@@ -621,6 +621,10 @@ export function HomePage() {
         <Suspense fallback={null}>
           <Lanyard position={[0, 0, 30]} gravity={[0, -40, 0]} />
         </Suspense>
+        {/* 拉绳开关的发现性提示 — 挂牌往下一拽就切换昼夜。 */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-12 text-center text-[11px] tracking-[0.35em] text-neutral-500">
+          下拉挂牌 · 切换昼夜
+        </div>
       </aside>
       </div>
 
