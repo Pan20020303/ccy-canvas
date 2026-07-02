@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
+import { ArrowLeft, Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
 import { gsap } from "gsap";
 
 import { useAuth } from "../auth/AuthProvider";
@@ -114,16 +114,26 @@ export const Navbar = () => {
       style={{ right: agentPanelOpen ? 480 : 0 }}
       className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 transition-[right] duration-200 ease-out"
     >
-      {/* Left: logo pill — clicking returns to the project homepage. */}
-      <button
-        type="button"
-        onClick={() => navigate('/home')}
-        title={language === 'zh' ? '返回首页' : 'Back to home'}
-        className={`pointer-events-auto flex items-center gap-2 ${pillBase} px-3 py-1.5 transition hover:bg-black/70`}
-      >
-        <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />
-        <span className="text-[13px] font-semibold tracking-wide text-neutral-100">CCY Canvas</span>
-      </button>
+      {/* Left: logo pill + 返回 — both routes back to the project homepage. */}
+      <div className="pointer-events-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => navigate('/home')}
+          title={language === 'zh' ? '返回首页' : 'Back to home'}
+          className={`flex items-center gap-2 ${pillBase} px-3 py-1.5 transition hover:bg-black/70`}
+        >
+          <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />
+          <span className="text-[13px] font-semibold tracking-wide text-neutral-100">CCY Canvas</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate('/home')}
+          className={`flex h-9 items-center gap-1.5 ${pillBase} px-3 text-[12px] text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {language === 'zh' ? '返回' : 'Back'}
+        </button>
+      </div>
 
       {/* Right: controls cluster */}
       <div className="pointer-events-auto flex items-center gap-2">
