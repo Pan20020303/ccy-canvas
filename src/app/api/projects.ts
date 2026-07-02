@@ -7,8 +7,16 @@ import { apiClient, resolveApiUrl } from "./client";
 export type BackendProject = {
   id: string;
   name: string;
+  cover_url?: string;
+  folder_id?: string;
   created_at: string;
   updated_at: string;
+};
+
+export type BackendFolder = {
+  id: string;
+  name: string;
+  created_at: string;
 };
 
 export type CanvasData = {
@@ -36,6 +44,39 @@ export function listProjects(): Promise<BackendProject[]> {
 
 export function createProject(name: string): Promise<BackendProject> {
   return apiClient.post<BackendProject>("/api/app/projects", { name });
+}
+
+/** Patch project metadata. Omitted fields stay untouched; empty string clears
+ *  (cover removed / moved back to the root level). */
+export function updateProject(
+  projectId: string,
+  patch: { name?: string; cover_url?: string; folder_id?: string },
+): Promise<BackendProject> {
+  return apiClient.patch<BackendProject>(`/api/app/projects/${projectId}`, patch);
+}
+
+export function deleteProject(projectId: string): Promise<{ deleted: boolean }> {
+  return apiClient.delete<{ deleted: boolean }>(`/api/app/projects/${projectId}`);
+}
+
+export function duplicateProject(projectId: string): Promise<BackendProject> {
+  return apiClient.post<BackendProject>(`/api/app/projects/${projectId}/duplicate`, {});
+}
+
+// ---------------------------------------------------------------------------
+// Folders
+// ---------------------------------------------------------------------------
+
+export function listFolders(): Promise<BackendFolder[]> {
+  return apiClient.get<BackendFolder[]>("/api/app/folders");
+}
+
+export function createFolder(name: string): Promise<BackendFolder> {
+  return apiClient.post<BackendFolder>("/api/app/folders", { name });
+}
+
+export function deleteFolder(folderId: string): Promise<{ deleted: boolean }> {
+  return apiClient.delete<{ deleted: boolean }>(`/api/app/folders/${folderId}`);
 }
 
 // ---------------------------------------------------------------------------

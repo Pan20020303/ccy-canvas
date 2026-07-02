@@ -14,7 +14,7 @@ import (
 const createProject = `-- name: CreateProject :one
 INSERT INTO projects (owner_id, name)
 VALUES ($1, $2)
-RETURNING id, owner_id, name, created_at, updated_at
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at
 `
 
 type CreateProjectParams struct {
@@ -29,10 +29,71 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.ID,
 		&i.OwnerID,
 		&i.Name,
+		&i.CoverUrl,
+		&i.FolderID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const createProjectFolder = `-- name: CreateProjectFolder :one
+INSERT INTO project_folders (owner_id, name)
+VALUES ($1, $2)
+RETURNING id, owner_id, name, created_at
+`
+
+type CreateProjectFolderParams struct {
+	OwnerID pgtype.UUID `json:"owner_id"`
+	Name    string      `json:"name"`
+}
+
+func (q *Queries) CreateProjectFolder(ctx context.Context, arg CreateProjectFolderParams) (ProjectFolder, error) {
+	row := q.db.QueryRow(ctx, createProjectFolder, arg.OwnerID, arg.Name)
+	var i ProjectFolder
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteProject = `-- name: DeleteProject :execrows
+DELETE FROM projects
+WHERE id = $1 AND owner_id = $2
+`
+
+type DeleteProjectParams struct {
+	ID      pgtype.UUID `json:"id"`
+	OwnerID pgtype.UUID `json:"owner_id"`
+}
+
+func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProject, arg.ID, arg.OwnerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteProjectFolder = `-- name: DeleteProjectFolder :execrows
+DELETE FROM project_folders
+WHERE id = $1 AND owner_id = $2
+`
+
+type DeleteProjectFolderParams struct {
+	ID      pgtype.UUID `json:"id"`
+	OwnerID pgtype.UUID `json:"owner_id"`
+}
+
+func (q *Queries) DeleteProjectFolder(ctx context.Context, arg DeleteProjectFolderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteProjectFolder, arg.ID, arg.OwnerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getCanvasSnapshot = `-- name: GetCanvasSnapshot :one
@@ -58,7 +119,7 @@ func (q *Queries) GetCanvasSnapshot(ctx context.Context, projectID pgtype.UUID) 
 }
 
 const getProjectByID = `-- name: GetProjectByID :one
-SELECT id, owner_id, name, created_at, updated_at
+SELECT id, owner_id, name, cover_url, folder_id, created_at, updated_at
 FROM projects
 WHERE id = $1
 `
@@ -70,14 +131,48 @@ func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, 
 		&i.ID,
 		&i.OwnerID,
 		&i.Name,
+		&i.CoverUrl,
+		&i.FolderID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const listProjectFoldersByOwner = `-- name: ListProjectFoldersByOwner :many
+SELECT id, owner_id, name, created_at
+FROM project_folders
+WHERE owner_id = $1
+ORDER BY created_at DESC
+`
+
+func (q *Queries) ListProjectFoldersByOwner(ctx context.Context, ownerID pgtype.UUID) ([]ProjectFolder, error) {
+	rows, err := q.db.Query(ctx, listProjectFoldersByOwner, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectFolder{}
+	for rows.Next() {
+		var i ProjectFolder
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.Name,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjectsByOwner = `-- name: ListProjectsByOwner :many
-SELECT id, owner_id, name, created_at, updated_at
+SELECT id, owner_id, name, cover_url, folder_id, created_at, updated_at
 FROM projects
 WHERE owner_id = $1
 ORDER BY updated_at DESC
@@ -96,6 +191,8 @@ func (q *Queries) ListProjectsByOwner(ctx context.Context, ownerID pgtype.UUID) 
 			&i.ID,
 			&i.OwnerID,
 			&i.Name,
+			&i.CoverUrl,
+			&i.FolderID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -109,11 +206,67 @@ func (q *Queries) ListProjectsByOwner(ctx context.Context, ownerID pgtype.UUID) 
 	return items, nil
 }
 
+const updateProjectCover = `-- name: UpdateProjectCover :one
+UPDATE projects
+SET cover_url = $2, updated_at = now()
+WHERE id = $1 AND owner_id = $3
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at
+`
+
+type UpdateProjectCoverParams struct {
+	ID       pgtype.UUID `json:"id"`
+	CoverUrl string      `json:"cover_url"`
+	OwnerID  pgtype.UUID `json:"owner_id"`
+}
+
+func (q *Queries) UpdateProjectCover(ctx context.Context, arg UpdateProjectCoverParams) (Project, error) {
+	row := q.db.QueryRow(ctx, updateProjectCover, arg.ID, arg.CoverUrl, arg.OwnerID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CoverUrl,
+		&i.FolderID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateProjectFolder = `-- name: UpdateProjectFolder :one
+UPDATE projects
+SET folder_id = $2, updated_at = now()
+WHERE id = $1 AND owner_id = $3
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at
+`
+
+type UpdateProjectFolderParams struct {
+	ID       pgtype.UUID `json:"id"`
+	FolderID pgtype.UUID `json:"folder_id"`
+	OwnerID  pgtype.UUID `json:"owner_id"`
+}
+
+func (q *Queries) UpdateProjectFolder(ctx context.Context, arg UpdateProjectFolderParams) (Project, error) {
+	row := q.db.QueryRow(ctx, updateProjectFolder, arg.ID, arg.FolderID, arg.OwnerID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.CoverUrl,
+		&i.FolderID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateProjectName = `-- name: UpdateProjectName :one
 UPDATE projects
 SET name = $2, updated_at = now()
 WHERE id = $1 AND owner_id = $3
-RETURNING id, owner_id, name, created_at, updated_at
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at
 `
 
 type UpdateProjectNameParams struct {
@@ -129,6 +282,8 @@ func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNamePa
 		&i.ID,
 		&i.OwnerID,
 		&i.Name,
+		&i.CoverUrl,
+		&i.FolderID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

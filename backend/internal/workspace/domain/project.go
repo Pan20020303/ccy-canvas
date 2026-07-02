@@ -11,8 +11,18 @@ type Project struct {
 	ID        string
 	OwnerID   string
 	Name      string
+	CoverURL  string
+	FolderID  string // empty = not in any folder
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// Folder groups projects on the homepage grid.
+type Folder struct {
+	ID        string
+	OwnerID   string
+	Name      string
+	CreatedAt time.Time
 }
 
 // CanvasSnapshot holds the serialised nodes and edges of a canvas at a point in time.

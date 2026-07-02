@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -32,8 +33,16 @@ func NewHandler(repo *infrastructure.Repository) *Handler {
 type ProjectItem struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	CoverURL  string    `json:"cover_url"`
+	FolderID  string    `json:"folder_id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type FolderItem struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type CanvasData struct {
@@ -45,7 +54,11 @@ type CanvasData struct {
 }
 
 func toProjectItem(p domain.Project) ProjectItem {
-	return ProjectItem{ID: p.ID, Name: p.Name, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+	return ProjectItem{ID: p.ID, Name: p.Name, CoverURL: p.CoverURL, FolderID: p.FolderID, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+}
+
+func toFolderItem(f domain.Folder) FolderItem {
+	return FolderItem{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedAt}
 }
 
 func toCanvasData(s domain.CanvasSnapshot) CanvasData {
@@ -97,6 +110,64 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.saveCanvas)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-project",
+		Method:      http.MethodPatch,
+		Path:        "/api/app/projects/{id}",
+		Summary:     "Update project metadata (name / cover / folder)",
+		Tags:        []string{"App", "Projects"},
+		Security:    userSecurity,
+	}, h.updateProject)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-project",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/projects/{id}",
+		Summary:       "Delete a project (canvas cascades)",
+		Tags:          []string{"App", "Projects"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.deleteProject)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "duplicate-project",
+		Method:        http.MethodPost,
+		Path:          "/api/app/projects/{id}/duplicate",
+		Summary:       "Duplicate a project together with its canvas",
+		Tags:          []string{"App", "Projects"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusCreated,
+	}, h.duplicateProject)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-folders",
+		Method:      http.MethodGet,
+		Path:        "/api/app/folders",
+		Summary:     "List project folders",
+		Tags:        []string{"App", "Projects"},
+		Security:    userSecurity,
+	}, h.listFolders)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "create-folder",
+		Method:        http.MethodPost,
+		Path:          "/api/app/folders",
+		Summary:       "Create a project folder",
+		Tags:          []string{"App", "Projects"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusCreated,
+	}, h.createFolder)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-folder",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/folders/{id}",
+		Summary:       "Delete a project folder (projects fall back to root)",
+		Tags:          []string{"App", "Projects"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.deleteFolder)
 }
 
 // --- handlers ---
@@ -251,6 +322,267 @@ func (h *Handler) saveCanvas(ctx context.Context, input *saveCanvasInput) (*save
 
 	out := &saveCanvasOutput{}
 	out.Body.Data = toCanvasData(*snap)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+// --- Project management (homepage) ---
+
+type updateProjectInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		// Pointer fields: nil = leave untouched; empty string = clear
+		// (cover removed / project moved back to root).
+		Name     *string `json:"name,omitempty" maxLength:"100" doc:"New project name"`
+		CoverURL *string `json:"cover_url,omitempty" doc:"Cover image url ('' clears)"`
+		FolderID *string `json:"folder_id,omitempty" doc:"Folder UUID ('' moves to root)"`
+	}
+}
+
+type updateProjectOutput struct {
+	Body struct {
+		Data      ProjectItem `json:"data"`
+		RequestID string      `json:"request_id"`
+	}
+}
+
+func (h *Handler) updateProject(ctx context.Context, input *updateProjectInput) (*updateProjectOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	proj, err := h.repo.GetProjectByID(ctx, input.ID)
+	if err != nil || proj == nil {
+		return nil, huma.Error404NotFound("Project not found")
+	}
+	if proj.OwnerID != claims.UserID {
+		return nil, huma.Error403Forbidden("Access denied")
+	}
+
+	current := proj
+	if input.Body.Name != nil {
+		name := strings.TrimSpace(*input.Body.Name)
+		if name == "" {
+			name = "Untitled"
+		}
+		current, err = h.repo.UpdateProjectName(ctx, input.ID, claims.UserID, name)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to rename project", err)
+		}
+	}
+	if input.Body.CoverURL != nil {
+		current, err = h.repo.UpdateProjectCover(ctx, input.ID, claims.UserID, strings.TrimSpace(*input.Body.CoverURL))
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update cover", err)
+		}
+	}
+	if input.Body.FolderID != nil {
+		folderID := strings.TrimSpace(*input.Body.FolderID)
+		if folderID != "" {
+			// Folder must exist and belong to the user.
+			folders, ferr := h.repo.ListFolders(ctx, claims.UserID)
+			if ferr != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, "Failed to verify folder", ferr)
+			}
+			found := false
+			for _, f := range folders {
+				if f.ID == folderID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, huma.Error404NotFound("Folder not found")
+			}
+		}
+		current, err = h.repo.UpdateProjectFolder(ctx, input.ID, claims.UserID, folderID)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to move project", err)
+		}
+	}
+
+	out := &updateProjectOutput{}
+	out.Body.Data = toProjectItem(*current)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type deleteProjectInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type deleteProjectOutput struct {
+	Body struct {
+		Data      map[string]bool `json:"data"`
+		RequestID string          `json:"request_id"`
+	}
+}
+
+func (h *Handler) deleteProject(ctx context.Context, input *deleteProjectInput) (*deleteProjectOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	deleted, err := h.repo.DeleteProject(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to delete project", err)
+	}
+	if !deleted {
+		return nil, huma.Error404NotFound("Project not found")
+	}
+
+	out := &deleteProjectOutput{}
+	out.Body.Data = map[string]bool{"deleted": true}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type duplicateProjectInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type duplicateProjectOutput struct {
+	Body struct {
+		Data      ProjectItem `json:"data"`
+		RequestID string      `json:"request_id"`
+	}
+}
+
+func (h *Handler) duplicateProject(ctx context.Context, input *duplicateProjectInput) (*duplicateProjectOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	source, err := h.repo.GetProjectByID(ctx, input.ID)
+	if err != nil || source == nil {
+		return nil, huma.Error404NotFound("Project not found")
+	}
+	if source.OwnerID != claims.UserID {
+		return nil, huma.Error403Forbidden("Access denied")
+	}
+
+	copyName := source.Name + " 副本"
+	created, err := h.repo.CreateProject(ctx, claims.UserID, copyName)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to duplicate project", err)
+	}
+	// Carry over cover + folder so the copy lands beside the original.
+	if source.CoverURL != "" {
+		if updated, cerr := h.repo.UpdateProjectCover(ctx, created.ID, claims.UserID, source.CoverURL); cerr == nil {
+			created = updated
+		}
+	}
+	if source.FolderID != "" {
+		if updated, ferr := h.repo.UpdateProjectFolder(ctx, created.ID, claims.UserID, source.FolderID); ferr == nil {
+			created = updated
+		}
+	}
+	// Copy the canvas snapshot (best-effort: an empty source canvas is fine).
+	if snap, serr := h.repo.GetCanvasSnapshot(ctx, input.ID); serr == nil && snap != nil {
+		if _, uerr := h.repo.UpsertCanvasSnapshot(ctx, created.ID, claims.UserID, snap.Nodes, snap.Edges, snap.Groups); uerr != nil {
+			return nil, apperror.Wrap(apperror.CodeInternal, "Failed to copy canvas", uerr)
+		}
+	}
+
+	out := &duplicateProjectOutput{}
+	out.Body.Data = toProjectItem(*created)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type listFoldersOutput struct {
+	Body struct {
+		Data      []FolderItem `json:"data"`
+		RequestID string       `json:"request_id"`
+	}
+}
+
+func (h *Handler) listFolders(ctx context.Context, _ *struct{}) (*listFoldersOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	folders, err := h.repo.ListFolders(ctx, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list folders", err)
+	}
+
+	items := make([]FolderItem, 0, len(folders))
+	for _, f := range folders {
+		items = append(items, toFolderItem(f))
+	}
+
+	out := &listFoldersOutput{}
+	out.Body.Data = items
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type createFolderInput struct {
+	Body struct {
+		Name string `json:"name" minLength:"1" maxLength:"100" doc:"Folder name"`
+	}
+}
+
+type createFolderOutput struct {
+	Body struct {
+		Data      FolderItem `json:"data"`
+		RequestID string     `json:"request_id"`
+	}
+}
+
+func (h *Handler) createFolder(ctx context.Context, input *createFolderInput) (*createFolderOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	name := strings.TrimSpace(input.Body.Name)
+	if name == "" {
+		name = "未命名文件夹"
+	}
+	folder, err := h.repo.CreateFolder(ctx, claims.UserID, name)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to create folder", err)
+	}
+
+	out := &createFolderOutput{}
+	out.Body.Data = toFolderItem(*folder)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type deleteFolderInput struct {
+	ID string `path:"id" doc:"Folder UUID"`
+}
+
+type deleteFolderOutput struct {
+	Body struct {
+		Data      map[string]bool `json:"data"`
+		RequestID string          `json:"request_id"`
+	}
+}
+
+func (h *Handler) deleteFolder(ctx context.Context, input *deleteFolderInput) (*deleteFolderOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	deleted, err := h.repo.DeleteFolder(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to delete folder", err)
+	}
+	if !deleted {
+		return nil, huma.Error404NotFound("Folder not found")
+	}
+
+	out := &deleteFolderOutput{}
+	out.Body.Data = map[string]bool{"deleted": true}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }

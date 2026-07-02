@@ -110,8 +110,17 @@ type Project struct {
 	ID        pgtype.UUID        `json:"id"`
 	OwnerID   pgtype.UUID        `json:"owner_id"`
 	Name      string             `json:"name"`
+	CoverUrl  string             `json:"cover_url"`
+	FolderID  pgtype.UUID        `json:"folder_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ProjectFolder struct {
+	ID        pgtype.UUID        `json:"id"`
+	OwnerID   pgtype.UUID        `json:"owner_id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type ProviderConfig struct {

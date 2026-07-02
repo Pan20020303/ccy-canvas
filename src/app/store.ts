@@ -256,6 +256,9 @@ type AppState = {
    *  backend snapshot before the real canvas finishes loading (data loss). */
   canvasHydrated: boolean;
   loadBackendProjects: () => Promise<void>;
+  /** Refresh ONLY the project list (rename/cover/folder/delete on the
+   *  homepage) — never touches the live canvas. */
+  refreshBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
   switchBackendProject: (id: string) => Promise<void>;
   saveCanvasToBackend: (options?: { keepalive?: boolean }) => Promise<void>;
@@ -2017,6 +2020,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   activeBackendProjectId: null,
   backendSyncing: false,
   canvasHydrated: false,
+
+  refreshBackendProjects: async () => {
+    try {
+      const projects = await listProjects();
+      set({ backendProjects: projects });
+    } catch {
+      // Best-effort — keep the current list on failure.
+    }
+  },
 
   loadBackendProjects: async () => {
     set({ backendSyncing: true });

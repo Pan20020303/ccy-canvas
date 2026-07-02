@@ -1,5 +1,5 @@
 -- name: ListProjectsByOwner :many
-SELECT id, owner_id, name, created_at, updated_at
+SELECT id, owner_id, name, cover_url, folder_id, created_at, updated_at
 FROM projects
 WHERE owner_id = $1
 ORDER BY updated_at DESC;
@@ -7,10 +7,10 @@ ORDER BY updated_at DESC;
 -- name: CreateProject :one
 INSERT INTO projects (owner_id, name)
 VALUES ($1, $2)
-RETURNING id, owner_id, name, created_at, updated_at;
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at;
 
 -- name: GetProjectByID :one
-SELECT id, owner_id, name, created_at, updated_at
+SELECT id, owner_id, name, cover_url, folder_id, created_at, updated_at
 FROM projects
 WHERE id = $1;
 
@@ -18,7 +18,38 @@ WHERE id = $1;
 UPDATE projects
 SET name = $2, updated_at = now()
 WHERE id = $1 AND owner_id = $3
-RETURNING id, owner_id, name, created_at, updated_at;
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at;
+
+-- name: UpdateProjectCover :one
+UPDATE projects
+SET cover_url = $2, updated_at = now()
+WHERE id = $1 AND owner_id = $3
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at;
+
+-- name: UpdateProjectFolder :one
+UPDATE projects
+SET folder_id = $2, updated_at = now()
+WHERE id = $1 AND owner_id = $3
+RETURNING id, owner_id, name, cover_url, folder_id, created_at, updated_at;
+
+-- name: DeleteProject :execrows
+DELETE FROM projects
+WHERE id = $1 AND owner_id = $2;
+
+-- name: CreateProjectFolder :one
+INSERT INTO project_folders (owner_id, name)
+VALUES ($1, $2)
+RETURNING id, owner_id, name, created_at;
+
+-- name: ListProjectFoldersByOwner :many
+SELECT id, owner_id, name, created_at
+FROM project_folders
+WHERE owner_id = $1
+ORDER BY created_at DESC;
+
+-- name: DeleteProjectFolder :execrows
+DELETE FROM project_folders
+WHERE id = $1 AND owner_id = $2;
 
 -- name: GetCanvasSnapshot :one
 SELECT id, project_id, user_id, nodes, edges, groups, version, created_at
