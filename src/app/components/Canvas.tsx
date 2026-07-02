@@ -104,7 +104,9 @@ const FUTURE_NODE_OPTIONS = [
 ] as const;
 
 const GRID_SIZE = 24;
-const GUIDE_THRESHOLD = 5;
+/** Snap window in SCREEN pixels — divided by zoom before comparing flow
+ *  coords, so the grab distance feels identical at 37% and 200%. */
+const GUIDE_THRESHOLD_SCREEN = 8;
 
 /** Node types whose edges keep their own default handles instead of being
  *  routed to the flush `edge-source-right` / `edge-target-left` anchors (see
@@ -136,14 +138,25 @@ function getNodeBounds(node: Node) {
   };
 }
 
-function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; snapDx: number; snapDy: number } {
+function computeGuides(dragged: Node, others: Node[], threshold: number): {
+  guides: GuideLine[];
+  snapDx: number;
+  snapDy: number;
+  hasSnapX: boolean;
+  hasSnapY: boolean;
+} {
   const db = getNodeBounds(dragged);
   const guides: GuideLine[] = [];
 
-  let bestDistX = GUIDE_THRESHOLD;
-  let bestDistY = GUIDE_THRESHOLD;
+  // hasSnapX/Y must be tracked separately from the delta: a PERFECT alignment
+  // yields snapDx === 0, which the caller used to misread as "no snap" and
+  // then grid-round the node right off its alignment.
+  let bestDistX = threshold;
+  let bestDistY = threshold;
   let snapDx = 0;
   let snapDy = 0;
+  let hasSnapX = false;
+  let hasSnapY = false;
 
   const dragXAnchors = [db.left, db.cx, db.right];
   const dragYAnchors = [db.top, db.cy, db.bottom];
@@ -160,6 +173,7 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
         if (dist < bestDistX) {
           bestDistX = dist;
           snapDx = ox - dx;
+          hasSnapX = true;
         }
       }
     }
@@ -170,6 +184,7 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
         if (dist < bestDistY) {
           bestDistY = dist;
           snapDy = oy - dy;
+          hasSnapY = true;
         }
       }
     }
@@ -203,41 +218,42 @@ function computeGuides(dragged: Node, others: Node[]): { guides: GuideLine[]; sn
     }
   }
 
-  return { guides, snapDx, snapDy };
+  return { guides, snapDx, snapDy, hasSnapX, hasSnapY };
 }
 
 function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
   const { x, y, zoom } = useViewport();
   if (!guides.length) return null;
 
+  // Reference-style guides: fine white dashed line spanning both nodes with
+  // short perpendicular ticks at each end. All strokes/dashes/extents are
+  // divided by zoom so they render at a constant screen size.
+  const overshoot = 12 / zoom;
+  const tick = 4 / zoom;
+  const stroke = 'rgba(255,255,255,0.75)';
+  const width = 1 / zoom;
+  const dash = `${5 / zoom} ${4 / zoom}`;
+
   return (
     <svg className="pointer-events-none absolute inset-0 z-[5] h-full w-full overflow-visible">
       <g transform={`translate(${x},${y}) scale(${zoom})`}>
-        {guides.map((guide, index) =>
-          guide.orientation === 'v' ? (
-            <line
-              key={index}
-              x1={guide.pos}
-              y1={guide.from - 20}
-              x2={guide.pos}
-              y2={guide.to + 20}
-              stroke="#22d3ee"
-              strokeWidth={1 / zoom}
-              strokeDasharray={`${4 / zoom} ${3 / zoom}`}
-            />
+        {guides.map((guide, index) => {
+          const from = guide.from - overshoot;
+          const to = guide.to + overshoot;
+          return guide.orientation === 'v' ? (
+            <g key={index}>
+              <line x1={guide.pos} y1={from} x2={guide.pos} y2={to} stroke={stroke} strokeWidth={width} strokeDasharray={dash} />
+              <line x1={guide.pos - tick} y1={from} x2={guide.pos + tick} y2={from} stroke={stroke} strokeWidth={width} />
+              <line x1={guide.pos - tick} y1={to} x2={guide.pos + tick} y2={to} stroke={stroke} strokeWidth={width} />
+            </g>
           ) : (
-            <line
-              key={index}
-              x1={guide.from - 20}
-              y1={guide.pos}
-              x2={guide.to + 20}
-              y2={guide.pos}
-              stroke="#22d3ee"
-              strokeWidth={1 / zoom}
-              strokeDasharray={`${4 / zoom} ${3 / zoom}`}
-            />
-          ),
-        )}
+            <g key={index}>
+              <line x1={from} y1={guide.pos} x2={to} y2={guide.pos} stroke={stroke} strokeWidth={width} strokeDasharray={dash} />
+              <line x1={from} y1={guide.pos - tick} x2={from} y2={guide.pos + tick} stroke={stroke} strokeWidth={width} />
+              <line x1={to} y1={guide.pos - tick} x2={to} y2={guide.pos + tick} stroke={stroke} strokeWidth={width} />
+            </g>
+          );
+        })}
       </g>
     </svg>
   );
@@ -860,23 +876,51 @@ const InnerCanvas = () => {
       change.type === 'position' && 'position' in change && change.position != null,
     );
 
-    if (posChange?.dragging) {
-      const draggedNode = nodes.find((node) => node.id === posChange.id);
-      if (draggedNode) {
-        const virtual = { ...draggedNode, position: posChange.position };
-        const { guides: nextGuides, snapDx, snapDy } = computeGuides(virtual, nodes);
+    const draggedNode = posChange ? nodes.find((node) => node.id === posChange.id) : undefined;
+    if (posChange && draggedNode) {
+      // Snap window is defined in SCREEN pixels — at low zoom the old fixed
+      // flow-px threshold shrank to ~2 screen px and never engaged.
+      const zoom = viewportRef.current?.zoom || 1;
+      const threshold = GUIDE_THRESHOLD_SCREEN / zoom;
+      // In a multi-select drag the co-dragged nodes move too — aligning
+      // against them means chasing a moving target, so exclude them.
+      const isMultiDrag = Boolean(draggedNode.selected);
+      const others = nodes.filter((node) => node.id !== draggedNode.id && !(isMultiDrag && node.selected));
+      const virtual = { ...draggedNode, position: posChange.position };
+      const { guides: nextGuides, snapDx, snapDy, hasSnapX, hasSnapY } = computeGuides(virtual, others, threshold);
+
+      if (posChange.dragging) {
         // Skip the setState when nothing changed (empty→empty is the common
         // case) — a fresh [] every frame forced a second full re-render.
         setGuides((prev) => (prev.length === 0 && nextGuides.length === 0 ? prev : nextGuides));
-
-        const snapped = {
-          x: snapDx === 0 ? snapPosition(posChange.position).x : posChange.position.x + snapDx,
-          y: snapDy === 0 ? snapPosition(posChange.position).y : posChange.position.y + snapDy,
-        };
-
-        onNodesChange(changes.map((change) => (change === posChange ? { ...posChange, position: snapped } : change)));
-        return;
+      } else {
+        setGuides([]);
       }
+
+      // While dragging: neighbor alignment wins, otherwise move freely (the
+      // old per-frame grid rounding made motion chunky). On RELEASE: keep the
+      // alignment if one is engaged — the old code grid-rounded the final
+      // position, destroying the alignment the guides had just shown — and
+      // grid-snap only the unaligned axes.
+      const snapped = {
+        x: hasSnapX ? posChange.position.x + snapDx : (posChange.dragging ? posChange.position.x : snapPosition(posChange.position).x),
+        y: hasSnapY ? posChange.position.y + snapDy : (posChange.dragging ? posChange.position.y : snapPosition(posChange.position).y),
+      };
+      const deltaX = snapped.x - posChange.position.x;
+      const deltaY = snapped.y - posChange.position.y;
+
+      onNodesChange(
+        changes.map((change) => {
+          if (change === posChange) return { ...posChange, position: snapped };
+          // Co-dragged nodes receive the SAME delta so the formation holds
+          // instead of only the primary node jumping onto the guide.
+          if (change.type === 'position' && 'position' in change && change.position) {
+            return { ...change, position: { x: change.position.x + deltaX, y: change.position.y + deltaY } };
+          }
+          return change;
+        }),
+      );
+      return;
     }
 
     if (posChange && !posChange.dragging) {
