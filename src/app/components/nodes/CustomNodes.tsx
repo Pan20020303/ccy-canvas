@@ -2242,6 +2242,37 @@ const BaseNode = ({
   // gap between "loader spinning" and "the output is just sitting there",
   // so the user notices the new content. Fires only on the true→false edge.
   const shellRef = useRef<HTMLDivElement>(null);
+
+  // Tilted-card effect (React Bits "TiltedCard", dependency-free like our
+  // Magnet/Dock ports): while this node is the CONNECT TARGET of a wire drag,
+  // the shell tilts toward the cursor in 3D — tactile "drop it here" feedback.
+  // Window-level mousemove (React Flow's drag owns the pointer stream) scoped
+  // to the one node that is currently the target.
+  const [tilt, setTilt] = useState<{ rx: number; ry: number } | null>(null);
+  useEffect(() => {
+    if (!connectTarget) {
+      setTilt(null);
+      return;
+    }
+    const TILT_AMPLITUDE = 8; // degrees at the card edge — subtle, canvas-scale
+    const onMove = (event: MouseEvent) => {
+      const el = shellRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const offsetX = (event.clientX - rect.left) / rect.width - 0.5;
+      const offsetY = (event.clientY - rect.top) / rect.height - 0.5;
+      setTilt({
+        rx: -offsetY * 2 * TILT_AMPLITUDE,
+        ry: offsetX * 2 * TILT_AMPLITUDE,
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      setTilt(null);
+    };
+  }, [connectTarget]);
   const prevLoading = useRef(loading);
   useEffect(() => {
     if (prevLoading.current && !loading && shellRef.current) {
@@ -2298,7 +2329,17 @@ const BaseNode = ({
             selected && toneStyles.selected,
             connectTarget && 'node-connect-target',
           )}
-          style={shellBackground ? { background: shellBackground } : undefined}
+          style={{
+            ...(shellBackground ? { background: shellBackground } : null),
+            // TiltedCard: 3D tilt toward the cursor while a wire hovers this
+            // card as its drop target; springs back on leave/drop. The eased
+            // transform transition doubles as the spring smoothing.
+            ...(tilt
+              ? { transform: `perspective(800px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(1.02)` }
+              : null),
+            transition: 'transform 0.22s ease-out, box-shadow 0.15s ease',
+            willChange: connectTarget ? 'transform' : undefined,
+          }}
           >
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
