@@ -298,7 +298,7 @@ const InnerCanvas = () => {
   const directorStageNodeId = useStore((state) => state.directorStageNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
-  const { screenToFlowPosition, fitView, setCenter } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
   const viewport = useViewport();
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -1236,36 +1236,21 @@ const InnerCanvas = () => {
     return { img, vid, aud, txt, other };
   }, [nodes]);
 
-  /** Audio nodes projected for the top-center track strip: a stable pseudo-
-   *  waveform (deterministic per node id — no per-render randomness) plus the
-   *  jump target position. */
-  const audioStripNodes = useMemo(() => {
-    const hash = (s: string) => {
-      let h = 2166136261;
-      for (let i = 0; i < s.length; i += 1) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-      }
-      return h >>> 0;
-    };
-    return nodes
-      .filter((n) => /audio/i.test(String(n.type ?? '')))
-      .slice(0, 8) // keep the strip bounded
-      .map((n) => {
-        const data = (n.data ?? {}) as Record<string, unknown>;
-        const bars: number[] = [];
-        for (let i = 0; i < 22; i += 1) {
-          bars.push(4 + (hash(`${n.id}:${i}`) % 12));
-        }
-        return {
-          id: n.id,
-          x: n.position.x,
-          y: n.position.y,
-          name: (typeof data.sourceName === 'string' && data.sourceName) || (typeof data.customTitle === 'string' && data.customTitle) || (language === 'zh' ? '音频' : 'Audio'),
-          bars,
-        };
-      });
-  }, [nodes, language]);
+  /** Zoom ruler mapping — log scale between the canvas minZoom/maxZoom so the
+   *  10%→100% range doesn't get crushed into a corner of the track. */
+  const ZOOM_RULER = { min: 0.1, max: 4 } as const;
+  const zoomToRulerT = useCallback(
+    (z: number) => (Math.log(Math.min(ZOOM_RULER.max, Math.max(ZOOM_RULER.min, z))) - Math.log(ZOOM_RULER.min)) / (Math.log(ZOOM_RULER.max) - Math.log(ZOOM_RULER.min)),
+    [ZOOM_RULER.max, ZOOM_RULER.min],
+  );
+  const zoomRulerTrackRef = useRef<HTMLDivElement>(null);
+  const zoomRulerSeek = useCallback((clientX: number) => {
+    const rect = zoomRulerTrackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const z = Math.exp(Math.log(ZOOM_RULER.min) + t * (Math.log(ZOOM_RULER.max) - Math.log(ZOOM_RULER.min)));
+    zoomTo(z);
+  }, [ZOOM_RULER.max, ZOOM_RULER.min, zoomTo]);
 
   return (
     <div
@@ -1959,37 +1944,42 @@ const InnerCanvas = () => {
         {Math.round(viewport.zoom * 100)}%
       </div>
 
-      {/* Audio track strip (reference: the amber waveform bar next to the zoom
-          chip) — appears only when the canvas holds audio nodes. Each node is a
-          waveform segment; click jumps to it. Bars are deterministic per node
-          id so the strip is stable across renders. */}
-      {audioStripNodes.length > 0 ? (
-        <div className="absolute left-1/2 top-12 z-30 flex -translate-x-1/2 items-end gap-3 rounded-full border border-white/8 bg-black/40 px-3 py-1.5 shadow-lg backdrop-blur-xl">
-          {audioStripNodes.map((audio) => (
-            <button
-              key={audio.id}
-              type="button"
-              title={audio.name}
-              onClick={() => {
-                setCenter(audio.x + 150, audio.y + 100, { zoom: Math.max(viewport.zoom, 0.6), duration: 400 });
-                onNodesChange([
-                  ...nodes.filter((n) => n.selected && n.id !== audio.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
-                  { id: audio.id, type: 'select' as const, selected: true },
-                ]);
-              }}
-              className="group flex items-end gap-[2px] transition hover:opacity-80"
-            >
-              {audio.bars.map((h, i) => (
-                <span
-                  key={i}
-                  className="w-[2px] rounded-full bg-amber-300/70 transition-colors group-hover:bg-amber-200"
-                  style={{ height: h }}
-                />
-              ))}
-            </button>
+      {/* Zoom ruler (reference: the tick ruler under the % chip). Log-scale
+          track from 10% to 400%; the white cursor is the current zoom, the
+          amber tick marks 100%. Click / drag to zoom around the viewport
+          center; double-click snaps back to 100%. */}
+      <div
+        className="absolute left-1/2 top-12 z-30 flex h-7 -translate-x-1/2 cursor-ew-resize touch-none select-none items-center rounded-full border border-white/8 bg-black/40 px-3 shadow-lg backdrop-blur-xl"
+        title={language === 'zh' ? '缩放标尺 — 拖动调整，双击回到 100%' : 'Zoom ruler — drag to zoom, double-click for 100%'}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          zoomRulerSeek(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if ((event.buttons & 1) === 1) zoomRulerSeek(event.clientX);
+        }}
+        onDoubleClick={() => zoomTo(1, { duration: 200 })}
+      >
+        <div ref={zoomRulerTrackRef} className="relative h-full w-[220px]">
+          {Array.from({ length: 41 }, (_, i) => (
+            <span
+              key={i}
+              className={clsx('absolute top-1/2 w-px -translate-y-1/2 bg-white/25', i % 8 === 0 ? 'h-[11px] bg-white/40' : 'h-[6px]')}
+              style={{ left: `${(i / 40) * 100}%` }}
+            />
           ))}
+          {/* 100% anchor */}
+          <span
+            className="absolute top-1/2 h-[11px] w-px -translate-y-1/2 bg-amber-400/80"
+            style={{ left: `${zoomToRulerT(1) * 100}%` }}
+          />
+          {/* current zoom cursor */}
+          <span
+            className="absolute top-1/2 h-[15px] w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]"
+            style={{ left: `${zoomToRulerT(viewport.zoom) * 100}%` }}
+          />
         </div>
-      ) : null}
+      </div>
 
       {/* Canvas stats — node / edge / group counts, NeoWOW-style hairline
           pill in the bottom-right corner. Sits to the left of the Agent
