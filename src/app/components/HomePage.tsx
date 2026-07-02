@@ -30,8 +30,21 @@ import {
 } from '../api/projects';
 import { useAuth } from '../auth/AuthProvider';
 import { MediaThumb } from './MediaThumb';
+import BorderGlow from './reactbits/BorderGlow';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
+
+/** Shared BorderGlow tuning — cool silver light that fits the graphite theme. */
+const CARD_GLOW = {
+  edgeSensitivity: 25,
+  glowColor: '210 30 85',
+  borderRadius: 16,
+  glowRadius: 26,
+  glowIntensity: 0.9,
+  coneSpread: 22,
+  fillOpacity: 0.3,
+  colors: ['#e2e8f0', '#a5b4fc', '#7dd3fc'],
+} as const;
 
 /**
  * 首页 — 全部项目. Project creation / switching / management (rename, cover,
@@ -367,17 +380,19 @@ export function HomePage() {
         <div className="grid grid-cols-[repeat(auto-fill,minmax(236px,1fr))] gap-x-5 gap-y-8">
           {/* 开始创作 */}
           <div>
-            <button
-              type="button"
-              onClick={() => void startCreating()}
-              disabled={busyId !== null}
-              className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 rounded-2xl border border-white/[0.14] bg-gradient-to-b from-white/[0.07] to-white/[0.02] text-neutral-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] transition hover:border-white/30 hover:from-white/[0.1] hover:shadow-[0_18px_50px_-20px_rgba(255,255,255,0.12)] disabled:opacity-60"
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] transition group-hover:border-white/30 group-hover:bg-white/[0.12]">
-                <Plus className="h-4.5 w-4.5" />
-              </span>
-              <span className="text-[13px] tracking-wide">{zh ? '开始创作' : 'Start creating'}</span>
-            </button>
+            <BorderGlow {...CARD_GLOW} backgroundColor="#111216">
+              <button
+                type="button"
+                onClick={() => void startCreating()}
+                disabled={busyId !== null}
+                className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 bg-gradient-to-b from-white/[0.06] to-white/[0.015] text-neutral-200 transition hover:from-white/[0.09] disabled:opacity-60"
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] transition group-hover:border-white/30 group-hover:bg-white/[0.12]">
+                  <Plus className="h-4.5 w-4.5" />
+                </span>
+                <span className="text-[13px] tracking-wide">{zh ? '开始创作' : 'Start creating'}</span>
+              </button>
+            </BorderGlow>
             <div className="mt-3 px-0.5 text-[12.5px] text-neutral-500">
               {openFolder
                 ? (zh ? '在此文件夹中新建项目' : 'Create a project in this folder')
@@ -388,16 +403,18 @@ export function HomePage() {
           {/* 文件夹卡片（仅根层级） */}
           {!openFolder ? folders.map((folder) => (
             <div key={folder.id} className="group/folder">
-              <button
-                type="button"
-                onClick={() => setOpenFolderId(folder.id)}
-                className="group relative block aspect-[16/10] w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-gradient-to-b from-[#1b1d22] to-[#121316] transition hover:border-white/20 hover:shadow-[0_18px_50px_-24px_rgba(255,255,255,0.1)]"
-              >
-                {/* 文件夹页签造型 */}
-                <div className="absolute left-5 top-5 h-2.5 w-16 rounded-t-md bg-white/[0.09]" />
-                <div className="absolute inset-x-5 bottom-5 top-7 rounded-xl border border-white/[0.07] bg-gradient-to-b from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]" />
-                <Folder className="absolute bottom-8 right-8 h-7 w-7 text-neutral-600 transition group-hover:text-neutral-400" />
-              </button>
+              <BorderGlow {...CARD_GLOW} backgroundColor="#15161a">
+                <button
+                  type="button"
+                  onClick={() => setOpenFolderId(folder.id)}
+                  className="group relative block aspect-[16/10] w-full overflow-hidden bg-gradient-to-b from-[#1b1d22] to-[#121316] transition"
+                >
+                  {/* 文件夹页签造型 */}
+                  <div className="absolute left-5 top-5 h-2.5 w-16 rounded-t-md bg-white/[0.09]" />
+                  <div className="absolute inset-x-5 bottom-5 top-7 rounded-xl border border-white/[0.07] bg-gradient-to-b from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]" />
+                  <Folder className="absolute bottom-8 right-8 h-7 w-7 text-neutral-600 transition group-hover:text-neutral-400" />
+                </button>
+              </BorderGlow>
               <div className="mt-3 flex items-start justify-between gap-2 px-0.5">
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 truncate text-[13px] text-neutral-200">
@@ -425,16 +442,16 @@ export function HomePage() {
             const menuVisible = cardMenu?.projectId === project.id;
             return (
               <div key={project.id} className="group/card">
-                <div className="relative">
+                <BorderGlow
+                  {...CARD_GLOW}
+                  backgroundColor="#141519"
+                  className={isActive ? 'ring-1 ring-white/25' : ''}
+                >
                   <button
                     type="button"
                     onClick={() => void openProject(project.id)}
                     disabled={busyId !== null}
-                    className={`relative block aspect-[16/10] w-full overflow-hidden rounded-2xl border transition disabled:opacity-60 ${
-                      isActive
-                        ? 'border-white/25 shadow-[0_18px_50px_-20px_rgba(255,255,255,0.16)]'
-                        : 'border-white/[0.08] hover:border-white/20 hover:shadow-[0_18px_50px_-24px_rgba(255,255,255,0.1)]'
-                    }`}
+                    className="relative block aspect-[16/10] w-full overflow-hidden transition disabled:opacity-60"
                   >
                     {project.coverUrl ? (
                       <MediaThumb src={project.coverUrl} alt={project.name} className="h-full w-full object-cover" />
@@ -459,7 +476,7 @@ export function HomePage() {
                       </div>
                     ) : null}
                   </button>
-                </div>
+                </BorderGlow>
 
                 <div className="mt-3 flex items-start justify-between gap-2 px-0.5">
                   <div className="min-w-0">
