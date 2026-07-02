@@ -204,6 +204,9 @@ func (r *healthFakeRepo) ListGenerationAttemptsByLog(_ context.Context, _ string
 func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _ string, _ int32, _ bool) error {
 	panic("nope")
 }
+func (r *healthFakeRepo) SetGenerationLogResultURLs(context.Context, string, string) error {
+	panic("nope")
+}
 func (r *healthFakeRepo) MarkGenerationLogPersisting(context.Context, string, StagedAsset, int32) error {
 	panic("nope")
 }

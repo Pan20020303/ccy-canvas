@@ -62,6 +62,59 @@ func (q *Queries) InsertGenerationLogQueued(ctx context.Context, arg InsertGener
 	return i, err
 }
 
+// ─── Inline-path idempotent pending insert (P0-5) ─────────────────────
+
+const insertGenerationLogPendingIdempotent = `
+INSERT INTO generation_logs (
+    user_id, node_id, service_type, model, prompt, status,
+    result_url, error_msg, duration_ms, request_id
+)
+VALUES ($1, $2, $3, $4, $5, 'pending', '', '', 0, $6)
+ON CONFLICT (request_id) WHERE request_id IS NOT NULL DO NOTHING
+RETURNING id, user_id, node_id, service_type, model, status, created_at
+`
+
+// InsertGenerationLogPendingIdempotent is the inline-path twin of
+// InsertGenerationLogQueued: it records the client idempotency key on the
+// 'pending' row so a double-submitted inline generation dedupes exactly like a
+// queued one. Returns pgx.ErrNoRows when the request_id already has a row —
+// caller should fetch it via GetGenerationLogByRequestID and refund the
+// duplicate reserve.
+func (q *Queries) InsertGenerationLogPendingIdempotent(ctx context.Context, arg InsertGenerationLogQueuedParams) (InsertGenerationLogQueuedRow, error) {
+	row := q.db.QueryRow(ctx, insertGenerationLogPendingIdempotent,
+		arg.UserID, arg.NodeID, arg.ServiceType, arg.Model, arg.Prompt, arg.RequestID)
+	var i InsertGenerationLogQueuedRow
+	err := row.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Model, &i.Status, &i.CreatedAt)
+	return i, err
+}
+
+// ─── Multi-asset result list (migration 022) ──────────────────────────
+
+const setGenerationLogResultURLs = `
+UPDATE generation_logs SET result_urls = $2 WHERE id = $1
+`
+
+// SetGenerationLogResultURLs stores the full ordered result list (JSON-encoded
+// []string) for generations that produced more than one asset (wan2.7 组图 /
+// n>1). result_url keeps the first asset for single-value consumers. Requires
+// migration 022_generation_result_urls.sql.
+func (q *Queries) SetGenerationLogResultURLs(ctx context.Context, id pgtype.UUID, resultURLs string) error {
+	_, err := q.db.Exec(ctx, setGenerationLogResultURLs, id, resultURLs)
+	return err
+}
+
+const getGenerationLogResultURLs = `
+SELECT COALESCE(result_urls, '') FROM generation_logs WHERE id = $1
+`
+
+// GetGenerationLogResultURLs returns the JSON-encoded result list ('' when the
+// generation produced a single asset).
+func (q *Queries) GetGenerationLogResultURLs(ctx context.Context, id pgtype.UUID) (string, error) {
+	var urls string
+	err := q.db.QueryRow(ctx, getGenerationLogResultURLs, id).Scan(&urls)
+	return urls, err
+}
+
 // ─── Idempotency lookup ───────────────────────────────────────────────
 
 const getGenerationLogByRequestID = `

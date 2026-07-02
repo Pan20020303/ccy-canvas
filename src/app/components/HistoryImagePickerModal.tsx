@@ -8,8 +8,8 @@ import {
   groupHistoryByDate,
   type HistoryAssetsTab,
 } from "../history-assets";
-import type { HistoryItem } from "../store";
-import { toRenderableMediaUrl } from "../reference-media";
+import { useStore, type HistoryItem } from "../store";
+import { MediaThumb } from "./MediaThumb";
 
 const MEDIA_TABS: HistoryAssetsTab[] = ["image", "video", "audio"];
 
@@ -33,6 +33,7 @@ export function HistoryImagePickerModal({
   onConfirm: (selectedItems: HistoryItem[]) => void;
 }) {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+  const removeHistoryItems = useStore((s) => s.removeHistoryItems);
   const [activeTab, setActiveTab] = useState<HistoryAssetsTab>("image");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -156,11 +157,12 @@ export function HistoryImagePickerModal({
                               } disabled:cursor-not-allowed disabled:opacity-50`}
                             >
                               <div className="relative aspect-[3/4] overflow-hidden bg-black/30">
-                                {assetUrl ? (
-                                  <img src={toRenderableMediaUrl(assetUrl)} alt={item.title} className="h-full w-full object-cover" />
-                                ) : (
-                                  <div className="flex h-full items-center justify-center text-sm text-neutral-600">No Preview</div>
-                                )}
+                                <MediaThumb
+                                  src={assetUrl}
+                                  alt={item.title}
+                                  className="h-full w-full object-cover"
+                                  onDead={item.mediaType === "image" ? () => removeHistoryItems([item.id]) : undefined}
+                                />
                                 <div className="absolute left-3 top-3 rounded-md border border-white/15 bg-black/45 p-0.5 text-neutral-100 backdrop-blur">
                                   {selected ? <Check className="h-4 w-4" /> : <div className="h-4 w-4" />}
                                 </div>

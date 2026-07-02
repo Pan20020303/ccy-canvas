@@ -171,6 +171,8 @@ func main() {
 	workspacehttp.RegisterUploadRoutes(router, sessionManager)
 	// User-scoped generation-history persistence (formerly localStorage-only).
 	workspacehttp.RegisterHistoryRoutes(router, sessionManager, queries)
+	// User-scoped asset-library persistence (formerly localStorage-only).
+	workspacehttp.RegisterAssetRoutes(router, sessionManager, queries)
 	fileServer := http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads")))
 	router.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000")

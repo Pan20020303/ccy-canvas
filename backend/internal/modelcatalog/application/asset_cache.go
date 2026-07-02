@@ -77,29 +77,60 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 		return StagedAsset{StagingURL: remoteURL}, nil
 	}
 
-	dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, trimmed, nil)
-	if err != nil {
-		return StagedAsset{StagingURL: remoteURL}, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasAssetCache/1.0)")
-	req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+	// Download with retry (P0-3). This GET is idempotent, so retrying is safe —
+	// unlike the paid submit POSTs. The COS/provider pipeline intermittently
+	// drops connections (EOF), and a single-shot download turned each blip into
+	// a permanently un-rehosted (expiring) asset. 4xx is NOT retried: an
+	// auth/404 failure won't heal.
+	var resp *http.Response
+	var lastErr error
 	attachedBearer := false
-	if auth.shouldAttachBearer(trimmed) {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(auth.bearerToken))
-		attachedBearer = true
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return StagedAsset{StagingURL: remoteURL}, ctx.Err()
+			case <-time.After(time.Duration(attempt-1) * time.Second):
+			}
+		}
+		dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		req, rerr := http.NewRequestWithContext(dlCtx, http.MethodGet, trimmed, nil)
+		if rerr != nil {
+			cancel()
+			return StagedAsset{StagingURL: remoteURL}, rerr
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasAssetCache/1.0)")
+		req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+		if auth.shouldAttachBearer(trimmed) {
+			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(auth.bearerToken))
+			attachedBearer = true
+		}
+		r, derr := assetCacheHTTPClient.Do(req)
+		if derr != nil {
+			cancel()
+			lastErr = derr
+			continue // network-level failure (EOF/reset/timeout) — retry
+		}
+		if r.StatusCode >= 500 {
+			r.Body.Close()
+			cancel()
+			lastErr = fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), r.StatusCode, attachedBearer)
+			continue // server-side blip — retry
+		}
+		if r.StatusCode < 200 || r.StatusCode >= 300 {
+			r.Body.Close()
+			cancel()
+			return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), r.StatusCode, attachedBearer)
+		}
+		resp = r
+		// cancel deliberately deferred until the body is consumed below.
+		defer cancel()
+		break
 	}
-	resp, err := assetCacheHTTPClient.Do(req)
-	if err != nil {
-		return StagedAsset{StagingURL: remoteURL}, err
+	if resp == nil {
+		return StagedAsset{StagingURL: remoteURL}, lastErr
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), resp.StatusCode, attachedBearer)
-	}
 
 	ext := extensionFor(trimmed, resp.Header.Get("Content-Type"))
 	contentType := resp.Header.Get("Content-Type")
@@ -343,6 +374,15 @@ func extensionFor(urlStr, contentType string) string {
 	return ".bin"
 }
 
+// assetCacheHTTPClient mirrors the provider-client hardening (P0-3): the COS /
+// provider result hosts intermittently kill kept-alive connections mid-read
+// (the #16/#17/#18 EOF class), so keep-alives are disabled — every staging
+// download gets a fresh connection.
 var assetCacheHTTPClient = &http.Client{
 	Timeout: 70 * time.Second,
+	Transport: func() http.RoundTripper {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.DisableKeepAlives = true
+		return t
+	}(),
 }

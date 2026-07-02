@@ -7,6 +7,9 @@ export type TaskItem = {
   model: string;
   status: "pending" | "success" | "error" | string;
   result_url: string;
+  /** All asset URLs when one generation yields several (wan2.7 组图 / n>1);
+   *  result_url === result_urls[0]. Absent for single-asset results. */
+  result_urls?: string[];
   error_msg: string;
   duration_ms: number;
   created_at: string;

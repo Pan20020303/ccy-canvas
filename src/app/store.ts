@@ -20,6 +20,7 @@ import { generate as apiGenerate } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
+import { saveAssetToServer, deleteAssetsFromServer, listAssetsFromServer } from './api/assets';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
@@ -290,6 +291,7 @@ type AppState = {
   savedAssets: SavedAsset[];
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
+  hydrateAssets: () => void;
   saveAssetDialogNodeId: string | null;
   /** Which directorStageNode currently has its full-screen overlay open.
    *  null = closed. The overlay component reads this and renders accordingly. */
@@ -646,6 +648,74 @@ function normalizeTaskStatus(status: string): 'active' | 'success' | 'error' | '
   return 'unknown';
 }
 
+/** True for remote media URLs that look SIGNED/EXPIRING (provider result
+ *  buckets like DashScope OSS attach Expires/signature query params). Our own
+ *  durable URLs are either relative /uploads paths or query-less COS public
+ *  objects, so they don't match — this is the trigger for the second-chance
+ *  client-side re-host on the SSE/poller delivery path (P0-8). */
+function isLikelyExpiringMediaUrl(url: string): boolean {
+  if (!/^https?:\/\//i.test(url)) return false;
+  return /[?&](Expires|expires|X-Amz-Expires|x-oss-expires|OSSAccessKeyId|Signature|signature|sign|token|st)=/.test(url);
+}
+
+/** Second-chance durability for queued/SSE results: the backend normally
+ *  re-hosts to COS before publishing, but when its staging failed the event
+ *  carries a short-lived provider URL. Re-host it client-side and swap the
+ *  node's url in place — guarded so a stale swap can't clobber a newer run. */
+function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (!isLikelyExpiringMediaUrl(appliedUrl)) return;
+  void rehostToStableUrl(appliedUrl).then((stable) => {
+    if (!stable || stable === appliedUrl) return;
+    setStore((state) => {
+      const nodes = state.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const data = (node.data ?? {}) as Record<string, unknown>;
+        if (data.url !== appliedUrl) return node; // superseded — leave it
+        return { ...node, data: { ...data, url: stable, output: stable } };
+      });
+      const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+      return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+    });
+  }).catch(() => {});
+}
+
+/** Fan the extra assets of a multi-image generation (wan2.7 组图 / n>1) out as
+ *  sibling image nodes in a grid beside the source node. Ids are deterministic
+ *  per (taskId, index) so a double delivery (SSE + poller race) can't create
+ *  duplicates. Returns only the nodes that don't already exist. */
+function buildExtraImageNodes(sourceNode: Node | undefined, existing: Node[], urls: string[], taskId: string): Node[] {
+  if (!urls || urls.length <= 1) return [];
+  const baseX = (sourceNode?.position.x ?? 200) + 380;
+  const baseY = sourceNode?.position.y ?? 200;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(urls.length - 1)));
+  const existingIds = new Set(existing.map((n) => n.id));
+  const extras: Node[] = [];
+  for (let i = 1; i < urls.length; i += 1) {
+    const url = (urls[i] ?? '').trim();
+    if (!url) continue;
+    const id = `node-multi-${taskId}-${i}`;
+    if (existingIds.has(id)) continue;
+    const slot = i - 1;
+    extras.push({
+      id,
+      type: 'imageNode',
+      position: {
+        x: baseX + (slot % cols) * 340,
+        y: baseY + Math.floor(slot / cols) * 320,
+      },
+      data: {
+        url,
+        output: url,
+        originalUrl: url,
+        status: 'done',
+        sourceKind: 'generated',
+        sourceName: `组图 ${i + 1}/${urls.length}`,
+      },
+    } as Node);
+  }
+  return extras;
+}
+
 /** Apply a task lookup result back onto its node. Called from the poller
  *  for each non-pending row the backend returns. */
 function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
@@ -813,14 +883,26 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         },
       };
     });
-    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    // Multi-image generations (wan2.7 组图 / n>1): the node keeps the first
+    // asset; the rest fan out as sibling image nodes in a grid. Deterministic
+    // ids make a double delivery (SSE + poller) idempotent.
+    const withExtras = normalizedStatus === 'success' && task.service_type === 'image' && (task.result_urls?.length ?? 0) > 1
+      ? [...nodes, ...buildExtraImageNodes(nodes.find((n) => n.id === task.node_id), nodes, task.result_urls as string[], task.id)]
+      : nodes;
+    const projectStateById = syncActiveProjectState(state, { nodes: withExtras }).projectStateById;
     return {
       activeRun: state.activeRun?.nodeId === task.node_id ? null : state.activeRun,
-      nodes,
+      nodes: withExtras,
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   });
+  // P0-8 second chance: if the delivered URL looks signed/expiring (backend
+  // re-host failed and published the provider URL), re-host client-side.
+  if (normalizedStatus === 'success' && task.result_url
+    && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
+    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore);
+  }
   trackedTaskNodes.delete(task.node_id);
 }
 
@@ -935,6 +1017,7 @@ type TaskEventPayload = {
   service_type: string;
   status: string;
   result_url: string;
+  result_urls?: string[];
   error_msg: string;
   duration_ms: number;
 };
@@ -952,6 +1035,7 @@ function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState,
       model: '',
       status: event.status,
       result_url: event.result_url,
+      result_urls: event.result_urls,
       error_msg: event.error_msg,
       duration_ms: event.duration_ms,
       created_at: '',
@@ -1440,48 +1524,80 @@ function findReferenceProviderForRequest(
   return preferredProvider ?? matchingProviders[0] ?? null;
 }
 
+function extensionForBlobType(type: string): string {
+  return type.startsWith('image/png')
+    ? 'png'
+    : type.startsWith('image/webp')
+      ? 'webp'
+      : type.startsWith('image/jpeg')
+        ? 'jpg'
+        : type.startsWith('image/gif')
+          ? 'gif'
+          : type.startsWith('video/mp4')
+            ? 'mp4'
+            : type.startsWith('audio/')
+              ? (type.includes('mpeg') ? 'mp3' : 'audio')
+              : 'bin';
+}
+
+/**
+ * Re-host a transient/expiring media URL into a stable backend-hosted URL so it
+ * survives a page reload, localStorage heavy-stripping, and provider-side
+ * expiry. `data:` / `blob:` / remote `http(s)` are fetched (remote via the
+ * backend proxy to dodge CORS/referer) and re-uploaded via uploadFile; relative
+ * `/uploads` and other same-origin URLs are already durable and pass through.
+ *
+ * Retries once on a transient failure. On FINAL failure it returns the original
+ * URL and logs loudly (no longer a silent fallback) — the dead-media cleanup
+ * (client onError → auto-delete) is the backstop for anything that still 404s.
+ */
+export async function rehostToStableUrl(url: string): Promise<string> {
+  if (!url) return url;
+  const isData = url.startsWith('data:');
+  const isBlob = url.startsWith('blob:');
+  const isRemoteHttp = /^https?:\/\//.test(url);
+  // Already durable (relative /uploads, same-origin path): nothing to do.
+  if (!isData && !isBlob && !isRemoteHttp) return url;
+
+  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const fetchURL = isRemoteHttp
+    ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(url)}`
+    : url;
+
+  const attempt = async (): Promise<string> => {
+    const response = await fetch(fetchURL, { credentials: isRemoteHttp ? 'include' : 'same-origin' });
+    if (!response.ok) throw new Error(`fetch failed: ${response.status}`);
+    const blob = await response.blob();
+    const uploaded = await uploadFile(blob, `asset-${Date.now()}.${extensionForBlobType(blob.type)}`);
+    return uploaded.url;
+  };
+
+  try {
+    return await attempt();
+  } catch {
+    try {
+      return await attempt(); // one retry for a transient network/proxy blip
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[rehostToStableUrl] re-host failed after retry; keeping original URL (cleanup will prune if dead)', err);
+      return url;
+    }
+  }
+}
+
 async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string> {
   if (result.type !== 'url') {
     return result.content;
   }
-
-  const isPersistableRemoteAsset = result.content.startsWith('data:') || /^https?:\/\//.test(result.content);
-  if (!isPersistableRemoteAsset) {
-    return result.content;
-  }
-
-  // For remote http(s) URLs, route through the backend proxy. A direct
-  // browser fetch often fails on third-party provider hosts due to CORS /
-  // referer / mixed-content rules, which would leave the node with an
-  // unrenderable remote URL. The proxy strips those constraints and gives
-  // us a same-origin blob we can re-upload as a stable /uploads/ asset.
-  const isRemoteHttp = /^https?:\/\//.test(result.content);
-  const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
-  const fetchURL = isRemoteHttp
-    ? `${apiBase}/api/app/proxy-media?url=${encodeURIComponent(result.content)}`
-    : result.content;
-
-  try {
-    const response = await fetch(fetchURL, { credentials: isRemoteHttp ? 'include' : 'same-origin' });
-    if (!response.ok) throw new Error(`fetch failed: ${response.status}`);
-    const blob = await response.blob();
-    const extension = blob.type.startsWith('image/png')
-      ? 'png'
-      : blob.type.startsWith('image/webp')
-        ? 'webp'
-        : blob.type.startsWith('image/jpeg')
-          ? 'jpg'
-          : blob.type.startsWith('video/mp4')
-            ? 'mp4'
-            : 'bin';
-    const uploaded = await uploadFile(blob, `generated-${Date.now()}.${extension}`);
-    return uploaded.url;
-  } catch (proxyErr) {
-    // eslint-disable-next-line no-console
-    console.warn('[persistGeneratedMediaUrl] proxy/upload failed — falling back to original URL', proxyErr);
-    return result.content;
-  }
+  return rehostToStableUrl(result.content);
 }
+
+// Client ids currently being deleted server-side. hydrateAssets filters these
+// out so a delete-then-reopen race can't resurrect a just-removed asset before
+// the DELETE commits. Cleared once the DELETE settles (server no longer has it).
+const pendingAssetDeletes = new Set<string>();
+// Backfill of local-only assets to the server runs once per session.
+let assetsBackfilledThisSession = false;
 
 export const useStore = create<AppState>()(persist((set, get) => ({
   language: 'zh',
@@ -2291,10 +2407,53 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       createdAt: Date.now(),
       ...asset,
     };
-    set((state) => ({ savedAssets: [created, ...stripHeavyFromSavedAssets(state.savedAssets)] }));
+    // Prepend to the LIVE list without heavy-stripping siblings — stripping is a
+    // persist-only concern (partialize). Blanking a sibling's in-memory data:/blob:
+    // url here would make its tile render empty and trip the auto-clean cascade.
+    set((state) => ({ savedAssets: [created, ...state.savedAssets] }));
+    // Persist to the backend (best-effort) so the library survives a localStorage
+    // wipe and follows the user across devices. Local-first: never blocks UI.
+    void saveAssetToServer(created).catch(() => {});
     return created;
   },
-  removeAsset: (id) => set((state) => ({ savedAssets: stripHeavyFromSavedAssets(state.savedAssets).filter((asset) => asset.id !== id) })),
+  removeAsset: (id) => {
+    pendingAssetDeletes.add(id);
+    void deleteAssetsFromServer([id]).catch(() => {}).finally(() => pendingAssetDeletes.delete(id));
+    // Only filter out the target — never heavy-strip surviving rows (see saveAsset).
+    set((state) => ({ savedAssets: state.savedAssets.filter((asset) => asset.id !== id) }));
+  },
+  hydrateAssets: async () => {
+    let remote: SavedAsset[];
+    try {
+      remote = await listAssetsFromServer();
+    } catch {
+      return; // best-effort; keep whatever is local
+    }
+    set((state) => {
+      // Merge server assets with any local-only ones, newest-first, dedup by id.
+      // Skip ids with an in-flight DELETE so a racing hydrate can't resurrect a
+      // just-removed asset.
+      const byId = new Map<string, SavedAsset>();
+      for (const it of remote) if (!pendingAssetDeletes.has(it.id)) byId.set(it.id, it);
+      for (const it of state.savedAssets) if (!byId.has(it.id)) byId.set(it.id, it);
+      const savedAssets = Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
+      // One-time (per session) backfill: push local-only assets with DURABLE media
+      // up to the server so pre-existing local libraries land in the DB. Skip
+      // empty / blob: (dead) and data: (heavy inline — would bloat the TEXT column;
+      // it was never re-hosted) urls. Idempotent via the (user_id, client_id) upsert.
+      if (!assetsBackfilledThisSession) {
+        assetsBackfilledThisSession = true;
+        const serverIds = new Set(remote.map((it) => it.id));
+        for (const it of savedAssets) {
+          if (serverIds.has(it.id)) continue;
+          const media = it.url || it.thumbnail || '';
+          if (!media || media.startsWith('blob:') || media.startsWith('data:')) continue;
+          void saveAssetToServer(it).catch(() => {});
+        }
+      }
+      return { savedAssets };
+    });
+  },
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
   closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
@@ -2810,7 +2969,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         // rides along to a sibling that doesn't support it. audio_setting only
         // for templates that expose it (video-edit); seed only for supportsSeed.
         audio_setting: serviceType === 'video' && activeTemplate?.audioSettingOptions?.length ? genParams?.audioSetting : undefined,
-        seed: serviceType === 'video' && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
+        seed: (serviceType === 'video' || serviceType === 'image') && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
+        // wan2.7 组图 (grid) mode → the backend sets enable_sequential so one
+        // request yields up to 12 images. Gated to the image 组图 tab.
+        enable_sequential: serviceType === 'image' && genParams?.referenceVariant === 'wan-group' ? true : undefined,
       }, aborter.signal);
 
       if (!isCurrentRun()) return;
@@ -2937,10 +3099,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             },
           };
         });
-        const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
+        // Multi-image sync result (wan2.7 组图 / n>1): fan the extra assets out
+        // as sibling image nodes (same behavior as the SSE/poller path).
+        const withExtras = serviceType === 'image' && (result.content_list?.length ?? 0) > 1
+          ? [...nodes, ...buildExtraImageNodes(nodes.find((n) => n.id === nodeId), nodes, result.content_list as string[], result.task_id ?? nodeId)]
+          : nodes;
+        const projectStateById = syncActiveProjectState(snapshot, { nodes: withExtras }).projectStateById;
         return {
           activeRun: null,
-          nodes,
+          nodes: withExtras,
           projectStateById,
           ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
         };

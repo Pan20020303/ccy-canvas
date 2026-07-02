@@ -103,6 +103,10 @@ type Repository interface {
 	// Generation log lifecycle — needed by the detached task runner so the
 	// goroutine can write its own outcome even after the client has hung up.
 	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32, cacheHit bool) error
+	// SetGenerationLogResultURLs stores the full ordered result list
+	// (JSON-encoded []string) when one generation yields multiple assets
+	// (wan2.7 组图 / n>1). Requires migration 022.
+	SetGenerationLogResultURLs(ctx context.Context, logID, resultURLsJSON string) error
 	MarkGenerationLogPersisting(ctx context.Context, logID string, staged StagedAsset, durationMs int32) error
 	MarkGenerationLogAssetReady(ctx context.Context, logID, cosURL string, durationMs int32) error
 	MarkGenerationLogAssetFailed(ctx context.Context, logID, status, errMsg string) error
@@ -247,14 +251,27 @@ func (s *Service) ReserveCredits(ctx context.Context, userID string, amount int3
 	return s.credits.Reserve(ctx, userID, amount, reason)
 }
 
-// RefundCredits returns amount after a terminal failure. Best-effort.
+// RefundCredits returns amount after a terminal failure. Money-adjacent, so
+// it is deliberately NOT single-shot: it retries a few times on its own
+// background context (the caller's ctx is often already cancelled — a client
+// hang-up must never eat a refund). A refund that still fails after all
+// attempts is logged loudly as an invariant breach for manual reconciliation.
 func (s *Service) RefundCredits(ctx context.Context, userID string, amount int32, reason string) {
 	if s.credits == nil || amount <= 0 || userID == "" {
 		return
 	}
-	if err := s.credits.Refund(ctx, userID, amount, reason); err != nil {
-		log.Printf("[credits] refund failed for user %s amount %d: %v", userID, amount, err)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = s.credits.Refund(rctx, userID, amount, reason)
+		cancel()
+		if lastErr == nil {
+			return
+		}
+		log.Printf("[credits] refund attempt %d/3 failed for user %s amount %d (%s): %v", attempt, userID, amount, reason, lastErr)
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 	}
+	log.Printf("[credits] INVARIANT BREACH: refund LOST after 3 attempts — user %s amount %d reason %q: %v (manual reconciliation required)", userID, amount, reason, lastErr)
 }
 
 // NewService creates a new model catalog Service.
@@ -947,6 +964,12 @@ type GenerateRequest struct {
 	// Seed is the optional random seed [0, 2147483647] for reproducible video
 	// generation. nil → the provider picks a random seed.
 	Seed *int
+	// EnableSequential turns on wan2.7 组图 (grid) mode — one request yields up
+	// to 12 images. Image models only; nil/false → single-image modes.
+	EnableSequential *bool
+	// ThinkingMode toggles wan2.7 文生图 thinking mode (upstream default true).
+	// Only takes effect for text-to-image (no reference image, non-group).
+	ThinkingMode *bool
 	// GenerationLogID is the parent row in generation_logs (when the caller
 	// pre-creates the log before invoking Generate). Used to link each
 	// per-attempt row in generation_attempts back to the request. Empty
@@ -975,7 +998,11 @@ type GenerateRequest struct {
 // GenerateResult carries the generation result.
 type GenerateResult struct {
 	Type    string `json:"type"`    // "text" or "url"
-	Content string `json:"content"` // text content or image URL
+	Content string `json:"content"` // text content or image URL (first, for back-compat)
+	// ContentList carries ALL result URLs when a single generation yields
+	// multiple assets (e.g. wan2.7 组图 / n>1). Content == ContentList[0]. Empty
+	// for single-asset results; consumers should fall back to Content.
+	ContentList []string `json:"content_list,omitempty"`
 }
 
 // candidateChannel is a provider that matched the request's (service_type,
@@ -1155,17 +1182,65 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 		return out, nil
 	}
 
+	// Multi-asset results (wan2.7 组图 / n>1): re-host EVERY asset, not just the
+	// first — provider URLs expire in ~24h, so any entry left un-rehosted rots.
+	// Each entry is best-effort (a failed entry keeps its upstream URL and is
+	// logged); the mark-persisting/queue machinery below stays single-asset and
+	// applies to the primary entry via the shared single-asset path.
+	if len(result.ContentList) > 1 {
+		for i, raw := range result.ContentList {
+			u := strings.TrimSpace(raw)
+			if u == "" {
+				continue
+			}
+			staged, err := StageRemoteAssetWithProviderAuth(ctx, u, c.baseURL, c.apiKey)
+			if err != nil {
+				out.cacheHit = false
+				log.Printf("[modelcatalog] WARNING asset staging failed for log %s entry %d/%d; keeping temporary upstream URL: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
+				continue
+			}
+			if staged.LocalPath == "" {
+				result.ContentList[i] = staged.StagingURL
+				continue
+			}
+			cachedURL, perr := PromoteStagedAssetToStore(ctx, staged)
+			if perr != nil {
+				out.cacheHit = false
+				result.ContentList[i] = staged.StagingURL
+				log.Printf("[modelcatalog] WARNING COS promotion failed for log %s entry %d/%d; serving staged copy: %v", req.GenerationLogID, i+1, len(result.ContentList), perr)
+				continue
+			}
+			result.ContentList[i] = cachedURL
+		}
+		// Keep Content in lockstep with the (possibly re-hosted) first entry so
+		// single-value consumers never see a URL the list no longer contains.
+		result.Content = result.ContentList[0]
+		if !out.cacheHit {
+			s.markGenerationAssetTemporary(req.GenerationLogID, nil)
+		}
+		return out, nil
+	}
+	// Single-asset result: drop any 1-element ContentList so it can't drift out
+	// of sync with Content when the single-asset path below rewrites it.
+	result.ContentList = nil
+
 	originalURL := strings.TrimSpace(result.Content)
 	staged, err := StageRemoteAssetWithProviderAuth(ctx, originalURL, c.baseURL, c.apiKey)
 	if err != nil {
 		out.cacheHit = false
 		log.Printf("[modelcatalog] WARNING asset staging failed for log %s; keeping temporary upstream URL: %v", req.GenerationLogID, err)
+		// P0-6: don't fail the generation, but make the degradation OBSERVABLE —
+		// asset_status='temporary_url' marks rows whose media will expire so
+		// they can be counted/alerted on instead of rotting silently. The
+		// frontend's expiring-URL second-chance re-host is the recovery path.
+		s.markGenerationAssetTemporary(req.GenerationLogID, err)
 		return out, nil
 	}
 	if staged.LocalPath == "" {
 		if staged.StagingURL == originalURL && isTemporaryGeneratedAssetURL(originalURL) {
 			out.cacheHit = false
 			log.Printf("[modelcatalog] WARNING generated media for log %s stayed on a temporary upstream URL", req.GenerationLogID)
+			s.markGenerationAssetTemporary(req.GenerationLogID, nil)
 			return out, nil
 		}
 		result.Content = staged.StagingURL
@@ -1207,6 +1282,26 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	}
 	log.Printf("[modelcatalog] asset staged for log %s but COS promotion failed; queued background persist: %v", req.GenerationLogID, err)
 	return out, nil
+}
+
+// markGenerationAssetTemporary flags a log row whose delivered media is still
+// on an expiring upstream URL (staging failed / never re-hosted). asset_status
+// 'temporary_url' deliberately does NOT flip the row's success status — the
+// generation itself succeeded — it exists so the degradation is countable and
+// alertable instead of silent (P0-6).
+func (s *Service) markGenerationAssetTemporary(logID string, cause error) {
+	if s.repo == nil || logID == "" {
+		return
+	}
+	msg := ""
+	if cause != nil {
+		msg = cause.Error()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.repo.MarkGenerationLogAssetFailed(ctx, logID, "temporary_url", msg); err != nil {
+		log.Printf("[modelcatalog] WARNING could not mark temporary_url asset status for log %s: %v", logID, err)
+	}
 }
 
 func isTemporaryGeneratedAssetURL(rawURL string) bool {
@@ -1550,6 +1645,16 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 	for attempt := 1; attempt <= 2; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		writeErr = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()), cacheHit)
+		if writeErr == nil && result != nil && len(result.ContentList) > 1 {
+			// Multi-asset result (wan2.7 组图 / n>1): persist the FULL ordered
+			// list so recovery paths don't silently truncate to one image.
+			// Best-effort on top of the durable single-value write.
+			if encoded, jerr := json.Marshal(result.ContentList); jerr == nil {
+				if uerr := s.repo.SetGenerationLogResultURLs(ctx, logID, string(encoded)); uerr != nil {
+					log.Printf("[modelcatalog] WARNING result_urls write failed for log %s (result_url still saved): %v", logID, uerr)
+				}
+			}
+		}
 		if s.cache != nil {
 			s.cache.Delete(ctx, generationTaskCacheKey(logID))
 		}
@@ -1576,11 +1681,15 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 	status := "success"
 	errMsg := ""
 	resultURL := ""
+	var resultURLs []string
 	if err != nil {
 		status = "error"
 		errMsg = err.Error()
 	} else if result != nil {
 		resultURL = result.Content
+		if len(result.ContentList) > 1 {
+			resultURLs = result.ContentList
+		}
 	}
 	if forcedStatus != "" {
 		status = forcedStatus
@@ -1591,6 +1700,7 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 		ServiceType: req.ServiceType,
 		Status:      status,
 		ResultURL:   resultURL,
+		ResultURLs:  resultURLs,
 		ErrorMsg:    errMsg,
 		DurationMs:  int(duration.Milliseconds()),
 	})
@@ -1701,6 +1811,16 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "ark" {
 		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
+	// wan2.7 (万相2.7) image models use DashScope's multimodal image API
+	// (input.messages.content, multi-image output). Routed purely by MODEL NAME —
+	// `wan2.7-image*` is a DashScope-specific model, so it works regardless of how
+	// the provider row's api_spec/adapter is set (dashscope vs custom vs
+	// openai-compatible), as long as the base URL points at the DashScope host.
+	// The submit endpoint is fixed in the builder, so the row's endpoint fields
+	// are ignored for wan2.7.
+	if isWan27Image(req.Model) {
+		return s.generateImageDashScope(ctx, pc, baseURL, apiKey, req)
+	}
 	schema := providerImageParameterSchema(pc, req.Model)
 	if len(req.ReferenceImages) > 0 && ResolveProfile(pc).ID == "custom" && !isChatCompletionsReferenceImageSchema(schema) {
 		editPath := strings.ToLower(strings.TrimSpace(resolveImageEditPath(pc)))
@@ -1773,7 +1893,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -1928,7 +2048,25 @@ func newProviderHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// doProviderRequestWithRetry retries with the broad network predicate —
+// appropriate for IDEMPOTENT requests (GET polls, text) where a duplicate
+// send costs nothing.
 func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	return doProviderRequestWithRetryPolicy(ctx, client, req, body, isRetryableProviderNetworkError)
+}
+
+// doProviderSubmitWithRetry is the retry wrapper for PAID, NON-IDEMPOTENT
+// generation submits (image/video/audio). It only retries failures that
+// provably happened BEFORE the upstream could have accepted the request
+// (dial / connection-refused / TLS handshake). A mid-flight EOF or reset
+// after the body was sent is NOT retried: the provider may have already
+// accepted and billed the generation, so a resend would produce a duplicate
+// paid result (P0-4). Same rationale as IsRequestDeadlineTimeout.
+func doProviderSubmitWithRetry(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	return doProviderRequestWithRetryPolicy(ctx, client, req, body, isRetryablePreSubmitNetworkError)
+}
+
+func doProviderRequestWithRetryPolicy(ctx context.Context, client *http.Client, req *http.Request, body []byte, retryable func(error) bool) (*http.Response, error) {
 	var lastErr error
 	for attempt := 1; attempt <= providerRequestMaxAttempts; attempt++ {
 		clone := req.Clone(ctx)
@@ -1942,7 +2080,7 @@ func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *h
 			return resp, nil
 		}
 		lastErr = err
-		if attempt == providerRequestMaxAttempts || !isRetryableProviderNetworkError(err) {
+		if attempt == providerRequestMaxAttempts || !retryable(err) {
 			break
 		}
 		if closer, ok := client.Transport.(interface{ CloseIdleConnections() }); ok {
@@ -1981,6 +2119,29 @@ func IsRequestDeadlineTimeout(err error) bool {
 	return strings.Contains(msg, "client.timeout exceeded") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "awaiting headers")
+}
+
+// isRetryablePreSubmitNetworkError reports failures that provably occurred
+// BEFORE the upstream could have accepted the request — the only class that is
+// safe to retry for a paid, non-idempotent submit. Post-send ambiguity (EOF,
+// connection reset, "server closed") is deliberately excluded: the upstream
+// may have completed and billed the work.
+func isRetryablePreSubmitNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsRequestDeadlineTimeout(err) {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "tls handshake failure")
 }
 
 func isRetryableProviderNetworkError(err error) bool {
@@ -2109,7 +2270,7 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}
@@ -2176,7 +2337,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}
@@ -2310,7 +2471,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, body.Bytes())
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, body.Bytes())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
 	}

@@ -16,8 +16,12 @@ type TaskEvent struct {
 	ServiceType string `json:"service_type"`
 	Status      string `json:"status"`     // "success" or "error"
 	ResultURL   string `json:"result_url"` // empty on error
-	ErrorMsg    string `json:"error_msg"`  // empty on success
-	DurationMs  int    `json:"duration_ms"`
+	// ResultURLs carries ALL asset URLs when one generation yields several
+	// (wan2.7 组图 / n>1); ResultURL == ResultURLs[0]. Omitted for
+	// single-asset results.
+	ResultURLs []string `json:"result_urls,omitempty"`
+	ErrorMsg   string   `json:"error_msg"` // empty on success
+	DurationMs int      `json:"duration_ms"`
 }
 
 // TaskEventBus is an in-process pub/sub for task completion events,

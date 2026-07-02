@@ -1290,6 +1290,8 @@ type generateInput struct {
 		ReferenceMode    string                      `json:"reference_mode,omitempty" doc:"Reference image mode (auto/start_frame/start_end/image_reference)"`
 		AudioSetting     string                      `json:"audio_setting,omitempty" doc:"HappyHorse video-edit audio: auto / origin"`
 		Seed             *int                        `json:"seed,omitempty" doc:"Random seed [0, 2147483647] for reproducible generation"`
+		EnableSequential *bool                       `json:"enable_sequential,omitempty" doc:"wan2.7 组图 (grid) mode — one request yields up to 12 images"`
+		ThinkingMode     *bool                       `json:"thinking_mode,omitempty" doc:"wan2.7 文生图 thinking mode (default true)"`
 	}
 }
 
@@ -1554,9 +1556,34 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceMode:    input.Body.ReferenceMode,
 		AudioSetting:     input.Body.AudioSetting,
 		Seed:             input.Body.Seed,
+		EnableSequential: input.Body.EnableSequential,
+		ThinkingMode:     input.Body.ThinkingMode,
 		UserID:           userIDStr,
 		NodeID:           input.Body.NodeId,
 		RequestID:        input.Body.RequestID,
+	}
+
+	// ─── Pre-reserve idempotency fast-path (P0-5) ──────────────────
+	// If the client sent a request_id we already have a row for, return that
+	// task BEFORE reserving credits. The old order (reserve → INSERT → detect
+	// conflict → refund) let a double-click reserve twice and depended on a
+	// best-effort refund; checking first means the common duplicate never
+	// touches the balance at all. The ON CONFLICT insert below stays as the
+	// race-proof backstop for truly concurrent duplicates.
+	if h.q != nil {
+		if cid := strings.TrimSpace(req.RequestID); cid != "" {
+			if parsedReqID, perr := uuid.Parse(cid); perr == nil {
+				var pgReqID pgtype.UUID
+				_ = pgReqID.Scan(parsedReqID.String())
+				if existing, derr := h.q.GetGenerationLogByRequestID(ctx, pgReqID); derr == nil {
+					out := &generateOutput{}
+					out.Body.Data.GenerateResult = application.GenerateResult{Type: "queued", Content: ""}
+					out.Body.Data.TaskID = formatPgUUID(existing.ID)
+					out.Body.RequestID = httpx.RequestIDFrom(ctx)
+					return out, nil
+				}
+			}
+		}
 	}
 
 	// ─── Per-generation credit reserve ─────────────────────────────
@@ -1606,9 +1633,44 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	// The service goroutine will flip this row to success/error when the
 	// upstream task finishes (which may be after this handler has already
 	// returned to the client).
+	//
+	// P0-5: when the client sent a request_id, the insert is IDEMPOTENT
+	// (ON CONFLICT request_id DO NOTHING) — the inline path previously had no
+	// dedup at all, so a double-click ran (and charged) two generations.
 	var logID pgtype.UUID
 	if h.q != nil {
-		if logRow, lerr := h.q.InsertGenerationLog(ctx, sqlc.InsertGenerationLogParams{
+		var pgReqID pgtype.UUID
+		if cid := strings.TrimSpace(req.RequestID); cid != "" {
+			if parsedReqID, perr := uuid.Parse(cid); perr == nil {
+				_ = pgReqID.Scan(parsedReqID.String())
+			}
+		}
+		if pgReqID.Valid {
+			logRow, lerr := h.q.InsertGenerationLogPendingIdempotent(ctx, sqlc.InsertGenerationLogQueuedParams{
+				UserID:      userID,
+				NodeID:      input.Body.NodeId,
+				ServiceType: input.Body.ServiceType,
+				Model:       input.Body.Model,
+				Prompt:      input.Body.Prompt,
+				RequestID:   pgReqID,
+			})
+			if lerr == nil {
+				logID = logRow.ID
+			} else if errors.Is(lerr, pgx.ErrNoRows) {
+				// Duplicate submit lost the race: reuse the winner's task and
+				// return the duplicate's reserve.
+				if existing, derr := h.q.GetGenerationLogByRequestID(ctx, pgReqID); derr == nil {
+					if req.CreditCost > 0 {
+						h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: idempotent replay (inline duplicate)")
+					}
+					out := &generateOutput{}
+					out.Body.Data.GenerateResult = application.GenerateResult{Type: "queued", Content: ""}
+					out.Body.Data.TaskID = formatPgUUID(existing.ID)
+					out.Body.RequestID = httpx.RequestIDFrom(ctx)
+					return out, nil
+				}
+			}
+		} else if logRow, lerr := h.q.InsertGenerationLog(ctx, sqlc.InsertGenerationLogParams{
 			UserID:      userID,
 			NodeID:      input.Body.NodeId,
 			ServiceType: input.Body.ServiceType,

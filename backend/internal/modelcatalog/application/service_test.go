@@ -601,17 +601,18 @@ func TestDispatchToVendorUsesTSProviderRunner(t *testing.T) {
 }
 
 type fakeRepository struct {
-	provider        *domain.RelayProvider
-	models          []domain.ModelDefinition
-	existingModels  map[string]bool
-	lastSyncID      string
-	statusUpdates   map[string]string
-	listUserID      string
-	listRole        string
-	providerConfigs []domain.ProviderConfig
-	lastLogStatus   string
-	lastLogResult   string
-	lastLogCacheHit bool
+	provider          *domain.RelayProvider
+	models            []domain.ModelDefinition
+	existingModels    map[string]bool
+	lastSyncID        string
+	statusUpdates     map[string]string
+	listUserID        string
+	listRole          string
+	providerConfigs   []domain.ProviderConfig
+	lastLogStatus     string
+	lastLogResult     string
+	lastLogResultURLs string
+	lastLogCacheHit   bool
 
 	// MarkGenerationLogFailed controls: whether the guarded transition reports
 	// success (markFailedTransitioned), an optional error, and a call counter.
@@ -1021,6 +1022,10 @@ func (r *fakeRepository) UpdateGenerationLogResult(_ context.Context, _ string, 
 	r.lastLogStatus = status
 	r.lastLogResult = resultURL
 	r.lastLogCacheHit = cacheHit
+	return nil
+}
+func (r *fakeRepository) SetGenerationLogResultURLs(_ context.Context, _ string, resultURLsJSON string) error {
+	r.lastLogResultURLs = resultURLsJSON
 	return nil
 }
 func (r *fakeRepository) MarkGenerationLogPersisting(context.Context, string, StagedAsset, int32) error {

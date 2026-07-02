@@ -1497,9 +1497,16 @@ const PromptPanel = ({
     return { images, videos };
   }, [upstreamNodes]);
 
-  // The modes this model supports, in registry order.
+  // The modes this model supports, in registry order. Video always gets the
+  // tab strip; image gets it ONLY when the template explicitly declares modes
+  // (wan2.7) — otherwise modesForModel's multi-image fallback would give plain
+  // image models a spurious reference tab.
   const modelReferenceModes = useMemo<ReferenceModeKey[]>(
-    () => (serviceType === 'video' ? modesForModel(template?.referenceModes) : []),
+    () => {
+      if (serviceType === 'video') return modesForModel(template?.referenceModes);
+      if (serviceType === 'image' && template?.referenceModes?.length) return modesForModel(template.referenceModes);
+      return [];
+    },
     [serviceType, template?.referenceModes],
   );
 
@@ -1523,7 +1530,7 @@ const PromptPanel = ({
   // valid set (e.g. user deleted the upstream video while on 动作模仿),
   // write the resolved mode back so the node never sits in an illegal state.
   useEffect(() => {
-    if (serviceType !== 'video') return;
+    if (serviceType !== 'video' && serviceType !== 'image') return;
     if (!activeReferenceMode) return;
     if (persistedReferenceMode !== activeReferenceMode) {
       updateNodeGenerationParams(nodeId, { referenceVariant: activeReferenceMode });

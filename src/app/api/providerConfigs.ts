@@ -1046,6 +1046,10 @@ export type GeneratePayload = {
   audio_setting?: string;
   /** Random seed [0, 2147483647] for reproducible generation. */
   seed?: number;
+  /** wan2.7 组图 (grid) mode — one request yields up to 12 images. */
+  enable_sequential?: boolean;
+  /** wan2.7 文生图 thinking mode (default true upstream). */
+  thinking_mode?: boolean;
   edit_operation?: string;
   mask_image?: string;
   output_count?: number;
@@ -1061,6 +1065,9 @@ export type GeneratePayload = {
 export type GenerateResult = {
   type: "text" | "url" | "queued";
   content: string;
+  /** All asset URLs when one generation yields several (wan2.7 组图 / n>1);
+   *  content === content_list[0]. Absent for single-asset results. */
+  content_list?: string[];
   /** Generation log row id — present when the backend was able to
    *  persist a log row. Frontend stores this on the node so recovery
    *  polling (Stage 2) can ask the backend "what happened to this

@@ -551,6 +551,14 @@ func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, statu
 	})
 }
 
+func (r *Repository) SetGenerationLogResultURLs(ctx context.Context, logID, resultURLsJSON string) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.SetGenerationLogResultURLs(ctx, pgID, resultURLsJSON)
+}
+
 func (r *Repository) MarkGenerationLogPersisting(ctx context.Context, logID string, staged application.StagedAsset, durationMs int32) error {
 	pgID, err := parsePgUUID(logID)
 	if err != nil {

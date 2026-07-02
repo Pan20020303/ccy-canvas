@@ -23,6 +23,8 @@ import {
 
 import { t } from '../i18n';
 import { toRenderableMediaUrl } from '../reference-media';
+import { reportDeadMedia, isCertainlyDeadSrc } from '../dead-media';
+import { MediaThumb } from './MediaThumb';
 import { useStore, ASSET_CATEGORIES, type SavedAssetCategory, type SavedAsset } from '../store';
 import { Dock, DockItem } from './reactbits/Dock';
 
@@ -71,6 +73,7 @@ export const Toolbar = () => {
   const setHistoryAssetsOpen = useStore((state) => state.setHistoryAssetsOpen);
   const savedAssets = useStore((state) => state.savedAssets);
   const removeAsset = useStore((state) => state.removeAsset);
+  const hydrateAssets = useStore((state) => state.hydrateAssets);
   const isAssetLibraryOpen = useStore((state) => state.isAssetLibraryOpen);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
@@ -101,6 +104,13 @@ export const Toolbar = () => {
   }, [isAssetLibraryOpen]);
   useEffect(() => {
     if (open !== 'assets' && isAssetLibraryOpen) setAssetLibraryOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Pull server-persisted assets when the library panel opens (best-effort,
+  // local-first) — mirrors HistoryAssetsModal's hydrateHistory-on-open.
+  useEffect(() => {
+    if (open === 'assets') hydrateAssets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -437,10 +447,20 @@ export const Toolbar = () => {
                           className="block w-full text-left"
                         >
                           <div className="aspect-square overflow-hidden bg-black/40">
-                            {asset.kind === 'image' && asset.thumbnail ? (
-                              <img src={toRenderableMediaUrl(asset.thumbnail)} alt="" className="h-full w-full object-cover" />
+                            {asset.kind === 'image' ? (
+                              <MediaThumb
+                                src={asset.thumbnail || asset.url}
+                                alt=""
+                                className="h-full w-full object-cover"
+                                onDead={() => removeAsset(asset.id)}
+                              />
                             ) : asset.kind === 'video' && asset.url ? (
-                              <video src={toRenderableMediaUrl(asset.url)} className="h-full w-full object-cover" muted />
+                              <video
+                                src={toRenderableMediaUrl(asset.url)}
+                                className="h-full w-full object-cover"
+                                muted
+                                onError={() => reportDeadMedia(isCertainlyDeadSrc(asset.url), () => removeAsset(asset.id))}
+                              />
                             ) : asset.kind === 'text' ? (
                               <div className="flex h-full items-center justify-center p-2 text-center text-[10px] text-neutral-400">
                                 <span className="line-clamp-4">{asset.text || asset.name}</span>

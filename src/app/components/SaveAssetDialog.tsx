@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronDown, X, Image as ImageIcon, Video as VideoIcon, Type } from 'lucide-react';
 import clsx from 'clsx';
 import { toRenderableMediaUrl } from '../reference-media';
-import { useStore, ASSET_CATEGORIES, type SavedAssetCategory } from '../store';
+import { useStore, ASSET_CATEGORIES, rehostToStableUrl, type SavedAssetCategory } from '../store';
 
 const SAVABLE_CATEGORIES = ASSET_CATEGORIES.filter((c) => c.key !== 'all') as { key: SavedAssetCategory; zh: string; en: string }[];
 
@@ -20,6 +20,7 @@ export function SaveAssetDialog() {
   const [name, setName] = useState('');
   const [category, setCategory] = useState<SavedAssetCategory>('scene');
   const [categoryOpen, setCategoryOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!node) return;
@@ -38,18 +39,28 @@ export function SaveAssetDialog() {
     : node.type === 'textNode' ? 'text'
     : 'image';
 
-  const onConfirm = () => {
-    if (!name.trim()) return;
-    saveAsset({
-      name: name.trim(),
-      category,
-      thumbnail: thumb,
-      url,
-      kind,
-      text: kind === 'text' ? text : undefined,
-    });
-    close();
-    setAssetLibraryOpen(true);
+  const onConfirm = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      // Re-host transient/expiring media to a stable URL BEFORE saving, so the
+      // library never stores a blob:/data:/expiring URL that later 404s. Dedupe
+      // when thumbnail === url so we only upload once.
+      const durableUrl = url ? await rehostToStableUrl(url) : url;
+      const durableThumb = thumb === url ? durableUrl : (thumb ? await rehostToStableUrl(thumb) : thumb);
+      saveAsset({
+        name: name.trim(),
+        category,
+        thumbnail: durableThumb,
+        url: durableUrl,
+        kind,
+        text: kind === 'text' ? text : undefined,
+      });
+      close();
+      setAssetLibraryOpen(true);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const categoryLabel = SAVABLE_CATEGORIES.find((c) => c.key === category);
@@ -142,10 +153,10 @@ export function SaveAssetDialog() {
         <div className="mt-6 flex justify-end">
           <button
             onClick={onConfirm}
-            disabled={!name.trim()}
+            disabled={!name.trim() || saving}
             className="rounded-lg bg-cyan-500 px-5 py-2 text-sm font-medium text-white transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {language === 'zh' ? '创建' : 'Create'}
+            {saving ? (language === 'zh' ? '保存中…' : 'Saving…') : (language === 'zh' ? '创建' : 'Create')}
           </button>
         </div>
       </div>

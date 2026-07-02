@@ -29,6 +29,8 @@ import {
   type HistoryAssetsTab,
 } from "../history-assets";
 import { toRenderableMediaUrl } from "../reference-media";
+import { reportDeadMedia, isCertainlyDeadSrc } from "../dead-media";
+import { MediaThumb } from "./MediaThumb";
 import { useStore, type HistoryItem } from "../store";
 
 const TAB_LABELS: Record<HistoryAssetsTab, { zh: string; en: string }> = {
@@ -362,11 +364,21 @@ export const HistoryAssetsModal = () => {
                                 </div>
                               ) : null}
 
-                              {item.mediaType === "image" && assetUrl ? (
-                                <img src={toRenderableMediaUrl(assetUrl)} alt={item.title} className={`${layout.previewClassName} h-full w-full object-cover`} />
+                              {item.mediaType === "image" ? (
+                                <MediaThumb
+                                  src={assetUrl}
+                                  alt={item.title}
+                                  className={`${layout.previewClassName} h-full w-full object-cover`}
+                                  onDead={() => removeHistoryItems([item.id])}
+                                />
                               ) : null}
                               {item.mediaType === "video" && assetUrl ? (
-                                <video src={toRenderableMediaUrl(assetUrl)} className={`${layout.previewClassName} h-full w-full object-cover`} muted />
+                                <video
+                                  src={toRenderableMediaUrl(assetUrl)}
+                                  className={`${layout.previewClassName} h-full w-full object-cover`}
+                                  muted
+                                  onError={() => reportDeadMedia(isCertainlyDeadSrc(assetUrl), () => removeHistoryItems([item.id]))}
+                                />
                               ) : null}
                               {item.mediaType === "audio" ? (
                                 <div className={`${layout.previewClassName} flex items-center justify-center bg-gradient-to-br from-neutral-800 to-neutral-900`}>

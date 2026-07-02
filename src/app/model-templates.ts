@@ -256,6 +256,30 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     aspectRatioOptions: ["256x256", "512x512", "1024x1024"],
     defaults: { aspectRatio: "1024x1024" },
   },
+  // 万相2.7 (DashScope) — ONE model, param-driven modes: 文生图 / 图像编辑 /
+  // 组图生成 (交互式编辑 bbox UI is Phase 2). The mode is picked via the
+  // reference-mode tab strip (wan-t2i / wan-edit / wan-group). size maps to the
+  // resolution 1K/2K/4K; watermark ships off in the backend.
+  "wan2.7-image-pro": {
+    vendor: "阿里云·通义",
+    serviceType: "image",
+    modelName: "wan2.7-image-pro",
+    referenceModes: ["wan-t2i", "wan-edit", "wan-group"],
+    supportsSeed: true,
+    supportsResolution: true,
+    resolutionOptions: ["1K", "2K", "4K"],
+    defaults: { resolution: "2K" },
+  },
+  "wan2.7-image": {
+    vendor: "阿里云·通义",
+    serviceType: "image",
+    modelName: "wan2.7-image",
+    referenceModes: ["wan-t2i", "wan-edit", "wan-group"],
+    supportsSeed: true,
+    supportsResolution: true,
+    resolutionOptions: ["1K", "2K"],
+    defaults: { resolution: "2K" },
+  },
   "runway-gen3": {
     vendor: "Runway",
     modelName: "runway-gen3",

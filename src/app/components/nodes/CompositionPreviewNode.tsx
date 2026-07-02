@@ -85,6 +85,23 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
           style={{ transform: 'none', pointerEvents: isConnectionDragging ? 'auto' : 'none' }}
         />
 
+        {/* 贴边渲染锚点 —— 连好的线连到节点边缘,而不是外侧 20px 的 `+` 泡泡。
+            1px、透明、pointer-events:none 纯渲染锚点。 */}
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="edge-source-right"
+          className="!h-px !w-px !min-h-0 !min-w-0 !cursor-default !border-0 !bg-transparent !opacity-0"
+          style={{ pointerEvents: 'none' }}
+        />
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="edge-target-left"
+          className="!h-px !w-px !min-h-0 !min-w-0 !cursor-default !border-0 !bg-transparent !opacity-0"
+          style={{ pointerEvents: 'none' }}
+        />
+
         {/* 左 + 泡泡(显式 target 端口) */}
         <Handle
           type="target"

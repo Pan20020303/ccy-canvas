@@ -16,7 +16,11 @@ export type ReferenceModeKey =
   | "multi-image"
   | "motion-mimic"
   | "all-in-one"
-  | "video-edit";
+  | "video-edit"
+  // wan2.7 (万相2.7) image modes — one model, param-driven modes.
+  | "wan-t2i"
+  | "wan-edit"
+  | "wan-group";
 
 /** Backend `reference_mode` vocabulary. Must stay in sync with the Go
  *  side (ReferenceMode field in service.go). */
@@ -128,6 +132,40 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
       en: "Video edit needs 1 connected source video",
     },
   },
+  // ── wan2.7 (万相2.7) image modes ────────────────────────────────────────
+  "wan-t2i": {
+    key: "wan-t2i",
+    label: { zh: "文生图", en: "Text→Image" },
+    requires: { images: { min: 0, max: 0 }, videos: { min: 0, max: 0 } },
+    backendMode: "auto",
+    slots: [],
+    disabledHint: {
+      zh: "文生图无需连接参考图（移除上游图片）",
+      en: "Text-to-image takes no reference image",
+    },
+  },
+  "wan-edit": {
+    key: "wan-edit",
+    label: { zh: "图像编辑", en: "Image edit" },
+    requires: { images: { min: 1, max: 9 }, videos: { min: 0, max: 0 } },
+    backendMode: "image_reference",
+    slots: [{ zh: "参考图 1~9", en: "1–9 images" }],
+    disabledHint: {
+      zh: "图像编辑需要连接 1~9 张图片",
+      en: "Image edit needs 1–9 reference images",
+    },
+  },
+  "wan-group": {
+    key: "wan-group",
+    label: { zh: "组图生成", en: "Grid" },
+    requires: { images: { min: 0, max: 1 }, videos: { min: 0, max: 0 } },
+    backendMode: "auto",
+    slots: [{ zh: "参考图（可选）", en: "Reference (optional)", optional: true }],
+    disabledHint: {
+      zh: "组图生成最多连接 1 张参考图",
+      en: "Grid takes an optional reference image",
+    },
+  },
 };
 
 /** Ordered list used to render tabs left-to-right. */
@@ -138,6 +176,9 @@ export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
   "motion-mimic",
   "all-in-one",
   "video-edit",
+  "wan-t2i",
+  "wan-edit",
+  "wan-group",
 ];
 
 export type ReferenceInputCounts = { images: number; videos: number };

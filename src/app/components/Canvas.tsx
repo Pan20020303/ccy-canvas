@@ -100,10 +100,13 @@ const FUTURE_NODE_OPTIONS = [
 const GRID_SIZE = 24;
 const GUIDE_THRESHOLD = 5;
 
-/** Node types that do NOT render through BaseNode and so lack the
- *  `qc-source-right` / `qc-target-left` quick-connect ports. Edges touching
- *  these keep their own default handles (see normalizedEdges). */
-const NON_PORT_NODE_TYPES = new Set(['agentNode', 'stickyNoteNode', 'directorStageNode', 'compositionPreviewNode']);
+/** Node types whose edges keep their own default handles instead of being
+ *  routed to the flush `edge-source-right` / `edge-target-left` anchors (see
+ *  normalizedEdges). Agent + sticky nodes already expose small handles centered
+ *  ON the node edge (React Flow default Position.Left/Right), so their wires are
+ *  already flush. Director-stage + composition nodes DO define the flush anchors
+ *  (their `+` bubbles sit 20px outside), so they are NOT excluded here. */
+const NON_PORT_NODE_TYPES = new Set(['agentNode', 'stickyNoteNode']);
 
 const snapPosition = (position: { x: number; y: number }) => ({
   x: Math.round(position.x / GRID_SIZE) * GRID_SIZE,
@@ -927,29 +930,43 @@ const InnerCanvas = () => {
         data: { url: previewUrl, status: 'uploading', progress: 0, sourceName: file.name, sourceKind: 'upload' },
       });
 
-      // 2. Upload with progress; uploads run concurrently so every dropped
-      //    file gets its node immediately. Swap in the real URL on success.
+      // 2. Upload with progress + retry. Uploads run concurrently so every
+      //    dropped file gets its node immediately; on success we swap in the
+      //    durable URL. The COS pipeline can intermittently EOF, so we retry a
+      //    few times before giving up. CRUCIAL: on final failure we KEEP the
+      //    local blob preview (never blank the url or revoke the blob) so the
+      //    image doesn't vanish — the user still sees it + an error and can
+      //    re-upload, instead of the picture flashing then disappearing.
       void (async () => {
-        try {
-          const data = await uploadFileWithProgress(file, file.name, (percent) => {
-            updateNodeData(id, { progress: percent });
-          });
-          const url = resolveBackendAssetUrl(data.url, import.meta.env.VITE_API_BASE_URL ?? '');
-          if (!url) {
-            updateNodeData(id, { status: 'error', url: '', error: `Upload response missing file url: ${file.name}` });
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+          try {
+            const data = await uploadFileWithProgress(file, file.name, (percent) => {
+              updateNodeData(id, { progress: percent });
+            });
+            const url = resolveBackendAssetUrl(data.url, import.meta.env.VITE_API_BASE_URL ?? '');
+            if (!url) throw new Error(`Upload response missing file url: ${file.name}`);
+            updateNodeData(id, { url, status: 'done', progress: 100, error: undefined });
+            const referenceValue = await readFileAsDataUrl(file);
+            if (referenceValue) setReferencePayloadValue(id, referenceValue);
+            URL.revokeObjectURL(previewUrl); // durable URL is live; drop the preview blob
             return;
+          } catch (error) {
+            if (attempt < MAX_ATTEMPTS) {
+              // Transient (intermittent upstream EOF / network) — keep the
+              // preview, back off, and retry.
+              updateNodeData(id, { status: 'uploading', progress: 0, error: undefined });
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+            // Final failure: keep the blob preview visible (do NOT revoke it or
+            // blank the url) so the image stays; surface the error so the user
+            // can re-upload.
+            updateNodeData(id, {
+              status: 'error',
+              error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
+            });
           }
-          updateNodeData(id, { url, status: 'done', progress: 100 });
-          const referenceValue = await readFileAsDataUrl(file);
-          if (referenceValue) setReferencePayloadValue(id, referenceValue);
-        } catch (error) {
-          updateNodeData(id, {
-            status: 'error',
-            url: '',
-            error: error instanceof Error ? error.message : `Upload failed: ${file.name}`,
-          });
-        } finally {
-          URL.revokeObjectURL(previewUrl);
         }
       })();
     }
