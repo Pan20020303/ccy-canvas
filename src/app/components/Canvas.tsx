@@ -2025,10 +2025,11 @@ const InnerCanvas = () => {
         </div>
       </div>
 
-      {/* Canvas stats — node / edge / group counts, NeoWOW-style hairline
-          pill in the bottom-right corner. Sits to the left of the Agent
-          FAB so they don't overlap. 节点 / 分组 open the jump-to index panel. */}
-      <div className="absolute bottom-6 right-24 z-30 flex items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl">
+      {/* Canvas stats — node / edge / group counts. Reference placement: a
+          bare hairline strip tucked into the bottom-right corner, directly
+          BELOW the Agent FAB (no pill chrome). 节点 / 分组 open the jump-to
+          index panel. */}
+      <div className="absolute bottom-3 right-5 z-30 flex items-center gap-2.5 text-[11px] text-neutral-500">
         {/* Compact icon+count trio (reference proportions): → edges, ⊞ nodes,
             ⊟ groups. Labels live in tooltips; per-type breakdown moved to the
             nodes tooltip. Nodes/groups open the jump-to index panel. */}
@@ -2107,10 +2108,11 @@ const InnerCanvas = () => {
         </Suspense>
       ) : null}
 
-      {/* Agent run panel + toggle FAB (bottom-right) */}
+      {/* Agent run panel + toggle FAB — bottom-right, stacked ABOVE the
+          stats strip (reference layout). */}
       <button
         onClick={() => setAgentPanelOpen(true)}
-        className="absolute bottom-6 right-6 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/15 text-cyan-200 shadow-2xl backdrop-blur-xl transition hover:bg-cyan-500/25"
+        className="absolute bottom-10 right-5 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/15 text-cyan-200 shadow-2xl backdrop-blur-xl transition hover:bg-cyan-500/25"
         title={language === 'zh' ? '智能体' : 'Agent'}
         style={{ display: agentPanelOpen ? 'none' : undefined }}
       >
