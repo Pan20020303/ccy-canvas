@@ -478,6 +478,16 @@ const InnerCanvas = () => {
         if (nodesRef.current.some((n) => n.selected)) {
           event.preventDefault();
           deleteSelectedNodes();
+          return;
+        }
+        // No nodes selected — delete any SELECTED EDGES (clicking a wire
+        // selects it; the ✕ button on the wire is the mouse equivalent).
+        const state = useStore.getState();
+        const selectedEdges = state.edges.filter((e) => e.selected);
+        if (selectedEdges.length > 0) {
+          event.preventDefault();
+          state.pushUndoSnapshot();
+          state.onEdgesChange(selectedEdges.map((e) => ({ type: 'remove' as const, id: e.id })));
         }
         return;
       }
