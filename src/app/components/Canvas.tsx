@@ -232,6 +232,7 @@ function computeGuides(dragged: Node, others: Node[], threshold: number): {
  *  only the preview roams free until then. */
 function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: ConnectionLineComponentProps) {
   const { screenToFlowPosition } = useReactFlow();
+  const theme = useStore((state) => state.theme);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -257,7 +258,7 @@ function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: Connection
     <path
       d={path}
       fill="none"
-      stroke="rgba(255,255,255,0.55)"
+      stroke={theme === 'light' ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.55)'}
       strokeWidth={2}
       strokeDasharray="6 6"
       strokeLinecap="round"
@@ -267,14 +268,15 @@ function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: Connection
 
 function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
   const { x, y, zoom } = useViewport();
+  const theme = useStore((state) => state.theme);
   if (!guides.length) return null;
 
-  // Reference-style guides: fine white dashed line spanning both nodes with
+  // Reference-style guides: fine dashed line spanning both nodes with
   // short perpendicular ticks at each end. All strokes/dashes/extents are
   // divided by zoom so they render at a constant screen size.
   const overshoot = 12 / zoom;
   const tick = 4 / zoom;
-  const stroke = 'rgba(255,255,255,0.75)';
+  const stroke = theme === 'light' ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.75)';
   const width = 1 / zoom;
   const dash = `${5 / zoom} ${4 / zoom}`;
 
@@ -329,6 +331,7 @@ const InnerCanvas = () => {
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const canvasHydrated = useStore((state) => state.canvasHydrated);
   const language = useStore((state) => state.language);
+  const theme = useStore((state) => state.theme);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const setConnectionDragging = useStore((state) => state.setConnectionDragging);
   const undoCanvas = useStore((state) => state.undoCanvas);
@@ -2069,18 +2072,27 @@ const InnerCanvas = () => {
           {Array.from({ length: 41 }, (_, i) => (
             <span
               key={i}
-              className={clsx('absolute top-1/2 w-px -translate-y-1/2 bg-white/25', i % 8 === 0 ? 'h-[11px] bg-white/40' : 'h-[6px]')}
+              className={clsx(
+                'absolute top-1/2 w-px -translate-y-1/2',
+                // 白天模式下白色刻度落在白色胶囊上会隐形 — 按主题取色。
+                theme === 'light'
+                  ? clsx('bg-black/30', i % 8 === 0 ? 'h-[11px] bg-black/50' : 'h-[6px]')
+                  : clsx('bg-white/25', i % 8 === 0 ? 'h-[11px] bg-white/40' : 'h-[6px]'),
+              )}
               style={{ left: `${(i / 40) * 100}%` }}
             />
           ))}
           {/* 100% anchor */}
           <span
-            className="absolute top-1/2 h-[11px] w-px -translate-y-1/2 bg-amber-400/80"
+            className="absolute top-1/2 h-[11px] w-px -translate-y-1/2 bg-amber-500/90"
             style={{ left: `${zoomToRulerT(1) * 100}%` }}
           />
           {/* current zoom cursor */}
           <span
-            className="absolute top-1/2 h-[15px] w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]"
+            className={clsx(
+              'absolute top-1/2 h-[15px] w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full',
+              theme === 'light' ? 'bg-black shadow-[0_0_6px_rgba(0,0,0,0.35)]' : 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]',
+            )}
             style={{ left: `${zoomToRulerT(viewport.zoom) * 100}%` }}
           />
         </div>

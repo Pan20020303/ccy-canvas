@@ -49,11 +49,13 @@ export function FlowEdge({
     state.nodes.some((n) => n.selected && (n.id === source || n.id === target)),
   );
 
+  // 白天模式下白色描边隐形 — stroke 是内联样式，CSS 覆盖不到，按主题取色。
+  const light = useStore((state) => state.theme) === 'light';
   const baseStroke = selected
-    ? 'rgba(255,255,255,0.6)'
+    ? (light ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.6)')
     : linkedToSelection
-      ? 'rgba(255,255,255,0.38)'
-      : 'rgba(255,255,255,0.2)';
+      ? (light ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.38)')
+      : (light ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.2)');
 
   const deleteEdge = (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -78,7 +80,7 @@ export function FlowEdge({
         <path
           d={edgePath}
           fill="none"
-          stroke="rgba(255,255,255,0.85)"
+          stroke={light ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.85)'}
           strokeWidth={2}
           strokeLinecap="round"
           strokeDasharray="6 10"
