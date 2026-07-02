@@ -31,6 +31,7 @@ import {
 import { useAuth } from '../auth/AuthProvider';
 import { MediaThumb } from './MediaThumb';
 import BorderGlow from './reactbits/BorderGlow';
+import Galaxy from './reactbits/Galaxy';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
 
@@ -251,6 +252,23 @@ export function HomePage() {
 
   return (
     <div className="relative min-h-screen bg-gradient-to-b from-[#111216] via-[#0d0e11] to-[#0a0b0d] text-neutral-100">
+      {/* Galaxy 星空背景 (React Bits, WebGL) — monochrome silver stars with a
+          gentle cursor parallax, sitting behind everything. pointer-events
+          none: the port listens on window so the parallax still works. */}
+      <div className="pointer-events-none fixed inset-0 z-0 opacity-60">
+        <Galaxy
+          density={0.9}
+          saturation={0}
+          glowIntensity={0.22}
+          twinkleIntensity={0.35}
+          starSpeed={0.25}
+          speed={0.6}
+          rotationSpeed={0.03}
+          mouseRepulsion={false}
+          transparent
+        />
+      </div>
+
       {/* Ambient light: a soft top-center glow over layered charcoal — the
           "premium dark" read instead of flat black. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.08),transparent_70%)]" />
