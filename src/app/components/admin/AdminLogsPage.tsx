@@ -2,6 +2,10 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "rea
 import {
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clock,
   ExternalLink,
   Loader2,
@@ -28,6 +32,7 @@ import {
 import { AdminShell } from "./AdminShell";
 
 const LOG_PAGE_SIZE = 100;
+const CLIENT_PAGE_SIZE = 20;
 
 const SERVICE_LABELS: Record<string, string> = {
   text: "文本生成",
@@ -305,6 +310,7 @@ export function AdminLogsPage() {
   const [userFilter, setUserFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [selectedLog, setSelectedLog] = useState<GenerationLog | null>(null);
+  const [page, setPage] = useState(0);
 
   const deferredUserFilter = useDeferredValue(userFilter);
   const deferredModelFilter = useDeferredValue(modelFilter);
@@ -371,7 +377,20 @@ export function AdminLogsPage() {
     }
   }, [logs, selectedLog]);
 
+  // Reset the client pager whenever any filter/search state changes.
+  useEffect(() => {
+    setPage(0);
+  }, [statusFilter, deferredUserFilter, deferredModelFilter]);
+
   const visibleColumns = useMemo(() => COLUMN_DEFS.filter((column) => visible[column.key]), [visible]);
+
+  // Clamp instead of resetting so a poll refresh (offset 0 reload) can't strand the pager out of range.
+  const pageCount = Math.max(1, Math.ceil(logs.length / CLIENT_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedLogs = useMemo(
+    () => logs.slice(currentPage * CLIENT_PAGE_SIZE, (currentPage + 1) * CLIENT_PAGE_SIZE),
+    [logs, currentPage],
+  );
 
   const counts = useMemo(
     () => ({
@@ -525,7 +544,7 @@ export function AdminLogsPage() {
                     </td>
                   </tr>
                 ) : (
-                  logs.map((log) => (
+                  pagedLogs.map((log) => (
                     <tr
                       key={log.id}
                       className="cursor-pointer transition hover:bg-white/[0.02]"
@@ -587,6 +606,27 @@ export function AdminLogsPage() {
             </table>
           </div>
 
+          {!loading && !error && pageCount > 1 ? (
+            <div className="flex items-center justify-center gap-1 border-t border-white/[0.04] bg-white/[0.01] px-4 py-2">
+              <button type="button" onClick={() => setPage(0)} disabled={currentPage === 0}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronsLeft className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={currentPage === 0}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="px-2 text-[11px] tabular-nums text-neutral-400">{currentPage + 1} / {pageCount}</span>
+              <button type="button" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={currentPage >= pageCount - 1}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => setPage(pageCount - 1)} disabled={currentPage >= pageCount - 1}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronsRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           {!loading && !error && logs.length > 0 ? (
             <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-500">
               <div className="flex flex-wrap items-center justify-between gap-3">

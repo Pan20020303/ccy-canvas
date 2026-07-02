@@ -44,10 +44,15 @@ import {
   ChevronDown,
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
+  Search as SearchIcon,
+  MoveRight,
+  Boxes,
+  Palette,
+  MoveDiagonal2,
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, eventMatchesShortcut, type HistoryItem } from '../store';
+import { useStore, eventMatchesShortcut, type HistoryItem, type Group } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -59,6 +64,7 @@ import {
 import { nodeTypes } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
+import { CanvasIndexPanel } from './CanvasIndexPanel';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
 // 打开导演台时按需加载,首屏 0 影响.
@@ -277,6 +283,9 @@ const InnerCanvas = () => {
   const ungroupNodes = useStore((state) => state.ungroupNodes);
   const setGroupMembers = useStore((state) => state.setGroupMembers);
   const moveGroup = useStore((state) => state.moveGroup);
+  const resizeGroup = useStore((state) => state.resizeGroup);
+  const setGroupColor = useStore((state) => state.setGroupColor);
+  const arrangeGroupNodes = useStore((state) => state.arrangeGroupNodes);
   const arrangeSelectedNodes = useStore((state) => state.arrangeSelectedNodes);
   const tidyCanvas = useStore((state) => state.tidyCanvas);
   const toggleNodeLock = useStore((state) => state.toggleNodeLock);
@@ -306,6 +315,15 @@ const InnerCanvas = () => {
     lastClientY: number;
     didCaptureUndo: boolean;
   } | null>(null);
+  // Corner-resize drag state for group shells (pointer-captured on the grip).
+  const groupResizeRef = useRef<{
+    groupId: string;
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+    didCaptureUndo: boolean;
+  } | null>(null);
 
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
@@ -313,6 +331,8 @@ const InnerCanvas = () => {
   // surrounding UI (we use it to hide the multi-select toolbar/bounds while
   // the group is being moved).
   const [groupDragging, setGroupDragging] = useState(false);
+  // Bottom-right canvas index — the "所有节点 / 分组" jump panel.
+  const [indexPanel, setIndexPanel] = useState<'nodes' | 'groups' | null>(null);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
@@ -502,6 +522,18 @@ const InnerCanvas = () => {
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
+      // Corner-resize drag takes priority — it's armed exclusively.
+      const resize = groupResizeRef.current;
+      if (resize) {
+        const zoom = viewportRef.current.zoom || 1;
+        resizeGroup(resize.groupId, {
+          width: resize.startW + (event.clientX - resize.startX) / zoom,
+          height: resize.startH + (event.clientY - resize.startY) / zoom,
+        }, { captureUndo: !resize.didCaptureUndo });
+        resize.didCaptureUndo = true;
+        return;
+      }
+
       const drag = groupDragRef.current;
       if (!drag) {
         return;
@@ -526,6 +558,7 @@ const InnerCanvas = () => {
 
     const handlePointerUp = () => {
       groupDragRef.current = null;
+      groupResizeRef.current = null;
       setGroupDragging(false);
     };
 
@@ -535,7 +568,7 @@ const InnerCanvas = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [moveGroup]);
+  }, [moveGroup, resizeGroup]);
 
   /** Intercept pointer/mouse downs on the ReactFlow pane: if the click falls
    *  inside any group's stored rectangle, hijack the gesture so ReactFlow
@@ -566,6 +599,23 @@ const InnerCanvas = () => {
       }) ?? null;
     };
 
+    // True when the pointer sits in the group's bottom-right resize corner
+    // (a ~26px screen-space square). Uses the same coordinate transform as
+    // hitTestGroup so the corner tracks the rendered grip at any zoom.
+    const hitsGroupResizeCorner = (group: Group, clientX: number, clientY: number) => {
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const v = viewportRef.current;
+      const zoom = v.zoom || 1;
+      const flowX = (clientX - wrapperRect.left - v.x) / zoom;
+      const flowY = (clientY - wrapperRect.top - v.y) / zoom;
+      const corner = 26 / zoom;
+      const gx = group.position?.x ?? 0;
+      const gy = group.position?.y ?? 0;
+      const gw = group.width ?? 0;
+      const gh = group.height ?? 0;
+      return flowX >= gx + gw - corner && flowY >= gy + gh - corner;
+    };
+
     const isPaneTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
       if (!el) return false;
@@ -594,6 +644,20 @@ const InnerCanvas = () => {
       event.stopPropagation();
       event.stopImmediatePropagation();
       setSelectedGroupId(hit.id);
+      // Corner hit → arm a RESIZE drag instead of a move. Routed through the
+      // same window-capture path as group moves because the ReactFlow pane
+      // sits above the shell layer and eats direct pointer events.
+      if (hitsGroupResizeCorner(hit, event.clientX, event.clientY)) {
+        groupResizeRef.current = {
+          groupId: hit.id,
+          startX: event.clientX,
+          startY: event.clientY,
+          startW: hit.width ?? 0,
+          startH: hit.height ?? 0,
+          didCaptureUndo: false,
+        };
+        return;
+      }
       // Drop any lingering multi-selection from a prior marquee so the
       // floating toolbar and selection rectangle don't visually leak into
       // the group-drag gesture. Reads from the store directly so we don't
@@ -1148,6 +1212,37 @@ const InnerCanvas = () => {
     return { img, vid, aud, txt, other };
   }, [nodes]);
 
+  /** Audio nodes projected for the top-center track strip: a stable pseudo-
+   *  waveform (deterministic per node id — no per-render randomness) plus the
+   *  jump target position. */
+  const audioStripNodes = useMemo(() => {
+    const hash = (s: string) => {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i += 1) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return h >>> 0;
+    };
+    return nodes
+      .filter((n) => /audio/i.test(String(n.type ?? '')))
+      .slice(0, 8) // keep the strip bounded
+      .map((n) => {
+        const data = (n.data ?? {}) as Record<string, unknown>;
+        const bars: number[] = [];
+        for (let i = 0; i < 22; i += 1) {
+          bars.push(4 + (hash(`${n.id}:${i}`) % 12));
+        }
+        return {
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          name: (typeof data.sourceName === 'string' && data.sourceName) || (typeof data.customTitle === 'string' && data.customTitle) || (language === 'zh' ? '音频' : 'Audio'),
+          bars,
+        };
+      });
+  }, [nodes, language]);
+
   return (
     <div
       ref={wrapperRef}
@@ -1179,10 +1274,26 @@ const InnerCanvas = () => {
             <div
               key={`shell-${group.id}`}
               className={clsx(
-                'pointer-events-auto absolute rounded-[26px] border bg-white/[0.025] backdrop-blur-[2px] transition-colors',
-                selected ? 'border-cyan-400/40 bg-cyan-400/[0.04]' : 'border-white/8',
+                // Dashed shell à la the reference: the group reads as a spatial
+                // frame, not a solid card.
+                'pointer-events-auto absolute border border-dashed bg-white/[0.025] backdrop-blur-[2px] transition-colors',
+                selected ? 'border-cyan-400/40 bg-cyan-400/[0.04]' : 'border-white/15',
               )}
-              style={{ left, top, width, height }}
+              style={{
+                left,
+                top,
+                width,
+                height,
+                // Modest FIXED-range corner radius (not zoom-scaled): a big
+                // radius pushed the dashed edge far from the rectangular
+                // corner, so the resize grip looked detached and "wandered"
+                // as zoom changed. Small radius keeps the dashed line hugging
+                // the corner the grip is pinned to, and the size caps still
+                // prevent a tiny group from turning into a pill.
+                borderRadius: Math.max(6, Math.min(16, width / 6, height / 6)),
+                // User-picked shell tint (inline bg wins over the tint classes).
+                ...(group.color ? { backgroundColor: group.color } : null),
+              }}
               onPointerDown={(event) => {
                 if (event.target !== event.currentTarget) return;
                 event.preventDefault();
@@ -1218,6 +1329,56 @@ const InnerCanvas = () => {
                   setGroupDragging(true);
                 }}
               />
+              {/* Bottom-right corner grip — drag to resize the group frame.
+                  Hover swaps the corner lines for a diagonal-arrows icon so
+                  the affordance reads as "drag me to resize". Pointer capture
+                  keeps the drag alive outside the grip; the screen-space delta
+                  is divided by zoom to stay in flow units. */}
+              <div
+                className={clsx(
+                  'group/grip absolute bottom-1 right-1 flex h-6 w-6 cursor-nwse-resize items-center justify-center rounded-md transition-colors',
+                  selected ? 'text-cyan-300/80' : 'text-neutral-500',
+                )}
+                title={language === 'zh' ? '拖动调整分组大小' : 'Drag to resize group'}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* no-op */ }
+                  setSelectedGroupId(group.id);
+                  groupResizeRef.current = {
+                    groupId: group.id,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    startW: b.width,
+                    startH: b.height,
+                    didCaptureUndo: false,
+                  };
+                }}
+                onPointerMove={(event) => {
+                  const r = groupResizeRef.current;
+                  if (!r || r.groupId !== group.id) return;
+                  const z = viewport.zoom || 1;
+                  resizeGroup(group.id, {
+                    width: r.startW + (event.clientX - r.startX) / z,
+                    height: r.startH + (event.clientY - r.startY) / z,
+                  }, { captureUndo: !r.didCaptureUndo });
+                  r.didCaptureUndo = true;
+                }}
+                onPointerUp={(event) => {
+                  groupResizeRef.current = null;
+                  try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+                }}
+                onPointerCancel={(event) => {
+                  groupResizeRef.current = null;
+                  try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+                }}
+              >
+                {/* Default: subtle corner lines. Hover: diagonal resize arrows. */}
+                <svg viewBox="0 0 10 10" className="h-3 w-3 transition-opacity group-hover/grip:opacity-0" aria-hidden>
+                  <path d="M2.5 9L9 2.5M5.5 9L9 5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" fill="none" />
+                </svg>
+                <MoveDiagonal2 className="absolute h-3.5 w-3.5 text-cyan-300 opacity-0 transition-opacity group-hover/grip:opacity-100" />
+              </div>
             </div>
           );
         })}
@@ -1346,14 +1507,15 @@ const InnerCanvas = () => {
             nodeStrokeColor="rgba(255,255,255,0.14)"
             nodeBorderRadius={3}
             style={{
-              width: minimapExpanded ? 320 : 180,
-              height: minimapExpanded ? 200 : 110,
+              // Compact by default (reference proportions); expandable on demand.
+              width: minimapExpanded ? 300 : 148,
+              height: minimapExpanded ? 190 : 94,
               left: 16,
               right: 'auto',
-              bottom: 76,
+              bottom: 64,
               backgroundColor: 'rgba(12,14,17,0.9)',
               border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 16,
+              borderRadius: 14,
               transition: 'width 0.2s, height 0.2s',
             }}
           />
@@ -1367,7 +1529,7 @@ const InnerCanvas = () => {
         <button
           type="button"
           className={`nodrag absolute z-30 flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-white/75 backdrop-blur-sm transition-opacity duration-150 hover:bg-black/80 hover:text-white ${minimapHovered ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
-          style={{ left: 16 + (minimapExpanded ? 320 : 180) - 30, bottom: 76 + (minimapExpanded ? 200 : 110) - 30 }}
+          style={{ left: 16 + (minimapExpanded ? 300 : 148) - 30, bottom: 64 + (minimapExpanded ? 190 : 94) - 30 }}
           title={minimapExpanded ? '收起小地图' : '放大小地图'}
           onMouseEnter={enterMinimap}
           onMouseLeave={leaveMinimap}
@@ -1424,20 +1586,18 @@ const InnerCanvas = () => {
             className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
             style={{ left, top }}
           >
-            <button disabled className={itemClass}>
-              <Play className="h-3.5 w-3.5 text-neutral-400" />
-              {language === 'zh' ? '整组执行' : 'Run Group'}
-            </button>
+            {/* Reference trio first: 颜色 | 整理布局 | 解组 */}
+            <GroupColorMenu
+              zh={language === 'zh'}
+              current={sel.color}
+              onPick={(color) => setGroupColor(sel.id, color)}
+            />
             <div className="h-4 w-px bg-white/10" />
-            <button disabled className={itemClass}>
-              <Wrench className="h-3.5 w-3.5 text-neutral-400" />
-              {language === 'zh' ? '添加到工具箱' : 'Add to Toolbox'}
-            </button>
-            <div className="h-4 w-px bg-white/10" />
-            <button disabled className={itemClass}>
-              <Share2 className="h-3.5 w-3.5 text-neutral-400" />
-              {language === 'zh' ? '转分镜组' : 'Convert to Storyboard'}
-            </button>
+            <ArrangeMenu
+              zh={language === 'zh'}
+              label={language === 'zh' ? '整理布局' : 'Tidy layout'}
+              onArrange={(mode) => arrangeGroupNodes(sel.id, mode)}
+            />
             <div className="h-4 w-px bg-white/10" />
             <button
               onClick={() => { ungroupNodes(selectedGroupId); setSelectedGroupId(null); }}
@@ -1445,15 +1605,6 @@ const InnerCanvas = () => {
             >
               <UngroupIcon className="h-3.5 w-3.5 text-neutral-400" />
               {language === 'zh' ? '解组' : 'Ungroup'}
-            </button>
-            <div className="h-4 w-px bg-white/10" />
-            <button
-              onClick={() => exportGroupAsImage(selectedGroupId)}
-              className={itemClass}
-              title={language === 'zh' ? '导出该组范围为 PNG' : 'Export group bounds as PNG'}
-            >
-              <Download className="h-3.5 w-3.5 text-neutral-400" />
-              {language === 'zh' ? '导出 PNG' : 'Export PNG'}
             </button>
             <div className="h-4 w-px bg-white/10" />
             <button
@@ -1730,35 +1881,39 @@ const InnerCanvas = () => {
         }}
       />
 
-      <div className="absolute bottom-6 left-6 z-40 flex flex-col gap-3">
-        <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-black/45 px-3 py-2 shadow-2xl backdrop-blur-xl">
-          <ControlButton
-            active={showMiniMap}
-            label={language === 'zh' ? '开关小地图' : 'Toggle minimap'}
-            onClick={() => setShowMiniMap(!showMiniMap)}
-          >
-            <Map className="h-4 w-4" />
-          </ControlButton>
-          <ControlButton
-            active={snapToGrid}
-            label={language === 'zh' ? '开关网格对齐' : 'Toggle grid snap'}
-            onClick={() => setSnapToGrid(!snapToGrid)}
-          >
-            <Grid3X3 className="h-4 w-4" />
-          </ControlButton>
-          <ControlButton
-            active={false}
-            label={language === 'zh' ? '整理画布' : 'Tidy canvas'}
-            onClick={() => {
-              tidyCanvas();
-              // Fit after the layout commits so the freshly-arranged graph
-              // is framed nicely.
-              setTimeout(() => void fitView({ padding: 0.15, duration: 400 }), 60);
-            }}
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </ControlButton>
-        </div>
+      {/* Bottom-left control strip — compact reference proportions: flat icon
+          toggles + a zoom readout in one hairline pill. */}
+      <div className="absolute bottom-6 left-6 z-40 flex items-center gap-1 rounded-full border border-white/10 bg-black/45 px-1.5 py-1 shadow-2xl backdrop-blur-xl">
+        <ControlButton
+          active={showMiniMap}
+          label={language === 'zh' ? '开关小地图' : 'Toggle minimap'}
+          onClick={() => setShowMiniMap(!showMiniMap)}
+        >
+          <Map className="h-3.5 w-3.5" />
+        </ControlButton>
+        <ControlButton
+          active={snapToGrid}
+          label={language === 'zh' ? '开关网格对齐' : 'Toggle grid snap'}
+          onClick={() => setSnapToGrid(!snapToGrid)}
+        >
+          <Grid3X3 className="h-3.5 w-3.5" />
+        </ControlButton>
+        <ControlButton
+          active={false}
+          label={language === 'zh' ? '整理画布' : 'Tidy canvas'}
+          onClick={() => {
+            tidyCanvas();
+            // Fit after the layout commits so the freshly-arranged graph
+            // is framed nicely.
+            setTimeout(() => void fitView({ padding: 0.15, duration: 400 }), 60);
+          }}
+        >
+          <LayoutGrid className="h-3.5 w-3.5" />
+        </ControlButton>
+        <span className="flex items-center gap-1 px-1.5 text-[11px] tabular-nums text-neutral-400">
+          <SearchIcon className="h-3 w-3" />
+          {Math.round(viewport.zoom * 100)}%
+        </span>
       </div>
 
       {/* Zoom % indicator — read-only pill at the top center of the
@@ -1769,28 +1924,110 @@ const InnerCanvas = () => {
         {Math.round(viewport.zoom * 100)}%
       </div>
 
+      {/* Audio track strip (reference: the amber waveform bar next to the zoom
+          chip) — appears only when the canvas holds audio nodes. Each node is a
+          waveform segment; click jumps to it. Bars are deterministic per node
+          id so the strip is stable across renders. */}
+      {audioStripNodes.length > 0 ? (
+        <div className="absolute left-1/2 top-12 z-30 flex -translate-x-1/2 items-end gap-3 rounded-full border border-white/8 bg-black/40 px-3 py-1.5 shadow-lg backdrop-blur-xl">
+          {audioStripNodes.map((audio) => (
+            <button
+              key={audio.id}
+              type="button"
+              title={audio.name}
+              onClick={() => {
+                setCenter(audio.x + 150, audio.y + 100, { zoom: Math.max(viewport.zoom, 0.6), duration: 400 });
+                onNodesChange([
+                  ...nodes.filter((n) => n.selected && n.id !== audio.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
+                  { id: audio.id, type: 'select' as const, selected: true },
+                ]);
+              }}
+              className="group flex items-end gap-[2px] transition hover:opacity-80"
+            >
+              {audio.bars.map((h, i) => (
+                <span
+                  key={i}
+                  className="w-[2px] rounded-full bg-amber-300/70 transition-colors group-hover:bg-amber-200"
+                  style={{ height: h }}
+                />
+              ))}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {/* Canvas stats — node / edge / group counts, NeoWOW-style hairline
           pill in the bottom-right corner. Sits to the left of the Agent
-          FAB so they don't overlap. */}
-      <div className="pointer-events-none absolute bottom-6 right-24 z-30 flex items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl">
-        <span className="tabular-nums font-medium text-neutral-200">
-          {language === 'zh' ? '节点' : 'Nodes'} {nodes.length}
+          FAB so they don't overlap. 节点 / 分组 open the jump-to index panel. */}
+      <div className="absolute bottom-6 right-24 z-30 flex items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl">
+        {/* Compact icon+count trio (reference proportions): → edges, ⊞ nodes,
+            ⊟ groups. Labels live in tooltips; per-type breakdown moved to the
+            nodes tooltip. Nodes/groups open the jump-to index panel. */}
+        <span
+          className="flex items-center gap-1 tabular-nums text-neutral-500"
+          title={language === 'zh' ? `连线 ${edges.length}` : `${edges.length} edges`}
+        >
+          <MoveRight className="h-3 w-3" />
+          {edges.length}
         </span>
-        <span className="flex items-center gap-1.5 tabular-nums text-neutral-500">
-          {nodeTypeStats.img > 0 ? <span title={language === 'zh' ? '图片' : 'Images'}>{language === 'zh' ? '图' : 'I'} {nodeTypeStats.img}</span> : null}
-          {nodeTypeStats.vid > 0 ? <span title={language === 'zh' ? '视频' : 'Videos'}>{language === 'zh' ? '视' : 'V'} {nodeTypeStats.vid}</span> : null}
-          {nodeTypeStats.aud > 0 ? <span title={language === 'zh' ? '音频' : 'Audio'}>{language === 'zh' ? '音' : 'A'} {nodeTypeStats.aud}</span> : null}
-          {nodeTypeStats.txt > 0 ? <span title={language === 'zh' ? '文本' : 'Text'}>{language === 'zh' ? '文' : 'T'} {nodeTypeStats.txt}</span> : null}
-        </span>
-        <span className="text-neutral-600">·</span>
-        <span className="tabular-nums">
-          {language === 'zh' ? '边' : 'Edges'} {edges.length}
-        </span>
-        <span className="text-neutral-600">·</span>
-        <span className="tabular-nums">
-          {groups.length} {language === 'zh' ? '分组' : 'groups'}
-        </span>
+        <button
+          type="button"
+          onClick={() => setIndexPanel((v) => (v === 'nodes' ? null : 'nodes'))}
+          className={clsx(
+            'flex items-center gap-1 tabular-nums font-medium transition hover:text-white',
+            indexPanel === 'nodes' ? 'text-cyan-300' : 'text-neutral-200',
+          )}
+          title={(language === 'zh'
+            ? [`节点 ${nodes.length}`, nodeTypeStats.img ? `图 ${nodeTypeStats.img}` : '', nodeTypeStats.vid ? `视 ${nodeTypeStats.vid}` : '', nodeTypeStats.aud ? `音 ${nodeTypeStats.aud}` : '', nodeTypeStats.txt ? `文 ${nodeTypeStats.txt}` : '']
+            : [`${nodes.length} nodes`, nodeTypeStats.img ? `img ${nodeTypeStats.img}` : '', nodeTypeStats.vid ? `vid ${nodeTypeStats.vid}` : '', nodeTypeStats.aud ? `aud ${nodeTypeStats.aud}` : '', nodeTypeStats.txt ? `txt ${nodeTypeStats.txt}` : '']
+          ).filter(Boolean).join(' · ')}
+        >
+          <LayoutGrid className="h-3 w-3" />
+          {nodes.length}
+        </button>
+        <button
+          type="button"
+          onClick={() => setIndexPanel((v) => (v === 'groups' ? null : 'groups'))}
+          className={clsx(
+            'flex items-center gap-1 tabular-nums transition hover:text-white',
+            indexPanel === 'groups' ? 'text-cyan-300' : undefined,
+          )}
+          title={language === 'zh' ? `分组 ${groups.length}` : `${groups.length} groups`}
+        >
+          <Boxes className="h-3 w-3" />
+          {groups.length}
+        </button>
       </div>
+
+      <CanvasIndexPanel
+        open={indexPanel}
+        onClose={() => setIndexPanel(null)}
+        nodes={nodes}
+        groups={groups}
+        language={language}
+        onJumpToNode={(nodeId) => {
+          const node = nodes.find((n) => n.id === nodeId);
+          if (!node) return;
+          // Keep the user's zoom unless they're zoomed way out (a jump at 10%
+          // zoom lands "nowhere" visually) — clamp up to a readable level.
+          setCenter(node.position.x + 170, node.position.y + 130, {
+            zoom: Math.max(viewport.zoom, 0.6),
+            duration: 400,
+          });
+          onNodesChange([
+            ...nodes.filter((n) => n.selected && n.id !== nodeId).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
+            { id: nodeId, type: 'select' as const, selected: true },
+          ]);
+        }}
+        onJumpToGroup={(groupId) => {
+          const group = groups.find((g) => g.id === groupId);
+          if (!group) return;
+          const cx = (group.position?.x ?? 0) + (group.width ?? 0) / 2;
+          const cy = (group.position?.y ?? 0) + (group.height ?? 0) / 2;
+          setCenter(cx, cy, { zoom: Math.max(viewport.zoom, 0.5), duration: 400 });
+          setSelectedGroupId(groupId);
+        }}
+      />
 
       <SaveAssetDialog />
 
@@ -1938,10 +2175,12 @@ function ControlButton({
       title={label}
       onClick={onClick}
       className={[
-        'flex h-10 w-10 items-center justify-center rounded-xl border text-neutral-300 transition',
+        // Compact reference proportions: small flat icon buttons inside a
+        // single hairline pill (no per-button borders).
+        'flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition',
         active
-          ? 'border-cyan-400/35 bg-cyan-500/15 text-cyan-300'
-          : 'border-white/8 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.06]',
+          ? 'bg-white/12 text-white'
+          : 'hover:bg-white/8 hover:text-neutral-200',
       ].join(' ')}
     >
       {children}
@@ -2005,9 +2244,11 @@ function ContextMenuButton({
 function ArrangeMenu({
   onArrange,
   zh,
+  label,
 }: {
   onArrange: (mode: 'grid' | 'horizontal' | 'vertical') => void;
   zh: boolean;
+  label?: string;
 }) {
   const [open, setOpen] = useState(false);
   const items: { mode: 'grid' | 'horizontal' | 'vertical'; Icon: typeof LayoutGrid; label: string }[] = [
@@ -2015,15 +2256,16 @@ function ArrangeMenu({
     { mode: 'horizontal', Icon: AlignHorizontalDistributeCenter, label: zh ? '水平排列' : 'Horizontal' },
     { mode: 'vertical', Icon: AlignVerticalDistributeCenter, label: zh ? '垂直排列' : 'Vertical' },
   ];
+  const triggerLabel = label ?? (zh ? '排列' : 'Arrange');
   return (
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
-        title={zh ? '排列' : 'Arrange'}
+        title={triggerLabel}
       >
         <LayoutGrid className="h-3.5 w-3.5 text-neutral-400" />
-        {zh ? '排列' : 'Arrange'}
+        {triggerLabel}
         <ChevronDown className="h-3 w-3 text-neutral-500" />
       </button>
       {open ? (
@@ -2038,6 +2280,65 @@ function ArrangeMenu({
               >
                 <Icon className="h-4 w-4 text-neutral-400" />
                 {label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** Group shell tint presets — subtle rgba washes so member nodes stay legible.
+ *  The swatch preview uses a stronger alpha of the same hue for visibility. */
+const GROUP_COLOR_PRESETS: { tint?: string; swatch: string; zh: string; en: string }[] = [
+  { tint: undefined, swatch: 'transparent', zh: '默认', en: 'Default' },
+  { tint: 'rgba(148,163,184,0.08)', swatch: 'rgba(148,163,184,0.8)', zh: '灰', en: 'Slate' },
+  { tint: 'rgba(59,130,246,0.08)', swatch: 'rgba(59,130,246,0.8)', zh: '蓝', en: 'Blue' },
+  { tint: 'rgba(6,182,212,0.08)', swatch: 'rgba(6,182,212,0.8)', zh: '青', en: 'Cyan' },
+  { tint: 'rgba(34,197,94,0.08)', swatch: 'rgba(34,197,94,0.8)', zh: '绿', en: 'Green' },
+  { tint: 'rgba(245,158,11,0.09)', swatch: 'rgba(245,158,11,0.85)', zh: '琥珀', en: 'Amber' },
+  { tint: 'rgba(236,72,153,0.08)', swatch: 'rgba(236,72,153,0.8)', zh: '粉', en: 'Pink' },
+  { tint: 'rgba(139,92,246,0.09)', swatch: 'rgba(139,92,246,0.8)', zh: '紫', en: 'Violet' },
+];
+
+function GroupColorMenu({
+  zh,
+  current,
+  onPick,
+}: {
+  zh: boolean;
+  current?: string;
+  onPick: (color?: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5"
+        title={zh ? '背景颜色' : 'Shell color'}
+      >
+        <Palette className="h-3.5 w-3.5 text-neutral-400" />
+        {zh ? '颜色' : 'Color'}
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-full left-1/2 z-50 mb-2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-white/10 bg-[#1e2026]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+            {GROUP_COLOR_PRESETS.map((preset) => (
+              <button
+                key={preset.swatch}
+                type="button"
+                title={zh ? preset.zh : preset.en}
+                onClick={() => { onPick(preset.tint); setOpen(false); }}
+                className={clsx(
+                  'flex h-5 w-5 items-center justify-center rounded-full border transition hover:scale-110',
+                  current === preset.tint ? 'border-white' : 'border-white/20',
+                )}
+                style={{ backgroundColor: preset.swatch }}
+              >
+                {preset.tint === undefined ? <span className="text-[10px] leading-none text-white/50">/</span> : null}
               </button>
             ))}
           </div>

@@ -121,12 +121,14 @@ export const Navbar = () => {
 
       {/* Right: controls cluster */}
       <div className="pointer-events-auto flex items-center gap-2">
+        {/* Icon-only language toggle (reference proportions); the current
+            language lives in the tooltip. */}
         <button
           onClick={toggleLanguage}
-          className={`flex items-center gap-1.5 ${pillBase} px-3 py-1.5 text-xs text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
+          title={language === "en" ? "Language: EN \u2192 \u4e2d\u6587" : "\u8bed\u8a00: \u4e2d\u6587 \u2192 EN"}
+          className={`flex h-9 w-9 items-center justify-center ${pillBase} text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
         >
-          <Languages className="h-3.5 w-3.5" />
-          <span>{language === "en" ? "EN" : "\u4e2d\u6587"}</span>
+          <Languages className="h-4 w-4" />
         </button>
 
         {user ? (

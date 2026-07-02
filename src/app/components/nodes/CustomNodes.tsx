@@ -41,6 +41,7 @@ import {
   Highlighter,
   RotateCcw,
   Palette,
+  MoveDiagonal2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -2239,7 +2240,7 @@ const BaseNode = ({
             selected && toneStyles.selected,
             connectTarget && 'node-connect-target',
           )}
-          style={shellBackground ? { backgroundColor: shellBackground } : undefined}
+          style={shellBackground ? { background: shellBackground } : undefined}
           >
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
@@ -6076,7 +6077,10 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       error={data.error}
       width={boxWidth}
-      shellBackground={bgColor}
+      // Solid dark shell (the node used to be transparent over the canvas
+      // grid). A user-picked tint layers OVER the solid base so pale tints
+      // still read as opaque.
+      shellBackground={bgColor ? `linear-gradient(${bgColor}, ${bgColor}), #16181d` : '#16181d'}
       topFloatingPanel={editorToolbar}
       promptPanel={activeMode === 'chooser' ? <PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" /> : undefined}
     >
@@ -6228,11 +6232,12 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
           </div>
         ) : null}
 
-        {/* Bottom-right corner grip — drag to resize the box (editor mode only).
-            Anchored to the BaseNode shell (the nearest positioned ancestor). */}
-        {activeMode === 'editor' && selected ? (
+        {/* Bottom-right corner grip — drag to resize the box (editor mode).
+            ALWAYS pinned to the shell's bottom-right corner (not gated on
+            selection, so it never appears to come and go / move around). */}
+        {activeMode === 'editor' ? (
           <div
-            className="nodrag nopan absolute bottom-1 right-1 z-20 flex h-4 w-4 cursor-nwse-resize items-center justify-center text-neutral-500 transition hover:text-neutral-200"
+            className="group/grip nodrag nopan absolute bottom-1 right-1 z-20 flex h-5 w-5 cursor-nwse-resize items-center justify-center text-neutral-500 transition"
             title={language === 'zh' ? '拖动调整大小' : 'Drag to resize'}
             onPointerDown={startResize}
             onPointerMove={moveResize}
@@ -6241,9 +6246,11 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
-            <svg viewBox="0 0 10 10" className="h-3 w-3" aria-hidden>
+            {/* Default: subtle corner lines. Hover: diagonal resize arrows. */}
+            <svg viewBox="0 0 10 10" className="h-3 w-3 transition-opacity group-hover/grip:opacity-0" aria-hidden>
               <path d="M2.5 9L9 2.5M5.5 9L9 5.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" fill="none" />
             </svg>
+            <MoveDiagonal2 className="absolute h-3.5 w-3.5 text-cyan-300 opacity-0 transition-opacity group-hover/grip:opacity-100" />
           </div>
         ) : null}
       </div>

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Loader2, RefreshCw, CheckCircle2, XCircle, Clock, Bot } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Loader2, RefreshCw, CheckCircle2, XCircle, Clock, Bot, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from "lucide-react";
 
 import { adminListAgentRuns, type AgentRun } from "../../api/skills";
 import { Badge } from "../ui/badge";
@@ -16,9 +16,12 @@ function StatusCell({ run }: { run: AgentRun }) {
   return <span className="inline-flex items-center gap-1.5 text-xs text-rose-400" title={run.error_msg}><XCircle className="h-3.5 w-3.5" /> {STATUS_LABELS[run.status]}</span>;
 }
 
+const PAGE_SIZE = 20;
+
 export function AdminAgentRunsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -27,6 +30,10 @@ export function AdminAgentRunsPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const pageCount = Math.max(1, Math.ceil(runs.length / PAGE_SIZE));
+  useEffect(() => { setPage((p) => Math.min(p, pageCount - 1)); }, [pageCount]);
+  const pagedRuns = useMemo(() => runs.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE), [runs, page]);
 
   return (
     <AdminShell
@@ -50,7 +57,7 @@ export function AdminAgentRunsPage() {
               <tr><td colSpan={8} className="py-16 text-center text-neutral-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr>
             ) : runs.length === 0 ? (
               <tr><td colSpan={8} className="py-16 text-center text-sm text-neutral-600">暂无记录</td></tr>
-            ) : runs.map((r) => (
+            ) : pagedRuns.map((r) => (
               <tr key={r.id} className="hover:bg-white/[0.02] transition">
                 <td className="px-4 py-3">
                   <div className="flex flex-col">
@@ -74,7 +81,18 @@ export function AdminAgentRunsPage() {
           </tbody>
         </table>
         {!loading && runs.length > 0 ? (
-          <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">共 {runs.length} 条</div>
+          <div className="relative border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">
+            共 {runs.length} 条
+            {pageCount > 1 ? (
+              <div className="absolute inset-0 flex items-center justify-center gap-1">
+                <button type="button" disabled={page === 0} onClick={() => setPage(0)} className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 disabled:opacity-30" aria-label="第一页"><ChevronsLeft className="h-3.5 w-3.5" /></button>
+                <button type="button" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 disabled:opacity-30" aria-label="上一页"><ChevronLeft className="h-3.5 w-3.5" /></button>
+                <span className="px-2 text-[11px] tabular-nums text-neutral-400">{page + 1} / {pageCount}</span>
+                <button type="button" disabled={page >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 disabled:opacity-30" aria-label="下一页"><ChevronRight className="h-3.5 w-3.5" /></button>
+                <button type="button" disabled={page >= pageCount - 1} onClick={() => setPage(pageCount - 1)} className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 disabled:opacity-30" aria-label="最后一页"><ChevronsRight className="h-3.5 w-3.5" /></button>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </div>
       {/* unused */}

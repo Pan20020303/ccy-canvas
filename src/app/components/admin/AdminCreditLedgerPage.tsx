@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, RefreshCw, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Loader2, RefreshCw, Search } from "lucide-react";
 
 import { listCreditLedger, type CreditLedgerEntry } from "../../api/admin";
 import { Badge } from "../ui/badge";
@@ -8,6 +8,7 @@ import { Input } from "../ui/input";
 import { AdminShell } from "./AdminShell";
 
 const PAGE_SIZE = 100;
+const CLIENT_PAGE_SIZE = 20;
 
 const TYPE_LABELS: Record<string, string> = {
   reserve: "扣费（预留）",
@@ -47,6 +48,7 @@ export function AdminCreditLedgerPage() {
   const [error, setError] = useState("");
   const [userFilter, setUserFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async (offset = 0) => {
     if (offset === 0) setLoading(true);
@@ -65,6 +67,16 @@ export function AdminCreditLedgerPage() {
   }, [userFilter, typeFilter]);
 
   useEffect(() => { void load(0); }, [load]);
+
+  // Reset the client pager whenever any filter/search state changes.
+  useEffect(() => { setPage(0); }, [userFilter, typeFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(rows.length / CLIENT_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedRows = useMemo(
+    () => rows.slice(currentPage * CLIENT_PAGE_SIZE, (currentPage + 1) * CLIENT_PAGE_SIZE),
+    [rows, currentPage],
+  );
 
   const summary = useMemo(() => {
     let spent = 0;
@@ -148,7 +160,7 @@ export function AdminCreditLedgerPage() {
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={6} className="px-4 py-16 text-center text-sm text-neutral-500">暂无积分流水。</td></tr>
                 ) : (
-                  rows.map((r) => (
+                  pagedRows.map((r) => (
                     <tr key={r.id} className="transition hover:bg-white/[0.02]">
                       <td className="px-4 py-3">
                         <div className="flex flex-col">
@@ -169,6 +181,27 @@ export function AdminCreditLedgerPage() {
               </tbody>
             </table>
           </div>
+          {!loading && !error && pageCount > 1 ? (
+            <div className="flex items-center justify-center gap-1 border-t border-white/[0.04] bg-white/[0.01] px-4 py-2">
+              <button type="button" onClick={() => setPage(0)} disabled={currentPage === 0}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronsLeft className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={currentPage === 0}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="px-2 text-[11px] tabular-nums text-neutral-400">{currentPage + 1} / {pageCount}</span>
+              <button type="button" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={currentPage >= pageCount - 1}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+              <button type="button" onClick={() => setPage(pageCount - 1)} disabled={currentPage >= pageCount - 1}
+                className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent">
+                <ChevronsRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           {!loading && !error && rows.length > 0 && rows.length < total ? (
             <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-500">
               <div className="flex items-center justify-between gap-3">

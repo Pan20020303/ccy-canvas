@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, ShieldCheck, User, Ban, Trash2, RefreshCw, Zap, XCircle, KeyRound, Eye, EyeOff } from "lucide-react";
+import { Loader2, ShieldCheck, User, Ban, Trash2, RefreshCw, Zap, XCircle, KeyRound, Eye, EyeOff, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from "lucide-react";
 
 import type { AdminUser, AdjustCreditsPayload } from "../../api/admin";
 import { listUsers, updateUserRole, updateUserStatus, deleteUser, adjustCredits, resetUserPassword } from "../../api/admin";
@@ -251,18 +251,30 @@ function PasswordDialog({ user, open, onClose }: {
 
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
+const PAGE_SIZE = 20;
+
 export function AdminMembersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [creditUser, setCreditUser] = useState<AdminUser | null>(null);
   const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null);
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
     try { setUsers(await listUsers()); } catch { /* */ }
     setLoading(false);
   }, []);
+
+  const totalPages = Math.max(1, Math.ceil(users.length / PAGE_SIZE));
+
+  useEffect(() => {
+    if (page > totalPages - 1) setPage(totalPages - 1);
+  }, [page, totalPages]);
+
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedUsers = users.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
   useEffect(() => { load(); }, [load]);
 
@@ -332,7 +344,7 @@ export function AdminMembersPage() {
               <tr><td colSpan={7} className="py-16 text-center text-neutral-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr>
             ) : users.length === 0 ? (
               <tr><td colSpan={7} className="py-16 text-center text-sm text-neutral-600">暂无用户</td></tr>
-            ) : users.map((u) => (
+            ) : pagedUsers.map((u) => (
               <tr key={u.id} className="group hover:bg-white/[0.02] transition">
                 <td className="px-4 py-3 font-medium text-neutral-200">{u.name}</td>
                 <td className="px-4 py-3 text-neutral-400">{u.email}</td>
@@ -382,8 +394,47 @@ export function AdminMembersPage() {
           </tbody>
         </table>
         {!loading && users.length > 0 && (
-          <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">
+          <div className="relative border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">
             共 {users.length} 位用户
+            {totalPages > 1 && (
+              <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-1 pointer-events-none">
+                <button
+                  onClick={() => setPage(0)}
+                  disabled={safePage === 0}
+                  title="第一页"
+                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronsLeft className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={safePage === 0}
+                  title="上一页"
+                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <span className="px-1.5 text-[11px] tabular-nums text-neutral-400">
+                  {safePage + 1} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={safePage >= totalPages - 1}
+                  title="下一页"
+                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setPage(totalPages - 1)}
+                  disabled={safePage >= totalPages - 1}
+                  title="最后一页"
+                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronsRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         )}
         </div>

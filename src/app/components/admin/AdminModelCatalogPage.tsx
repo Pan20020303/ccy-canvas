@@ -5,7 +5,10 @@ import {
   Bot,
   BrainCircuit,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clapperboard,
   Eye,
   FileCode2,
@@ -2152,6 +2155,32 @@ function ModelTestResultModal({ result, onClose }: { result: ModelTestResult; on
   );
 }
 
+const PANEL_PAGE_SIZE = 20;
+
+const PANEL_PAGER_BUTTON =
+  "flex h-7 w-7 items-center justify-center rounded text-neutral-400 transition hover:bg-white/8 disabled:opacity-30 disabled:hover:bg-transparent";
+
+function PanelPager({ page, pageCount, onChange, className = "mt-4" }: { page: number; pageCount: number; onChange: (page: number) => void; className?: string }) {
+  if (pageCount <= 1) return null;
+  return (
+    <div className={`flex items-center justify-center gap-1 ${className}`}>
+      <button type="button" onClick={() => onChange(0)} disabled={page === 0} className={PANEL_PAGER_BUTTON}>
+        <ChevronsLeft className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" onClick={() => onChange(Math.max(0, page - 1))} disabled={page === 0} className={PANEL_PAGER_BUTTON}>
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </button>
+      <span className="px-2 text-[11px] tabular-nums text-neutral-400">{page + 1} / {pageCount}</span>
+      <button type="button" onClick={() => onChange(Math.min(pageCount - 1, page + 1))} disabled={page >= pageCount - 1} className={PANEL_PAGER_BUTTON}>
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" onClick={() => onChange(pageCount - 1)} disabled={page >= pageCount - 1} className={PANEL_PAGER_BUTTON}>
+        <ChevronsRight className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -2161,6 +2190,10 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
   const [tab, setTab] = useState<"ordinary" | "advanced">("ordinary");
   const [useMode, setUseMode] = useState<AgentUseMode>(0);
   const [editor, setEditor] = useState<{ agent: Agent | null; draft: AgentEditorDraft } | null>(null);
+  const [page, setPage] = useState(0);
+
+  // Reset the pager whenever the tab changes.
+  useEffect(() => { setPage(0); }, [tab]);
 
   const load = async () => {
     setLoading(true);
@@ -2189,6 +2222,9 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
     () => AGENT_PRESETS.map((preset) => ({ preset, agent: findPresetAgent(agents, preset) })),
     [agents],
   );
+  const pageCount = Math.max(1, Math.ceil(agents.length / PANEL_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedAgents = agents.slice(currentPage * PANEL_PAGE_SIZE, (currentPage + 1) * PANEL_PAGE_SIZE);
 
   const switchUseMode = async (value: "ordinary" | "advanced") => {
     const mode: AgentUseMode = value === "advanced" ? 1 : 0;
@@ -2361,6 +2397,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
           )}
         </div>
       ) : (
+        <>
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {loading ? (
           <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
@@ -2373,7 +2410,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
             暂无 Agent，点击创建一个可配置的创作角色。
           </button>
         ) : (
-          agents.map((agent) => (
+          pagedAgents.map((agent) => (
             <button
               key={agent.id}
               type="button"
@@ -2405,6 +2442,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
           ))
         )}
         </div>
+        {!loading ? <PanelPager page={currentPage} pageCount={pageCount} onChange={setPage} /> : null}
+        </>
       )}
 
       {editor ? (
@@ -2430,6 +2469,7 @@ function PromptManagePanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [previewOnly, setPreviewOnly] = useState(false);
+  const [page, setPage] = useState(0);
   const [editor, setEditor] = useState<{
     skill: Skill | null;
     name: string;
@@ -2455,6 +2495,9 @@ function PromptManagePanel() {
   }, []);
 
   const prompts = skills.filter(isPromptTemplateSkill);
+  const pageCount = Math.max(1, Math.ceil(prompts.length / PANEL_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedPrompts = prompts.slice(currentPage * PANEL_PAGE_SIZE, (currentPage + 1) * PANEL_PAGE_SIZE);
 
   const openEditor = (skill: Skill | null) => {
     const spec = (skill?.spec ?? {}) as Record<string, unknown>;
@@ -2529,7 +2572,7 @@ function PromptManagePanel() {
             暂无提示词模板，点击创建一个。
           </button>
         ) : (
-          prompts.map((skill) => (
+          pagedPrompts.map((skill) => (
             <button
               key={skill.id}
               type="button"
@@ -2548,6 +2591,7 @@ function PromptManagePanel() {
           ))
         )}
       </div>
+      {!loading ? <PanelPager page={currentPage} pageCount={pageCount} onChange={setPage} /> : null}
       {editor ? (
         <PromptEditorModal
           editor={editor}
@@ -2574,6 +2618,10 @@ function SkillManagementPanel() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+
+  // Reset the pager whenever the search keyword changes.
+  useEffect(() => { setPage(0); }, [keyword]);
 
   const load = async () => {
     setLoading(true);
@@ -2612,7 +2660,10 @@ function SkillManagementPanel() {
   });
   const activeEntry = filtered.find((entry) => entry.path === activePath) ?? filtered[0] ?? null;
   const active = activeEntry?.skill ?? null;
-  const skillTree = buildSkillTree(filtered);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PANEL_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedEntries = filtered.slice(currentPage * PANEL_PAGE_SIZE, (currentPage + 1) * PANEL_PAGE_SIZE);
+  const skillTree = buildSkillTree(pagedEntries);
 
   const saveSkillContent = async () => {
     if (!active || draft === null) return;
@@ -2713,6 +2764,7 @@ function SkillManagementPanel() {
               <div className="space-y-1">{renderSkillTree(skillTree)}</div>
             )}
           </div>
+          {!loading ? <PanelPager page={currentPage} pageCount={pageCount} onChange={setPage} className="mt-2 border-t border-white/[0.06] pt-2" /> : null}
         </aside>
         <div className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025]">
           {active && activeEntry ? (

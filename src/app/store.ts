@@ -90,6 +90,8 @@ export type Group = {
   position?: { x: number; y: number };
   width?: number;
   height?: number;
+  /** Optional shell tint (rgba string). Undefined → default neutral shell. */
+  color?: string;
 };
 type ProjectCanvasState = { nodes: Node[]; edges: Edge[]; groups: Group[] };
 
@@ -266,6 +268,9 @@ type AppState = {
   setGroupMembers: (groupId: string, nodeIds: string[]) => void;
   renameGroup: (groupId: string, name: string) => void;
   moveGroup: (groupId: string, delta: { x: number; y: number }, options?: { captureUndo?: boolean }) => void;
+  resizeGroup: (groupId: string, size: { width: number; height: number }, options?: { captureUndo?: boolean }) => void;
+  setGroupColor: (groupId: string, color?: string) => void;
+  arrangeGroupNodes: (groupId: string, mode: 'grid' | 'horizontal' | 'vertical') => void;
   // Multi-node layout actions (operate on currently `selected: true` nodes).
   // No-op when fewer than 2 nodes are selected. Alignment snaps every
   // selected node to a shared edge; distribute spreads them evenly.
@@ -902,6 +907,30 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   if (normalizedStatus === 'success' && task.result_url
     && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
     upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore);
+  }
+  // 历史资产: the QUEUED delivery path never recorded history — addHistory only
+  // ran in runNode's synchronous success block, so with the task queue enabled
+  // (SSE/poller completion) generated media silently skipped the 历史资产 panel.
+  // Record it here with a task-deterministic id so a double delivery (SSE +
+  // poller race) dedupes locally and server-side (upsert by client_id).
+  if (normalizedStatus === 'success' && task.result_url
+    && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
+    const store = getStore();
+    const historyId = `gen-task-${task.id}`;
+    if (!store.history.some((h) => h.id === historyId)) {
+      const nodeData = (store.nodes.find((n) => n.id === task.node_id)?.data ?? {}) as Record<string, unknown>;
+      const prompt = typeof nodeData.prompt === 'string' ? (nodeData.prompt as string) : '';
+      store.addHistory({
+        id: historyId,
+        title: prompt.slice(0, 60) || (task.model || task.service_type),
+        type: task.service_type,
+        mediaType: task.service_type as 'image' | 'video' | 'audio',
+        timestamp: Date.now(),
+        thumbnail: task.result_url,
+        promptExcerpt: prompt.slice(0, 120) || undefined,
+        sourceNodeId: task.node_id,
+      } as never);
+    }
   }
   trackedTaskNodes.delete(task.node_id);
 }
@@ -2520,6 +2549,108 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const undoStack = options?.captureUndo ? pushUndoState(state) : state.undoStack;
     const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
 
+    return {
+      nodes,
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  resizeGroup: (groupId, size, options) => set((state) => {
+    const target = state.groups.find((group) => group.id === groupId);
+    if (!target) return {};
+    const width = Math.max(160, Math.round(size.width));
+    const height = Math.max(120, Math.round(size.height));
+    if (target.width === width && target.height === height) return {};
+    const groups = state.groups.map((group) => (
+      group.id === groupId ? { ...group, width, height } : group
+    ));
+    // Same undo convention as moveGroup: one snapshot per drag (captured on the
+    // first move), not one per pointermove frame.
+    const undoStack = options?.captureUndo ? pushUndoState(state) : state.undoStack;
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  setGroupColor: (groupId, color) => set((state) => {
+    const target = state.groups.find((group) => group.id === groupId);
+    if (!target || target.color === color) return {};
+    const groups = state.groups.map((group) => (
+      group.id === groupId ? { ...group, color } : group
+    ));
+    const undoStack = pushUndoState(state);
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  // 整理布局: re-flow a group's MEMBER nodes inside the group frame (same
+  // layout math as arrangeSelectedNodes), then grow/shrink the frame to fit
+  // the arranged content. One undo step.
+  arrangeGroupNodes: (groupId, mode) => set((state) => {
+    const group = state.groups.find((g) => g.id === groupId);
+    if (!group || group.nodeIds.length === 0) return {};
+    const memberIds = new Set(group.nodeIds);
+    const members = state.nodes.filter((n) => memberIds.has(n.id));
+    if (members.length === 0) return {};
+
+    const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
+    const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
+    const GAP = 48;
+    const PAD = 32; // interior padding between the frame edge and the content
+
+    const originX = (group.position?.x ?? Math.min(...members.map((n) => n.position.x))) + PAD;
+    const originY = (group.position?.y ?? Math.min(...members.map((n) => n.position.y))) + PAD;
+    const ordered = [...members].sort((a, b) =>
+      Math.abs(a.position.y - b.position.y) > 24 ? a.position.y - b.position.y : a.position.x - b.position.x,
+    );
+
+    const nextPos = new Map<string, { x: number; y: number }>();
+    if (mode === 'horizontal') {
+      let x = originX;
+      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + GAP; }
+    } else if (mode === 'vertical') {
+      let y = originY;
+      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + GAP; }
+    } else {
+      const cols = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
+      const cellW = Math.max(...ordered.map(nodeWidth)) + GAP;
+      const cellH = Math.max(...ordered.map(nodeHeight)) + GAP;
+      ordered.forEach((n, i) => {
+        nextPos.set(n.id, {
+          x: originX + (i % cols) * cellW,
+          y: originY + Math.floor(i / cols) * cellH,
+        });
+      });
+    }
+
+    // Fit the frame around the arranged content.
+    let maxRight = originX;
+    let maxBottom = originY;
+    for (const n of ordered) {
+      const p = nextPos.get(n.id)!;
+      maxRight = Math.max(maxRight, p.x + nodeWidth(n));
+      maxBottom = Math.max(maxBottom, p.y + nodeHeight(n));
+    }
+    const gx = group.position?.x ?? (originX - PAD);
+    const gy = group.position?.y ?? (originY - PAD);
+
+    const undoStack = pushUndoState(state);
+    const nodes = state.nodes.map((n) => (nextPos.has(n.id) ? { ...n, position: nextPos.get(n.id)! } : n));
+    const groups = state.groups.map((g) => (
+      g.id === groupId
+        ? { ...g, position: { x: gx, y: gy }, width: Math.max(160, maxRight - gx + PAD), height: Math.max(120, maxBottom - gy + PAD) }
+        : g
+    ));
+    const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
     return {
       nodes,
       groups,

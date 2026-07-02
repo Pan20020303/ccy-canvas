@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy, Loader2, Plus, RefreshCw, XCircle } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Loader2, Plus, RefreshCw, XCircle } from "lucide-react";
 
 import type { AdminInvitation, CreateInvitationPayload } from "../../api/admin";
 import { listInvitations, revokeInvitation, createInvitation } from "../../api/admin";
@@ -7,6 +7,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { AdminShell } from "./AdminShell";
+
+const PAGE_SIZE = 20;
 
 const STATUS_STYLES: Record<string, string> = {
   active: "bg-emerald-500/12 text-emerald-300 border-emerald-500/20",
@@ -204,6 +206,7 @@ export function AdminInvitationsPage() {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +215,14 @@ export function AdminInvitationsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const pageCount = Math.max(1, Math.ceil(invitations.length / PAGE_SIZE));
+
+  useEffect(() => {
+    setPage((p) => Math.min(p, Math.max(0, Math.ceil(invitations.length / PAGE_SIZE) - 1)));
+  }, [invitations.length]);
+
+  const pagedInvitations = invitations.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   const handleRevoke = async (inv: AdminInvitation) => {
     setBusyId(inv.id);
@@ -264,7 +275,7 @@ export function AdminInvitationsPage() {
               <tr><td colSpan={8} className="py-16 text-center text-neutral-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr>
             ) : invitations.length === 0 ? (
               <tr><td colSpan={8} className="py-16 text-center text-sm text-neutral-600">暂无邀请码，点击「创建邀请码」开始</td></tr>
-            ) : invitations.map((inv) => (
+            ) : pagedInvitations.map((inv) => (
               <tr key={inv.id} className="group hover:bg-white/[0.02] transition">
                 <td className="px-4 py-3">
                   <Badge className={inv.role === "admin" ? "bg-[#ff6a1f]/15 text-[#ff9b68] border-[#ff6a1f]/20" : "bg-white/[0.06] text-neutral-300 border-white/10"}>
@@ -299,7 +310,48 @@ export function AdminInvitationsPage() {
         </table>
         {!loading && invitations.length > 0 && (
           <div className="border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">
-            共 {invitations.length} 条
+            <div className="flex items-center justify-between">
+              <span>共 {invitations.length} 条</span>
+              {pageCount > 1 && (
+                <div className="flex items-center justify-center gap-1">
+                  <button
+                    onClick={() => setPage(0)}
+                    disabled={page === 0}
+                    title="首页"
+                    className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition"
+                  >
+                    <ChevronsLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    title="上一页"
+                    className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="px-2 text-[11px] tabular-nums text-neutral-400">
+                    {page + 1} / {pageCount}
+                  </span>
+                  <button
+                    onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                    disabled={page >= pageCount - 1}
+                    title="下一页"
+                    className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setPage(pageCount - 1)}
+                    disabled={page >= pageCount - 1}
+                    title="末页"
+                    className="flex h-6 w-6 items-center justify-center rounded text-neutral-400 hover:bg-white/8 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent transition"
+                  >
+                    <ChevronsRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
         </div>
