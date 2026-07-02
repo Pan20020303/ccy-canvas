@@ -38,7 +38,8 @@ import logoUrl from '../../imports/logo.png';
 // 3D 挂牌（three + rapier 物理）体积不小 — 懒加载，只在首页首帧后拉取。
 const Lanyard = lazy(() => import('./reactbits/Lanyard'));
 
-/** Shared BorderGlow tuning — cool silver light that fits the graphite theme. */
+/** Shared BorderGlow tuning — cool silver light on BORDERLESS cards
+ *  (reference style): no resting border, the glow only materializes on hover. */
 const CARD_GLOW = {
   edgeSensitivity: 25,
   glowColor: '210 30 85',
@@ -265,15 +266,15 @@ export function HomePage() {
   const menuItemCls = 'flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] text-neutral-300 transition hover:bg-white/[0.06] hover:text-neutral-100';
 
   return (
-    <div className="relative min-h-screen bg-gradient-to-b from-[#111216] via-[#0d0e11] to-[#0a0b0d] text-neutral-100">
+    <div className="relative min-h-screen bg-gradient-to-b from-[#191a20] via-[#131418] to-[#0f1013] text-neutral-100">
       {/* Galaxy 星空背景 (React Bits, WebGL) — monochrome silver stars with a
           gentle cursor parallax, sitting behind everything. pointer-events
           none: the port listens on window so the parallax still works. */}
-      <div className="pointer-events-none fixed inset-0 z-0 opacity-60">
+      <div className="pointer-events-none fixed inset-0 z-0 opacity-70">
         <Galaxy
           density={0.9}
           saturation={0}
-          glowIntensity={0.22}
+          glowIntensity={0.28}
           twinkleIntensity={0.35}
           starSpeed={0.25}
           speed={0.6}
@@ -285,13 +286,13 @@ export function HomePage() {
 
       {/* Ambient light: a soft top-center glow over layered charcoal — the
           "premium dark" read instead of flat black. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.08),transparent_70%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[460px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.12),transparent_70%)]" />
 
 
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onCoverFile(e)} />
 
-      {/* Full-bleed header. */}
-      <header className="relative z-20 w-full border-b border-white/[0.06] bg-white/[0.015] backdrop-blur-xl">
+      {/* Full-bleed header — borderless (reference style). */}
+      <header className="relative z-20 w-full bg-white/[0.02] backdrop-blur-xl">
         <div className="flex h-16 w-full items-center justify-between px-8">
           <div className="flex items-center gap-2.5">
             <img src={logoUrl} alt="CCY Canvas" className="h-7 w-7 rounded object-contain" />
@@ -374,7 +375,7 @@ export function HomePage() {
             <h1 className="text-[19px] font-semibold tracking-wide text-neutral-100">
               {openFolder ? openFolder.name : (zh ? '全部项目' : 'All projects')}
             </h1>
-            <span className="text-[12px] text-neutral-600">{visibleProjects.length}</span>
+            <span className="text-[12px] text-neutral-500">{visibleProjects.length}</span>
           </div>
           {!openFolder && hasBackend ? (
             creatingFolder ? (
@@ -412,22 +413,20 @@ export function HomePage() {
         </div>
 
         <div className="grid grid-cols-[repeat(auto-fill,minmax(236px,1fr))] gap-x-5 gap-y-8">
-          {/* 开始创作 */}
+          {/* 开始创作 — 参考风格：虚线空卡，无实体边框底。 */}
           <div>
-            <BorderGlow {...CARD_GLOW} backgroundColor="#111216">
-              <button
-                type="button"
-                onClick={() => void startCreating()}
-                disabled={busyId !== null}
-                className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 bg-gradient-to-b from-white/[0.06] to-white/[0.015] text-neutral-200 transition hover:from-white/[0.09] disabled:opacity-60"
-              >
-                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-white/[0.06] transition group-hover:border-white/30 group-hover:bg-white/[0.12]">
-                  <Plus className="h-4.5 w-4.5" />
-                </span>
-                <span className="text-[13px] tracking-wide">{zh ? '开始创作' : 'Start creating'}</span>
-              </button>
-            </BorderGlow>
-            <div className="mt-3 px-0.5 text-[12.5px] text-neutral-500">
+            <button
+              type="button"
+              onClick={() => void startCreating()}
+              disabled={busyId !== null}
+              className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] text-neutral-200 transition hover:border-white/40 hover:bg-white/[0.07] disabled:opacity-60"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.09] transition group-hover:bg-white/[0.16]">
+                <Plus className="h-4.5 w-4.5" />
+              </span>
+              <span className="text-[13px] tracking-wide">{zh ? '开始创作' : 'Start creating'}</span>
+            </button>
+            <div className="mt-3 px-0.5 text-[12.5px] text-neutral-400">
               {openFolder
                 ? (zh ? '在此文件夹中新建项目' : 'Create a project in this folder')
                 : (zh ? '创建新的画布项目' : 'Create a new canvas project')}
@@ -437,27 +436,27 @@ export function HomePage() {
           {/* 文件夹卡片（仅根层级） */}
           {!openFolder ? folders.map((folder) => (
             <div key={folder.id} className="group/folder">
-              <BorderGlow {...CARD_GLOW} backgroundColor="#15161a">
+              <BorderGlow {...CARD_GLOW} backgroundColor="#1d1e24" className="!border-transparent">
                 <button
                   type="button"
                   onClick={() => setOpenFolderId(folder.id)}
-                  className="group relative block aspect-[16/10] w-full overflow-hidden bg-gradient-to-b from-[#1b1d22] to-[#121316] transition"
+                  className="group relative block aspect-[16/10] w-full overflow-hidden bg-gradient-to-b from-[#26272d] to-[#191a1f] transition"
                 >
                   {/* 文件夹页签造型 */}
-                  <div className="absolute left-5 top-5 h-2.5 w-16 rounded-t-md bg-white/[0.09]" />
-                  <div className="absolute inset-x-5 bottom-5 top-7 rounded-xl border border-white/[0.07] bg-gradient-to-b from-white/[0.07] to-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]" />
-                  <Folder className="absolute bottom-8 right-8 h-7 w-7 text-neutral-600 transition group-hover:text-neutral-400" />
+                  <div className="absolute left-5 top-5 h-2.5 w-16 rounded-t-md bg-white/[0.12]" />
+                  <div className="absolute inset-x-5 bottom-5 top-7 rounded-xl bg-gradient-to-b from-white/[0.1] to-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]" />
+                  <Folder className="absolute bottom-8 right-8 h-7 w-7 text-neutral-500 transition group-hover:text-neutral-300" />
                 </button>
               </BorderGlow>
               <div className="mt-3 flex items-start justify-between gap-2 px-0.5">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 truncate text-[13px] text-neutral-200">
+                  <div className="flex items-center gap-1.5 truncate text-[13px] text-neutral-100">
                     {folder.name}
-                    <span className="text-[10.5px] text-neutral-600">
+                    <span className="text-[10.5px] text-neutral-500">
                       {projects.filter((p) => p.folderId === folder.id).length}
                     </span>
                   </div>
-                  <div className="mt-1 text-[11px] tabular-nums text-neutral-600">{formatDate(new Date(folder.created_at).getTime(), zh)}</div>
+                  <div className="mt-1 text-[11px] tabular-nums text-neutral-500">{formatDate(new Date(folder.created_at).getTime(), zh)}</div>
                 </div>
                 <button
                   type="button"
@@ -478,8 +477,8 @@ export function HomePage() {
               <div key={project.id} className="group/card">
                 <BorderGlow
                   {...CARD_GLOW}
-                  backgroundColor="#141519"
-                  className={isActive ? 'ring-1 ring-white/25' : ''}
+                  backgroundColor="#1b1c21"
+                  className={isActive ? '!border-transparent ring-1 ring-white/30' : '!border-transparent'}
                 >
                   <button
                     type="button"
@@ -491,9 +490,9 @@ export function HomePage() {
                       <MediaThumb src={project.coverUrl} alt={project.name} className="h-full w-full object-cover" />
                     ) : (
                       <>
-                        <div className="absolute inset-0 bg-gradient-to-b from-[#1c1d22] via-[#141519] to-[#0e0f12]" />
-                        <div className="absolute inset-0 bg-[radial-gradient(70%_55%_at_50%_12%,rgba(255,255,255,0.09),transparent_65%)] opacity-80 transition-opacity group-hover/card:opacity-100" />
-                        <div className="relative flex h-full w-full items-center justify-center text-neutral-700 transition group-hover/card:text-neutral-500">
+                        <div className="absolute inset-0 bg-gradient-to-b from-[#26272d] via-[#1b1c21] to-[#141519]" />
+                        <div className="absolute inset-0 bg-[radial-gradient(70%_55%_at_50%_12%,rgba(255,255,255,0.12),transparent_65%)] opacity-80 transition-opacity group-hover/card:opacity-100" />
+                        <div className="relative flex h-full w-full items-center justify-center text-neutral-600 transition group-hover/card:text-neutral-400">
                           <ImageIcon className="h-8 w-8" />
                         </div>
                       </>
@@ -514,10 +513,10 @@ export function HomePage() {
 
                 <div className="mt-3 flex items-start justify-between gap-2 px-0.5">
                   <div className="min-w-0">
-                    <div className="truncate text-[13px] text-neutral-200">
+                    <div className="truncate text-[13px] text-neutral-100">
                       {project.name.trim() || (zh ? '未命名项目' : 'Untitled Project')}
                     </div>
-                    <div className="mt-1 text-[11px] tabular-nums text-neutral-600">{formatDate(project.createdAt, zh)}</div>
+                    <div className="mt-1 text-[11px] tabular-nums text-neutral-500">{formatDate(project.createdAt, zh)}</div>
                   </div>
                   {hasBackend ? (
                     <div className="relative">
@@ -631,7 +630,7 @@ export function HomePage() {
             </button>
           </div>
         ) : (
-          <div className="mt-16 text-center text-[12px] text-neutral-700">{zh ? '没有更多了' : 'No more projects'}</div>
+          <div className="mt-16 text-center text-[12px] text-neutral-600">{zh ? '没有更多了' : 'No more projects'}</div>
         )}
       </main>
 
