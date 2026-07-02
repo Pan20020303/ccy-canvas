@@ -2254,7 +2254,7 @@ const BaseNode = ({
       setTilt(null);
       return;
     }
-    const TILT_AMPLITUDE = 8; // degrees at the card edge — subtle, canvas-scale
+    const TILT_AMPLITUDE = 14; // degrees at the card edge (React Bits default)
     const onMove = (event: MouseEvent) => {
       const el = shellRef.current;
       if (!el) return;
@@ -2335,7 +2335,7 @@ const BaseNode = ({
             // card as its drop target; springs back on leave/drop. The eased
             // transform transition doubles as the spring smoothing.
             ...(tilt
-              ? { transform: `perspective(800px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(1.02)` }
+              ? { transform: `perspective(800px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(1.045)` }
               : null),
             transition: 'transform 0.22s ease-out, box-shadow 0.15s ease',
             willChange: connectTarget ? 'transform' : undefined,

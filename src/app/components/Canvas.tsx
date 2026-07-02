@@ -4,10 +4,13 @@ import {
   Background,
   MiniMap,
   BackgroundVariant,
+  Position,
   ReactFlowProvider,
+  getBezierPath,
   useReactFlow,
   useViewport,
   type Connection,
+  type ConnectionLineComponentProps,
   type Node,
   type NodeChange,
 } from '@xyflow/react';
@@ -220,6 +223,46 @@ function computeGuides(dragged: Node, others: Node[], threshold: number): {
   }
 
   return { guides, snapDx, snapDy, hasSnapX, hasSnapY };
+}
+
+/** In-progress connection line that follows the RAW cursor. React Flow snaps
+ *  the default preview to the hovered handle — and since our full-card drop
+ *  target is one giant handle, the wire visually locked onto the card CENTER
+ *  the moment you hovered it. The drop still lands on the handle at release;
+ *  only the preview roams free until then. */
+function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: ConnectionLineComponentProps) {
+  const { screenToFlowPosition } = useReactFlow();
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      setCursor(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+    };
+    window.addEventListener('pointermove', onMove);
+    return () => window.removeEventListener('pointermove', onMove);
+  }, [screenToFlowPosition]);
+
+  const tx = cursor?.x ?? toX;
+  const ty = cursor?.y ?? toY;
+  const [path] = getBezierPath({
+    sourceX: fromX,
+    sourceY: fromY,
+    sourcePosition: fromPosition,
+    targetX: tx,
+    targetY: ty,
+    targetPosition: tx >= fromX ? Position.Left : Position.Right,
+  });
+
+  return (
+    <path
+      d={path}
+      fill="none"
+      stroke="rgba(255,255,255,0.55)"
+      strokeWidth={2}
+      strokeDasharray="6 6"
+      strokeLinecap="round"
+    />
+  );
 }
 
 function AlignmentGuides({ guides }: { guides: GuideLine[] }) {
@@ -1544,6 +1587,7 @@ const InnerCanvas = () => {
         }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        connectionLineComponent={FreeConnectionLine}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
         className="touch-none"
