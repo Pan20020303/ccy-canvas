@@ -26,7 +26,7 @@ export function ProtectedRoute({
   }
 
   if (requireRole && user.role !== requireRole) {
-    return <Navigate to="/app" replace />;
+    return <Navigate to="/home" replace />;
   }
 
   return <>{children}</>;

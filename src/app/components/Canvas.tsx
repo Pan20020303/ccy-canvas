@@ -17,7 +17,7 @@ import {
   ClipboardPaste,
   Download,
   FolderHeart,
-  Grid3X3,
+  HelpCircle,
   Image as ImageIcon,
   Layers3,
   LayoutGrid,
@@ -64,6 +64,7 @@ import {
 import { nodeTypes } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
+import { CanvasGuideModal } from './CanvasGuideModal';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
@@ -279,7 +280,6 @@ const InnerCanvas = () => {
     showMiniMap,
     setShowMiniMap,
     snapToGrid,
-    setSnapToGrid,
     history,
   } = useStore();
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
@@ -350,6 +350,7 @@ const InnerCanvas = () => {
   const [groupDragging, setGroupDragging] = useState(false);
   // Bottom-right canvas index — the "所有节点 / 分组" jump panel.
   const [indexPanel, setIndexPanel] = useState<'nodes' | 'groups' | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
@@ -1946,7 +1947,8 @@ const InnerCanvas = () => {
       />
 
       {/* Bottom-left control strip — compact reference proportions: flat icon
-          toggles + a zoom readout in one hairline pill. */}
+          toggles + a zoom readout in one hairline pill. The snap toggle moved
+          into the bottom dock (reference keeps the pin there). */}
       <div className="absolute bottom-6 left-6 z-40 flex items-center gap-1 rounded-full border border-white/10 bg-black/45 px-1.5 py-1 shadow-2xl backdrop-blur-xl">
         <ControlButton
           active={showMiniMap}
@@ -1954,13 +1956,6 @@ const InnerCanvas = () => {
           onClick={() => setShowMiniMap(!showMiniMap)}
         >
           <Map className="h-3.5 w-3.5" />
-        </ControlButton>
-        <ControlButton
-          active={snapToGrid}
-          label={language === 'zh' ? '开关网格对齐' : 'Toggle grid snap'}
-          onClick={() => setSnapToGrid(!snapToGrid)}
-        >
-          <Grid3X3 className="h-3.5 w-3.5" />
         </ControlButton>
         <ControlButton
           active={false}
@@ -1979,6 +1974,18 @@ const InnerCanvas = () => {
           {Math.round(viewport.zoom * 100)}%
         </span>
       </div>
+
+      {/* 使用指南 — standalone "?" beside the bottom-left strip (reference
+          placement); opens the canvas guide modal. */}
+      <button
+        type="button"
+        onClick={() => setGuideOpen(true)}
+        title={language === 'zh' ? '使用指南' : 'Canvas guide'}
+        className="absolute bottom-6 left-[150px] z-40 flex h-[34px] w-[34px] items-center justify-center rounded-full border border-white/10 bg-black/45 text-neutral-400 shadow-2xl backdrop-blur-xl transition hover:bg-black/70 hover:text-neutral-100"
+      >
+        <HelpCircle className="h-4 w-4" />
+      </button>
+      {guideOpen ? <CanvasGuideModal onClose={() => setGuideOpen(false)} /> : null}
 
       {/* Zoom % indicator — read-only pill at the top center of the
           canvas. Matches NeoWOW's `极简 · NNN%` chip; the "极简" render

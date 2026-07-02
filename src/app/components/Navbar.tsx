@@ -114,11 +114,16 @@ export const Navbar = () => {
       style={{ right: agentPanelOpen ? 480 : 0 }}
       className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 transition-[right] duration-200 ease-out"
     >
-      {/* Left: logo pill */}
-      <div className={`pointer-events-auto flex items-center gap-2 ${pillBase} px-3 py-1.5`}>
+      {/* Left: logo pill — clicking returns to the project homepage. */}
+      <button
+        type="button"
+        onClick={() => navigate('/home')}
+        title={language === 'zh' ? '返回首页' : 'Back to home'}
+        className={`pointer-events-auto flex items-center gap-2 ${pillBase} px-3 py-1.5 transition hover:bg-black/70`}
+      >
         <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />
         <span className="text-[13px] font-semibold tracking-wide text-neutral-100">CCY Canvas</span>
-      </div>
+      </button>
 
       {/* Right: controls cluster */}
       <div className="pointer-events-auto flex items-center gap-2">

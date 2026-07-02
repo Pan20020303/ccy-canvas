@@ -13,6 +13,7 @@ import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
 import { AgentRunPanel } from "./components/AgentRunPanel";
 import { Canvas } from "./components/Canvas";
+import { HomePage } from "./components/HomePage";
 import { LoginPage } from "./components/LoginPage";
 import { Modals } from "./components/Modals";
 import { Navbar } from "./components/Navbar";
@@ -81,7 +82,8 @@ const HomeRedirect = () => {
     return <Navigate to="/login" replace />;
   }
 
-  return <Navigate to={user.role === "admin" ? "/admin" : "/app"} replace />;
+  // 项目创建 / 切换在首页完成，画布从首页进入。管理员保留原来的直达管理端。
+  return <Navigate to={user.role === "admin" ? "/admin" : "/home"} replace />;
 };
 
 export const router = createBrowserRouter([
@@ -96,6 +98,14 @@ export const router = createBrowserRouter([
   {
     path: "/register",
     Component: RegisterPage,
+  },
+  {
+    path: "/home",
+    Component: () => (
+      <ProtectedRoute>
+        <HomePage />
+      </ProtectedRoute>
+    ),
   },
   {
     path: "/app",

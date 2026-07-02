@@ -135,7 +135,7 @@ export const LoginPage = () => {
     setError(null);
     try {
       const user = await login({ email, password });
-      navigate(user.role === "admin" ? "/admin" : "/app", { replace: true });
+      navigate(user.role === "admin" ? "/admin" : "/home", { replace: true });
     } catch (err) {
       setError(toUserMessage(err, zh ? "zh" : "en"));
     } finally {
