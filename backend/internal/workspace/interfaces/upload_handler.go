@@ -53,8 +53,8 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 
 		// Validate content type.
 		contentType := header.Header.Get("Content-Type")
-		if !strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(contentType, "video/") {
-			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Only image and video files are allowed"})
+		if !strings.HasPrefix(contentType, "image/") && !strings.HasPrefix(contentType, "video/") && !strings.HasPrefix(contentType, "audio/") {
+			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Only image, video and audio files are allowed"})
 			return
 		}
 		// Defense against stored XSS: never trust the client-declared type for
@@ -87,6 +87,12 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 				ext = ".mp4"
 			} else if strings.HasPrefix(contentType, "video/quicktime") {
 				ext = ".mov"
+			} else if strings.HasPrefix(contentType, "audio/mpeg") {
+				ext = ".mp3"
+			} else if strings.HasPrefix(contentType, "audio/wav") || strings.HasPrefix(contentType, "audio/x-wav") || strings.HasPrefix(contentType, "audio/wave") {
+				ext = ".wav"
+			} else if strings.HasPrefix(contentType, "audio/mp4") || strings.HasPrefix(contentType, "audio/x-m4a") {
+				ext = ".m4a"
 			} else {
 				ext = ".bin"
 			}
@@ -151,7 +157,7 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		// a common one. We explicitly do NOT forward Referer so
 		// referrer-based hotlink protection doesn't bite either.
 		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
-		req.Header.Set("Accept", "image/*,video/*,*/*;q=0.8")
+		req.Header.Set("Accept", "image/*,video/*,audio/*,*/*;q=0.8")
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -175,13 +181,14 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		//      (bulletproof for COS files saved with .bin/.img keys)
 		ct := resp.Header.Get("Content-Type")
 		body := bufio.NewReaderSize(resp.Body, 512)
-		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") {
+		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") && !strings.HasPrefix(ct, "audio/") {
 			if sniffed := sniffMediaType(target); sniffed != "" {
 				ct = sniffed
 			} else {
 				peek, _ := body.Peek(512)
 				detected := http.DetectContentType(peek)
-				if strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "video/") {
+				// application/ogg is how Go detects Ogg audio containers.
+				if strings.HasPrefix(detected, "image/") || strings.HasPrefix(detected, "video/") || strings.HasPrefix(detected, "audio/") || detected == "application/ogg" {
 					ct = detected
 				} else {
 					http.Error(w, "Not a media resource (upstream="+resp.Header.Get("Content-Type")+", detected="+detected+")", http.StatusBadRequest)
@@ -248,6 +255,18 @@ func sniffMediaType(rawURL string) string {
 		return "video/webm"
 	case ".mkv":
 		return "video/x-matroska"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".m4a":
+		return "audio/mp4"
+	case ".aac":
+		return "audio/aac"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
 	}
 	return ""
 }
