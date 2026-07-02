@@ -31,7 +31,6 @@ import {
 import { useAuth } from '../auth/AuthProvider';
 import { MediaThumb } from './MediaThumb';
 import BorderGlow from './reactbits/BorderGlow';
-import Galaxy from './reactbits/Galaxy';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
 
@@ -266,27 +265,9 @@ export function HomePage() {
   const menuItemCls = 'flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] text-neutral-300 transition hover:bg-white/[0.06] hover:text-neutral-100';
 
   return (
-    <div className="relative min-h-screen bg-gradient-to-b from-[#191a20] via-[#131418] to-[#0f1013] text-neutral-100">
-      {/* Galaxy 星空背景 (React Bits, WebGL) — monochrome silver stars with a
-          gentle cursor parallax, sitting behind everything. pointer-events
-          none: the port listens on window so the parallax still works. */}
-      <div className="pointer-events-none fixed inset-0 z-0 opacity-70">
-        <Galaxy
-          density={0.9}
-          saturation={0}
-          glowIntensity={0.28}
-          twinkleIntensity={0.35}
-          starSpeed={0.25}
-          speed={0.6}
-          rotationSpeed={0.03}
-          mouseRepulsion={false}
-          transparent
-        />
-      </div>
-
-      {/* Ambient light: a soft top-center glow over layered charcoal — the
-          "premium dark" read instead of flat black. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[460px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.12),transparent_70%)]" />
+    <div className="relative min-h-screen bg-[#121316] text-neutral-100">
+      {/* NeoWow 同款黑灰背景：纯色炭灰 + 细点阵纹理，无渐变无光晕。 */}
+      <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(rgba(255,255,255,0.05)_1px,transparent_1px)] [background-size:24px_24px]" />
 
 
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onCoverFile(e)} />
