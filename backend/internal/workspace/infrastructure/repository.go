@@ -68,6 +68,7 @@ func toSnapshot(s sqlc.CanvasSnapshot) domain.CanvasSnapshot {
 		UserID:    uuidStr(s.UserID),
 		Nodes:     rawJSON(s.Nodes),
 		Edges:     rawJSON(s.Edges),
+		Groups:    rawJSON(s.Groups),
 		Version:   s.Version,
 		CreatedAt: s.CreatedAt.Time,
 	}
@@ -159,7 +160,7 @@ func (r *Repository) GetCanvasSnapshot(ctx context.Context, projectID string) (*
 	return &snap, nil
 }
 
-func (r *Repository) UpsertCanvasSnapshot(ctx context.Context, projectID, userID string, nodes, edges json.RawMessage) (*domain.CanvasSnapshot, error) {
+func (r *Repository) UpsertCanvasSnapshot(ctx context.Context, projectID, userID string, nodes, edges, groups json.RawMessage) (*domain.CanvasSnapshot, error) {
 	pgProj, err := parsePgUUID(projectID)
 	if err != nil {
 		return nil, err
@@ -176,11 +177,16 @@ func (r *Repository) UpsertCanvasSnapshot(ctx context.Context, projectID, userID
 	if len(edgesBytes) == 0 {
 		edgesBytes = []byte("[]")
 	}
+	groupsBytes := []byte(groups)
+	if len(groupsBytes) == 0 {
+		groupsBytes = []byte("[]")
+	}
 	s, err := r.q.UpsertCanvasSnapshot(ctx, sqlc.UpsertCanvasSnapshotParams{
 		ProjectID: pgProj,
 		UserID:    pgUser,
 		Nodes:     nodesBytes,
 		Edges:     edgesBytes,
+		Groups:    groupsBytes,
 	})
 	if err != nil {
 		return nil, err

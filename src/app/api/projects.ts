@@ -15,6 +15,8 @@ export type CanvasData = {
   project_id: string;
   nodes: unknown[];
   edges: unknown[];
+  /** Canvas group rectangles; older snapshots may omit it. */
+  groups?: unknown[];
   version: number;
 };
 
@@ -48,11 +50,12 @@ export function saveCanvas(
   projectId: string,
   nodes: unknown[],
   edges: unknown[],
+  groups: unknown[] = [],
   options?: { keepalive?: boolean },
 ): Promise<CanvasData> {
   return apiClient.put<CanvasData>(
     `/api/app/projects/${projectId}/canvas`,
-    { nodes, edges },
+    { nodes, edges, groups },
     options,
   );
 }

@@ -14,6 +14,7 @@ type CanvasSnapshot struct {
 	UserID    pgtype.UUID        `json:"user_id"`
 	Nodes     []byte             `json:"nodes"`
 	Edges     []byte             `json:"edges"`
+	Groups    []byte             `json:"groups"`
 	Version   int32              `json:"version"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }

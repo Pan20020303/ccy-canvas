@@ -36,7 +36,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 }
 
 const getCanvasSnapshot = `-- name: GetCanvasSnapshot :one
-SELECT id, project_id, user_id, nodes, edges, version, created_at
+SELECT id, project_id, user_id, nodes, edges, groups, version, created_at
 FROM canvas_snapshots
 WHERE project_id = $1
 `
@@ -50,6 +50,7 @@ func (q *Queries) GetCanvasSnapshot(ctx context.Context, projectID pgtype.UUID) 
 		&i.UserID,
 		&i.Nodes,
 		&i.Edges,
+		&i.Groups,
 		&i.Version,
 		&i.CreatedAt,
 	)
@@ -135,14 +136,15 @@ func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNamePa
 }
 
 const upsertCanvasSnapshot = `-- name: UpsertCanvasSnapshot :one
-INSERT INTO canvas_snapshots (project_id, user_id, nodes, edges, version)
-VALUES ($1, $2, $3, $4, 1)
+INSERT INTO canvas_snapshots (project_id, user_id, nodes, edges, groups, version)
+VALUES ($1, $2, $3, $4, $5, 1)
 ON CONFLICT (project_id) DO UPDATE
   SET nodes = EXCLUDED.nodes,
       edges = EXCLUDED.edges,
+      groups = EXCLUDED.groups,
       version = canvas_snapshots.version + 1,
       user_id = EXCLUDED.user_id
-RETURNING id, project_id, user_id, nodes, edges, version, created_at
+RETURNING id, project_id, user_id, nodes, edges, groups, version, created_at
 `
 
 type UpsertCanvasSnapshotParams struct {
@@ -150,6 +152,7 @@ type UpsertCanvasSnapshotParams struct {
 	UserID    pgtype.UUID `json:"user_id"`
 	Nodes     []byte      `json:"nodes"`
 	Edges     []byte      `json:"edges"`
+	Groups    []byte      `json:"groups"`
 }
 
 func (q *Queries) UpsertCanvasSnapshot(ctx context.Context, arg UpsertCanvasSnapshotParams) (CanvasSnapshot, error) {
@@ -158,6 +161,7 @@ func (q *Queries) UpsertCanvasSnapshot(ctx context.Context, arg UpsertCanvasSnap
 		arg.UserID,
 		arg.Nodes,
 		arg.Edges,
+		arg.Groups,
 	)
 	var i CanvasSnapshot
 	err := row.Scan(
@@ -166,6 +170,7 @@ func (q *Queries) UpsertCanvasSnapshot(ctx context.Context, arg UpsertCanvasSnap
 		&i.UserID,
 		&i.Nodes,
 		&i.Edges,
+		&i.Groups,
 		&i.Version,
 		&i.CreatedAt,
 	)

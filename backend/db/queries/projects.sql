@@ -21,16 +21,17 @@ WHERE id = $1 AND owner_id = $3
 RETURNING id, owner_id, name, created_at, updated_at;
 
 -- name: GetCanvasSnapshot :one
-SELECT id, project_id, user_id, nodes, edges, version, created_at
+SELECT id, project_id, user_id, nodes, edges, groups, version, created_at
 FROM canvas_snapshots
 WHERE project_id = $1;
 
 -- name: UpsertCanvasSnapshot :one
-INSERT INTO canvas_snapshots (project_id, user_id, nodes, edges, version)
-VALUES ($1, $2, $3, $4, 1)
+INSERT INTO canvas_snapshots (project_id, user_id, nodes, edges, groups, version)
+VALUES ($1, $2, $3, $4, $5, 1)
 ON CONFLICT (project_id) DO UPDATE
   SET nodes = EXCLUDED.nodes,
       edges = EXCLUDED.edges,
+      groups = EXCLUDED.groups,
       version = canvas_snapshots.version + 1,
       user_id = EXCLUDED.user_id
-RETURNING id, project_id, user_id, nodes, edges, version, created_at;
+RETURNING id, project_id, user_id, nodes, edges, groups, version, created_at;

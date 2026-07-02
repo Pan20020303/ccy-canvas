@@ -40,6 +40,7 @@ type CanvasData struct {
 	ProjectID string          `json:"project_id"`
 	Nodes     json.RawMessage `json:"nodes"`
 	Edges     json.RawMessage `json:"edges"`
+	Groups    json.RawMessage `json:"groups"`
 	Version   int32           `json:"version"`
 }
 
@@ -48,7 +49,11 @@ func toProjectItem(p domain.Project) ProjectItem {
 }
 
 func toCanvasData(s domain.CanvasSnapshot) CanvasData {
-	return CanvasData{ProjectID: s.ProjectID, Nodes: s.Nodes, Edges: s.Edges, Version: s.Version}
+	groups := s.Groups
+	if len(groups) == 0 {
+		groups = json.RawMessage("[]")
+	}
+	return CanvasData{ProjectID: s.ProjectID, Nodes: s.Nodes, Edges: s.Edges, Groups: groups, Version: s.Version}
 }
 
 var userSecurity = []map[string][]string{{httpapi.SecuritySchemeName: {}}}
@@ -199,7 +204,7 @@ func (h *Handler) getCanvas(ctx context.Context, input *getCanvasInput) (*getCan
 	out := &getCanvasOutput{}
 	if snap == nil {
 		// Return empty canvas for new projects.
-		out.Body.Data = CanvasData{ProjectID: input.ID, Nodes: json.RawMessage("[]"), Edges: json.RawMessage("[]"), Version: 0}
+		out.Body.Data = CanvasData{ProjectID: input.ID, Nodes: json.RawMessage("[]"), Edges: json.RawMessage("[]"), Groups: json.RawMessage("[]"), Version: 0}
 	} else {
 		out.Body.Data = toCanvasData(*snap)
 	}
@@ -212,6 +217,8 @@ type saveCanvasInput struct {
 	Body struct {
 		Nodes json.RawMessage `json:"nodes" doc:"ReactFlow nodes array"`
 		Edges json.RawMessage `json:"edges" doc:"ReactFlow edges array"`
+		// Optional for backward compatibility: older clients don't send it.
+		Groups json.RawMessage `json:"groups,omitempty" doc:"Canvas group rectangles"`
 	}
 }
 
@@ -237,7 +244,7 @@ func (h *Handler) saveCanvas(ctx context.Context, input *saveCanvasInput) (*save
 		return nil, huma.Error403Forbidden("Access denied")
 	}
 
-	snap, err := h.repo.UpsertCanvasSnapshot(ctx, input.ID, claims.UserID, input.Body.Nodes, input.Body.Edges)
+	snap, err := h.repo.UpsertCanvasSnapshot(ctx, input.ID, claims.UserID, input.Body.Nodes, input.Body.Edges, input.Body.Groups)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to save canvas", err)
 	}

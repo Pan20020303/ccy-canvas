@@ -2043,13 +2043,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             return n;
           });
           const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : state.edges;
+          // Older snapshots have no groups field — keep whatever is local then.
+          const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : state.groups;
           const projectStateById = {
             ...state.projectStateById,
-            [first.id]: createCanvasSnapshot(nodes, edges, state.groups),
+            [first.id]: createCanvasSnapshot(nodes, edges, groups),
           };
           return {
             nodes,
             edges,
+            groups,
             activeProjectId: first.id,
             activeBackendProjectId: first.id,
             canvasHydrated: true, // backend canvas is now the source of truth → auto-save is safe
@@ -2099,7 +2102,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // Save current canvas first.
     if (state.activeBackendProjectId) {
       try {
-        await saveCanvas(state.activeBackendProjectId, state.nodes, state.edges);
+        await saveCanvas(state.activeBackendProjectId, state.nodes, state.edges, state.groups);
       } catch {
         // Non-fatal — continue switching.
       }
@@ -2118,15 +2121,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         return n;
       });
       const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
+      const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
       set((state) => {
         const projectStateById = {
           ...state.projectStateById,
-          [id]: createCanvasSnapshot(nodes, edges, []),
+          [id]: createCanvasSnapshot(nodes, edges, groups),
         };
         return {
           nodes,
           edges,
-          groups: [],
+          groups,
           undoStack: [],
           copiedCanvasSelection: null,
           activeProjectId: id,
@@ -2147,7 +2151,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   },
 
   saveCanvasToBackend: async (options) => {
-    const { activeBackendProjectId, canvasHydrated, nodes, edges } = get();
+    const { activeBackendProjectId, canvasHydrated, nodes, edges, groups } = get();
     if (!activeBackendProjectId) return;
     // Defense-in-depth: never persist before the backend canvas has loaded,
     // so a refresh can't write the heavy-stripped localStorage canvas over
@@ -2165,10 +2169,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // triggers, and re-PUTting a multi-MB unchanged canvas wastes bandwidth
     // and backend writes. (The payload deliberately stays FULL fidelity —
     // the backend snapshot is the un-stripped source of truth.)
-    const payloadSignature = `${activeBackendProjectId}:${JSON.stringify(cleanNodes)}:${JSON.stringify(edges)}`;
+    const payloadSignature = `${activeBackendProjectId}:${JSON.stringify(cleanNodes)}:${JSON.stringify(edges)}:${JSON.stringify(groups)}`;
     if (payloadSignature === lastSavedCanvasSignature) return;
     try {
-      await saveCanvas(activeBackendProjectId, cleanNodes, edges, options);
+      await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
       lastSavedCanvasSignature = payloadSignature;
     } catch {
       // Silent — save errors should not interrupt the user.

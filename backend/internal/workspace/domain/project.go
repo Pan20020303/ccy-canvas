@@ -22,6 +22,7 @@ type CanvasSnapshot struct {
 	UserID    string
 	Nodes     json.RawMessage
 	Edges     json.RawMessage
+	Groups    json.RawMessage
 	Version   int32
 	CreatedAt time.Time
 }
