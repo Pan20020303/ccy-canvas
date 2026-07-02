@@ -1032,6 +1032,8 @@ describe("workspace control bar state", () => {
 
     await firstModule.useStore.getState().runNode("2", { prompt: "persist across reload", model: "gpt-image-2" });
 
+    // Persist writes are debounced (drag-smoothness) — flush before "reload".
+    firstModule.flushPendingPersist();
     const secondModule = await loadStore(sharedStorage);
     const rehydratedState = secondModule.useStore.getState();
     const imageNode = rehydratedState.nodes.find((node) => node.id === "2");
@@ -1059,6 +1061,8 @@ describe("workspace control bar state", () => {
       thumbnail: "blob:http://localhost:5173/temp-history",
     });
 
+    // Persist writes are debounced (drag-smoothness) — flush before "reload".
+    firstModule.flushPendingPersist();
     const secondModule = await loadStore(sharedStorage);
     const rehydratedState = secondModule.useStore.getState();
     const blobNode = rehydratedState.nodes.find((node) => node.id === "blob-ref-image");
@@ -1103,7 +1107,7 @@ describe("workspace control bar state", () => {
 
   it("does not persist heavy inline media fields that can exceed browser storage quota", async () => {
     const sharedStorage = createStorageMock();
-    const { useStore } = await loadStore(sharedStorage);
+    const { useStore, flushPendingPersist } = await loadStore(sharedStorage);
     const inlineImage = "data:image/png;base64," + "x".repeat(1024);
 
     useStore.getState().addNode({
@@ -1125,6 +1129,8 @@ describe("workspace control bar state", () => {
       },
     } as never);
 
+    // Persist writes are debounced (drag-smoothness) — flush before reading.
+    flushPendingPersist();
     const persistedValues: string[] = [];
     for (let index = 0; index < sharedStorage.length; index += 1) {
       const key = sharedStorage.key(index);

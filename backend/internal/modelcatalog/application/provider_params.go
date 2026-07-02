@@ -251,6 +251,32 @@ func applyImageParameterAliases(body map[string]interface{}, allowed map[string]
 	}
 }
 
+// applyGeminiProImageResolution hardwires the REQUIRED output_resolution field
+// for the gemini-3.0-pro-image family (Nano Pro 高清). The vendor exposes the
+// family as two model ids — "gemini-3.0-pro-image" (2K) and
+// "gemini-3.0-pro-image 4K" — and both require output_resolution in the body.
+// The UI stores the BASE model name plus a resolution param (2k/4k), so this
+// maps resolution → output_resolution and appends the " 4K" model suffix,
+// without depending on the provider row carrying a parameter schema (mirrors
+// the wan2.7 model-name routing precedent). A model that already carries the
+// " 4K" suffix wins over the resolution param, so legacy nodes keep working.
+func applyGeminiProImageResolution(body map[string]interface{}, allowed map[string]bool, req GenerateRequest) {
+	model := strings.TrimSpace(req.Model)
+	if !strings.HasPrefix(strings.ToLower(model), "gemini-3.0-pro-image") {
+		return
+	}
+	res := "2K"
+	requested := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(req.Resolution), " ", ""))
+	if strings.HasSuffix(strings.ToUpper(model), " 4K") || requested == "4K" {
+		res = "4K"
+	}
+	allowParams(allowed, "output_resolution")
+	body["output_resolution"] = res
+	if res == "4K" && !strings.HasSuffix(strings.ToUpper(model), " 4K") {
+		body["model"] = model + " 4K"
+	}
+}
+
 func applyProviderModelRoutes(body map[string]interface{}, schema providerParameterSchema) {
 	if len(schema.ModelRoutes) == 0 {
 		return

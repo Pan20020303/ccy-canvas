@@ -42,6 +42,11 @@ type AuthContextValue = {
   }) => Promise<AuthUser>;
   logout: () => Promise<void>;
   refresh: () => Promise<AuthUser | null>;
+  /** Light-weight periodic sync: refreshes user + credit balance ONLY. Unlike
+   *  refresh(), it does NOT reload backend models/projects — the full reload
+   *  used to run on every 60s poll / tab refocus and REPLACED the live canvas
+   *  (resetting to the first project and clearing the undo stack). */
+  refreshCredits: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -77,6 +82,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return null;
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Credits-only sync for polling paths: never touches models/projects/canvas.
+  const refreshCredits = async () => {
+    try {
+      const data = await apiClient.get<AuthPayload>("/api/auth/me");
+      setUser(data.user);
+      setCreditSummary(data.credit_summary ?? null);
+    } catch {
+      // Transient failure — keep the last known balance; the next tick retries.
     }
   };
 
@@ -117,6 +133,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setCreditSummary(null);
       },
       refresh,
+      refreshCredits,
     }),
     [creditSummary, loading, user],
   );

@@ -271,6 +271,7 @@ type AppState = {
   resizeGroup: (groupId: string, size: { width: number; height: number }, options?: { captureUndo?: boolean }) => void;
   setGroupColor: (groupId: string, color?: string) => void;
   arrangeGroupNodes: (groupId: string, mode: 'grid' | 'horizontal' | 'vertical') => void;
+  commitCanvasMirrors: () => void;
   // Multi-node layout actions (operate on currently `selected: true` nodes).
   // No-op when fewer than 2 nodes are selected. Alignment snaps every
   // selected node to a shared edge; distribute spreads them evenly.
@@ -433,7 +434,13 @@ const createCanvasSnapshot = (
 const cloneCanvasState = (state: Pick<AppState, 'nodes' | 'edges' | 'groups'>): ProjectCanvasState =>
   createCanvasSnapshot(state.nodes, state.edges, state.groups);
 
-const pushUndoState = (state: AppState) => [...state.undoStack, cloneCanvasState(state)];
+// Cap the undo stack so long sessions can't accumulate hundreds of full-canvas
+// clones in memory (each entry deep-copies every node/edge/group).
+const MAX_UNDO_STACK = 50;
+const pushUndoState = (state: AppState) => {
+  const next = [...state.undoStack, cloneCanvasState(state)];
+  return next.length > MAX_UNDO_STACK ? next.slice(-MAX_UNDO_STACK) : next;
+};
 
 // Position + dimension changes are NOT auto-captured for undo: a single drag
 // emits dozens of per-frame 'position' changes, and capturing each one made
@@ -1352,6 +1359,72 @@ function sanitizePersistedAppState<T extends {
   };
 }
 
+// ── Persist throttling (drag-smoothness P0) ────────────────────────────────
+// zustand's persist middleware runs partialize → stringify → storage.setItem on
+// EVERY set(). During a node drag that's once per pointermove frame: stripping
+// heavy media across every project/space, stringifying MBs and synchronously
+// writing localStorage — 5-30ms per frame, the #1 cause of drag jank.
+// Two-layer fix:
+//   1. canvasInteractionActive: while a drag/resize gesture is active,
+//      partialize returns its cached last snapshot (no strip/clone work).
+//   2. debouncedJSONStorage: stringify + localStorage write are deferred to a
+//      400ms trailing debounce, flushed on pagehide/visibility-hidden so a tab
+//      close can't lose more than the in-flight gesture.
+let canvasInteractionActive = false;
+let lastPartializedSnapshot: unknown = null;
+export function setCanvasInteractionActive(active: boolean) {
+  canvasInteractionActive = active;
+  if (!active) lastPartializedSnapshot = null; // next persist recomputes fresh
+}
+
+const PERSIST_WRITE_DELAY_MS = 400;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingPersist: { name: string; value: unknown; target: Storage | null } | null = null;
+export function flushPendingPersist() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  if (!pendingPersist) return;
+  const { name, value, target } = pendingPersist;
+  pendingPersist = null;
+  // Guard: if globalThis.localStorage was swapped after this write was queued
+  // (only happens in tests that reload the store module against a fresh mock),
+  // drop the stale write instead of clobbering the new environment's data.
+  if (target && typeof localStorage !== 'undefined' && target !== localStorage) return;
+  appStorage.setItem(name, JSON.stringify(value));
+}
+const debouncedJSONStorage = {
+  getItem: (name: string) => {
+    const raw = appStorage.getItem(name);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name: string, value: unknown) => {
+    pendingPersist = {
+      name,
+      value,
+      target: typeof localStorage !== 'undefined' ? localStorage : null,
+    };
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(flushPendingPersist, PERSIST_WRITE_DELAY_MS);
+  },
+  removeItem: (name: string) => {
+    pendingPersist = null;
+    appStorage.removeItem(name);
+  },
+};
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPendingPersist);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingPersist();
+  });
+}
+
 let storageQuotaWarned = false;
 export const appStorage = {
   getItem: (name: string) => localStorage.getItem(storageKey(name)),
@@ -1382,6 +1455,10 @@ export const appStorage = {
 
 export function bindStorageToUser(userId: string) {
   if (storageUserId === userId) return;
+  // Flush any debounced persist BEFORE the key switches — appStorage resolves
+  // storageKey at write time, so a pending write flushed after the switch
+  // would land in the NEW user's slot with the OLD user's data.
+  flushPendingPersist();
   storageUserId = userId;
   useStore.persist.rehydrate();
 }
@@ -1621,6 +1698,10 @@ async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string>
   return rehostToStableUrl(result.content);
 }
 
+// Signature of the last successfully-saved backend canvas payload — lets the
+// debounced autosave skip re-PUTting an unchanged multi-MB canvas.
+let lastSavedCanvasSignature = '';
+
 // Client ids currently being deleted server-side. hydrateAssets filters these
 // out so a delete-then-reopen race can't resurrect a just-removed asset before
 // the DELETE commits. Cleared once the DELETE settles (server no longer has it).
@@ -1680,6 +1761,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             .filter((group) => group.nodeIds.length > 0);
       const captured = shouldCaptureNodeChangesForUndo(changes);
       const undoStack = captured ? pushUndoState(state) : state.undoStack;
+      // Drag-smoothness P0: position/dimension/select-only change batches skip
+      // the project/space mirror deep-clones — during a drag those cloned the
+      // ENTIRE workspace (every project × every node) once per pointermove
+      // frame. Structural edits still sync inline; gestures reconcile once via
+      // commitCanvasMirrors() on drag/resize stop (Canvas wires it).
+      if (!captured && removedIds.size === 0) {
+        return { nodes, groups };
+      }
       const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
       return {
         nodes,
@@ -1692,6 +1781,21 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       };
     });
   },
+
+  // One-shot reconciliation of the project/space mirrors with the live canvas.
+  // Called at gesture end (node drag stop, group drag/resize release) to pick
+  // up the position changes that onNodesChange/moveGroup skipped per-frame.
+  commitCanvasMirrors: () => set((state) => {
+    const projectStateById = syncActiveProjectState(state, {
+      nodes: state.nodes,
+      edges: state.edges,
+      groups: state.groups,
+    }).projectStateById;
+    return {
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
 
   onEdgesChange: (changes: EdgeChange[]) => {
     set((state) => {
@@ -2057,8 +2161,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       }
       return n;
     });
+    // Skip identical payloads: the debounced autosave fires on many benign
+    // triggers, and re-PUTting a multi-MB unchanged canvas wastes bandwidth
+    // and backend writes. (The payload deliberately stays FULL fidelity —
+    // the backend snapshot is the un-stripped source of truth.)
+    const payloadSignature = `${activeBackendProjectId}:${JSON.stringify(cleanNodes)}:${JSON.stringify(edges)}`;
+    if (payloadSignature === lastSavedCanvasSignature) return;
     try {
       await saveCanvas(activeBackendProjectId, cleanNodes, edges, options);
+      lastSavedCanvasSignature = payloadSignature;
     } catch {
       // Silent — save errors should not interrupt the user.
     }
@@ -2547,14 +2658,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           }
     ));
     const undoStack = options?.captureUndo ? pushUndoState(state) : state.undoStack;
-    const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
 
+    // Per-frame gesture: skip the project/space mirror deep-clones (see
+    // onNodesChange). commitCanvasMirrors() reconciles on pointer-up.
     return {
       nodes,
       groups,
       undoStack,
-      projectStateById,
-      ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
   resizeGroup: (groupId, size, options) => set((state) => {
@@ -2567,14 +2677,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       group.id === groupId ? { ...group, width, height } : group
     ));
     // Same undo convention as moveGroup: one snapshot per drag (captured on the
-    // first move), not one per pointermove frame.
+    // first move), not one per pointermove frame. Mirror sync deferred to
+    // commitCanvasMirrors() on pointer-up (per-frame gesture).
     const undoStack = options?.captureUndo ? pushUndoState(state) : state.undoStack;
-    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
     return {
       groups,
       undoStack,
-      projectStateById,
-      ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
   setGroupColor: (groupId, color) => set((state) => {
@@ -3343,7 +3451,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setConnectionDragging: (value) => set({ isConnectionDragging: value }),
 }), {
   name: 'cineflow-store',
-  storage: createJSONStorage(() => appStorage),
+  // Object-level storage with a trailing debounce: stringify + localStorage
+  // write happen at most once per 400ms (and on pagehide), not once per set().
+  storage: debouncedJSONStorage as never,
   version: 5,
   migrate: (persistedState: any, version) => {
     if (!persistedState) {
@@ -3400,28 +3510,38 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ? sanitizePersistedAppState(persistedState as Partial<AppState>)
       : {}),
   }),
-  partialize: (state) => ({
-    language: state.language,
-    theme: state.theme,
-    spaces: state.spaces,
-    activeSpaceId: state.activeSpaceId,
-    activeSpaceType: state.activeSpaceType,
-    spaceSnapshotsById: stripHeavyFromSpaceSnapshots(state.spaceSnapshotsById),
-    nodes: stripHeavyFromNodes(state.nodes),
-    edges: state.edges,
-    history: stripHeavyFromHistory(state.history),
-    projects: state.projects,
-    activeProjectId: state.activeProjectId,
-    projectStateById: stripHeavyFromProjectStateById(state.projectStateById),
-    spaceMembers: state.spaceMembers,
-    invitations: state.invitations,
-    groups: state.groups,
-    savedAssets: stripHeavyFromSavedAssets(state.savedAssets),
-    shortcuts: state.shortcuts,
-    isTaskQueueCollapsed: state.isTaskQueueCollapsed,
-    showMiniMap: state.showMiniMap,
-    snapToGrid: state.snapToGrid,
-  }),
+  partialize: (state) => {
+    // During a drag/resize gesture, skip the expensive strip/clone pass and
+    // reuse the last snapshot — the debounced storage discards intermediate
+    // writes anyway, and the gesture's final set() recomputes fresh.
+    if (canvasInteractionActive && lastPartializedSnapshot) {
+      return lastPartializedSnapshot as never;
+    }
+    const snapshot = {
+      language: state.language,
+      theme: state.theme,
+      spaces: state.spaces,
+      activeSpaceId: state.activeSpaceId,
+      activeSpaceType: state.activeSpaceType,
+      spaceSnapshotsById: stripHeavyFromSpaceSnapshots(state.spaceSnapshotsById),
+      nodes: stripHeavyFromNodes(state.nodes),
+      edges: state.edges,
+      history: stripHeavyFromHistory(state.history),
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      projectStateById: stripHeavyFromProjectStateById(state.projectStateById),
+      spaceMembers: state.spaceMembers,
+      invitations: state.invitations,
+      groups: state.groups,
+      savedAssets: stripHeavyFromSavedAssets(state.savedAssets),
+      shortcuts: state.shortcuts,
+      isTaskQueueCollapsed: state.isTaskQueueCollapsed,
+      showMiniMap: state.showMiniMap,
+      snapToGrid: state.snapToGrid,
+    };
+    lastPartializedSnapshot = snapshot;
+    return snapshot;
+  },
 }));
 
 // Boot the recovery poller once the store exists. Safe to call before any

@@ -2294,3 +2294,51 @@ func multipartNewReader(body io.Reader, boundary string) *multipart.Reader {
 	}
 	return multipart.NewReader(bytes.NewReader(data), strings.TrimSpace(boundary))
 }
+
+func TestApplyGeminiProImageResolution(t *testing.T) {
+	// Base model, no resolution → defaults to 2K, model unchanged.
+	body := map[string]interface{}{"model": "gemini-3.0-pro-image"}
+	applyGeminiProImageResolution(body, nil, GenerateRequest{Model: "gemini-3.0-pro-image"})
+	if body["output_resolution"] != "2K" {
+		t.Fatalf("expected output_resolution 2K, got %v", body["output_resolution"])
+	}
+	if body["model"] != "gemini-3.0-pro-image" {
+		t.Fatalf("expected model unchanged, got %v", body["model"])
+	}
+
+	// Base model + resolution 4k → 4K + " 4K" model suffix.
+	body = map[string]interface{}{"model": "gemini-3.0-pro-image"}
+	applyGeminiProImageResolution(body, nil, GenerateRequest{Model: "gemini-3.0-pro-image", Resolution: "4k"})
+	if body["output_resolution"] != "4K" {
+		t.Fatalf("expected output_resolution 4K, got %v", body["output_resolution"])
+	}
+	if body["model"] != "gemini-3.0-pro-image 4K" {
+		t.Fatalf("expected 4K model suffix, got %v", body["model"])
+	}
+
+	// Legacy " 4K" model id wins over a stale 2k resolution param.
+	body = map[string]interface{}{"model": "gemini-3.0-pro-image 4K"}
+	applyGeminiProImageResolution(body, nil, GenerateRequest{Model: "gemini-3.0-pro-image 4K", Resolution: "2k"})
+	if body["output_resolution"] != "4K" {
+		t.Fatalf("expected suffix to win with 4K, got %v", body["output_resolution"])
+	}
+	if body["model"] != "gemini-3.0-pro-image 4K" {
+		t.Fatalf("expected model unchanged, got %v", body["model"])
+	}
+
+	// output_resolution survives an allowed-parameter whitelist.
+	allowed := map[string]bool{"model": true, "messages": true}
+	body = map[string]interface{}{"model": "gemini-3.0-pro-image"}
+	applyGeminiProImageResolution(body, allowed, GenerateRequest{Model: "gemini-3.0-pro-image", Resolution: "2k"})
+	pruneUnsupportedParameters(body, allowed)
+	if body["output_resolution"] != "2K" {
+		t.Fatalf("expected output_resolution to survive pruning, got %v", body["output_resolution"])
+	}
+
+	// Non-family models are untouched.
+	body = map[string]interface{}{"model": "gpt-image-2"}
+	applyGeminiProImageResolution(body, nil, GenerateRequest{Model: "gpt-image-2", Resolution: "4k"})
+	if _, ok := body["output_resolution"]; ok {
+		t.Fatalf("expected no output_resolution for non-gemini model")
+	}
+}

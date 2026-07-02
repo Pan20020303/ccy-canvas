@@ -14,7 +14,7 @@ export const Navbar = () => {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
-  const { user, creditSummary, logout, refresh } = useAuth();
+  const { user, creditSummary, logout, refreshCredits } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -73,15 +73,16 @@ export const Navbar = () => {
   //     completed in another tab, or balance changes from admin tools)
   //   · refresh whenever an in-flight generation settles (activeRun null←non-null)
   //   · poll once a minute as a low-cost safety net
-  // refresh() also re-fetches the user object, so we re-use it instead of
-  // adding a credits-only endpoint.
+  // CRITICAL: these paths use refreshCredits (user + balance ONLY). The full
+  // refresh() reloads models AND projects — which replaced the live canvas
+  // with the first backend project and wiped the undo stack once a minute.
   useEffect(() => {
     if (!user) return;
     const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible") void refreshCredits();
     };
     document.addEventListener("visibilitychange", onVisible);
-    const intervalId = window.setInterval(() => { void refresh(); }, 60_000);
+    const intervalId = window.setInterval(() => { void refreshCredits(); }, 60_000);
 
     // Subscribe to activeRun transitions: any "running → idle" edge means
     // a generation just settled (success / failure / refund), so the
@@ -90,7 +91,7 @@ export const Navbar = () => {
     let prevActive = useStore.getState().activeRun;
     const unsubscribe = useStore.subscribe((state) => {
       const next = state.activeRun;
-      if (prevActive && !next) void refresh();
+      if (prevActive && !next) void refreshCredits();
       prevActive = next;
     });
 
@@ -99,7 +100,7 @@ export const Navbar = () => {
       window.clearInterval(intervalId);
       unsubscribe();
     };
-  }, [user, refresh]);
+  }, [user, refreshCredits]);
 
   // Floating layout: the navbar no longer occupies a horizontal strip \u2014 the
   // canvas runs edge-to-edge under it. The logo and the controls cluster sit

@@ -214,7 +214,18 @@ export const Toolbar = () => {
             </div>
           </button>
         </DockItem>
-        <DockItem><SideBtn k="files" icon={FolderOpen} label={language === 'zh' ? '文件 / 历史' : 'Files / History'} /></DockItem>
+        <DockItem>
+          {/* 历史资产 opens its modal directly — no intermediate dock panel. */}
+          <button
+            onClick={() => { setOpen(null); setHistoryAssetsOpen(true); }}
+            className="group relative flex items-center justify-center rounded-full p-2.5 text-neutral-400 transition-all hover:bg-white/5 hover:text-cyan-300"
+          >
+            <FolderOpen className="h-4 w-4" />
+            <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded border border-white/10 bg-black/80 px-2 py-1 text-[10px] text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+              {language === 'zh' ? '历史资产' : 'History Assets'}
+            </div>
+          </button>
+        </DockItem>
 
         <div className="mx-1 h-4 w-px self-center bg-white/10" />
 
@@ -379,40 +390,6 @@ export const Toolbar = () => {
                   {language === 'zh' ? '新建项目' : 'New Project'}
                 </button>
               )}
-            </>
-          ) : null}
-
-          {open === 'files' ? (
-            <>
-              <PanelTitle>{language === 'zh' ? '文件管理' : 'Files'}</PanelTitle>
-              <div className="mb-2 rounded-xl border border-cyan-500/10 bg-cyan-500/[0.05] px-3 py-2 text-[11px] text-neutral-400">
-                {spaces.find((space) => space.id === activeSpaceId)?.type === 'team'
-                  ? (language === 'zh' ? '你正在查看团队空间的共享历史生成。' : 'You are viewing shared team history.')
-                  : (language === 'zh' ? '你正在查看个人空间的历史生成。' : 'You are viewing personal history.')}
-              </div>
-              <div className="space-y-3">
-                <button
-                  onClick={() => {
-                    setHistoryAssetsOpen(true);
-                    setOpen(null);
-                  }}
-                  className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-left transition hover:border-cyan-400/30 hover:bg-white/[0.05]"
-                >
-                  <div>
-                    <div className="text-sm text-neutral-100">{language === 'zh' ? '历史生成' : 'History Assets'}</div>
-                    <div className="mt-1 text-xs text-neutral-500">
-                      {language === 'zh'
-                        ? '在独立弹窗中浏览、筛选和批量操作历史资产'
-                        : 'Browse and batch manage history assets in a dedicated modal'}
-                    </div>
-                  </div>
-                  <Film className="h-4 w-4 text-neutral-500" />
-                </button>
-
-                <div className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-xs text-neutral-600">
-                  {language === 'zh' ? '输出文件夹将在下一阶段接入。' : 'Output folders will be connected in the next phase.'}
-                </div>
-              </div>
             </>
           ) : null}
         </div>

@@ -2236,6 +2236,7 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	}
 	applyImageParameterAliases(body, allowed, schema, req)
 	mergeAllowedParameters(body, allowed, req.Parameters)
+	applyGeminiProImageResolution(body, allowed, req)
 	applyProviderModelRoutes(body, schema)
 
 	content := []map[string]interface{}{
@@ -2325,6 +2326,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	}
 	applyImageParameterAliases(body, allowed, schema, req)
 	mergeAllowedParameters(body, allowed, req.Parameters)
+	applyGeminiProImageResolution(body, allowed, req)
 	applyProviderModelRoutes(body, schema)
 	pruneUnsupportedParameters(body, allowed)
 	bodyJSON, _ := json.Marshal(body)

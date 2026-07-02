@@ -350,6 +350,27 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     modelName: "doubao-seedream-4-0-250828",
     ...SEEDREAM_TEMPLATE,
   },
+  // ── Nano Pro（gemini-3.0-pro-image）高清图像家族 ─────────────────────────
+  // 供应商把 2K/4K 拆成两个模型 id（"gemini-3.0-pro-image" 与 "… 4K"）。
+  // 模型下拉只展示基础名（PromptPanel 折叠 " 4K" 变体），2K/4K 在参数面板的
+  // 分辨率里选；后端 applyGeminiProImageResolution 按分辨率补 output_resolution
+  // 并在 4K 时切换到 " 4K" 模型 id。
+  "gemini-3.0-pro-image": {
+    vendor: "Google",
+    serviceType: "image",
+    modelName: "gemini-3.0-pro-image",
+    supportsResolution: true,
+    resolutionOptions: ["2k", "4k"],
+    defaults: { resolution: "2k" },
+  },
+  "gemini-3.0-pro-image 4K": {
+    vendor: "Google",
+    serviceType: "image",
+    modelName: "gemini-3.0-pro-image 4K",
+    supportsResolution: true,
+    resolutionOptions: ["2k", "4k"],
+    defaults: { resolution: "4k" },
+  },
   // ── 阿里云百炼 HappyHorse 快乐马（图/参/编/文 4 个 mode × 1.0 / 1.1 两个版本）
   // 文档：图生(i2v)、参考生(r2v)、视频编辑(video-edit)、文生(t2v)
   // 前端 UI 在 CustomNodes 里识别 happyhorse 家族，把模型 dropdown 拆成

@@ -52,7 +52,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, eventMatchesShortcut, type HistoryItem, type Group } from '../store';
+import { useStore, eventMatchesShortcut, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -286,6 +286,7 @@ const InnerCanvas = () => {
   const resizeGroup = useStore((state) => state.resizeGroup);
   const setGroupColor = useStore((state) => state.setGroupColor);
   const arrangeGroupNodes = useStore((state) => state.arrangeGroupNodes);
+  const commitCanvasMirrors = useStore((state) => state.commitCanvasMirrors);
   const arrangeSelectedNodes = useStore((state) => state.arrangeSelectedNodes);
   const tidyCanvas = useStore((state) => state.tidyCanvas);
   const toggleNodeLock = useStore((state) => state.toggleNodeLock);
@@ -525,6 +526,7 @@ const InnerCanvas = () => {
       // Corner-resize drag takes priority — it's armed exclusively.
       const resize = groupResizeRef.current;
       if (resize) {
+        setCanvasInteractionActive(true); // idempotent; freezes persist work
         const zoom = viewportRef.current.zoom || 1;
         resizeGroup(resize.groupId, {
           width: resize.startW + (event.clientX - resize.startX) / zoom,
@@ -538,6 +540,7 @@ const InnerCanvas = () => {
       if (!drag) {
         return;
       }
+      setCanvasInteractionActive(true);
 
       const dx = event.clientX - drag.lastClientX;
       const dy = event.clientY - drag.lastClientY;
@@ -557,9 +560,15 @@ const InnerCanvas = () => {
     };
 
     const handlePointerUp = () => {
+      const hadGesture = groupDragRef.current != null || groupResizeRef.current != null;
       groupDragRef.current = null;
       groupResizeRef.current = null;
       setGroupDragging(false);
+      if (hadGesture) {
+        // Gesture over: resume persist work + reconcile the skipped mirrors.
+        setCanvasInteractionActive(false);
+        commitCanvasMirrors();
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -568,7 +577,7 @@ const InnerCanvas = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [moveGroup, resizeGroup]);
+  }, [moveGroup, resizeGroup, commitCanvasMirrors]);
 
   /** Intercept pointer/mouse downs on the ReactFlow pane: if the click falls
    *  inside any group's stored rectangle, hijack the gesture so ReactFlow
@@ -856,7 +865,9 @@ const InnerCanvas = () => {
       if (draggedNode) {
         const virtual = { ...draggedNode, position: posChange.position };
         const { guides: nextGuides, snapDx, snapDy } = computeGuides(virtual, nodes);
-        setGuides(nextGuides);
+        // Skip the setState when nothing changed (empty→empty is the common
+        // case) — a fresh [] every frame forced a second full re-render.
+        setGuides((prev) => (prev.length === 0 && nextGuides.length === 0 ? prev : nextGuides));
 
         const snapped = {
           x: snapDx === 0 ? snapPosition(posChange.position).x : posChange.position.x + snapDx,
@@ -1100,11 +1111,24 @@ const InnerCanvas = () => {
    *  untouched. Dragging still starts from the `+` bubble (its own handle); the
    *  full-area target still catches drops anywhere on the card — we only reroute
    *  how the committed wire is DRAWN. */
-  const normalizedEdges = useMemo(() => {
+  // id→type projection with a STABLE identity: node types almost never change,
+  // but the `nodes` array is re-minted every drag frame. Keying the memo on a
+  // cheap string signature keeps normalizedEdges from re-minting every edge
+  // object (and re-rendering every FlowEdge) once per pointermove.
+  const nodeTypeSignature = useMemo(
+    () => nodes.map((node) => `${node.id}:${node.type ?? ''}`).join('|'),
+    [nodes],
+  );
+  const nodeTypeById = useMemo(() => {
     // NB: `Map` here would resolve to the lucide-react icon (imported above), so
     // use a plain lookup object for id → node type.
     const typeById: Record<string, string> = {};
     nodes.forEach((node) => { typeById[node.id] = node.type ?? ''; });
+    return typeById;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeTypeSignature]);
+  const normalizedEdges = useMemo(() => {
+    const typeById = nodeTypeById;
     return edges.map((edge) => {
       const sourceHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.source] ?? '');
       const targetHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.target] ?? '');
@@ -1117,7 +1141,7 @@ const InnerCanvas = () => {
         targetHandle: targetHasPorts ? 'edge-target-left' : (edge.targetHandle ?? null),
       };
     });
-  }, [edges, nodes]);
+  }, [edges, nodeTypeById]);
 
   /** Export a group's bounding box as a PNG. Uses html-to-image to snapshot
    *  the ReactFlow viewport (which contains all nodes + edges), then crops
@@ -1367,10 +1391,14 @@ const InnerCanvas = () => {
                 onPointerUp={(event) => {
                   groupResizeRef.current = null;
                   try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+                  setCanvasInteractionActive(false);
+                  commitCanvasMirrors();
                 }}
                 onPointerCancel={(event) => {
                   groupResizeRef.current = null;
                   try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+                  setCanvasInteractionActive(false);
+                  commitCanvasMirrors();
                 }}
               >
                 {/* Default: subtle corner lines. Hover: diagonal resize arrows. */}
@@ -1420,10 +1448,17 @@ const InnerCanvas = () => {
           // undo step (position changes during the drag are not auto-captured).
           pushUndoSnapshot();
           setNodeDragging(true);
+          // Drag-smoothness P0: freeze the persist partialize while the
+          // gesture runs (debounced storage discards intermediates anyway).
+          setCanvasInteractionActive(true);
         }}
         onNodeDragStop={(_event, _node, draggedNodes) => {
           setNodeDragging(false);
           setGuides([]);
+          setCanvasInteractionActive(false);
+          // Reconcile the project/space mirrors once — per-frame position
+          // changes skipped them (see store.onNodesChange).
+          commitCanvasMirrors();
           // Membership is re-evaluated against each group's FIXED stored
           // rectangle (the gray shell the user can see):
           //   - dragged member ends up INSIDE  → stays in

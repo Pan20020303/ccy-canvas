@@ -161,6 +161,8 @@ type VendorModelDefinition = {
   mode?: Array<string | string[]>;
   audio?: "optional" | false | true;
   durationResolutionMap?: Array<{ duration: number[]; resolution: string[] }>;
+  /** true = 可被调用但不出现在前端模型选择列表（如超分等内部功能专用模型）。 */
+  hidden?: boolean;
 };
 
 type ModelEditorDraft = {
@@ -176,6 +178,7 @@ type ModelEditorDraft = {
   durationResolutionMap: Array<{ duration: string; resolution: string }>;
   creditCost: string;
   isDefault: boolean;
+  hidden: boolean;
 };
 
 type ModelEditorState = {
@@ -316,6 +319,7 @@ function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackN
     mode: mode.length ? mode : undefined,
     audio: raw.audio === true || raw.audio === false || raw.audio === "optional" ? raw.audio : undefined,
     durationResolutionMap: normalizeDurationResolutionMap(raw.durationResolutionMap ?? raw.duration_resolution_map),
+    hidden: raw.hidden === true ? true : undefined,
   };
 }
 
@@ -396,6 +400,7 @@ function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition)
       : [{ duration: "", resolution: "" }],
     creditCost: source.creditCost === undefined ? "" : String(source.creditCost),
     isDefault: Boolean(source.modelName && source.modelName === config.default_model),
+    hidden: Boolean(source.hidden),
   };
 }
 
@@ -410,11 +415,12 @@ function buildModelFromDraft(draft: ModelEditorDraft): VendorModelDefinition | n
   const modelName = draft.modelName.trim();
   if (!name || !modelName) return null;
   const creditCost = creditCostFromDraft(draft.creditCost);
+  const hidden = draft.hidden ? true : undefined;
   if (draft.type === "text") {
-    return { name, modelName, type: "text", creditCost, think: draft.think };
+    return { name, modelName, type: "text", creditCost, think: draft.think, hidden };
   }
   if (draft.type === "image") {
-    return { name, modelName, type: "image", creditCost, mode: draft.imageModes.length ? draft.imageModes : ["text"] };
+    return { name, modelName, type: "image", creditCost, mode: draft.imageModes.length ? draft.imageModes : ["text"], hidden };
   }
   if (draft.type === "video") {
     const mode = draft.videoModes.filter((item) => item !== "multiReference");
@@ -433,15 +439,17 @@ function buildModelFromDraft(draft: ModelEditorDraft): VendorModelDefinition | n
       mode: mixed.length ? [...mode, mixed] : mode.length ? mode : ["text"],
       audio: draft.audio,
       durationResolutionMap: durationResolutionMap.length ? durationResolutionMap : [{ duration: [5], resolution: ["720p"] }],
+      hidden,
     };
   }
-  return { name, modelName, type: "audio", creditCost };
+  return { name, modelName, type: "audio", creditCost, hidden };
 }
 
 function modelTags(model: VendorModelDefinition, config: ProviderConfig) {
   const tags = [SERVICE_LABELS[model.type] ?? SERVICE_LABELS[config.service_type]];
   tags.push(`积分 ${getModelCreditCost(config, model.modelName, model)}/次`);
   if (config.default_model === model.modelName) tags.push("默认模型");
+  if (model.hidden) tags.push("不在选择列表");
   if (model.type === "text" && model.think) tags.push("深度思考");
   (model.mode ?? []).forEach((mode) => {
     if (Array.isArray(mode)) {
@@ -1944,10 +1952,16 @@ function ModelEditorModal({
               ))}
             </select>
           </SettingsField>
-          <label className="mt-6 flex items-center gap-2 text-sm text-neutral-300">
-            <input type="checkbox" checked={draft.isDefault} onChange={(event) => update({ isDefault: event.target.checked })} className="accent-neutral-300" />
-            设为默认模型
-          </label>
+          <div className="mt-6 flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-sm text-neutral-300">
+              <input type="checkbox" checked={draft.isDefault} onChange={(event) => update({ isDefault: event.target.checked })} className="accent-neutral-300" />
+              设为默认模型
+            </label>
+            <label className="flex items-center gap-2 text-sm text-neutral-300" title="关闭后模型仍可被调用（如超分等内部功能），但不出现在前端的模型选择列表里">
+              <input type="checkbox" checked={!draft.hidden} onChange={(event) => update({ hidden: !event.target.checked })} className="accent-neutral-300" />
+              在模型选择中显示
+            </label>
+          </div>
         </div>
 
         <SettingsField label="积分 / 次（留空继承供应商默认）">

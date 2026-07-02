@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import gsap from 'gsap';
 import * as THREE from 'three';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Handle, Position, useViewport } from '@xyflow/react';
+import { Handle, Position, useReactFlow, useViewport } from '@xyflow/react';
 import {
   Type,
   Image as ImageIcon,
@@ -42,6 +42,10 @@ import {
   RotateCcw,
   Palette,
   MoveDiagonal2,
+  ArrowLeft,
+  Brush,
+  Undo2,
+  Redo2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -1184,13 +1188,40 @@ const PromptPanel = ({
     [enabledConfigs],
   );
 
+  // 管理端「编辑模型」的元数据（parameter_schema.vendor_models）：
+  //   hidden=true → 可被调用（如超分等内部功能）但不出现在选择列表；
+  //   name       → 前端展示用显示名称（值仍存真实模型 id）。
+  const { hiddenModels, modelDisplayNames } = useMemo(() => {
+    const hidden = new Set<string>();
+    const names = new Map<string, string>();
+    for (const config of enabledConfigs) {
+      const schema = config.parameterSchema as { vendor_models?: unknown[]; vendor_all_models?: unknown[] } | undefined;
+      const rawModels = Array.isArray(schema?.vendor_models)
+        ? schema.vendor_models
+        : Array.isArray(schema?.vendor_all_models)
+          ? schema.vendor_all_models
+          : [];
+      for (const raw of rawModels) {
+        if (!raw || typeof raw !== 'object') continue;
+        const entry = raw as { modelName?: unknown; model_name?: unknown; name?: unknown; hidden?: unknown };
+        const modelName = String(entry.modelName ?? entry.model_name ?? '').trim();
+        if (!modelName) continue;
+        if (entry.hidden === true) hidden.add(modelName);
+        const display = typeof entry.name === 'string' ? entry.name.trim() : '';
+        if (display && display !== modelName && !names.has(modelName)) names.set(modelName, display);
+      }
+    }
+    return { hiddenModels: hidden, modelDisplayNames: names };
+  }, [enabledConfigs]);
+
   const modelIsDisabled = Boolean(params.model) && !enabledConfigs.some((config) => config.modelList.includes(params.model));
   const activeModel = useMemo(() => {
     if (params.model && availableModels.includes(params.model)) {
       return params.model;
     }
-    return availableModels[0] ?? fallbackModel;
-  }, [availableModels, fallbackModel, params.model]);
+    // 默认选择跳过隐藏模型（它们只服务内部功能，不该成为兜底默认）。
+    return availableModels.find((m) => !hiddenModels.has(m)) ?? availableModels[0] ?? fallbackModel;
+  }, [availableModels, fallbackModel, hiddenModels, params.model]);
 
   useEffect(() => {
     if (!modelIsDisabled || !activeModel || activeModel === params.model) {
@@ -1597,6 +1628,8 @@ const PromptPanel = ({
     const out: string[] = [];
     const seenVirtual = new Set<string>();
     for (const m of availableModels) {
+      // 管理端标记为隐藏的模型：可被调用（超分等内部功能），不进选择列表。
+      if (hiddenModels.has(m)) continue;
       const parsed = parseHappyHorseModel(m);
       if (parsed) {
         const v = `${HAPPYHORSE_VIRTUAL_PREFIX}${parsed.version}`;
@@ -1606,15 +1639,27 @@ const PromptPanel = ({
         }
         continue;
       }
+      // 分辨率变体折叠：`X 4K` 这种「同名模型的型号」不单独占一行——
+      // 基础名存在时隐藏变体，2K/4K 在参数面板的分辨率里选
+      // （后端按 resolution 自动切换真实模型 id）。
+      if (/ 4k$/i.test(m) && availableModels.includes(m.replace(/ 4k$/i, ''))) {
+        continue;
+      }
       out.push(m);
     }
     return out;
-  }, [availableModels]);
+  }, [availableModels, hiddenModels]);
 
-  // 当前底部 dropdown 应该选中的「显示值」：HappyHorse 系列收编成虚拟名。
+  // 当前底部 dropdown 应该选中的「显示值」：HappyHorse 系列收编成虚拟名；
+  // ` 4K` 分辨率变体显示为基础名。
   const activeModelDisplay = happyHorse
     ? `${HAPPYHORSE_VIRTUAL_PREFIX}${happyHorse.version}`
-    : activeModel;
+    : (/ 4k$/i.test(activeModel) && availableModels.includes(activeModel.replace(/ 4k$/i, ''))
+      ? activeModel.replace(/ 4k$/i, '')
+      : activeModel);
+
+  // 展示层名称：管理端「显示名称」优先，仅影响渲染，值仍是真实模型 id。
+  const displayNameFor = (value: string) => modelDisplayNames.get(value) ?? value;
 
   // 折叠后点选：HappyHorse 虚拟项 → 默认 t2v；版本里若无 t2v（理论不会）
   // 退回该版本第一个可用后缀。其它模型原样转发到 handleModelChange。
@@ -1965,7 +2010,7 @@ const PromptPanel = ({
             不再单独占一个底栏 dropdown。 */}
         <Dropdown
           label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
-          value={activeModelDisplay}
+          value={displayNameFor(activeModelDisplay)}
           options={displayModels}
           onChange={handleDisplayPick}
           menuMinWidth={240}
@@ -1985,7 +2030,7 @@ const PromptPanel = ({
             return (
               <div className="flex w-full items-center gap-2">
                 <ModelBrandIcon model={lookupModel} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
-                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
+                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{displayNameFor(option)}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>
             );
@@ -2114,6 +2159,31 @@ const PromptPanel = ({
   );
 };
 
+/** Counter-scales the selected node's floating toolbar to constant screen size.
+ *  Split out of BaseNode so useViewport() only subscribes THIS tiny component
+ *  (mounted for the one selected node) to pan/zoom — previously every mounted
+ *  node re-rendered on every viewport change, making panning as heavy as
+ *  dragging. */
+function TopFloatingPanelScaler({ children }: { children: React.ReactNode }) {
+  const viewport = useViewport();
+  const inverseZoom = 1 / (viewport.zoom || 1);
+  return (
+    <div className="absolute left-1/2 top-0 z-30" style={{ height: 0, width: 0 }}>
+      <div
+        className="pointer-events-auto pb-3"
+        style={{
+          width: 'max-content',
+          whiteSpace: 'nowrap',
+          transform: `translate(-50%, -100%) scale(${inverseZoom})`,
+          transformOrigin: 'bottom center',
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const BaseNode = ({
   icon: Icon,
   title,
@@ -2156,17 +2226,17 @@ const BaseNode = ({
   const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
   // The quick-connect `+` bubbles only show on hover / sole-selection; gate the
   // magnet effect to those states so the global mousemove listeners aren't
-  // attached for every off-screen node's bubbles.
+  // attached for every off-screen node's bubbles. An ENGAGED pull also keeps
+  // the gate open (and the bubble visible): the magnet radius extends well
+  // beyond the card, so cursor-leaves-card must not kill an active pull.
   const [hovered, setHovered] = useState(false);
-  const magnetDisabled = !hovered && !(selected && !multiSelectActive);
+  const [leftPull, setLeftPull] = useState(false);
+  const [rightPull, setRightPull] = useState(false);
+  const magnetDisabled = !hovered && !(selected && !multiSelectActive) && !leftPull && !rightPull;
   // While a connection is being dragged AND the pointer is over this node, it is
   // the drop target — pulse it (the full-area target handle lets the wire land
   // anywhere on the card).
   const connectTarget = isConnectionDragging && hovered;
-  // Counter-scale the top floating toolbar so it keeps a constant screen size
-  // across canvas zoom, matching the prompt panel's behaviour.
-  const baseViewport = useViewport();
-  const baseInverseZoom = 1 / (baseViewport.zoom || 1);
 
   // Pulse the shell when a long-running generation completes — bridges the
   // gap between "loader spinning" and "the output is just sitting there",
@@ -2203,19 +2273,7 @@ const BaseNode = ({
       onMouseLeave={() => setHovered(false)}
     >
       {selected && !multiSelectActive && topFloatingPanel ? (
-        <div className="absolute left-1/2 top-0 z-30" style={{ height: 0, width: 0 }}>
-          <div
-            className="pointer-events-auto pb-3"
-            style={{
-              width: 'max-content',
-              whiteSpace: 'nowrap',
-              transform: `translate(-50%, -100%) scale(${baseInverseZoom})`,
-              transformOrigin: 'bottom center',
-            }}
-          >
-            {topFloatingPanel}
-          </div>
-        </div>
+        <TopFloatingPanelScaler>{topFloatingPanel}</TopFloatingPanelScaler>
       ) : null}
       {/* Name label ABOVE the media (top-left, outside the frame) — the media
           below is a borderless full-bleed card ("全面屏"). */}
@@ -2287,38 +2345,52 @@ const BaseNode = ({
             connections explicitly on the input port. The full-area target
             handle above still catches drops anywhere on the card, so this
             small visible port is purely additive. */}
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="qc-target-left"
+        {/* Each bubble: a static ANCHOR div marks the resting spot; the Magnet's
+            moving layer carries the REAL React Flow Handle, so wherever the
+            bubble is pulled, pressing the mouse starts a wire drag right there —
+            no need to travel back to the resting spot. Anchor is pointer-events
+            none (an empty resting spot must not eat pane clicks); the Handle
+            re-enables its own pointer events. */}
+        <div
           className={clsx(
-            '!h-6 !w-6 !-left-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
-            selected && !multiSelectActive && '!opacity-100',
+            'pointer-events-none absolute -left-8 top-1/2 z-10 h-6 w-6 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100',
+            (leftPull || (selected && !multiSelectActive)) && 'opacity-100',
           )}
-          style={{ transform: 'translate(0, -50%)' }}
         >
-          <Magnet disabled={magnetDisabled} outward="left" padding={150} magnetStrength={3}>
-            <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
-              <Plus className="h-3 w-3 text-slate-50" />
-            </div>
+          <Magnet disabled={magnetDisabled} release={isConnectionDragging} outward="left" padding={90} magnetStrength={1} activeTransition="none" onActiveChange={setLeftPull}>
+            <Handle
+              type="target"
+              position={Position.Left}
+              id="qc-target-left"
+              className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
+              style={{ pointerEvents: 'auto' }}
+            >
+              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+                <Plus className="h-3 w-3 text-slate-50" />
+              </div>
+            </Handle>
           </Magnet>
-        </Handle>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="qc-source-right"
+        </div>
+        <div
           className={clsx(
-            '!h-6 !w-6 !-right-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
-            selected && !multiSelectActive && '!opacity-100',
+            'pointer-events-none absolute -right-8 top-1/2 z-10 h-6 w-6 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100',
+            (rightPull || (selected && !multiSelectActive)) && 'opacity-100',
           )}
-          style={{ transform: 'translate(0, -50%)' }}
         >
-          <Magnet disabled={magnetDisabled} padding={150} magnetStrength={3}>
-            <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
-              <Plus className="h-3 w-3 text-slate-50" />
-            </div>
+          <Magnet disabled={magnetDisabled} release={isConnectionDragging} outward="right" padding={90} magnetStrength={1} activeTransition="none" onActiveChange={setRightPull}>
+            <Handle
+              type="source"
+              position={Position.Right}
+              id="qc-source-right"
+              className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
+              style={{ pointerEvents: 'auto' }}
+            >
+              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+                <Plus className="h-3 w-3 text-slate-50" />
+              </div>
+            </Handle>
           </Magnet>
-        </Handle>
+        </div>
       </div>
 
       {floatingPanel}
@@ -2666,14 +2738,17 @@ async function loadImageElement(src: string): Promise<HTMLImageElement> {
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error('Image decode failed'));
-    img.src = objectUrl;
-  });
-  URL.revokeObjectURL(objectUrl);
-  return img;
+  try {
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Image decode failed'));
+      img.src = objectUrl;
+    });
+    return img;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function canvasToDataUrl(canvas: HTMLCanvasElement) {
@@ -2720,6 +2795,295 @@ async function uploadTransientImageReference(source: string, filename: string) {
     return source;
   }
   return uploadImageSource(trimmed, filename);
+}
+
+// ── 画笔标注 (on-image annotation) ─────────────────────────────────────────
+// Freehand pen strokes + text labels drawn OVER a generated image, baked into
+// a new full-resolution copy on save. Coordinates are stored normalized
+// (0..1 relative to the displayed media box) so they survive canvas zoom and
+// map onto the natural-size bitmap through the same object-cover crop the
+// <img> uses.
+type AnnotateOp =
+  | { kind: 'pen'; color: string; width: number; points: Array<{ x: number; y: number }> }
+  | { kind: 'text'; color: string; size: number; x: number; y: number; text: string };
+
+const ANNOTATE_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#ffffff', '#111827'];
+
+function paintAnnotateOps(
+  ctx: CanvasRenderingContext2D,
+  ops: AnnotateOp[],
+  mapX: (n: number) => number,
+  mapY: (n: number) => number,
+  widthScale: number,
+) {
+  for (const op of ops) {
+    if (op.kind === 'pen') {
+      if (op.points.length === 0) continue;
+      ctx.strokeStyle = op.color;
+      ctx.lineWidth = Math.max(1, op.width * widthScale);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(mapX(op.points[0].x), mapY(op.points[0].y));
+      for (let i = 1; i < op.points.length; i += 1) {
+        ctx.lineTo(mapX(op.points[i].x), mapY(op.points[i].y));
+      }
+      // A click without movement still leaves a visible dot.
+      if (op.points.length === 1) ctx.lineTo(mapX(op.points[0].x) + 0.01, mapY(op.points[0].y));
+      ctx.stroke();
+    } else {
+      if (!op.text) continue;
+      ctx.fillStyle = op.color;
+      ctx.font = `600 ${Math.max(8, op.size * widthScale)}px system-ui, sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.fillText(op.text, mapX(op.x), mapY(op.y));
+    }
+  }
+}
+
+/** Bake annotation ops into a full-resolution PNG of the source image. */
+async function renderAnnotatedImage(srcUrl: string, ops: AnnotateOp[], boxW: number, boxH: number): Promise<Blob> {
+  const img = await loadImageElement(srcUrl);
+  const nW = img.naturalWidth || Math.max(1, Math.round(boxW));
+  const nH = img.naturalHeight || Math.max(1, Math.round(boxH));
+  const canvas = document.createElement('canvas');
+  canvas.width = nW;
+  canvas.height = nH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D unavailable');
+  ctx.drawImage(img, 0, 0, nW, nH);
+  // The node shows the image object-cover inside a boxW×boxH frame: scale
+  // s = display px per natural px; only a centered visW×visH source crop is
+  // visible, so normalized box coords map into that crop.
+  const s = Math.max(boxW / nW, boxH / nH);
+  const visW = boxW / s;
+  const visH = boxH / s;
+  const offX = (nW - visW) / 2;
+  const offY = (nH - visH) / 2;
+  paintAnnotateOps(ctx, ops, (n) => offX + n * visW, (n) => offY + n * visH, 1 / s);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('Canvas export failed');
+  return blob;
+}
+
+/** Transparent drawing surface overlaid on the node's media box. */
+function ImageAnnotateLayer({ tool, color, width, ops, onCommit, suspended = false }: {
+  tool: 'pen' | 'text';
+  color: string;
+  width: number;
+  ops: AnnotateOp[];
+  onCommit: (op: AnnotateOp) => void;
+  /** Blocks input (and lets pointer events pass through) while a save is
+   *  in-flight or a wire is being dragged over the node. */
+  suspended?: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawingRef = useRef<Extract<AnnotateOp, { kind: 'pen' }> | null>(null);
+  const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null);
+  const textDraftRef = useRef(textDraft);
+  textDraftRef.current = textDraft;
+
+  const repaint = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const live = drawingRef.current ? [...ops, drawingRef.current] : ops;
+    // Op widths are in box CSS px; the bitmap is box CSS px × dpr.
+    const widthScale = canvas.width / Math.max(1, canvas.offsetWidth || canvas.width);
+    paintAnnotateOps(ctx, live, (n) => n * canvas.width, (n) => n * canvas.height, widthScale);
+  }, [ops]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    canvas.width = Math.round((canvas.offsetWidth || 1) * dpr);
+    canvas.height = Math.round((canvas.offsetHeight || 1) * dpr);
+    repaint();
+  }, [repaint]);
+
+  const toNorm = (event: React.PointerEvent) => {
+    // getBoundingClientRect is post-zoom, so normalized coords are zoom-proof.
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1),
+      y: clampNumber((event.clientY - rect.top) / Math.max(1, rect.height), 0, 1),
+    };
+  };
+
+  // Ref-routed so the Enter-then-blur sequence can't commit the label twice.
+  const commitTextDraft = () => {
+    const draft = textDraftRef.current;
+    textDraftRef.current = null;
+    setTextDraft(null);
+    if (draft && draft.value.trim()) {
+      onCommit({ kind: 'text', color, size: Math.max(14, width * 4), x: draft.x, y: draft.y, text: draft.value.trim() });
+    }
+  };
+
+  return (
+    <div
+      className="nodrag nopan absolute inset-0 z-20"
+      style={{ cursor: tool === 'text' ? 'text' : 'crosshair', pointerEvents: suspended ? 'none' : undefined }}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        if (suspended || event.button !== 0) return;
+        if (tool === 'text') {
+          if (!textDraftRef.current) setTextDraft({ ...toNorm(event), value: '' });
+          return;
+        }
+        (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+        drawingRef.current = { kind: 'pen', color, width, points: [toNorm(event)] };
+        repaint();
+      }}
+      onPointerMove={(event) => {
+        if (!drawingRef.current) return;
+        event.stopPropagation();
+        drawingRef.current.points.push(toNorm(event));
+        repaint();
+      }}
+      onPointerUp={() => {
+        const op = drawingRef.current;
+        drawingRef.current = null;
+        if (op) onCommit(op);
+      }}
+      onPointerCancel={() => {
+        drawingRef.current = null;
+        repaint();
+      }}
+    >
+      <canvas ref={canvasRef} className="block h-full w-full" />
+      {textDraft ? (
+        <input
+          autoFocus
+          value={textDraft.value}
+          placeholder="输入文字…"
+          onChange={(event) => {
+            const value = event.target.value;
+            setTextDraft((draft) => (draft ? { ...draft, value } : draft));
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') commitTextDraft();
+            if (event.key === 'Escape') {
+              textDraftRef.current = null;
+              setTextDraft(null);
+            }
+          }}
+          onBlur={commitTextDraft}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="nodrag nopan absolute z-30 rounded border border-white/40 bg-black/60 px-1.5 py-0.5 outline-none backdrop-blur-sm placeholder:text-white/40"
+          style={{
+            left: `${textDraft.x * 100}%`,
+            top: `${textDraft.y * 100}%`,
+            color,
+            maxWidth: '70%',
+            // Match the size the label will be baked at, so commit doesn't jump.
+            fontSize: Math.max(14, width * 4),
+            lineHeight: 1.2,
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Annotation-mode toolbar: 返回 | 画笔 文字 颜色 粗细 | 撤销 重做 | 保存. */
+function ImageAnnotateToolbar({ zh, tool, setTool, color, setColor, width, setWidth, canUndo, canRedo, onUndo, onRedo, onExit, onSave, saving }: {
+  zh: boolean;
+  tool: 'pen' | 'text';
+  setTool: (tool: 'pen' | 'text') => void;
+  color: string;
+  setColor: (color: string) => void;
+  width: number;
+  setWidth: (width: number) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onExit: () => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  const [showColors, setShowColors] = useState(false);
+  return (
+    <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_18px_40px_-18px_rgba(0,0,0,0.9)]">
+      <button
+        type="button"
+        onClick={onExit}
+        title={zh ? '退出标注（不保存）' : 'Exit without saving'}
+        className="flex items-center gap-1 rounded-full px-2 py-1 text-xs text-neutral-300 transition hover:bg-white/10 hover:text-white"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        {zh ? '返回' : 'Back'}
+      </button>
+      <div className="mx-1 h-5 w-px bg-white/10" />
+      <Button variant="ghost" size="icon" className={clsx(tool === 'pen' && 'bg-white/15 text-white')} onClick={() => setTool('pen')} title={zh ? '画笔' : 'Pen'}>
+        <Brush className="h-4 w-4" />
+      </Button>
+      <Button variant="ghost" size="icon" className={clsx(tool === 'text' && 'bg-white/15 text-white')} onClick={() => setTool('text')} title={zh ? '文字' : 'Text'}>
+        <Type className="h-4 w-4" />
+      </Button>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setShowColors((v) => !v)}
+          title={zh ? '颜色' : 'Color'}
+          className="flex h-8 w-8 items-center justify-center rounded-full transition hover:bg-white/10"
+        >
+          <span className="h-4 w-4 rounded-full border border-white/40" style={{ backgroundColor: color }} />
+        </button>
+        {showColors ? (
+          <div className="absolute left-1/2 top-full z-40 mt-2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-white/10 bg-[#12161d]/95 px-2 py-1.5 shadow-xl backdrop-blur-xl">
+            {ANNOTATE_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => { setColor(c); setShowColors(false); }}
+                className={clsx('h-4 w-4 rounded-full border border-white/30 transition hover:scale-110', color === c && 'ring-2 ring-white/80')}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-1.5 px-1" title={zh ? '粗细' : 'Stroke width'}>
+        <span
+          className="shrink-0 rounded-full"
+          style={{ width: Math.max(3, Math.min(12, width / 2)), height: Math.max(3, Math.min(12, width / 2)), backgroundColor: color }}
+        />
+        <input
+          type="range"
+          min={2}
+          max={24}
+          step={1}
+          value={width}
+          onChange={(event) => setWidth(Number(event.target.value))}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="h-1 w-20 cursor-pointer accent-white"
+        />
+      </div>
+      <div className="mx-1 h-5 w-px bg-white/10" />
+      <Button variant="ghost" size="icon" disabled={!canUndo} onClick={onUndo} title={zh ? '上一步' : 'Undo'}>
+        <Undo2 className="h-4 w-4" />
+      </Button>
+      <Button variant="ghost" size="icon" disabled={!canRedo} onClick={onRedo} title={zh ? '下一步' : 'Redo'}>
+        <Redo2 className="h-4 w-4" />
+      </Button>
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={saving}
+        className="ml-1 flex items-center gap-1 rounded-full bg-white px-3 py-1 text-xs font-medium text-black transition hover:bg-neutral-200 disabled:opacity-60"
+      >
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        {zh ? '保存' : 'Save'}
+      </button>
+    </div>
+  );
 }
 
 function isLikelyPanoramaData(data: Record<string, any>) {
@@ -3359,7 +3723,212 @@ function LightingActionEditor({
   );
 }
 
-function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
+/** 高清增强配置弹窗 — Nano Pro 专用超分：引擎固定，只选 2K/4K 目标分辨率。
+ *  左侧原图预览，右侧原图信息 + 引擎卡 + 目标分辨率与输出尺寸估算。 */
+function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose }: {
+  sourceUrl: string;
+  zh: boolean;
+  modelAvailable: boolean;
+  busy: boolean;
+  onSubmit: (resolution: '2k' | '4k', aspectRatio: string) => void;
+  onClose: () => void;
+}) {
+  const [res, setRes] = useState<'2k' | '4k'>('2k');
+  const [ratio, setRatio] = useState<string>('auto');
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadImageElement(sourceUrl)
+      .then((img) => {
+        if (!cancelled && img.naturalWidth && img.naturalHeight) {
+          setDims({ w: img.naturalWidth, h: img.naturalHeight });
+        }
+      })
+      .catch(() => { /* info rows stay '—' */ });
+    return () => { cancelled = true; };
+  }, [sourceUrl]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const ratioLabel = useMemo(() => {
+    if (!dims) return '—';
+    // Snap to the nearest friendly ratio when within ~2%; otherwise show the
+    // reduced exact ratio (raw dims like 1672:941 are unreadable).
+    const candidates = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '2:1', '1:2', '21:9'];
+    const actual = dims.w / dims.h;
+    let best = '';
+    let bestDelta = Infinity;
+    for (const candidate of candidates) {
+      const [a, b] = candidate.split(':').map(Number);
+      const delta = Math.abs(Math.log(actual / (a / b)));
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = candidate;
+      }
+    }
+    if (bestDelta < 0.02) return best;
+    const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+    const d = gcd(dims.w, dims.h) || 1;
+    return `${dims.w / d}:${dims.h / d}`;
+  }, [dims]);
+  const mp = dims ? ((dims.w * dims.h) / 1_000_000).toFixed(1) : '—';
+  const targetLong = res === '4k' ? 3840 : 2048;
+  const scale = dims ? targetLong / Math.max(dims.w, dims.h) : null;
+  // Output size: auto keeps the source ratio; an explicit ratio re-frames the
+  // output at the target long edge.
+  const out = useMemo(() => {
+    if (ratio !== 'auto') {
+      const [a, b] = ratio.split(':').map(Number);
+      if (a > 0 && b > 0) {
+        return a >= b
+          ? { w: targetLong, h: Math.round((targetLong * b) / a) }
+          : { w: Math.round((targetLong * a) / b), h: targetLong };
+      }
+    }
+    if (!dims || !scale) return null;
+    return { w: Math.round(dims.w * scale), h: Math.round(dims.h * scale) };
+  }, [ratio, dims, scale, targetLong]);
+
+  const InfoRow = ({ label, value }: { label: string; value: React.ReactNode }) => (
+    <div className="flex items-center justify-between text-[12px]">
+      <span className="text-neutral-500">{label}</span>
+      <span className="font-mono text-neutral-200">{value}</span>
+    </div>
+  );
+
+  return createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 p-6 backdrop-blur-md" onClick={onClose}>
+      <div
+        className="flex h-[min(720px,86vh)] w-[min(1160px,94vw)] overflow-hidden rounded-2xl border border-white/10 bg-[#101218] shadow-[0_40px_120px_rgba(0,0,0,0.7)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {/* 左侧预览 */}
+        <div className="flex flex-1 items-center justify-center bg-black/40 p-6">
+          <img
+            src={toRenderableMediaUrl(sourceUrl)}
+            alt=""
+            draggable={false}
+            className="max-h-full max-w-full rounded-lg object-contain select-none"
+          />
+        </div>
+        {/* 右侧配置 */}
+        <div className="flex w-[340px] shrink-0 flex-col border-l border-white/10">
+          <div className="flex items-center justify-between px-5 pb-3 pt-5">
+            <div className="text-[15px] font-semibold text-neutral-100">{zh ? '高清增强配置' : 'HD enhance'}</div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-neutral-400 transition hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 space-y-4 overflow-y-auto px-5 pb-4">
+            <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+              <InfoRow label={zh ? '分辨率' : 'Resolution'} value={dims ? `${dims.w} × ${dims.h} px` : '—'} />
+              <InfoRow label={zh ? '宽高比' : 'Aspect'} value={ratioLabel} />
+              <InfoRow label={zh ? '像素总量' : 'Pixels'} value={dims ? `${mp} MP` : '—'} />
+            </div>
+            <div>
+              <div className="mb-2 flex items-baseline gap-2">
+                <span className="text-[13px] font-medium text-neutral-200">{zh ? '处理引擎' : 'Engine'}</span>
+                <span className="text-[11px] text-neutral-500">{zh ? '大模型智能超分' : 'Model-powered upscale'}</span>
+              </div>
+              <div className="rounded-xl border border-indigo-400/60 bg-indigo-500/10 p-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-indigo-200">Nano Pro {zh ? '大模型高清' : 'HD'}</span>
+                  <span className="rounded bg-indigo-500 px-1 text-[9px] font-bold leading-4 text-white">AI</span>
+                </div>
+                <div className="mt-1 text-[11px] leading-relaxed text-indigo-200/80">
+                  {zh ? '大模型驱动的智能高清还原，细节丰富自然，支持 2K/4K 输出。' : 'Model-driven HD restoration with rich, natural detail. 2K/4K output.'}
+                </div>
+              </div>
+              {!modelAvailable ? (
+                <div className="mt-2 text-[11px] text-amber-400/90">
+                  {zh ? '未找到 gemini-3.0-pro-image 模型，请先在管理端启用。' : 'gemini-3.0-pro-image is not configured — enable it in admin first.'}
+                </div>
+              ) : null}
+            </div>
+            <div>
+              <div className="mb-2 flex items-baseline gap-2">
+                <span className="text-[13px] font-medium text-neutral-200">{zh ? '目标分辨率' : 'Target resolution'}</span>
+                <span className="text-[11px] text-neutral-500">{zh ? '等比放大至目标分辨率' : 'Scaled proportionally'}</span>
+              </div>
+              <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                <InfoRow
+                  label={zh ? '输出尺寸' : 'Output size'}
+                  value={out ? <span><span className="text-amber-300">{out.w}</span> × {out.h} px</span> : '—'}
+                />
+                <InfoRow label={zh ? '放大倍率' : 'Scale'} value={scale ? `≈ ${scale.toFixed(1)}x` : '—'} />
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                {(['2k', '4k'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setRes(option)}
+                    className={clsx(
+                      'rounded-full border px-4 py-1.5 text-xs font-medium transition',
+                      res === option
+                        ? 'border-white bg-white text-black'
+                        : 'border-white/15 text-neutral-300 hover:border-white/40 hover:text-white',
+                    )}
+                  >
+                    {option.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 flex items-baseline gap-2">
+                <span className="text-[13px] font-medium text-neutral-200">{zh ? '画幅比例' : 'Aspect ratio'}</span>
+                <span className="text-[11px] text-neutral-500">{zh ? '输出画面的宽高比' : 'Output frame ratio'}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'].map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setRatio(option)}
+                    className={clsx(
+                      'rounded-full border px-3 py-1.5 text-xs font-medium transition',
+                      ratio === option
+                        ? 'border-white bg-white text-black'
+                        : 'border-white/15 text-neutral-300 hover:border-white/40 hover:text-white',
+                    )}
+                  >
+                    {option === 'auto' ? (zh ? '自动' : 'Auto') : option}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-between border-t border-white/10 px-5 py-3.5">
+            <div className="text-[12px] text-neutral-300">{zh ? '高清' : 'HD'} · Nano Pro · {res.toUpperCase()}</div>
+            <button
+              type="button"
+              disabled={busy || !modelAvailable}
+              // 自动 = 跟随原图：把探测到的（贴近标准的）原图比例传下去，
+              // 避免派生节点回退到默认 1:1。
+              onClick={() => onSubmit(res, ratio === 'auto' ? (dims ? ratioLabel : 'auto') : ratio)}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:opacity-50"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string; onAnnotate?: () => void }) {
   const language = useStore((state) => state.language);
   const backendModels = useStore((state) => state.backendModels);
   const nodes = useStore((state) => state.nodes);
@@ -3388,6 +3957,14 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [session, setSession] = useState<ImageActionSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [hdOpen, setHdOpen] = useState(false);
+  // Nano Pro 高清引擎：优先基础名；只配了 " 4K" 变体时也能兜底使用。
+  const nanoProModel = useMemo(() => {
+    const models = imageModelOptions;
+    return models.find((m) => m.trim().toLowerCase() === 'gemini-3.0-pro-image')
+      ?? models.find((m) => m.trim().toLowerCase().startsWith('gemini-3.0-pro-image'))
+      ?? '';
+  }, [imageModelOptions]);
   const latestDerived = useMemo(
     () => {
       const matches = nodes.filter((node) => (node.data as Record<string, unknown> | undefined)?.derivedFromNodeId === sourceNodeId);
@@ -3474,6 +4051,11 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     anglePreset?: string;
     lightingPreset?: string;
     gridPreset?: string;
+    /** e.g. '2k'/'4k' — Nano Pro 高清 target; overrides the inherited source resolution. */
+    resolution?: string;
+    /** Explicit output frame ratio; overrides the inherited source aspect. */
+    aspectRatio?: string;
+    derivationAction?: string;
   }) => {
     if (!sourceNode) return;
     const base = sourceNode.position ?? { x: 0, y: 0 };
@@ -3504,13 +4086,13 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         status: 'idle',
         sourceKind: 'derived',
         derivedFromNodeId: sourceNodeId,
-        derivationAction: session?.action ?? 'enhance',
+        derivationAction: payload.derivationAction ?? session?.action ?? 'enhance',
         isPanorama: isPanoramaAction,
         generationParams: {
           model,
-          aspectRatio: isPanoramaAction ? '2:1' : (sourceParams.aspectRatio ?? '1:1'),
+          aspectRatio: payload.aspectRatio ?? (isPanoramaAction ? '2:1' : (sourceParams.aspectRatio ?? '1:1')),
           quality: sourceParams.quality ?? 'auto',
-          resolution: sourceParams.resolution ?? '720p',
+          resolution: payload.resolution ?? sourceParams.resolution ?? '720p',
           durationSeconds: sourceParams.durationSeconds,
           referenceImages: stableReferenceImages,
           maskImage: stableMaskImage,
@@ -3733,7 +4315,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button variant="ghost" size="sm" onClick={() => openDraft('enhance')} className={actionButtonClass}>
+        <Button variant="ghost" size="sm" onClick={() => setHdOpen(true)} className={actionButtonClass}>
           <Sparkles className="h-3.5 w-3.5" />
           {language === 'zh' ? '高清' : 'HD'}
         </Button>
@@ -3758,8 +4340,13 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           </DropdownMenuContent>
         </DropdownMenu>
         <div className="mx-1 h-5 w-px bg-white/10" />
-        <Button variant="ghost" size="icon" onClick={() => openDraft('edit')} title={language === 'zh' ? '局部编辑' : 'Edit region'}>
-          <Highlighter className="h-4 w-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => (onAnnotate ? onAnnotate() : openDraft('edit'))}
+          title={onAnnotate ? (language === 'zh' ? '画笔标注' : 'Draw on image') : (language === 'zh' ? '局部编辑' : 'Edit region')}
+        >
+          <Brush className="h-4 w-4" />
         </Button>
         <Button variant="ghost" size="icon" onClick={() => setSession({ action: 'enhance', open: false, compareOpen: true, draft: { prompt: '' } })} title={language === 'zh' ? '对比' : 'Compare'}>
           <CopyIcon className="h-4 w-4" />
@@ -3860,6 +4447,44 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       </Dialog>
 
       {fullscreenOpen ? <PreviewModal kind="image" src={sourceUrl} onClose={() => setFullscreenOpen(false)} /> : null}
+      {hdOpen ? (
+        <HdEnhanceModal
+          sourceUrl={sourceUrl}
+          zh={language === 'zh'}
+          modelAvailable={Boolean(nanoProModel)}
+          busy={busy}
+          onClose={() => setHdOpen(false)}
+          onSubmit={(resolution, aspectRatio) => {
+            void (async () => {
+              if (busy) return;
+              setBusy(true);
+              try {
+                const basePrompt = language === 'zh'
+                  ? '保留构图与主体，提升清晰度、纹理与细节层次。'
+                  : 'Preserve composition and subject while enhancing sharpness, texture, and details.';
+                // The Nano Pro chat endpoint has no aspect field — a non-auto
+                // frame ratio rides in as a prompt directive (and lands in
+                // generationParams so schema-aliased providers pick it up too).
+                const ratioSuffix = aspectRatio !== 'auto'
+                  ? (language === 'zh' ? `画幅比例 ${aspectRatio}。` : ` Output aspect ratio ${aspectRatio}.`)
+                  : '';
+                await spawnDerivedNode({
+                  prompt: `${basePrompt}${ratioSuffix}`,
+                  model: nanoProModel || undefined,
+                  resolution,
+                  aspectRatio: aspectRatio !== 'auto' ? aspectRatio : undefined,
+                  referenceImages: [sourceUrl],
+                  outputCount: 1,
+                  derivationAction: 'enhance',
+                });
+                setHdOpen(false);
+              } finally {
+                setBusy(false);
+              }
+            })();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -5537,6 +6162,9 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   // Without this fallback, React crashes the entire workspace on render.
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const addHistory = useStore((state) => state.addHistory);
   const [preview, setPreview] = useState(false);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
@@ -5545,6 +6173,123 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   const effectiveAspect = naturalRatio ?? paramAspect;
   const genBox = mediaBoxFromAspect(parseAspectRatio(effectiveAspect));
   const isPanorama = isLikelyPanoramaData(data);
+
+  // 画笔标注 session: null = off. Ops/redo live here so the toolbar (in the
+  // topFloatingPanel slot) and the drawing layer (over the media box) share
+  // one source of truth.
+  const [annotate, setAnnotate] = useState<null | {
+    tool: 'pen' | 'text';
+    color: string;
+    width: number;
+    ops: AnnotateOp[];
+    redo: AnnotateOp[];
+  }>(null);
+  const [annotateSaving, setAnnotateSaving] = useState(false);
+  const annotating = annotate !== null;
+  const isConnectionDragging = useStore((state) => state.isConnectionDragging);
+
+  // 标注期间接管全局快捷键（capture 期，压过画布的删除/撤销处理器）：
+  // Backspace/Delete/Ctrl+Z = 撤销一笔（而不是删掉整个节点/画布撤销），
+  // Ctrl+Shift+Z / Ctrl+Y = 重做，Esc = 退出标注。
+  useEffect(() => {
+    if (!annotating) return;
+    const undoOp = () => setAnnotate((s) => (s && s.ops.length > 0 ? { ...s, ops: s.ops.slice(0, -1), redo: [...s.redo, s.ops[s.ops.length - 1]] } : s));
+    const redoOp = () => setAnnotate((s) => (s && s.redo.length > 0 ? { ...s, ops: [...s.ops, s.redo[s.redo.length - 1]], redo: s.redo.slice(0, -1) } : s));
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = Boolean(target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable));
+      if (event.key === 'Escape') {
+        if (typing) return; // let the text-draft input handle its own Escape
+        event.preventDefault();
+        event.stopPropagation();
+        setAnnotate(null);
+        return;
+      }
+      if ((event.key === 'Backspace' || event.key === 'Delete') && !typing) {
+        event.preventDefault();
+        event.stopPropagation();
+        undoOp();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.shiftKey) redoOp();
+        else undoOp();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        event.stopPropagation();
+        redoOp();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [annotating]);
+
+  // 取消选中时：空白标注会话直接退出（工具栏跟着选中态走，避免只剩
+  // 一层没有出口的画布）；已有笔迹则保留会话，点回节点即可继续。
+  useEffect(() => {
+    if (!annotating || selected) return;
+    setAnnotate((s) => (s && s.ops.length === 0 ? null : s));
+  }, [annotating, selected]);
+
+  const handleAnnotateSave = async () => {
+    if (!annotate || annotateSaving) return;
+    if (annotate.ops.length === 0) {
+      setAnnotate(null);
+      return;
+    }
+    setAnnotateSaving(true);
+    try {
+      const blob = await renderAnnotatedImage(String(data.url), annotate.ops, genBox.width, genBox.height);
+      const objectUrl = URL.createObjectURL(blob);
+      let stableUrl: string;
+      try {
+        stableUrl = await uploadImageSource(objectUrl, `annotated-${id}-${Date.now()}.png`);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      // 原图不动：标注结果落成一个新的派生节点并连线（与超分一致的模式）。
+      const annotatedId = `img-annotate-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const basePosition = useStore.getState().nodes.find((node) => node.id === id)?.position ?? { x: 0, y: 0 };
+      addNode({
+        id: annotatedId,
+        type: 'imageNode',
+        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
+        data: {
+          customTitle: language === 'zh' ? '标注图' : 'Annotated image',
+          url: stableUrl,
+          output: stableUrl,
+          status: 'done',
+          sourceKind: 'derived',
+          derivedFromNodeId: id,
+          derivationAction: 'annotate',
+          generationParams: {
+            aspectRatio: effectiveAspect,
+          },
+        },
+      } as never);
+      onConnect({ source: id, target: annotatedId, sourceHandle: null, targetHandle: null } as never);
+      addHistory({
+        id: `annotate-${id}-${Date.now()}`,
+        title: `${data.customTitle || (language === 'zh' ? '画笔标注' : 'Annotated image')}`,
+        type: 'image',
+        mediaType: 'image',
+        timestamp: Date.now(),
+        thumbnail: stableUrl,
+        promptExcerpt: typeof data.prompt === 'string' ? data.prompt.slice(0, 120) : undefined,
+        sourceNodeId: id,
+        derivationAction: 'annotate',
+      });
+      setAnnotate(null);
+    } catch (err) {
+      toast.error(language === 'zh' ? `标注保存失败：${err instanceof Error ? err.message : String(err)}` : `Failed to save annotation: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAnnotateSaving(false);
+    }
+  };
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
@@ -5572,7 +6317,35 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       width={genBox.width}
-      topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
+      topFloatingPanel={
+        annotate
+          ? (
+            <ImageAnnotateToolbar
+              zh={language === 'zh'}
+              tool={annotate.tool}
+              setTool={(tool) => setAnnotate((s) => (s ? { ...s, tool } : s))}
+              color={annotate.color}
+              setColor={(color) => setAnnotate((s) => (s ? { ...s, color } : s))}
+              width={annotate.width}
+              setWidth={(width) => setAnnotate((s) => (s ? { ...s, width } : s))}
+              canUndo={annotate.ops.length > 0}
+              canRedo={annotate.redo.length > 0}
+              onUndo={() => setAnnotate((s) => (s && s.ops.length > 0 ? { ...s, ops: s.ops.slice(0, -1), redo: [...s.redo, s.ops[s.ops.length - 1]] } : s))}
+              onRedo={() => setAnnotate((s) => (s && s.redo.length > 0 ? { ...s, ops: [...s.ops, s.redo[s.redo.length - 1]], redo: s.redo.slice(0, -1) } : s))}
+              onExit={() => setAnnotate(null)}
+              onSave={() => void handleAnnotateSave()}
+              saving={annotateSaving}
+            />
+          )
+          : data.url && data.status !== 'uploading'
+            ? (
+              <ImageActionToolbar
+                sourceNodeId={id}
+                onAnnotate={() => setAnnotate({ tool: 'pen', color: ANNOTATE_COLORS[0], width: 6, ops: [], redo: [] })}
+              />
+            )
+            : undefined
+      }
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
@@ -5581,9 +6354,13 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
+          className={clsx('relative w-full overflow-hidden rounded-[12px]', annotate ? 'cursor-crosshair' : 'cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
-          onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
+          onDoubleClick={() => {
+            if (annotate) return;
+            if (isPanorama) setPanoramaPreview(true);
+            else setPreview(true);
+          }}
         >
           <ResilientImage
             src={data.url}
@@ -5599,13 +6376,26 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             versions={(data.versions ?? []) as NodeVersion[]}
             mediaKind="image"
           />
-          {isPanorama ? (
+          {isPanorama && !annotate ? (
             <PanoramaOpenButton
               onClick={(event) => {
                 event.stopPropagation();
                 setPanoramaPreview(true);
               }}
               compact
+            />
+          ) : null}
+          {annotate ? (
+            <ImageAnnotateLayer
+              // Re-key on media box changes (e.g. naturalRatio arriving) so the
+              // bitmap re-measures; ops are normalized and survive the remount.
+              key={`${genBox.width}x${genBox.height}`}
+              tool={annotate.tool}
+              color={annotate.color}
+              width={annotate.width}
+              ops={annotate.ops}
+              suspended={annotateSaving || isConnectionDragging}
+              onCommit={(op) => setAnnotate((s) => (s ? { ...s, ops: [...s.ops, op], redo: [] } : s))}
             />
           ) : null}
         </div>
@@ -5864,6 +6654,20 @@ const TEXT_NODE_BG_COLORS: string[] = [
   'rgba(236,72,153,0.28)', 'rgba(100,116,139,0.32)',
 ];
 
+/** Toolbar glyph for the text-highlight tool: an "A" on a yellow chip.
+ *  Deliberately NOT the pen/Highlighter icon — that glyph already means the
+ *  image BRUSH elsewhere in the app and reads as 画笔, not 高亮. */
+const HighlightChipIcon = ({ className }: { className?: string }) => (
+  <span
+    className={clsx(
+      'flex items-center justify-center rounded-[4px] bg-[#fde68a] text-[9px] font-bold leading-none text-[#1a1d22]',
+      className,
+    )}
+  >
+    A
+  </span>
+);
+
 const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
@@ -5882,9 +6686,9 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   // Background color + corner-resize. Live size is tracked locally during a
   // drag and committed to node data ONCE on pointer-up (updateNodeData pushes an
   // undo snapshot, so per-move writes would flood the undo stack).
-  const { zoom } = useViewport();
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
+  // Zoom is read LAZILY at drag time (getViewport) instead of useViewport —
+  // subscribing every text node to pan/zoom made panning re-render them all.
+  const { getViewport } = useReactFlow();
   const [showBgPalette, setShowBgPalette] = useState(false);
   const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
   const liveSizeRef = useRef(liveSize);
@@ -5914,14 +6718,14 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const moveResize = useCallback((event: React.PointerEvent) => {
     const start = resizeStartRef.current;
     if (!start) return;
-    const z = zoomRef.current || 1;
+    const z = getViewport().zoom || 1;
     const next = {
       width: Math.round(Math.max(TEXT_NODE_MIN_WIDTH, start.w + (event.clientX - start.x) / z)),
       height: Math.round(Math.max(TEXT_NODE_MIN_HEIGHT, start.h + (event.clientY - start.y) / z)),
     };
     liveSizeRef.current = next;
     setLiveSize(next);
-  }, []);
+  }, [getViewport]);
 
   const endResize = useCallback((event: React.PointerEvent) => {
     if (!resizeStartRef.current) return;
@@ -5957,6 +6761,17 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
     document.execCommand(cmd, false, value);
     updateNodeData(id, { content: target.innerHTML });
   }, [id, updateNodeData]);
+
+  /** Toggle the yellow text highlight: clicking with the caret/selection
+   *  inside already-highlighted text CLEARS it instead of stacking more. */
+  const toggleHighlight = useCallback(() => {
+    let isOn = false;
+    try {
+      const current = String(document.queryCommandValue('hiliteColor') || document.queryCommandValue('backColor') || '');
+      isOn = current !== '' && current !== 'false' && current !== 'transparent' && current !== 'rgba(0, 0, 0, 0)';
+    } catch { /* unsupported query — fall through to applying */ }
+    exec('hiliteColor', isOn ? 'transparent' : '#fde68a');
+  }, [exec]);
 
   const upstreamIds = useMemo(
     () => edges.filter((edge) => edge.target === id).map((edge) => edge.source),
@@ -6033,7 +6848,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       </div>
       <div className="mx-0.5 h-4 w-px bg-white/10" />
       {([
-        { Icon: Highlighter, key: 'bg', title: language === 'zh' ? '高亮背景色' : 'Highlight', onClick: () => exec('hiliteColor', '#fde68a') },
+        { Icon: HighlightChipIcon, key: 'bg', title: language === 'zh' ? '高亮背景色（再点取消）' : 'Highlight (click again to clear)', onClick: toggleHighlight },
         { Icon: Heading1, key: 'h1', title: 'H1', onClick: () => exec('formatBlock', 'H1') },
         { Icon: Heading2, key: 'h2', title: 'H2', onClick: () => exec('formatBlock', 'H2') },
         { Icon: Heading3, key: 'h3', title: 'H3', onClick: () => exec('formatBlock', 'H3') },
@@ -6294,18 +7109,23 @@ import { NodeVersionsBadge } from './NodeVersions';
 import type { NodeVersion } from '../../store';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 
+// Every node component is memoized: React Flow re-renders ALL registered node
+// components whenever its nodes array changes identity (i.e. every drag frame
+// for every node) unless they bail out on unchanged props. RF passes stable
+// per-node props (id / data / selected / ...), so a plain shallow memo skips
+// the (heavy) unaffected nodes while the dragged one still re-renders.
 export const nodeTypes = {
-  textNode: ModeTextNode,
-  imageNode: RenamableImageNode,
-  videoNode: RenamableVideoNode,
-  audioNode: RenamableAudioNode,
-  panoramaNode: RenamablePanoramaNode,
-  referenceImageNode: ReferenceImageNode,
-  referenceVideoNode: ReferenceVideoNode,
-  referenceAudioNode: AudioReferenceNode,
-  agentNode: AgentNode,
-  stickyNoteNode: StickyNoteNode,
-  directorStageNode: DirectorStageNode,
-  compositionPreviewNode: CompositionPreviewNode,
+  textNode: memo(ModeTextNode),
+  imageNode: memo(RenamableImageNode),
+  videoNode: memo(RenamableVideoNode),
+  audioNode: memo(RenamableAudioNode),
+  panoramaNode: memo(RenamablePanoramaNode),
+  referenceImageNode: memo(ReferenceImageNode),
+  referenceVideoNode: memo(ReferenceVideoNode),
+  referenceAudioNode: memo(AudioReferenceNode),
+  agentNode: memo(AgentNode),
+  stickyNoteNode: memo(StickyNoteNode),
+  directorStageNode: memo(DirectorStageNode),
+  compositionPreviewNode: memo(CompositionPreviewNode),
 };
 
