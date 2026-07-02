@@ -147,26 +147,63 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			fetchURL = signed
 		}
 		client := safehttp.Client(60 * time.Second)
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
-		if err != nil {
-			http.Error(w, "Failed to build request", http.StatusBadRequest)
+		rangeHeader := r.Header.Get("Range")
+		buildRequest := func() (*http.Request, error) {
+			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
+			if err != nil {
+				return nil, err
+			}
+			// Some buckets / CDNs (COS 防盗链, Cloudflare bot fight, etc.)
+			// reject requests with an empty or non-browser User-Agent. Set
+			// a common one. We explicitly do NOT forward Referer so
+			// referrer-based hotlink protection doesn't bite either.
+			req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
+			req.Header.Set("Accept", "image/*,video/*,audio/*,*/*;q=0.8")
+			// Forward Range so <audio>/<video> can stream and SEEK: media
+			// elements always request `bytes=0-` and scrubbing needs 206
+			// partials — swallowing Range made playback unseekable.
+			if rangeHeader != "" {
+				req.Header.Set("Range", rangeHeader)
+			}
+			return req, nil
+		}
+
+		// One retry on transport errors / upstream 5xx: the provider link
+		// occasionally drops the first connection (intermittent EOF), and a
+		// media element that 502s on its initial load stays broken until the
+		// node remounts.
+		var resp *http.Response
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			req, err := buildRequest()
+			if err != nil {
+				http.Error(w, "Failed to build request", http.StatusBadRequest)
+				return
+			}
+			resp, lastErr = client.Do(req)
+			if lastErr == nil && resp.StatusCode < 500 {
+				break
+			}
+			if resp != nil {
+				resp.Body.Close()
+				resp = nil
+			}
+		}
+		if lastErr != nil {
+			http.Error(w, "Failed to fetch media: "+lastErr.Error(), http.StatusBadGateway)
 			return
 		}
-		// Some buckets / CDNs (COS 防盗链, Cloudflare bot fight, etc.)
-		// reject requests with an empty or non-browser User-Agent. Set
-		// a common one. We explicitly do NOT forward Referer so
-		// referrer-based hotlink protection doesn't bite either.
-		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
-		req.Header.Set("Accept", "image/*,video/*,audio/*,*/*;q=0.8")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			http.Error(w, "Failed to fetch media: "+err.Error(), http.StatusBadGateway)
+		if resp == nil {
+			http.Error(w, "Upstream unavailable", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				http.Error(w, "Requested range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
 			http.Error(w, fmt.Sprintf("Upstream returned HTTP %d", resp.StatusCode), http.StatusBadGateway)
 			return
 		}
@@ -181,9 +218,18 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		//      (bulletproof for COS files saved with .bin/.img keys)
 		ct := resp.Header.Get("Content-Type")
 		body := bufio.NewReaderSize(resp.Body, 512)
+		// A 206 partial that does not start at byte 0 carries mid-file bytes —
+		// http.DetectContentType on them is meaningless. Browsers always begin
+		// with `bytes=0-`, so byte sniffing stays available for the request
+		// that matters; later mid-file seeks fall back to the URL extension.
+		partialFromMiddle := resp.StatusCode == http.StatusPartialContent &&
+			!strings.HasPrefix(strings.ReplaceAll(rangeHeader, " ", ""), "bytes=0-")
 		if !strings.HasPrefix(ct, "video/") && !strings.HasPrefix(ct, "image/") && !strings.HasPrefix(ct, "audio/") {
 			if sniffed := sniffMediaType(target); sniffed != "" {
 				ct = sniffed
+			} else if partialFromMiddle {
+				http.Error(w, "Not a media resource (mid-file range without a media extension)", http.StatusBadRequest)
+				return
 			} else {
 				peek, _ := body.Peek(512)
 				detected := http.DetectContentType(peek)
@@ -214,6 +260,17 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
+		}
+		// Range plumbing: advertise seekability and mirror partial responses so
+		// media elements can scrub.
+		if ar := resp.Header.Get("Accept-Ranges"); ar != "" {
+			w.Header().Set("Accept-Ranges", ar)
+		}
+		if cr := resp.Header.Get("Content-Range"); cr != "" {
+			w.Header().Set("Content-Range", cr)
+		}
+		if resp.StatusCode == http.StatusPartialContent {
+			w.WriteHeader(http.StatusPartialContent)
 		}
 		io.Copy(w, io.LimitReader(body, maxProxySize))
 	}

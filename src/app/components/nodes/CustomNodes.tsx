@@ -5032,6 +5032,10 @@ const VideoHoverControls = ({
   const [captureOpen, setCaptureOpen] = useState(false);
   const progressRef = useRef<HTMLDivElement>(null);
 
+  // Re-attach on hover too: the <video> element can mount AFTER this effect
+  // first ran (a generated url arriving later), and the ref OBJECT identity
+  // never changes — with [videoRef] alone the listeners were never bound and
+  // the progress bar stayed frozen forever.
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -5039,35 +5043,64 @@ const VideoHoverControls = ({
     const onPause = () => setPlaying(false);
     const onTime = () => setCurrentTime(v.currentTime);
     const onMeta = () => setDuration(v.duration || 0);
+    const onEnd = () => setPlaying(false);
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('loadedmetadata', onMeta);
+    v.addEventListener('durationchange', onMeta);
+    v.addEventListener('ended', onEnd);
     if (v.duration) setDuration(v.duration);
+    setPlaying(!v.paused);
+    setCurrentTime(v.currentTime);
     return () => {
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPause);
       v.removeEventListener('timeupdate', onTime);
       v.removeEventListener('loadedmetadata', onMeta);
+      v.removeEventListener('durationchange', onMeta);
+      v.removeEventListener('ended', onEnd);
     };
-  }, [videoRef]);
+  }, [videoRef, hovered]);
+
+  // Smooth playhead: timeupdate only fires ~4 Hz; drive the bar per-frame
+  // while playing so it glides instead of jumping.
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0;
+    const tick = () => {
+      const v = videoRef.current;
+      if (v) setCurrentTime(v.currentTime);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, videoRef]);
 
   const togglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) v.play().catch(() => {});
-    else v.pause();
+    if (v.paused) {
+      v.play().catch(() => {
+        // A transient proxy failure at initial load bricks the element;
+        // reload once and retry so the play button isn't permanently dead.
+        v.load();
+        v.play().catch(() => {});
+      });
+    } else {
+      v.pause();
+    }
   };
 
-  const seek = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const seekToClientX = (clientX: number) => {
     const bar = progressRef.current;
     const v = videoRef.current;
     if (!bar || !v || !duration) return;
     const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     v.currentTime = ratio * duration;
+    setCurrentTime(v.currentTime);
   };
 
   if (!hovered) return null;
@@ -5080,9 +5113,24 @@ const VideoHoverControls = ({
         {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
       </button>
       <span className="shrink-0 text-[10px] tabular-nums text-white/70">{formatTime(currentTime)}</span>
-      <div ref={progressRef} className="relative flex-1 cursor-pointer py-1" onClick={seek}>
+      <div
+        ref={progressRef}
+        className="nodrag nopan relative flex-1 cursor-pointer touch-none py-1"
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          seekToClientX(e.clientX);
+        }}
+        onPointerMove={(e) => {
+          if ((e.buttons & 1) === 1) {
+            e.stopPropagation();
+            seekToClientX(e.clientX);
+          }
+        }}
+      >
         <div className="h-1 rounded-full bg-white/20">
-          <div className="h-full rounded-full bg-white/80 transition-[width] duration-100" style={{ width: `${progress}%` }} />
+          <div className="h-full rounded-full bg-white/80" style={{ width: `${progress}%` }} />
         </div>
         <div className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-white shadow" style={{ left: `${progress}%` }} />
       </div>
@@ -5619,21 +5667,42 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
     };
   }, [playableUrl]);
 
+  // Smooth playhead: timeupdate only fires ~4 Hz; advance the waveform
+  // per-frame while playing so the bars sweep instead of stuttering.
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0;
+    const tick = () => {
+      const a = audioRef.current;
+      if (a) setCurrentTime(a.currentTime);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
+
   const togglePlay = (event: React.MouseEvent) => {
     event.stopPropagation();
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) a.play().catch(() => {});
-    else a.pause();
+    if (a.paused) {
+      a.play().catch(() => {
+        // A transient proxy failure at initial load bricks the element;
+        // reload once and retry so play isn't permanently dead.
+        a.load();
+        a.play().catch(() => {});
+      });
+    } else {
+      a.pause();
+    }
   };
 
-  const seek = (event: React.MouseEvent) => {
-    event.stopPropagation();
+  const seekToClientX = (clientX: number) => {
     const bar = barRef.current;
     const a = audioRef.current;
     if (!bar || !a || !duration) return;
     const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     a.currentTime = ratio * duration;
     setCurrentTime(a.currentTime);
   };
@@ -5668,11 +5737,22 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
           </button>
         ) : null}
 
-        {/* seekable waveform */}
+        {/* seekable waveform — click or drag to scrub */}
         <div
           ref={barRef}
-          className="nodrag mt-3 flex h-12 cursor-pointer items-center gap-[2px]"
-          onClick={seek}
+          className="nodrag nopan mt-3 flex h-12 cursor-pointer touch-none items-center gap-[2px]"
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+            seekToClientX(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if ((event.buttons & 1) === 1) {
+              event.stopPropagation();
+              seekToClientX(event.clientX);
+            }
+          }}
         >
           {bars.map((height, index) => (
             <div
