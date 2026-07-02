@@ -98,10 +98,12 @@ describe("history assets helpers", () => {
       canUse: true,
     });
 
+    // Audio history is insertable too (reuseHistoryItems maps it to a
+    // referenceAudioNode), so an audio-only selection enables 使用.
     expect(computeBatchActionAvailability([sampleHistory[2]])).toEqual({
       canDelete: true,
       canDownload: true,
-      canUse: false,
+      canUse: true,
     });
   });
 

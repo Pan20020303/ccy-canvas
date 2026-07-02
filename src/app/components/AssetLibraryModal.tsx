@@ -14,12 +14,13 @@ import { MediaThumb } from './MediaThumb';
  * a three-step empty state.
  */
 
-type KindFilter = 'all' | 'image' | 'video' | 'text';
+type KindFilter = 'all' | 'image' | 'video' | 'audio' | 'text';
 
 const KIND_CHIPS: { key: KindFilter; zh: string; en: string }[] = [
   { key: 'all', zh: '全部', en: 'All' },
   { key: 'image', zh: '图片', en: 'Images' },
   { key: 'video', zh: '视频', en: 'Videos' },
+  { key: 'audio', zh: '音频', en: 'Audio' },
   { key: 'text', zh: '文本', en: 'Text' },
 ];
 
@@ -39,11 +40,15 @@ export function AssetLibraryModal() {
   const [category, setCategory] = useState<SavedAssetCategory | 'all'>('all');
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [kind, setKind] = useState<KindFilter>('all');
+  // Auto-delete of dead thumbnails is armed only AFTER the server list has
+  // been merged in. Before that, local state may hold stripped ('') urls whose
+  // real value only exists server-side — deleting on sight would erase both.
+  const [hydrated, setHydrated] = useState(false);
 
   // Pull server-persisted assets + reset filters each time the modal opens.
   useEffect(() => {
     if (isOpen) {
-      hydrateAssets();
+      void Promise.resolve(hydrateAssets()).then(() => setHydrated(true)).catch(() => { /* keep auto-delete disarmed */ });
       setTab('library');
       setCategory('all');
       setKind('all');
@@ -74,6 +79,8 @@ export function AssetLibraryModal() {
       addNode({ id, type: 'referenceImageNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
     } else if (asset.kind === 'video') {
       addNode({ id, type: 'referenceVideoNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
+    } else if (asset.kind === 'audio') {
+      addNode({ id, type: 'referenceAudioNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
     } else {
       addNode({ id, type: 'textNode', position, data: { content: asset.text ?? '', customTitle: asset.name, textMode: 'editor' } } as never);
     }
@@ -199,9 +206,11 @@ export function AssetLibraryModal() {
                       <button type="button" onClick={() => useAsset(asset)} className="block w-full text-left" title={zh ? '添加到画布' : 'Add to canvas'}>
                         <div className="aspect-square overflow-hidden bg-black/40">
                           {asset.kind === 'image' ? (
-                            <MediaThumb src={asset.thumbnail || asset.url} alt="" className="h-full w-full object-cover" onDead={() => removeAsset(asset.id)} />
+                            <MediaThumb src={asset.thumbnail || asset.url} alt="" className="h-full w-full object-cover" onDead={hydrated ? () => removeAsset(asset.id) : undefined} />
                           ) : asset.kind === 'video' && asset.url ? (
                             <div className="flex h-full w-full items-center justify-center text-neutral-500"><Video className="h-7 w-7" /></div>
+                          ) : asset.kind === 'audio' && asset.url ? (
+                            <div className="flex h-full w-full items-center justify-center text-neutral-500"><Music className="h-7 w-7" /></div>
                           ) : (
                             <div className="flex h-full items-center justify-center p-3 text-center text-[11px] text-neutral-400">
                               <span className="line-clamp-5">{asset.text || asset.name}</span>

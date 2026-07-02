@@ -61,7 +61,7 @@ export function getZoomLayout(percentage: number): HistoryZoomLayout {
 export function computeBatchActionAvailability(selectedItems: HistoryItem[]) {
   const canDelete = selectedItems.length > 0;
   const canDownload = selectedItems.some((item) => Boolean(item.thumbnail || item.content));
-  const canUse = selectedItems.some((item) => item.mediaType === "image" || item.mediaType === "video");
+  const canUse = selectedItems.some((item) => item.mediaType === "image" || item.mediaType === "video" || item.mediaType === "audio");
 
   return {
     canDelete,

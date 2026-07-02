@@ -103,7 +103,7 @@ export type SavedAsset = {
   category: SavedAssetCategory;
   thumbnail: string;
   url: string;
-  kind: 'image' | 'video' | 'text';
+  kind: 'image' | 'video' | 'audio' | 'text';
   text?: string;
   createdAt: number;
 };

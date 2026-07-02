@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ImageOff } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -8,15 +8,17 @@ import { reportDeadMedia, isCertainlyDeadSrc } from '../dead-media';
 /**
  * Self-healing + self-cleaning thumbnail for history / asset tiles.
  *
- * - Empty src → treated as immediately dead.
- * - Load error → retries ONCE (re-mount, which also swaps a remote URL to the
- *   media proxy via toRenderableMediaUrl); a second failure marks it dead.
+ * - Empty src → placeholder only, NEVER reported dead. A blank url usually
+ *   means the persist layer stripped a heavy data:/blob: value locally while
+ *   the server still holds the real copy (hydrate will restore it) — deleting
+ *   on sight destroyed exactly those assets.
+ * - Load error → retries ONCE with an ALTERNATE url (raw src if the first
+ *   attempt was proxied, else a cache-busted reload); a second failure marks
+ *   it dead.
  * - When an entry is dead AND we're online, `onDead()` fires so the caller can
- *   auto-remove the unloadable entry (list + backend). We gate on
- *   `navigator.onLine` so a transient offline blip can't nuke the whole library.
- *
- * This is why the "clean up lost data" requirement needs no separate sweep:
- * anything that can't render self-reports and is pruned on view.
+ *   auto-remove the unloadable entry (list + backend). Guarded by
+ *   `navigator.onLine` plus a per-session budget so a transient outage can't
+ *   nuke the whole library.
  */
 export function MediaThumb({
   src,
@@ -29,27 +31,16 @@ export function MediaThumb({
   className?: string;
   onDead?: () => void;
 }) {
-  const rendered = useMemo(() => (src ? toRenderableMediaUrl(src) : ''), [src]);
+  const primary = useMemo(() => (src ? toRenderableMediaUrl(src) : ''), [src]);
+  const fallback = useMemo(() => {
+    if (!src) return '';
+    if (primary !== src) return src; // proxied first — retry direct
+    return `${primary}${primary.includes('?') ? '&' : '?'}mtretry=1`;
+  }, [primary, src]);
   const [attempt, setAttempt] = useState(0);
-  const [dead, setDead] = useState(!src);
-  const firedRef = useRef(false);
+  const [dead, setDead] = useState(false);
 
-  const markDead = () => {
-    setDead(true);
-    if (firedRef.current) return;
-    firedRef.current = true;
-    // Empty / blob: src can never load → certain; a remote/relative load error is
-    // uncertain (could be a server blip) and is budget-limited by the guard.
-    reportDeadMedia(isCertainlyDeadSrc(src), () => onDead?.());
-  };
-
-  // An empty src is certainly dead — report it once on mount.
-  useEffect(() => {
-    if (!src) markDead();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src]);
-
-  if (dead || !rendered) {
+  if (dead || !primary) {
     return (
       <div className={clsx('flex items-center justify-center bg-black/40 text-neutral-600', className)}>
         <ImageOff className="h-6 w-6" />
@@ -60,15 +51,16 @@ export function MediaThumb({
   return (
     <img
       key={attempt}
-      src={rendered}
+      src={attempt === 0 ? primary : fallback}
       alt={alt}
       className={className}
       onError={() => {
         if (attempt === 0) {
-          setAttempt(1); // one retry via a fresh load
+          setAttempt(1);
           return;
         }
-        markDead();
+        setDead(true);
+        reportDeadMedia(isCertainlyDeadSrc(src), () => onDead?.());
       }}
     />
   );

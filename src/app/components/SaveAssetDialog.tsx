@@ -35,8 +35,13 @@ export function SaveAssetDialog() {
   const url = data.url || '';
   const thumb = data.thumbnail || data.url || '';
   const text = data.content || '';
-  const kind: 'image' | 'video' | 'text' = node.type === 'videoNode' || node.type === 'referenceVideoNode' ? 'video'
-    : node.type === 'textNode' ? 'text'
+  // Match by pattern, not exact node-type names — an audio node saved as
+  // kind:'image' renders through <img>, always errors, and self-deletes via
+  // the dead-media cleanup.
+  const nodeType = String(node.type ?? '');
+  const kind: 'image' | 'video' | 'audio' | 'text' = /video/i.test(nodeType) ? 'video'
+    : /audio/i.test(nodeType) ? 'audio'
+    : nodeType === 'textNode' ? 'text'
     : 'image';
 
   const onConfirm = async () => {

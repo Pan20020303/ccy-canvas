@@ -339,6 +339,20 @@ export const HistoryAssetsModal = () => {
 
                               {!bulkMode && assetUrl ? (
                                 <div className="absolute right-3 top-3 z-10 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+                                  {item.mediaType === "image" || item.mediaType === "video" || item.mediaType === "audio" ? (
+                                    <button
+                                      type="button"
+                                      title={language === "zh" ? "加入画布" : "Add to canvas"}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        reuseHistoryItems([item.id]);
+                                        setOpen(false);
+                                      }}
+                                      className="rounded-md border border-white/15 bg-black/40 p-1.5 text-neutral-200 backdrop-blur transition hover:bg-black/60"
+                                    >
+                                      <Plus className="h-3.5 w-3.5" />
+                                    </button>
+                                  ) : null}
                                   {previewable ? (
                                     <button
                                       type="button"
