@@ -86,6 +86,7 @@ export function HomePage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [folders, setFolders] = useState<BackendFolder[]>([]);
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const [cardMenu, setCardMenu] = useState<CardMenuState>(null);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -134,6 +135,16 @@ export function HomePage() {
     [projects, openFolderId],
   );
   const openFolder = openFolderId ? folders.find((f) => f.id === openFolderId) ?? null : null;
+
+  // 分页：项目卡 8 个/页（开始创作卡和文件夹卡不占页额）。
+  const PAGE_SIZE = 8;
+  const totalPages = Math.max(1, Math.ceil(visibleProjects.length / PAGE_SIZE));
+  useEffect(() => { setPage(1); }, [openFolderId]);
+  useEffect(() => { setPage((p) => Math.min(p, totalPages)); }, [totalPages]);
+  const pagedProjects = useMemo(
+    () => visibleProjects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [visibleProjects, page],
+  );
 
   const openProject = async (projectId: string) => {
     if (busyId) return;
@@ -276,13 +287,6 @@ export function HomePage() {
           "premium dark" read instead of flat black. */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[420px] bg-[radial-gradient(55%_90%_at_50%_0%,rgba(255,255,255,0.08),transparent_70%)]" />
 
-      {/* CCY 挂牌 — 物理摆动的 3D 工牌，挂在最右侧的空档里（大屏才显示，
-          避免和居中网格打架）。可以抓着卡片甩。 */}
-      <div className="fixed right-0 top-0 z-10 hidden h-screen w-[400px] min-[1680px]:block">
-        <Suspense fallback={null}>
-          <Lanyard position={[0, 0, 22]} gravity={[0, -40, 0]} />
-        </Suspense>
-      </div>
 
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onCoverFile(e)} />
 
@@ -352,7 +356,8 @@ export function HomePage() {
         </div>
       </header>
 
-      <main className="relative z-10 mx-auto max-w-[1280px] px-8 pb-20 pt-9">
+      <div className="relative z-10 flex">
+      <main className="mx-auto w-full max-w-[1280px] px-8 pb-20 pt-9">
         {/* Title row: breadcrumb (root / folder) + 新建文件夹 */}
         <div className="mb-7 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -466,7 +471,7 @@ export function HomePage() {
             </div>
           )) : null}
 
-          {visibleProjects.map((project) => {
+          {pagedProjects.map((project) => {
             const isActive = project.id === effectiveActiveProjectId;
             const menuVisible = cardMenu?.projectId === project.id;
             return (
@@ -603,8 +608,41 @@ export function HomePage() {
           })}
         </div>
 
-        <div className="mt-16 text-center text-[12px] text-neutral-700">{zh ? '没有更多了' : 'No more projects'}</div>
+        {totalPages > 1 ? (
+          <div className="mt-14 flex items-center justify-center gap-3">
+            <button
+              type="button"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-neutral-300 transition hover:border-white/25 hover:text-white disabled:opacity-35 disabled:hover:border-white/10"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="min-w-12 text-center text-[12px] tabular-nums text-neutral-400">
+              {page} / {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-neutral-300 transition hover:border-white/25 hover:text-white disabled:opacity-35 disabled:hover:border-white/10"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="mt-16 text-center text-[12px] text-neutral-700">{zh ? '没有更多了' : 'No more projects'}</div>
+        )}
       </main>
+
+      {/* CCY 挂牌 — 右侧真实占位的侧栏（flex 兄弟节点，永远不会盖住网格），
+          仅大屏显示；相机拉远到 z=30，卡片摆动不再被画布边缘裁掉。 */}
+      <aside className="sticky top-16 hidden h-[calc(100vh-64px)] w-[440px] shrink-0 self-start min-[1680px]:block">
+        <Suspense fallback={null}>
+          <Lanyard position={[0, 0, 30]} gravity={[0, -40, 0]} />
+        </Suspense>
+      </aside>
+      </div>
 
       {/* 重命名弹层 */}
       {renameTarget ? (
