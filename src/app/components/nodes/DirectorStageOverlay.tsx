@@ -7,7 +7,7 @@ import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
   RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
   ListTree, Boxes, HelpCircle, Search, Users, User, Globe2, Type, Monitor,
-  Magnet, Undo2, Redo2, ArrowDown, RectangleHorizontal,
+  Magnet, Undo2, Redo2, ArrowDown, RectangleHorizontal, Image as ImageLucide, Film, UploadCloud,
 } from 'lucide-react';
 import * as THREE from 'three';
 
@@ -131,6 +131,13 @@ const DEFAULT_CAMERA: CameraSpec = {
   lookAt: [0, 1.2, 0],
   fov: 50,
   aspect: '16:9',
+};
+
+// 编辑器主视口的"原点"视角 —— 故意和 DEFAULT_CAMERA(机位1)错开:
+// 机位标记现在常显,视口若与机位重合会钻进标记模型内部一片黑。
+const EDITOR_HOME = {
+  position: [-4.6, 3.1, 5.8] as [number, number, number],
+  lookAt: [0, 1, 0] as [number, number, number],
 };
 
 const ASPECT_RATIOS: AspectRatio[] = ['16:9', '9:16', '1:1', '4:3', '21:9'];
@@ -845,8 +852,8 @@ function Billboard({ text, position, scale = 1 }: { text: string; position: [num
   );
 }
 
-/** 场景里的相机标记物 —— 一个橙色相机外形,可点选,可 TransformControls 拖.
- *  active 那个机位不渲染(我们正在透过它看场景). */
+/** 场景里的相机标记物 —— 相机外形,可点选,可 TransformControls 拖.
+ *  所有机位常显(参考:主视口是自由编辑视角);活跃机位紫色、其余琥珀色. */
 const CameraMarker = forwardRef<THREE.Group, {
   camera: CameraSpec;
   isActive: boolean;
@@ -873,6 +880,8 @@ const CameraMarker = forwardRef<THREE.Group, {
 
   // 视锥参考线:原点 → lookAt 距离处按 fov/aspect 张开的取景框 4 角 + 框线。
   // group 已经 lookAt 对准目标(本地 +Z 朝向 lookAt),在本地系里画即可。
+  // 2026-07:活跃机位也渲染标记(主视口是自由编辑视角,不再"透过"机位看),
+  // 用紫色调与普通机位(琥珀色)区分。
   const guideGeom = useMemo(() => {
     if (!showGuide) return null;
     const d = Math.max(0.2, new THREE.Vector3(...cam.lookAt).distanceTo(new THREE.Vector3(...cam.position)));
@@ -891,12 +900,13 @@ const CameraMarker = forwardRef<THREE.Group, {
   }, [showGuide, cam.fov, cam.aspect, cam.lookAt, cam.position]);
   useEffect(() => () => { guideGeom?.dispose(); }, [guideGeom]);
 
-  if (isActive) return null;
-
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation();
     if (gRef.current) onSelect(cam.id, gRef.current);
   };
+
+  const bodyColor = selected ? '#fcd34d' : isActive ? '#a78bfa' : '#f59e0b';
+  const bodyEmissive = selected ? '#fde68a' : isActive ? '#8b5cf6' : '#f59e0b';
 
   return (
     <group ref={setRef} name={`stage-camera-${cam.id}`} position={cam.position} onClick={handleClick}>
@@ -904,8 +914,8 @@ const CameraMarker = forwardRef<THREE.Group, {
       <mesh castShadow>
         <boxGeometry args={[0.22, 0.18, 0.3]} />
         <meshStandardMaterial
-          color={selected ? '#fcd34d' : '#f59e0b'}
-          emissive={selected ? '#fde68a' : '#f59e0b'}
+          color={bodyColor}
+          emissive={bodyEmissive}
           emissiveIntensity={selected ? 0.4 : 0.2}
           roughness={0.5}
         />
@@ -931,6 +941,28 @@ const CameraMarker = forwardRef<THREE.Group, {
     </group>
   );
 });
+
+/** 站位参考层 —— AI识图导入的图片半透明平铺在地面,辅助按图摆位。
+ *  raycast 关闭:不挡实体点选。 */
+type ReferenceLayer = { image: string; width: number; height: number; timestamp: number };
+function ReferenceLayerPlane({ layer }: { layer: ReferenceLayer }) {
+  const texture = useMemo(() => {
+    const tex = new THREE.TextureLoader().load(layer.image);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }, [layer.image]);
+  useEffect(() => () => { texture.dispose(); }, [texture]);
+  const long = 10;
+  const ar = layer.width > 0 && layer.height > 0 ? layer.width / layer.height : 16 / 9;
+  const w = ar >= 1 ? long : long * ar;
+  const h = ar >= 1 ? long / ar : long;
+  return (
+    <mesh rotation={[-PI / 2, 0, 0]} position={[0, 0.004, 0]} raycast={() => null}>
+      <planeGeometry args={[w, h]} />
+      <meshBasicMaterial map={texture} transparent opacity={0.55} depthWrite={false} />
+    </mesh>
+  );
+}
 
 /** 参考快捷键方案:WASD 平移 + E/Q 升降 + Shift 加速(按住持续移动),
  *  以及鼠标键位配置 —— 左键只做选中,右键/中键拖拽环视。 */
@@ -1126,6 +1158,12 @@ export function DirectorStageOverlay() {
     setStageSettings((s) => ({ ...s, ...p }));
   }, []);
   const [envPopover, setEnvPopover] = useState<'panorama' | 'labels' | 'aspect' | null>(null);
+
+  // AI识图:站位参考层(半透明铺地面) + 弹窗开关。
+  const [refLayer, setRefLayer] = useState<ReferenceLayer | null>(
+    () => (data as { referenceLayer?: ReferenceLayer | null }).referenceLayer ?? null,
+  );
+  const [aiVisionOpen, setAiVisionOpen] = useState(false);
 
   // 选中态 (actor / camera / prop).
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -1378,17 +1416,11 @@ export function DirectorStageOverlay() {
     setTimeout(() => setPresetFlash(null), 1200);
   }, []);
 
+  /** 切换活跃机位 —— 只改预览面板/出图对象,不再把主视口飞进机位里
+   *  (参考:主视口是自由编辑视角,所有机位标记常显在场景中)。 */
   const switchToCamera = useCallback((id: string) => {
-    const cam = cameras.find((c) => c.id === id);
-    const cc = cameraControlsRef.current;
-    if (!cam || !cc) return;
     setActiveCameraId(id);
-    cc.setLookAt(
-      cam.position[0], cam.position[1], cam.position[2],
-      cam.lookAt[0], cam.lookAt[1], cam.lookAt[2],
-      true,
-    );
-  }, [cameras]);
+  }, []);
 
   const addCameraFromCurrentView = useCallback(() => {
     const cc = cameraControlsRef.current;
@@ -1454,13 +1486,8 @@ export function DirectorStageOverlay() {
       roll: def.roll ? (def.roll * PI) / 180 : undefined,
     };
     setCameras((prev) => [...prev, cam]);
+    // 设为活跃:预览面板立即切到新机位;主视口保持自由编辑视角不动。
     setActiveCameraId(id);
-    // 主视口飞过去(CameraControls 不支持 roll,荷兰角只体现在预览/出图里)。
-    cameraControlsRef.current?.setLookAt(
-      position[0], position[1], position[2],
-      lookAt[0], lookAt[1], lookAt[2],
-      true,
-    );
   }, [actors, activeCamera]);
 
   const removeCamera = useCallback((id: string) => {
@@ -1542,8 +1569,8 @@ export function DirectorStageOverlay() {
     const cc = cameraControlsRef.current;
     if (!cc) return;
     cc.setLookAt(
-      DEFAULT_CAMERA.position[0], DEFAULT_CAMERA.position[1], DEFAULT_CAMERA.position[2],
-      DEFAULT_CAMERA.lookAt[0], DEFAULT_CAMERA.lookAt[1], DEFAULT_CAMERA.lookAt[2],
+      EDITOR_HOME.position[0], EDITOR_HOME.position[1], EDITOR_HOME.position[2],
+      EDITOR_HOME.lookAt[0], EDITOR_HOME.lookAt[1], EDITOR_HOME.lookAt[2],
       true,
     );
   }, []);
@@ -1677,7 +1704,7 @@ export function DirectorStageOverlay() {
     if (nodeId) {
       try {
         const snap = captureRef.current?.();
-        const patch: Record<string, unknown> = { stageSettings };
+        const patch: Record<string, unknown> = { stageSettings, referenceLayer: refLayer };
         if (snap) patch.editorPreview = snap;
         updateNodeData(nodeId, patch);
       } catch (err) {
@@ -1685,7 +1712,21 @@ export function DirectorStageOverlay() {
       }
     }
     close();
-  }, [nodeId, stageSettings, updateNodeData, close]);
+  }, [nodeId, stageSettings, refLayer, updateNodeData, close]);
+
+  /** AI识图弹窗「生成站位参考」:把上传图设为站位参考层;覆盖模式额外
+   *  重置演员/道具/机位/环境到初始态(参考弹窗里两个单选的语义)。 */
+  const applyReferenceLayer = useCallback((p: { image: string; width: number; height: number; overwrite: boolean }) => {
+    setRefLayer({ image: p.image, width: p.width, height: p.height, timestamp: Date.now() });
+    if (p.overwrite) {
+      setActors([{ ...DEFAULT_ACTOR }]);
+      setStageProps([]);
+      setCameras([DEFAULT_CAMERA]);
+      setActiveCameraId(DEFAULT_CAMERA.id);
+      setSelection(null);
+      setStageSettings({ ...DEFAULT_STAGE_SETTINGS });
+    }
+  }, []);
 
   /** 右下机位面板的实时预览 —— 离屏按机位比例渲染,700ms 一帧;选中了某个
    *  机位标记就预览它,否则预览活跃机位。finalize 抓图期间暂停,避免争抢
@@ -1713,12 +1754,15 @@ export function DirectorStageOverlay() {
   useEffect(() => {
     if (!nodeId) return;
     const cc = cameraControlsRef.current;
-    if (!cc || !activeCamera) return;
+    if (!cc) return;
+    // 打开时用编辑器默认视角(不钻进活跃机位 —— 机位标记现在常显,
+    // 与机位重合会卡在标记模型内部)。
     const id = requestAnimationFrame(() => {
-      const healthy = isCameraStateHealthy(activeCamera.position, activeCamera.lookAt);
-      const p = healthy ? activeCamera.position : DEFAULT_CAMERA.position;
-      const l = healthy ? activeCamera.lookAt : DEFAULT_CAMERA.lookAt;
-      cc.setLookAt(p[0], p[1], p[2], l[0], l[1], l[2], false);
+      cc.setLookAt(
+        EDITOR_HOME.position[0], EDITOR_HOME.position[1], EDITOR_HOME.position[2],
+        EDITOR_HOME.lookAt[0], EDITOR_HOME.lookAt[1], EDITOR_HOME.lookAt[2],
+        false,
+      );
     });
     return () => cancelAnimationFrame(id);
   }, [nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1781,6 +1825,7 @@ export function DirectorStageOverlay() {
         editorPreview,
         lastCaptures,
         stageSettings,
+        referenceLayer: refLayer,
       };
       updateNodeData(nodeId, patch as Record<string, unknown>);
 
@@ -1822,7 +1867,7 @@ export function DirectorStageOverlay() {
       setConfirmStage('idle');
       close();
     }
-  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, stageProps, cameras, stageSettings, addNode, onConnect]);
+  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, stageProps, cameras, stageSettings, refLayer, addNode, onConnect]);
 
   /** "确认构图"按钮统一入口:按当前阶段路由. */
   const onConfirm = useCallback(() => {
@@ -1917,14 +1962,10 @@ export function DirectorStageOverlay() {
 
   return createPortal(
     <div className="fixed inset-0 z-[100] flex flex-col bg-[#050507]">
-      {/* 顶部操作提示栏 */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-3 text-[12px] text-white/60">
-        <div className="flex items-center gap-3">
-          <span className="font-medium text-white/90">{language === 'zh' ? '导演台' : 'Director Stage'}</span>
-          <span className="text-white/30">·</span>
-          <span className="font-mono text-[11px] text-white/40">{node.id}</span>
-        </div>
-        <div className="hidden items-center gap-3 md:flex">
+      {/* 3D 视口 —— 全面屏(参考):没有顶部栏,提示条 / 关闭按钮浮在视口上。 */}
+      <div className="relative flex-1">
+        {/* 顶部中央:快捷键提示胶囊条(浮动) */}
+        <div className="pointer-events-none absolute left-1/2 top-3 z-20 hidden -translate-x-1/2 items-center gap-3 rounded-lg border border-white/10 bg-black/65 px-3.5 py-1.5 text-[12px] text-white/60 backdrop-blur-md md:flex">
           <Hint k={language === 'zh' ? '左键' : 'LMB'} v={language === 'zh' ? '选中' : 'Select'} />
           <Hint k={language === 'zh' ? '右键 / 中键拖拽' : 'RMB/MMB drag'} v={language === 'zh' ? '环视' : 'Orbit'} />
           <Hint k="WASD" v={language === 'zh' ? '移动' : 'Move'} />
@@ -1933,18 +1974,15 @@ export function DirectorStageOverlay() {
           <Hint k="C" v={language === 'zh' ? '应用视图到机位' : 'Apply view'} />
           <span className="font-mono text-[11px] text-white/50">FOV {mainFov}°</span>
         </div>
+        {/* 右上:退出(浮动) */}
         <button
           type="button"
           onClick={closeWithSnapshot}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-white/60 transition hover:bg-white/[0.06] hover:text-white"
+          className="absolute right-4 top-3 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-black/65 text-white/60 backdrop-blur-md transition hover:border-white/25 hover:text-white"
           title="Esc"
         >
           <X className="h-4 w-4" />
         </button>
-      </div>
-
-      {/* 3D 视口 */}
-      <div className="relative flex-1">
         <Canvas
           shadows
           dpr={[1, 2]}
@@ -1999,6 +2037,8 @@ export function DirectorStageOverlay() {
             {/* 坐标轴 —— 仅在有选中时(actor 或 camera)显示, 没选时
                 场景干净, 跟最终出图风格一致. 0.5 长度刚好够辨认 X/Y/Z
                 方向不喧宾夺主. */}
+            {/* AI识图的站位参考层(半透明铺地) */}
+            {refLayer ? <ReferenceLayerPlane layer={refLayer} /> : null}
             {selection ? <axesHelper args={[0.5]} /> : null}
             {actors.map((a) => {
               const url = bodyTypeOf(a.assetId).glbUrl;
@@ -2091,6 +2131,18 @@ export function DirectorStageOverlay() {
             >
               <Boxes className="h-3.5 w-3.5" />
               <span>{language === 'zh' ? '资产' : 'Assets'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAiVisionOpen(true)}
+              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11.5px] backdrop-blur-md transition ${
+                aiVisionOpen
+                  ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                  : 'border-white/12 bg-black/70 text-white/80 hover:border-white/30 hover:text-white'
+              }`}
+            >
+              <ImageLucide className="h-3.5 w-3.5" />
+              <span>{language === 'zh' ? 'AI识图' : 'AI Vision'}</span>
             </button>
             <button
               type="button"
@@ -2400,7 +2452,24 @@ export function DirectorStageOverlay() {
 
       {/* 底栏工具组的弹层(全景背景 / 标签 / 出图比例)。 */}
       {envPopover === 'panorama' ? (
-        <PanoramaPanel settings={stageSettings} onPatch={patchStageSettings} onClose={() => setEnvPopover(null)} />
+        <PanoramaPanel
+          settings={stageSettings}
+          onPatch={patchStageSettings}
+          onClose={() => setEnvPopover(null)}
+          hasRefLayer={!!refLayer}
+          onRemoveRefLayer={() => setRefLayer(null)}
+        />
+      ) : null}
+
+      {/* AI识图:生成站位参考弹窗(参考样式)。 */}
+      {aiVisionOpen ? (
+        <StageVisionModal
+          onClose={() => setAiVisionOpen(false)}
+          onGenerate={(p) => {
+            applyReferenceLayer(p);
+            setAiVisionOpen(false);
+          }}
+        />
       ) : null}
       {envPopover === 'labels' ? (
         <LabelsPanel settings={stageSettings} onPatch={patchStageSettings} onClose={() => setEnvPopover(null)} />
@@ -2461,6 +2530,16 @@ export function DirectorStageOverlay() {
             <Monitor className="h-3.5 w-3.5" />
             <span className="font-mono">{activeCamera?.aspect ?? '16:9'}</span>
             <ChevronDown className="h-3 w-3 opacity-60" />
+          </button>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          {/* 动画(BATE):占位按钮,功能待定(按参考先摆上)。 */}
+          <button
+            type="button"
+            title={language === 'zh' ? '即将上线' : 'Coming soon'}
+            className="flex cursor-default items-center gap-1.5 rounded-md border border-white/12 bg-white/[0.04] px-2.5 py-1.5 text-[12px] text-white/50"
+          >
+            <Film className="h-3.5 w-3.5" />
+            {language === 'zh' ? '动画(BATE)' : 'Animation (BETA)'}
           </button>
           <div className="mx-1 h-5 w-px bg-white/10" />
           <button
@@ -3257,11 +3336,151 @@ function TogglePill({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   );
 }
 
+/** AI识图弹窗 —— 上传图片生成「站位参考层」(参考样式:本地上传/历史记录
+ *  两个页签 + 插入/覆盖单选)。生成 = 把图半透明平铺在舞台地面辅助摆位。 */
+function StageVisionModal({ onClose, onGenerate }: {
+  onClose: () => void;
+  onGenerate: (p: { image: string; width: number; height: number; overwrite: boolean }) => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  const [tab, setTab] = useState<'upload' | 'history'>('upload');
+  const [img, setImg] = useState<{ src: string; width: number; height: number } | null>(null);
+  const [overwrite, setOverwrite] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const readFile = (f: File | undefined | null) => {
+    if (!f || !f.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = String(reader.result);
+      const probe = new window.Image();
+      probe.onload = () => setImg({ src, width: probe.naturalWidth, height: probe.naturalHeight });
+      probe.src = src;
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const RadioCard = ({ active, title, sub, onPick }: { active: boolean; title: string; sub: string; onPick: () => void }) => (
+    <button
+      type="button"
+      onClick={onPick}
+      className={`flex flex-1 flex-col gap-1 rounded-lg border px-3.5 py-3 text-left transition ${
+        active ? 'border-violet-400/60 bg-violet-500/[0.10]' : 'border-white/10 bg-white/[0.02] hover:border-white/25'
+      }`}
+    >
+      <span className="flex items-center gap-2 text-[12.5px] text-white/90">
+        <span className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${active ? 'border-violet-300' : 'border-white/30'}`}>
+          {active ? <span className="h-1.5 w-1.5 rounded-full bg-violet-300" /> : null}
+        </span>
+        {title}
+      </span>
+      <span className="pl-5.5 text-[10.5px] leading-relaxed text-white/45">{sub}</span>
+    </button>
+  );
+
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-[600px] rounded-xl border border-white/10 bg-[#101114] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between pb-3">
+          <span className="text-[14px] font-medium text-white">{zh ? '生成站位参考' : 'Blocking reference'}</span>
+          <button type="button" onClick={onClose} className="rounded p-1 text-white/40 transition hover:bg-white/[0.08] hover:text-white">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex gap-4 border-b border-white/[0.08] pb-2">
+          {(['upload', 'history'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`relative pb-1 text-[12.5px] transition ${tab === t ? 'text-white' : 'text-white/45 hover:text-white/80'}`}
+            >
+              {t === 'upload' ? (zh ? '本地上传' : 'Upload') : (zh ? '历史记录' : 'History')}
+              {tab === t ? <span className="absolute -bottom-[9px] left-0 right-0 h-px bg-white" /> : null}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'upload' ? (
+          <div
+            className="mt-4 flex min-h-[220px] cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-white/15 bg-white/[0.015] px-6 py-8 text-center transition hover:border-white/30"
+            onClick={() => fileRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); readFile(e.dataTransfer.files?.[0]); }}
+          >
+            {img ? (
+              <>
+                <img src={img.src} alt="站位参考" className="max-h-[180px] max-w-full rounded object-contain" />
+                <span className="text-[10.5px] text-white/40">{zh ? '点击或拖拽可重新选择' : 'Click or drop to replace'}</span>
+              </>
+            ) : (
+              <>
+                <UploadCloud className="h-6 w-6 text-white/30" />
+                <span className="text-[12.5px] text-white/80">
+                  <span className="underline underline-offset-2">{zh ? '点击上传' : 'Click to upload'}</span>
+                  {zh ? ' 或 拖拽本地图片至此上传' : ' or drop an image here'}
+                </span>
+                <span className="text-[10.5px] text-white/35">{zh ? '生成后作为半透明参考层平铺在舞台地面' : 'Placed on the stage floor as a translucent layer'}</span>
+              </>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => { readFile(e.target.files?.[0]); e.target.value = ''; }}
+            />
+          </div>
+        ) : (
+          <div className="mt-4 flex min-h-[220px] items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.015] text-[11.5px] text-white/35">
+            {zh ? '暂无识图记录' : 'No history yet'}
+          </div>
+        )}
+
+        <div className="mt-4">
+          <div className="pb-2 text-[11.5px] text-white/60">{zh ? '选择是否覆盖场景' : 'Overwrite scene?'}</div>
+          <div className="flex gap-2.5">
+            <RadioCard
+              active={!overwrite}
+              onPick={() => setOverwrite(false)}
+              title={zh ? '插入当前导演台' : 'Insert into stage'}
+              sub={zh ? '作为站位参考层插入,不覆盖当前全景、角色和机位' : 'Adds the reference layer, keeps backdrop, actors and cameras'}
+            />
+            <RadioCard
+              active={overwrite}
+              onPick={() => setOverwrite(true)}
+              title={zh ? '覆盖当前导演台' : 'Overwrite stage'}
+              sub={zh ? '作为站位参考层插入,覆盖当前全景、角色和机位' : 'Adds the layer and resets backdrop, actors and cameras'}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between border-t border-white/[0.06] pt-3">
+          <span className="text-[10.5px] text-white/35">
+            {zh ? '生成后可在「全景」面板移除站位参考层' : 'Remove the layer later from the Backdrop panel'}
+          </span>
+          <button
+            type="button"
+            disabled={!img}
+            onClick={() => img && onGenerate({ image: img.src, width: img.width, height: img.height, overwrite })}
+            className="flex items-center gap-1.5 rounded-md border border-violet-400/40 bg-violet-500/[0.18] px-3.5 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/70 hover:bg-violet-500/[0.3] disabled:cursor-default disabled:opacity-40"
+          >
+            {zh ? '生成站位参考' : 'Generate'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** 全景背景面板 —— 天空颜色 / 地面透明度 / 地面高度 / 显隐(参考图样式)。 */
-function PanoramaPanel({ settings, onPatch, onClose }: {
+function PanoramaPanel({ settings, onPatch, onClose, hasRefLayer = false, onRemoveRefLayer }: {
   settings: StageSettings;
   onPatch: (p: Partial<StageSettings>) => void;
   onClose: () => void;
+  hasRefLayer?: boolean;
+  onRemoveRefLayer?: () => void;
 }) {
   const language = useStore((s) => s.language);
   const zh = language === 'zh';
@@ -3333,6 +3552,15 @@ function PanoramaPanel({ settings, onPatch, onClose }: {
           {zh ? '重置高度' : 'Reset height'}
         </button>
       </div>
+      {hasRefLayer && onRemoveRefLayer ? (
+        <button
+          type="button"
+          onClick={onRemoveRefLayer}
+          className="rounded border border-rose-400/25 bg-rose-500/[0.06] px-2 py-1.5 text-[10.5px] text-rose-200/90 transition hover:border-rose-400/50 hover:bg-rose-500/[0.12]"
+        >
+          {zh ? '移除站位参考层' : 'Remove blocking layer'}
+        </button>
+      ) : null}
     </EnvPopoverShell>
   );
 }

@@ -69,6 +69,13 @@ export type DirectorStageData = {
     roll?: number;
   }>;
   activeCameraId?: string;
+  /** AI识图导入的站位参考层 —— 半透明平铺在舞台地面辅助摆位。 */
+  referenceLayer?: {
+    image: string;
+    width: number;
+    height: number;
+    timestamp: number;
+  } | null;
   /** 舞台环境设置(全景背景 / 标签 / 参考线)——关闭或确认构图时落盘。 */
   stageSettings?: {
     skyColor?: string;
