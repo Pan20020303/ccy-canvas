@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { Handle, NodeProps, Position } from '@xyflow/react';
 import { Image as ImageIcon, Plus, Video as VideoIcon } from 'lucide-react';
 import clsx from 'clsx';
 
+import Magnet from '../Magnet';
 import { useStore } from '../../store';
 
 /**
@@ -63,8 +65,18 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
   const widthClass = ASPECT_TO_WIDTH[data.aspect ?? '16:9'];
   const hasImage = !!data.image;
 
+  // 与 BaseNode 一致的磁吸快连泡泡状态(hover / 选中常显,吸附半径 90px)。
+  const [hovered, setHovered] = useState(false);
+  const [leftPull, setLeftPull] = useState(false);
+  const [rightPull, setRightPull] = useState(false);
+  const magnetDisabled = !hovered && !selected && !leftPull && !rightPull;
+
   return (
-    <div className={clsx('group', widthClass)}>
+    <div
+      className={clsx('group', widthClass)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div className="mb-1.5 flex items-center gap-1.5 text-[11.5px] text-neutral-200">
         <ImageIcon className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
         <div className="min-w-0 font-medium tracking-wide">
@@ -107,21 +119,28 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
           style={{ pointerEvents: 'none' }}
         />
 
-        {/* 左 + 泡泡(显式 target 端口) */}
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="comp-target-left"
+        {/* 左 + 泡泡(target)—— 与 BaseNode 同款磁吸快连:Magnet 的移动层
+            带着真正的 Handle 走,泡泡被吸到哪里,按下就能从哪里拉线。 */}
+        <div
           className={clsx(
-            '!h-6 !w-6 !-left-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
-            selected && '!opacity-100',
+            'pointer-events-none absolute -left-8 top-1/2 z-10 h-6 w-6 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100',
+            (leftPull || selected) && 'opacity-100',
           )}
-          style={{ transform: 'translate(0, -50%)' }}
         >
-          <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
-            <Plus className="h-3 w-3 text-neutral-300" />
-          </div>
-        </Handle>
+          <Magnet disabled={magnetDisabled} release={isConnectionDragging} outward="left" padding={90} magnetStrength={1} activeTransition="none" onActiveChange={setLeftPull}>
+            <Handle
+              type="target"
+              position={Position.Left}
+              id="comp-target-left"
+              className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
+              style={{ pointerEvents: 'auto' }}
+            >
+              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+                <Plus className="h-3 w-3 text-slate-50" />
+              </div>
+            </Handle>
+          </Magnet>
+        </div>
 
         {/* 主体:快照图 —— 全面屏,图就是整张卡;meta 悬浮在图上 hover 才出现. */}
         <div className={clsx('relative w-full bg-black', aspectClass)}>
@@ -140,20 +159,27 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
               不再放「回到导演台」按钮 —— 要改场景去导演台节点点「编辑」。 */}
         </div>
 
-        {/* 右 + 泡泡(source 端口) */}
-        <Handle
-          type="source"
-          position={Position.Right}
+        {/* 右 + 泡泡(source)—— 同款磁吸快连,拉线到下游生成节点。 */}
+        <div
           className={clsx(
-            '!h-6 !w-6 !-right-8 !rounded-full !border-0 !bg-transparent opacity-0 transition-opacity group-hover:opacity-100',
-            selected && '!opacity-100',
+            'pointer-events-none absolute -right-8 top-1/2 z-10 h-6 w-6 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100',
+            (rightPull || selected) && 'opacity-100',
           )}
-          style={{ transform: 'translate(0, -50%)' }}
         >
-          <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/15 bg-[#1a1d22]/90 backdrop-blur-md">
-            <Plus className="h-3 w-3 text-neutral-300" />
-          </div>
-        </Handle>
+          <Magnet disabled={magnetDisabled} release={isConnectionDragging} outward="right" padding={90} magnetStrength={1} activeTransition="none" onActiveChange={setRightPull}>
+            <Handle
+              type="source"
+              position={Position.Right}
+              id="qc-source-right"
+              className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
+              style={{ pointerEvents: 'auto' }}
+            >
+              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+                <Plus className="h-3 w-3 text-slate-50" />
+              </div>
+            </Handle>
+          </Magnet>
+        </div>
       </div>
     </div>
   );

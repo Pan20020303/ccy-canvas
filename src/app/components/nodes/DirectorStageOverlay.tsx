@@ -882,6 +882,15 @@ const CameraMarker = forwardRef<THREE.Group, {
   // group 已经 lookAt 对准目标(本地 +Z 朝向 lookAt),在本地系里画即可。
   // 2026-07:活跃机位也渲染标记(主视口是自由编辑视角,不再"透过"机位看),
   // 用紫色调与普通机位(琥珀色)区分。
+  // 主视口贴得太近(点击机位切换视角会飞进机位)时隐藏标记,否则视口
+  // 卡在标记模型内部一片黑。直接改 group.visible,不走 React 重渲染。
+  const proximityTmp = useRef(new THREE.Vector3());
+  useFrame(({ camera: viewCam }) => {
+    if (!gRef.current) return;
+    const d = viewCam.position.distanceTo(proximityTmp.current.set(cam.position[0], cam.position[1], cam.position[2]));
+    gRef.current.visible = d > 0.65;
+  });
+
   const guideGeom = useMemo(() => {
     if (!showGuide) return null;
     const d = Math.max(0.2, new THREE.Vector3(...cam.lookAt).distanceTo(new THREE.Vector3(...cam.position)));
@@ -1055,6 +1064,16 @@ function CaptureBridge({
       const prevSize = new THREE.Vector2();
       gl.getSize(prevSize);
       const prevPixelRatio = gl.getPixelRatio();
+      // 机位视角出图时隐藏所有机位标记 —— 临时相机就在自己标记盒的中心,
+      // 不隐藏的话整张图都是盒子内壁(全黑);其他机位的标记/参考线也不该
+      // 出现在成片里。
+      const hiddenMarkers: THREE.Object3D[] = [];
+      scene.traverse((o) => {
+        if (o.name && o.name.startsWith('stage-camera-') && o.visible) {
+          o.visible = false;
+          hiddenMarkers.push(o);
+        }
+      });
       try {
         // updateStyle=false:只换 drawing buffer,CSS 尺寸不变 → 布局不动。
         gl.setPixelRatio(1);
@@ -1075,6 +1094,7 @@ function CaptureBridge({
         console.error('[DirectorStage] spec capture failed for', cam.id, err);
         return null;
       } finally {
+        hiddenMarkers.forEach((o) => { o.visible = true; });
         gl.setPixelRatio(prevPixelRatio);
         gl.setSize(prevSize.x, prevSize.y, false);
         // 立刻把主视口画回来,下一次 paint 不会闪机位画面。
@@ -1416,11 +1436,21 @@ export function DirectorStageOverlay() {
     setTimeout(() => setPresetFlash(null), 1200);
   }, []);
 
-  /** 切换活跃机位 —— 只改预览面板/出图对象,不再把主视口飞进机位里
-   *  (参考:主视口是自由编辑视角,所有机位标记常显在场景中)。 */
+  /** 切换活跃机位:预览/出图对象切过去,主视口同时飞进该机位视角
+   *  (2026-07 反馈:点击机位要切换视角)。机位标记有贴近自动隐身,
+   *  飞进去不会黑屏。 */
   const switchToCamera = useCallback((id: string) => {
     setActiveCameraId(id);
-  }, []);
+    const cam = cameras.find((c) => c.id === id);
+    const cc = cameraControlsRef.current;
+    if (cam && cc) {
+      cc.setLookAt(
+        cam.position[0], cam.position[1], cam.position[2],
+        cam.lookAt[0], cam.lookAt[1], cam.lookAt[2],
+        true,
+      );
+    }
+  }, [cameras]);
 
   const addCameraFromCurrentView = useCallback(() => {
     const cc = cameraControlsRef.current;
@@ -1486,8 +1516,13 @@ export function DirectorStageOverlay() {
       roll: def.roll ? (def.roll * PI) / 180 : undefined,
     };
     setCameras((prev) => [...prev, cam]);
-    // 设为活跃:预览面板立即切到新机位;主视口保持自由编辑视角不动。
+    // 设为活跃并飞进新机位视角(标记有贴近隐身,不会黑屏)。
     setActiveCameraId(id);
+    cameraControlsRef.current?.setLookAt(
+      position[0], position[1], position[2],
+      lookAt[0], lookAt[1], lookAt[2],
+      true,
+    );
   }, [actors, activeCamera]);
 
   const removeCamera = useCallback((id: string) => {
@@ -1753,18 +1788,20 @@ export function DirectorStageOverlay() {
 
   useEffect(() => {
     if (!nodeId) return;
-    const cc = cameraControlsRef.current;
-    if (!cc) return;
     // 打开时用编辑器默认视角(不钻进活跃机位 —— 机位标记现在常显,
-    // 与机位重合会卡在标记模型内部)。
-    const id = requestAnimationFrame(() => {
+    // 与机位重合会卡在标记模型内部)。CameraControls 在 r3f 里异步挂载,
+    // ref 可能还没就绪 —— 轮询到拿到为止,不能只试一次。
+    const t = window.setInterval(() => {
+      const cc = cameraControlsRef.current;
+      if (!cc) return;
       cc.setLookAt(
         EDITOR_HOME.position[0], EDITOR_HOME.position[1], EDITOR_HOME.position[2],
         EDITOR_HOME.lookAt[0], EDITOR_HOME.lookAt[1], EDITOR_HOME.lookAt[2],
         false,
       );
-    });
-    return () => cancelAnimationFrame(id);
+      window.clearInterval(t);
+    }, 60);
+    return () => window.clearInterval(t);
   }, [nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** ====== Confirm + multi-camera capture ====== */
@@ -1987,7 +2024,7 @@ export function DirectorStageOverlay() {
           shadows
           dpr={[1, 2]}
           gl={{ preserveDrawingBuffer: true, antialias: true }}
-          camera={{ position: [3.5, 2.2, 4.5], fov: 50 }}
+          camera={{ position: EDITOR_HOME.position, fov: 50 }}
           style={{ background: stageSettings.skyColor }}
           onPointerMissed={onDeselect}
         >
@@ -2338,9 +2375,9 @@ export function DirectorStageOverlay() {
                   role="button"
                   tabIndex={0}
                   onClick={() => {
-                    if (!isActive) switchToCamera(cam.id);
-                    // 同时选中场景里的相机标记物.
-                    // (点击列表 = 关注这个机位.)
+                    // 点击机位 = 切换活跃机位并把主视口飞进该机位视角
+                    // (活跃行再点一次也会重新飞回去)。
+                    switchToCamera(cam.id);
                   }}
                   className={`group flex cursor-pointer items-center gap-2 rounded border px-2 py-1.5 text-left text-[11px] transition ${
                     isActive
