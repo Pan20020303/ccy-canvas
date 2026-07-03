@@ -1042,8 +1042,10 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
         </header>
 
         <div className="prompt-editor-scroll flex-1 overflow-y-auto px-6 py-5">
-          <div className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-            <aside className="space-y-5 rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
+          {/* 黄金分割布局:左(模板/脚本) 38.2% : 右(表单) 61.8%;
+              间距节奏 12 / 20 / 32(≈ 斐波那契 13/21/34)。 */}
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,38.2fr)_minmax(0,61.8fr)]">
+            <aside className="space-y-5 self-start rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
           <Field label="服务类型">
             <select value={serviceType} onChange={(event) => setServiceType(event.target.value as ServiceType)} className={FIELD_SELECT}>
               {Object.entries(SERVICE_LABELS).map(([value, label]) => (
@@ -1103,100 +1105,111 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
           </Field>
 
             </aside>
-            <div className="space-y-5">
+            <div className="space-y-8">
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="厂商"><input value={vendor} onChange={(event) => setVendor(event.target.value)} className={FIELD_INPUT} /></Field>
-            <Field label="显示名称"><input value={name} onChange={(event) => setName(event.target.value)} className={FIELD_INPUT} /></Field>
-          </div>
-
-          <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
-            <Field label="图标 Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
-            <Field label="图标 URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
-            <div className="pb-3">
-              <ModelBrandIcon model={defaultModel || modelListText.split(/\n/)[0]} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="协议">
-              <select value={protocol} onChange={(event) => setProtocol(event.target.value as GatewayProtocol)} className={FIELD_SELECT}>
-                <option value="openai_compatible">OpenAI-compatible</option>
-                <option value="newapi">NewAPI</option>
-                <option value="native">Native</option>
-              </select>
-            </Field>
-            <Field label="适配器">
-              <select value={apiSpec} onChange={(event) => setApiSpec(event.target.value)} className={FIELD_SELECT}>
-                <option value="openai">OpenAI</option>
-                <option value="custom">Custom</option>
-                <option value="ark">Volcengine Ark</option>
-              </select>
-            </Field>
-          </div>
-
-          <Field label="运行时">
-            <select value={adapterRuntime} onChange={(event) => setAdapterRuntime(event.target.value as AdapterRuntime)} className={FIELD_SELECT}>
-              <option value="go">Go 内置适配器</option>
-              <option value="ts">TypeScript 供应商脚本</option>
-            </select>
-          </Field>
-
-          <Field label="Base URL">
-            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example-newapi.com/v1" className={FIELD_INPUT} />
-            <p className="mt-2 text-xs text-neutral-500">建议填写到 /v1；后端会对普通根域名自动补 /v1。</p>
-          </Field>
-
-          <Field label={isEdit ? "API Key（留空保持不变）" : "API Key"}>
-            <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" className={FIELD_INPUT} />
-          </Field>
-
-          {showCustomEndpoints ? (
+          {/* ── 基本信息 ── */}
+          <section className="space-y-3">
+            <SectionTitle>基本信息</SectionTitle>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="提交端点"><input value={submitEndpoint} onChange={(event) => setSubmitEndpoint(event.target.value)} className={FIELD_INPUT} /></Field>
-              <Field label="查询端点"><input value={queryEndpoint} onChange={(event) => setQueryEndpoint(event.target.value)} className={FIELD_INPUT} /></Field>
+              <Field label="厂商"><input value={vendor} onChange={(event) => setVendor(event.target.value)} className={FIELD_INPUT} /></Field>
+              <Field label="显示名称"><input value={name} onChange={(event) => setName(event.target.value)} className={FIELD_INPUT} /></Field>
             </div>
-          ) : null}
+            <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-3">
+              <Field label="图标 Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
+              <Field label="图标 URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
+              <div className="pb-3">
+                <ModelBrandIcon model={defaultModel || modelListText.split(/\n/)[0]} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
+              </div>
+            </div>
+          </section>
 
-          <div className="rounded-md border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-xs text-neutral-500">
-            最终端点：{endpointPreview}
-          </div>
+          {/* ── 接入 ── */}
+          <section className="space-y-3">
+            <SectionTitle>接入</SectionTitle>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="协议">
+                <select value={protocol} onChange={(event) => setProtocol(event.target.value as GatewayProtocol)} className={FIELD_SELECT}>
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                  <option value="newapi">NewAPI</option>
+                  <option value="native">Native</option>
+                </select>
+              </Field>
+              <Field label="适配器">
+                <select value={apiSpec} onChange={(event) => setApiSpec(event.target.value)} className={FIELD_SELECT}>
+                  <option value="openai">OpenAI</option>
+                  <option value="custom">Custom</option>
+                  <option value="ark">Volcengine Ark</option>
+                </select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="运行时">
+                <select value={adapterRuntime} onChange={(event) => setAdapterRuntime(event.target.value as AdapterRuntime)} className={FIELD_SELECT}>
+                  <option value="go">Go 内置适配器</option>
+                  <option value="ts">TypeScript 供应商脚本</option>
+                </select>
+              </Field>
+              <Field label={isEdit ? "API Key（留空保持不变）" : "API Key"}>
+                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" className={FIELD_INPUT} />
+              </Field>
+            </div>
+            <Field label="Base URL">
+              <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example-newapi.com/v1" className={FIELD_INPUT} />
+              <p className="mt-2 text-xs text-neutral-500">建议填写到 /v1；后端会对普通根域名自动补 /v1。</p>
+            </Field>
+            {showCustomEndpoints ? (
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="提交端点"><input value={submitEndpoint} onChange={(event) => setSubmitEndpoint(event.target.value)} className={FIELD_INPUT} /></Field>
+                <Field label="查询端点"><input value={queryEndpoint} onChange={(event) => setQueryEndpoint(event.target.value)} className={FIELD_INPUT} /></Field>
+              </div>
+            ) : null}
+            <div className="rounded-md border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-xs text-neutral-500">
+              最终端点：{endpointPreview}
+            </div>
+          </section>
 
-          <Field label="模型列表（每行一个）">
-            <textarea value={modelListText} onChange={(event) => setModelListText(event.target.value)} className={`${FIELD_INPUT} min-h-28 resize-none py-3`} />
-          </Field>
+          {/* ── 模型 ── */}
+          <section className="space-y-3">
+            <SectionTitle>模型</SectionTitle>
+            <Field label="模型列表（每行一个）">
+              <textarea value={modelListText} onChange={(event) => setModelListText(event.target.value)} className={`${FIELD_INPUT} min-h-28 resize-none py-3`} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="默认模型"><input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} className={FIELD_INPUT} /></Field>
+              <Field label="优先级"><input value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} type="number" className={FIELD_INPUT} /></Field>
+            </div>
+          </section>
 
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="默认模型"><input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} className={FIELD_INPUT} /></Field>
-            <Field label="优先级"><input value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} type="number" className={FIELD_INPUT} /></Field>
-          </div>
-
-          <Field label="积分 / 次（每次生成扣除）">
-            <input
-              value={creditCost}
-              onChange={(event) => setCreditCost(Math.max(0, Number(event.target.value) || 0))}
-              type="number"
-              min={0}
-              step={1}
-              className={FIELD_INPUT}
-            />
-            <p className="mt-1 text-[11px] text-neutral-500">用此配置生成一次扣除的积分数。0 = 免费。按模型差异化可在下方 Schema 的 models.&lt;模型名&gt;.credit_cost 设置。</p>
-          </Field>
-
-          <label className="flex items-center gap-2 text-sm text-neutral-300">
-            <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-neutral-300" />
-            设为默认配置
-          </label>
-
-          <Field label="参数 Schema JSON">
-            <textarea
-              value={parameterSchemaText}
-              onChange={(event) => setParameterSchemaText(event.target.value)}
-              spellCheck={false}
-              className={`${FIELD_INPUT} min-h-36 resize-y py-3 font-mono text-xs`}
-            />
-            <p className="mt-2 text-xs text-neutral-500">控制前端参数按钮和后端允许透传字段，例如 quality_options、size_options、output_format_options、allowed_parameters、defaults。</p>
-          </Field>
+          {/* ── 计费与高级 ── */}
+          <section className="space-y-3">
+            <SectionTitle>计费与高级</SectionTitle>
+            <div className="grid grid-cols-2 items-end gap-3">
+              <Field label="积分 / 次（每次生成扣除）">
+                <input
+                  value={creditCost}
+                  onChange={(event) => setCreditCost(Math.max(0, Number(event.target.value) || 0))}
+                  type="number"
+                  min={0}
+                  step={1}
+                  className={FIELD_INPUT}
+                />
+              </Field>
+              <label className="flex items-center gap-2 pb-3 text-sm text-neutral-300">
+                <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-neutral-300" />
+                设为默认配置
+              </label>
+            </div>
+            <p className="text-[11px] text-neutral-500">用此配置生成一次扣除的积分数。0 = 免费。按模型差异化可在下方 Schema 的 models.&lt;模型名&gt;.credit_cost 设置。</p>
+            <Field label="参数 Schema JSON">
+              <textarea
+                value={parameterSchemaText}
+                onChange={(event) => setParameterSchemaText(event.target.value)}
+                spellCheck={false}
+                className={`${FIELD_INPUT} min-h-36 resize-y py-3 font-mono text-xs`}
+              />
+              <p className="mt-2 text-xs text-neutral-500">控制前端参数按钮和后端允许透传字段，例如 quality_options、size_options、output_format_options、allowed_parameters、defaults。</p>
+            </Field>
+          </section>
 
           {error ? <div className="rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
             </div>
@@ -1232,6 +1245,16 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-2 block text-xs font-medium text-neutral-500">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** 编辑配置弹窗右列的分组标题 —— 小号大写间距字 + 细分割线。 */
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">{children}</span>
+      <div className="h-px flex-1 bg-white/[0.06]" />
+    </div>
   );
 }
 
