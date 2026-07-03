@@ -1499,6 +1499,28 @@ export const appStorage = {
   },
 };
 
+/** 使用偏好的独立小键(几十字节)。主持久化是整仓 JSON,画布重的账号一次
+ *  QuotaExceeded 就整体写入失败(appStorage 静默吞掉),偏好开关会跟着丢 ——
+ *  关键小设置单独落盘,不与大画布共命运。 */
+const LIGHT_PREFS_KEY = 'cineflow-prefs';
+
+export function persistLightPrefs(prefs: { confirmBeforeGenerate: boolean }) {
+  try {
+    localStorage.setItem(storageKey(LIGHT_PREFS_KEY), JSON.stringify(prefs));
+  } catch { /* storage 不可用就算了,主持久化还有机会兜住 */ }
+}
+
+function applyLightPrefsOverride() {
+  try {
+    const raw = localStorage.getItem(storageKey(LIGHT_PREFS_KEY));
+    if (!raw) return;
+    const prefs = JSON.parse(raw) as { confirmBeforeGenerate?: boolean };
+    if (typeof prefs.confirmBeforeGenerate === 'boolean') {
+      useStore.setState({ confirmBeforeGenerate: prefs.confirmBeforeGenerate });
+    }
+  } catch { /* ignore */ }
+}
+
 export function bindStorageToUser(userId: string) {
   if (storageUserId === userId) return;
   // Flush any debounced persist BEFORE the key switches — appStorage resolves
@@ -1506,7 +1528,13 @@ export function bindStorageToUser(userId: string) {
   // would land in the NEW user's slot with the OLD user's data.
   flushPendingPersist();
   storageUserId = userId;
-  useStore.persist.rehydrate();
+  const rehydrated = useStore.persist.rehydrate();
+  // 独立小键在整仓 rehydrate 之后覆盖,保证大 blob 里的旧值压不过它。
+  if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') {
+    void (rehydrated as Promise<void>).then(applyLightPrefsOverride);
+  } else {
+    applyLightPrefsOverride();
+  }
 }
 
 function extractProxyMediaOriginalUrl(url: string): string {
@@ -3555,7 +3583,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),
 
   confirmBeforeGenerate: false,
-  setConfirmBeforeGenerate: (v) => set({ confirmBeforeGenerate: v }),
+  setConfirmBeforeGenerate: (v) => {
+    set({ confirmBeforeGenerate: v });
+    // 立即写独立小键(同步、无防抖)——主持久化超配额失败也丢不了它。
+    persistLightPrefs({ confirmBeforeGenerate: v });
+  },
   pendingRunConfirm: [],
   setPendingRunConfirm: (v) => set({ pendingRunConfirm: v }),
 
