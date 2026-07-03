@@ -2077,14 +2077,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const projects = await listProjects();
       if (projects.length === 0) return;
-      const first = projects[0];
+      // 2026-07 修复:刷新后必须回到用户上次所在的项目,而不是无脑跳到
+      // projects[0] —— 否则刚建的节点看起来"消失"了(其实好好待在原项目
+      // 里,是画布自己切走了)。activeBackendProjectId 已持久化,优先用它。
+      const persistedId = get().activeBackendProjectId;
+      const first = (persistedId && projects.find((p) => p.id === persistedId)) || projects[0];
       // IMPORTANT: do NOT set activeBackendProjectId yet. Auto-save is gated
       // on canvasHydrated, but we still keep the project id assignment until
       // after the canvas resolves so the whole "active project" state flips
       // atomically and the heavy-stripped localStorage canvas can never be
       // saved back over the real backend snapshot mid-load.
       set({ backendProjects: projects });
-      // Load canvas for the first/active project.
+      // Load canvas for the restored/first project.
       try {
         const canvas = await getCanvas(first.id);
         set((state) => {
@@ -3013,6 +3017,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           { nodeId, payload: { prompt: payload.prompt, model: payload.model } },
         ],
       }));
+      // 撤掉调用方的乐观 running 态 —— 提交按钮会先把节点置成 running 再
+      // 调 runNode,这里不清掉的话确认之前节点就空转生成动画(没有真任务,
+      // 轮询也永远不会来收尾)。
+      const optimistic = get().nodes.find((n) => n.id === nodeId);
+      if (optimistic && (optimistic.data as Record<string, unknown>)?.status === 'running') {
+        get().updateNodeData(nodeId, { status: undefined, error: undefined, queuedAfterTimeout: false });
+      }
       return;
     }
     // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
@@ -3613,6 +3624,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       history: stripHeavyFromHistory(state.history),
       projects: state.projects,
       activeProjectId: state.activeProjectId,
+      // 刷新后 loadBackendProjects 用它恢复"上次所在项目"(不再跳回第一个)。
+      activeBackendProjectId: state.activeBackendProjectId,
       projectStateById: stripHeavyFromProjectStateById(state.projectStateById),
       spaceMembers: state.spaceMembers,
       invitations: state.invitations,
