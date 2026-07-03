@@ -686,18 +686,48 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
-            {/* ── Audio (HappyHorse video-edit only) ───────────────────── */}
+            {/* ── Audio ──────────────────────────────────────────────────
+                on/off 布尔对(如可灵的生成音效)用单个开关(2026-07 反馈);
+                多档位(HappyHorse 的 auto/origin/off)保留按钮组。 */}
             {hasAudioSetting ? (
-              <div className="mt-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {template.audioSettingOptions!.map((option) => (
-                    <BlockButton key={option} active={option === audioSetting} onClick={() => onAudioSetting!(option)}>
-                      {AUDIO_LABEL[option] ?? option}
-                    </BlockButton>
-                  ))}
+              template.audioSettingOptions!.length === 2
+                && template.audioSettingOptions!.includes('on')
+                && template.audioSettingOptions!.includes('off') ? (
+                <div className="mt-4 flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
+                    <div className="mt-0.5 text-[10px] text-neutral-500">
+                      {AUDIO_LABEL[audioSetting === 'on' ? 'on' : 'off']}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={audioSetting === 'on'}
+                    onClick={() => onAudioSetting!(audioSetting === 'on' ? 'off' : 'on')}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                      audioSetting === 'on' ? 'bg-violet-500/80' : 'bg-neutral-700'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-[left] ${
+                        audioSetting === 'on' ? 'left-[18px]' : 'left-0.5'
+                      }`}
+                    />
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-4">
+                  <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {template.audioSettingOptions!.map((option) => (
+                      <BlockButton key={option} active={option === audioSetting} onClick={() => onAudioSetting!(option)}>
+                        {AUDIO_LABEL[option] ?? option}
+                      </BlockButton>
+                    ))}
+                  </div>
+                </div>
+              )
             ) : null}
 
             {/* ── Seed (reproducible generation) ───────────────────────── */}
@@ -1157,12 +1187,21 @@ const PromptPanel = ({
     const n = allNodes.find((node) => node.id === id);
     const d = (n?.data ?? {}) as Record<string, string>;
     const type = n?.type ?? '';
-    const isImage = type === 'imageNode' || type === 'referenceImageNode';
+    // 导演台 / 构图预览的输出是构图快照 —— 在引用条里就是一张图片参考,
+    // 与 collectUpstreamReferenceMedia 的取值逻辑保持一致。
+    const stageData = n?.data as { editorPreview?: string; lastCapture?: { image?: string }; image?: string } | undefined;
+    const stageThumb = type === 'directorStageNode'
+      ? (stageData?.editorPreview || stageData?.lastCapture?.image || '')
+      : type === 'compositionPreviewNode'
+        ? (stageData?.image || '')
+        : '';
+    const isImage = type === 'imageNode' || type === 'referenceImageNode'
+      || type === 'directorStageNode' || type === 'compositionPreviewNode';
     const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
     const isAudio = type === 'audioNode' || type === 'referenceAudioNode';
     // 音频没有可用缩略图（url 是 mp3，塞进 <img> 就是裂图）——留空走图标卡；
     // 视频优先用封面帧，兜底才是原始视频 url。
-    const thumb = isAudio ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (d.url || d.thumbnail || '');
+    const thumb = isAudio ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
     const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'other';
     const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : isAudio ? `音频 ${idx + 1}` : `节点 ${idx + 1}`;
     const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : '节';
@@ -1604,9 +1643,10 @@ const PromptPanel = ({
     let videos = 0;
     let audios = 0;
     for (const up of upstreamNodes) {
-      if (up.type === 'imageNode' || up.type === 'referenceImageNode') images += 1;
-      else if (up.type === 'videoNode' || up.type === 'referenceVideoNode') videos += 1;
-      else if (up.type === 'audioNode' || up.type === 'referenceAudioNode') audios += 1;
+      // 用 kind 归类:导演台 / 构图预览也算图片参考(与实际发给后端的一致)。
+      if (up.kind === 'image') images += 1;
+      else if (up.kind === 'video') videos += 1;
+      else if (up.kind === 'audio') audios += 1;
     }
     return { images, videos, audios };
   }, [upstreamNodes]);

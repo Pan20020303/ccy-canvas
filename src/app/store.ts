@@ -327,9 +327,15 @@ type AppState = {
    *  也一起切换,让面板里看到的提示词跟图对上. */
   setActiveVersion: (nodeId: string, versionId: string) => void;
   updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
-  runNode: (nodeId: string, payload: { prompt: string; model?: string }) => void;
+  runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean }) => void;
   cancelNode: (nodeId: string) => void;
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
+  /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。 */
+  confirmBeforeGenerate: boolean;
+  setConfirmBeforeGenerate: (v: boolean) => void;
+  /** 待确认的生成请求 —— 确认弹窗读它,确认后带 skipConfirm 重入 runNode。 */
+  pendingRunConfirm: { nodeId: string; payload: { prompt: string; model?: string } } | null;
+  setPendingRunConfirm: (v: { nodeId: string; payload: { prompt: string; model?: string } } | null) => void;
   shortcuts: Record<string, string>;
   setShortcut: (action: string, combo: string) => void;
   resetShortcuts: () => void;
@@ -2997,6 +3003,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
+    // 使用偏好「生成前确认」:先挂起请求弹确认窗,确认按钮带 skipConfirm
+    // 重入。放在最前面 —— 确认之前不 abort 旧请求、不产生任何生成状态。
+    if (get().confirmBeforeGenerate && !payload?.skipConfirm) {
+      set({ pendingRunConfirm: { nodeId, payload: { prompt: payload.prompt, model: payload.model } } });
+      return;
+    }
     // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
     // 不能直接 return，否则用户会看到按钮只闪一下但没有任何生成状态。
     if (runAborters[nodeId]) {
@@ -3258,7 +3270,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         // on a previous model (genParams persists across model switches) never
         // rides along to a sibling that doesn't support it. audio_setting only
         // for templates that expose it (video-edit); seed only for supportsSeed.
-        audio_setting: serviceType === 'video' && activeTemplate?.audioSettingOptions?.length ? genParams?.audioSetting : undefined,
+        // 兜底到首个选项:UI 把 options[0] 显示为默认激活态(如可灵默认
+        // 生成音效),不兜底的话用户没点过开关时请求里就没有这个字段,
+        // 后端默认可能和 UI 显示相反。
+        audio_setting: serviceType === 'video' && activeTemplate?.audioSettingOptions?.length
+          ? (genParams?.audioSetting ?? activeTemplate.audioSettingOptions[0])
+          : undefined,
         seed: (serviceType === 'video' || serviceType === 'image') && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
         // wan2.7 组图 (grid) mode → the backend sets enable_sequential so one
         // request yields up to 12 images. Gated to the image 组图 tab.
@@ -3497,6 +3514,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   isSettingsOpen: false,
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),
 
+  confirmBeforeGenerate: false,
+  setConfirmBeforeGenerate: (v) => set({ confirmBeforeGenerate: v }),
+  pendingRunConfirm: null,
+  setPendingRunConfirm: (v) => set({ pendingRunConfirm: v }),
+
   isTaskQueueCollapsed: false,
   setTaskQueueCollapsed: (value) => set({ isTaskQueueCollapsed: value }),
   showMiniMap: false,
@@ -3594,6 +3616,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       isTaskQueueCollapsed: state.isTaskQueueCollapsed,
       showMiniMap: state.showMiniMap,
       snapToGrid: state.snapToGrid,
+      // 使用偏好(storage key 按用户隔离,天然每用户独立)。
+      confirmBeforeGenerate: state.confirmBeforeGenerate,
     };
     lastPartializedSnapshot = snapshot;
     return snapshot;

@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
-import { X, Keyboard, Wrench, Bot } from 'lucide-react';
+import { X, Keyboard, Wrench, Bot, SlidersHorizontal } from 'lucide-react';
 import { useStore, DEFAULT_SHORTCUTS, formatShortcutCombo } from '../store';
 import { SkillsSettingsTab } from './settings/SkillsSettingsTab';
 import { AgentsSettingsTab } from './settings/AgentsSettingsTab';
 
 const SECTIONS = [
-  { id: 'skills',    icon: Wrench,   zh: '我的技能',   en: 'My Skills'     },
-  { id: 'agents',    icon: Bot,      zh: '我的智能体', en: 'My Agents'     },
-  { id: 'shortcuts', icon: Keyboard, zh: '键盘快捷键', en: 'Shortcuts'     },
+  { id: 'skills',      icon: Wrench,            zh: '我的技能',   en: 'My Skills'     },
+  { id: 'agents',      icon: Bot,               zh: '我的智能体', en: 'My Agents'     },
+  { id: 'shortcuts',   icon: Keyboard,          zh: '键盘快捷键', en: 'Shortcuts'     },
+  { id: 'preferences', icon: SlidersHorizontal, zh: '使用偏好',   en: 'Preferences'   },
 ];
 
 const ACTION_LABELS: Record<string, { zh: string; en: string }> = {
@@ -174,6 +175,8 @@ export const SettingsModal = () => {
                   </button>
                 </div>
               </>
+            ) : section === 'preferences' ? (
+              <PreferencesTab zh={zh} />
             ) : (
               <div className="text-xs text-neutral-500">
                 {zh ? '该分区还在开发中。' : 'This section is coming soon.'}
@@ -185,3 +188,42 @@ export const SettingsModal = () => {
     </div>
   );
 };
+
+/** 使用偏好 —— 每个用户独立(store 持久化按用户 id 隔离 storage key)。
+ *  本轮只有一个实际功能:生成前确认;鼠标指针等更多偏好后续加入。 */
+function PreferencesTab({ zh }: { zh: boolean }) {
+  const confirmBeforeGenerate = useStore((s) => s.confirmBeforeGenerate);
+  const setConfirmBeforeGenerate = useStore((s) => s.setConfirmBeforeGenerate);
+  return (
+    <div className="max-w-[560px] space-y-4">
+      <div className="flex items-start justify-between gap-6 rounded-lg border border-white/[0.06] bg-white/[0.02] px-4 py-3.5">
+        <div>
+          <div className="text-sm text-neutral-200">{zh ? '生成前确认' : 'Confirm before generating'}</div>
+          <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+            {zh
+              ? '开启后，每次调用模型都会先弹窗提醒：请确认提示词、参考图以及分辨率等设置是否正确 — 离开排队状态后无法取消。'
+              : 'When on, every model call first shows a confirmation dialog reminding you to check the prompt, references and resolution — tasks cannot be cancelled once they leave the queue.'}
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={confirmBeforeGenerate}
+          onClick={() => setConfirmBeforeGenerate(!confirmBeforeGenerate)}
+          className={`relative mt-1 h-5 w-9 shrink-0 rounded-full transition-colors ${
+            confirmBeforeGenerate ? 'bg-cyan-500/80' : 'bg-neutral-700'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-[left] ${
+              confirmBeforeGenerate ? 'left-[18px]' : 'left-0.5'
+            }`}
+          />
+        </button>
+      </div>
+      <p className="px-1 text-[11px] text-neutral-600">
+        {zh ? '更多偏好（鼠标指针、画布手感等）即将加入。' : 'More preferences (cursor style, canvas feel, …) coming soon.'}
+      </p>
+    </div>
+  );
+}

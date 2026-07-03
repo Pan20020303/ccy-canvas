@@ -2347,12 +2347,18 @@ const InnerCanvas = () => {
 
       <SaveAssetDialog />
 
-      {/* 3D 导演台 overlay — 仅在用户打开时挂载,关闭后整个 WebGL 上下文释放. */}
+      {/* 3D 导演台 overlay — 仅在用户打开时挂载,关闭后整个 WebGL 上下文释放.
+          key=节点 id:目标节点变化时强制全新挂载,演员/道具/机位这些
+          本地 state 不可能带到另一个导演台上(删旧建新残留旧内容的兜底). */}
       {directorStageNodeId ? (
         <Suspense fallback={null}>
-          <DirectorStageOverlay />
+          <DirectorStageOverlay key={directorStageNodeId} />
         </Suspense>
       ) : null}
+
+      {/* 使用偏好「生成前确认」— runNode 挂起的请求在这里确认/取消. */}
+      <RunConfirmDialog />
+
 
       {/* Agent run panel + toggle FAB — bottom-right, stacked ABOVE the
           stats strip (reference layout). */}
@@ -2690,6 +2696,56 @@ function GroupColorMenu({
           </div>
         </>
       ) : null}
+    </div>
+  );
+}
+
+/** 使用偏好「生成前确认」弹窗 —— runNode 在偏好开启时把请求挂起到
+ *  pendingRunConfirm,这里确认(带 skipConfirm 重入)或取消。 */
+function RunConfirmDialog() {
+  const pending = useStore((s) => s.pendingRunConfirm);
+  const setPending = useStore((s) => s.setPendingRunConfirm);
+  const runNode = useStore((s) => s.runNode);
+  const language = useStore((s) => s.language);
+  if (!pending) return null;
+  const zh = language === 'zh';
+  return (
+    <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+      <div className="w-[440px] rounded-xl border border-white/10 bg-[#101114] p-5">
+        <div className="text-[14px] font-medium text-white">
+          {zh ? '生成前确认' : 'Confirm before generating'}
+        </div>
+        <p className="mt-3 text-[12.5px] leading-relaxed text-neutral-300">
+          {zh
+            ? '请确认你的提示词、参考图以及分辨率等设置是否正确 — 任务发起后，离开排队状态将无法取消。'
+            : 'Please double-check your prompt, reference images and resolution — once the task leaves the queue it cannot be cancelled.'}
+        </p>
+        {pending.payload.prompt ? (
+          <div className="prompt-editor-scroll mt-3 max-h-24 overflow-y-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-[11.5px] text-neutral-400">
+            {pending.payload.prompt}
+          </div>
+        ) : null}
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setPending(null)}
+            className="rounded-md border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[12px] text-white/70 transition hover:border-white/25 hover:bg-white/[0.08]"
+          >
+            {zh ? '再检查一下' : 'Keep editing'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const p = pending;
+              setPending(null);
+              void runNode(p.nodeId, { ...p.payload, skipConfirm: true });
+            }}
+            className="rounded-md border border-violet-400/40 bg-violet-500/[0.18] px-3 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/70 hover:bg-violet-500/[0.3]"
+          >
+            {zh ? '确认生成' : 'Generate'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
