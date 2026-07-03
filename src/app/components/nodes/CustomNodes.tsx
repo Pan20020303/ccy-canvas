@@ -46,6 +46,9 @@ import {
   Brush,
   Undo2,
   Redo2,
+  ArrowRightLeft,
+  Mic,
+  ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore } from '../../store';
@@ -5052,6 +5055,74 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   );
 }
 
+/** 音频节点的浮动工具条（选中且有音频时出现，音频生成/音频上传共用）：
+ *  变速（真实生效，写 data.playbackRate 由播放器应用）· 音频裁剪 · 格式转换 ·
+ *  音频提取 · 内容检测 · 下载。裁剪/转换/提取/检测暂无后端能力 — 按钮占位
+ *  禁用，悬停提示即将上线。 */
+const AUDIO_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 0.5] as const;
+
+function AudioActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
+  const language = useStore((state) => state.language);
+  const nodes = useStore((state) => state.nodes);
+  const updateNodeData = useStore((state) => state.updateNodeData);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
+  const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
+  const sourceUrl = typeof sourceData.url === 'string' ? sourceData.url : '';
+  if (!sourceNode || !['audioNode', 'referenceAudioNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
+
+  const zh = language === 'zh';
+  const rate = Number(sourceData.playbackRate) || 1;
+  const cycleRate = () => {
+    const idx = AUDIO_PLAYBACK_RATES.indexOf(rate as (typeof AUDIO_PLAYBACK_RATES)[number]);
+    const next = AUDIO_PLAYBACK_RATES[(idx + 1) % AUDIO_PLAYBACK_RATES.length];
+    updateNodeData(sourceNodeId, { playbackRate: next });
+  };
+  const comingSoon = zh ? '即将上线' : 'Coming soon';
+  const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
+  const disabledClass = 'disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-neutral-100/88';
+  const downloadName = `${String(sourceData.customTitle || sourceData.sourceName || sourceNodeId).replace(/[^a-z0-9_\-一-鿿]+/gi, '-') || 'audio'}.mp3`;
+
+  return (
+    <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+      <Button
+        variant="ghost"
+        size="sm"
+        className={clsx(actionButtonClass, 'min-w-[52px] justify-center tabular-nums')}
+        onClick={cycleRate}
+        title={zh ? '播放速度（点击切换）' : 'Playback speed (click to cycle)'}
+      >
+        {rate}x
+      </Button>
+      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+        <Scissors className="h-3.5 w-3.5" />
+        {zh ? '音频裁剪' : 'Trim'}
+      </Button>
+      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+        <ArrowRightLeft className="h-3.5 w-3.5" />
+        {zh ? '格式转换' : 'Convert'}
+      </Button>
+      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+        <Mic className="h-3.5 w-3.5" />
+        {zh ? '音频提取' : 'Extract'}
+      </Button>
+      <div className="mx-1 h-5 w-px bg-white/10" />
+      <Button variant="ghost" size="icon" className={disabledClass} disabled title={zh ? `内容检测 · ${comingSoon}` : `Safety check · ${comingSoon}`}>
+        <ShieldCheck className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => {
+          void downloadAsset(sourceUrl, downloadName);
+        }}
+        title={zh ? '下载' : 'Download'}
+      >
+        <Download className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
 export const TextNode = ({ id, data, selected }: any) => {
   const language = useStore((state) => state.language);
   return (
@@ -5801,34 +5872,33 @@ function audioBarHeights(seed: string): number[] {
   return out;
 }
 
-/**
- * Uploaded-audio reference node — an MP3/WAV/etc. dropped onto the canvas.
- * Renders a real, seekable waveform player (play/pause, m:ss.s readout, a
- * moving playhead, format badge, download) mirroring the reference design.
- * Distinct from AudioNode (the decorative TTS "generate audio" node).
- */
-export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
-  const data = rawData ?? {};
+/** 可复用的波形播放卡 — 音频上传 / 音频生成节点共用同一套播放器。
+ *  伪波形（按节点 id 确定性生成）、点击/拖拽 seek、rAF 平滑播放头、m:ss.s
+ *  读数、格式角标、右上角下载；播放速率由节点 data.playbackRate 驱动
+ *  （AudioActionToolbar 写入，这里应用到 <audio> 元素）。 */
+function AudioWaveformPlayer({
+  nodeId,
+  rawUrl,
+  downloadName,
+  formatBadge,
+  playbackRate = 1,
+}: {
+  nodeId: string;
+  /** 未包装的原始 url（下载用）；播放地址内部再走 toRenderableMediaUrl。 */
+  rawUrl: string;
+  downloadName: string;
+  formatBadge: string;
+  playbackRate?: number;
+}) {
   const language = useStore((state) => state.language);
-  const displayName = getReferenceDisplayName(data);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const bars = useMemo(() => audioBarHeights(id), [id]);
-
-  const playableUrl = data.url ? toRenderableMediaUrl(data.url) : '';
-  const formatBadge = (String(data.sourceName ?? '').split('.').pop() || 'audio')
-    .toUpperCase()
-    .slice(0, 4);
-  const sourceKindLabel = data.sourceKind === 'upload'
-    ? (language === 'zh' ? '上传' : 'Upload')
-    : data.sourceKind === 'derived'
-      ? (language === 'zh' ? '派生' : 'Derived')
-      : data.sourceKind === 'generated'
-        ? (language === 'zh' ? '生成' : 'Generated')
-        : '';
+  const bars = useMemo(() => audioBarHeights(nodeId), [nodeId]);
+  const playableUrl = rawUrl ? toRenderableMediaUrl(rawUrl) : '';
+  const effectiveRate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
 
   useEffect(() => {
     const a = audioRef.current;
@@ -5855,6 +5925,12 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
     };
   }, [playableUrl]);
 
+  // 变速：url 变化会重建元素、load() 重试会重置速率，两处都要重放。
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) a.playbackRate = effectiveRate;
+  }, [effectiveRate, playableUrl]);
+
   // Smooth playhead: timeupdate only fires ~4 Hz; advance the waveform
   // per-frame while playing so the bars sweep instead of stuttering.
   useEffect(() => {
@@ -5878,6 +5954,7 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
         // A transient proxy failure at initial load bricks the element;
         // reload once and retry so play isn't permanently dead.
         a.load();
+        a.playbackRate = effectiveRate;
         a.play().catch(() => {});
       });
     } else {
@@ -5899,6 +5976,98 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
   const playedBars = Math.round(progress * bars.length);
 
   return (
+    <div className={clsx('relative rounded-[12px] border p-3 pt-2.5 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+      {playableUrl ? <audio ref={audioRef} src={playableUrl} preload="metadata" className="hidden" /> : null}
+
+      {/* download — mirrors the reference's top-right affordance */}
+      {playableUrl ? (
+        <button
+          type="button"
+          className="nodrag absolute right-2.5 top-2.5 z-10 flex h-6 w-6 items-center justify-center rounded-md text-white/45 transition hover:bg-white/10 hover:text-white/80"
+          title={language === 'zh' ? '下载' : 'Download'}
+          onClick={(event) => {
+            event.stopPropagation();
+            void downloadAsset(rawUrl, downloadName);
+          }}
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+
+      {/* seekable waveform — click or drag to scrub */}
+      <div
+        ref={barRef}
+        className="nodrag nopan mt-3 flex h-12 cursor-pointer touch-none items-center gap-[2px]"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+          seekToClientX(event.clientX);
+        }}
+        onPointerMove={(event) => {
+          if ((event.buttons & 1) === 1) {
+            event.stopPropagation();
+            seekToClientX(event.clientX);
+          }
+        }}
+      >
+        {bars.map((height, index) => (
+          <div
+            key={index}
+            className={clsx(
+              'flex-1 rounded-full transition-colors',
+              index < playedBars ? 'bg-emerald-300/85' : 'bg-white/18',
+            )}
+            style={{ height: `${Math.round(height * 100)}%` }}
+          />
+        ))}
+      </div>
+
+      {/* transport: time · play · format */}
+      <div className="mt-2.5 flex items-center gap-3">
+        <span className="shrink-0 text-[11px] tabular-nums text-neutral-400">
+          {formatAudioTime(currentTime)} / {formatAudioTime(duration)}
+        </span>
+        <div className="flex flex-1 justify-center">
+          <button
+            type="button"
+            onClick={togglePlay}
+            disabled={!playableUrl}
+            className="nodrag flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/90 transition hover:bg-white/15 disabled:opacity-40"
+            title={playing ? (language === 'zh' ? '暂停' : 'Pause') : (language === 'zh' ? '播放' : 'Play')}
+          >
+            {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="ml-0.5 h-3.5 w-3.5" />}
+          </button>
+        </div>
+        <span className="shrink-0 rounded-md bg-white/8 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-neutral-400">
+          {formatBadge}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Uploaded-audio reference node — an MP3/WAV/etc. dropped onto the canvas.
+ * Renders the shared AudioWaveformPlayer card, mirroring the reference design.
+ * Distinct from AudioNode (the decorative TTS "generate audio" node).
+ */
+export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
+  const data = rawData ?? {};
+  const language = useStore((state) => state.language);
+  const displayName = getReferenceDisplayName(data);
+  const formatBadge = (String(data.sourceName ?? '').split('.').pop() || 'audio')
+    .toUpperCase()
+    .slice(0, 4);
+  const sourceKindLabel = data.sourceKind === 'upload'
+    ? (language === 'zh' ? '上传' : 'Upload')
+    : data.sourceKind === 'derived'
+      ? (language === 'zh' ? '派生' : 'Derived')
+      : data.sourceKind === 'generated'
+        ? (language === 'zh' ? '生成' : 'Generated')
+        : '';
+
+  return (
     <BaseNode
       icon={Music}
       tone="audio"
@@ -5906,75 +6075,16 @@ export const AudioReferenceNode = ({ id, data: rawData, selected }: any) => {
       headerRight={sourceKindLabel}
       selected={selected}
       error={data.error}
+      topFloatingPanel={data.url && data.status !== 'uploading' ? <AudioActionToolbar sourceNodeId={id} /> : undefined}
     >
-      <div className={clsx('relative rounded-[12px] border p-3 pt-2.5 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
-        {playableUrl ? <audio ref={audioRef} src={playableUrl} preload="metadata" className="hidden" /> : null}
-
-        {/* download — mirrors the reference's top-right affordance */}
-        {playableUrl && data.status !== 'uploading' ? (
-          <button
-            type="button"
-            className="nodrag absolute right-2.5 top-2.5 z-10 flex h-6 w-6 items-center justify-center rounded-md text-white/45 transition hover:bg-white/10 hover:text-white/80"
-            title={language === 'zh' ? '下载' : 'Download'}
-            onClick={(event) => {
-              event.stopPropagation();
-              void downloadAsset(data.url, displayName || `audio.${formatBadge.toLowerCase()}`);
-            }}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-
-        {/* seekable waveform — click or drag to scrub */}
-        <div
-          ref={barRef}
-          className="nodrag nopan mt-3 flex h-12 cursor-pointer touch-none items-center gap-[2px]"
-          onClick={(event) => event.stopPropagation()}
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-            seekToClientX(event.clientX);
-          }}
-          onPointerMove={(event) => {
-            if ((event.buttons & 1) === 1) {
-              event.stopPropagation();
-              seekToClientX(event.clientX);
-            }
-          }}
-        >
-          {bars.map((height, index) => (
-            <div
-              key={index}
-              className={clsx(
-                'flex-1 rounded-full transition-colors',
-                index < playedBars ? 'bg-emerald-300/85' : 'bg-white/18',
-              )}
-              style={{ height: `${Math.round(height * 100)}%` }}
-            />
-          ))}
-        </div>
-
-        {/* transport: time · play · format */}
-        <div className="mt-2.5 flex items-center gap-3">
-          <span className="shrink-0 text-[11px] tabular-nums text-neutral-400">
-            {formatAudioTime(currentTime)} / {formatAudioTime(duration)}
-          </span>
-          <div className="flex flex-1 justify-center">
-            <button
-              type="button"
-              onClick={togglePlay}
-              disabled={!playableUrl}
-              className="nodrag flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-white/5 text-white/90 transition hover:bg-white/15 disabled:opacity-40"
-              title={playing ? (language === 'zh' ? '暂停' : 'Pause') : (language === 'zh' ? '播放' : 'Play')}
-            >
-              {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="ml-0.5 h-3.5 w-3.5" />}
-            </button>
-          </div>
-          <span className="shrink-0 rounded-md bg-white/8 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-neutral-400">
-            {formatBadge}
-          </span>
-        </div>
-
+      <div className="relative">
+        <AudioWaveformPlayer
+          nodeId={id}
+          rawUrl={String(data.url ?? '')}
+          downloadName={displayName || `audio.${formatBadge.toLowerCase()}`}
+          formatBadge={formatBadge}
+          playbackRate={Number(data.playbackRate) || 1}
+        />
         {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
       </div>
     </BaseNode>
@@ -6832,6 +6942,10 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const title = data.customTitle || (language === 'zh' ? '生成音频' : 'Generate Audio');
+  // 生成完成后变成与「音频上传」一致的波形播放卡；空态用统一的占位框。
+  const hasAudio = Boolean(data.url) && data.status !== 'uploading';
+  const urlExt = String(data.url ?? '').split('?')[0].split('.').pop() ?? '';
+  const formatBadge = (/^[a-z0-9]{2,4}$/i.test(urlExt) ? urlExt : 'mp3').toUpperCase().slice(0, 4);
   return (
     <BaseNode
       icon={Music}
@@ -6841,24 +6955,26 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.error}
+      topFloatingPanel={hasAudio ? <AudioActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
     >
-      <div className={clsx('flex items-center space-x-3 rounded-[12px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/18">
-          <Music className="h-3.5 w-3.5 text-emerald-300" />
-        </div>
-        <div className="flex-1">
-          <div className="flex h-6 items-end gap-[2px]">
-            {Array.from({ length: 28 }).map((_, index) => (
-              <div
-                key={index}
-                className="flex-1 rounded-sm bg-emerald-300/45"
-                style={{ height: `${20 + Math.abs(Math.sin(index * 0.7) * 80)}%` }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
+      {hasAudio ? (
+        <AudioWaveformPlayer
+          nodeId={id}
+          rawUrl={String(data.url)}
+          downloadName={`${title}.${formatBadge.toLowerCase()}`}
+          formatBadge={formatBadge}
+          playbackRate={Number(data.playbackRate) || 1}
+        />
+      ) : (
+        <MediaEmptyPlaceholder
+          icon={Music}
+          zh={language === 'zh'}
+          className={clsx('w-full', NODE_TONE_STYLES.audio.surface)}
+          style={{ height: 150 }}
+          caption={{ zh: '输入提示词生成音频', en: 'Enter a prompt to generate audio' }}
+        />
+      )}
     </BaseNode>
   );
 };
