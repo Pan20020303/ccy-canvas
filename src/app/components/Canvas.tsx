@@ -1721,6 +1721,34 @@ const InnerCanvas = () => {
         </button>
       ) : null}
 
+      {/* 空画布指引 — 新项目首帧的引导（参考样式）：中央虚线 + 圆，点击直接
+          打开「添加节点」菜单；双击画布本来就会开菜单，文案指路。有节点或
+          菜单打开时不渲染。容器 pointer-events-none，不挡画布双击。 */}
+      {nodes.length === 0 && !contextMenu ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-6">
+          <button
+            type="button"
+            onClick={(event) => {
+              connectingFrom.current = null;
+              bulkConnectFrom.current = null;
+              openContextMenu({ clientX: event.clientX, clientY: event.clientY }, 'add-node', false);
+            }}
+            className="pointer-events-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-dashed border-white/15 text-neutral-500 transition hover:border-white/25 hover:text-neutral-300"
+            title={language === 'zh' ? '添加节点' : 'Add a node'}
+          >
+            <Plus className="h-7 w-7" />
+          </button>
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="text-[17px] font-semibold text-neutral-300">
+              {language === 'zh' ? '双击画布开始创作' : 'Double-click the canvas to start'}
+            </div>
+            <div className="text-[13px] text-neutral-600">
+              {language === 'zh' ? '或使用底部工具栏添加节点' : 'Or add nodes from the bottom toolbar'}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Click ripples — a short expanding ring at each pane click. */}
       {ripples.length > 0 ? (
         <div className="pointer-events-none absolute inset-0 z-40 overflow-hidden">
