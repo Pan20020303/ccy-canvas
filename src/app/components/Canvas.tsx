@@ -336,6 +336,10 @@ const InnerCanvas = () => {
   const setConnectionDragging = useStore((state) => state.setConnectionDragging);
   const undoCanvas = useStore((state) => state.undoCanvas);
   const redoCanvas = useStore((state) => state.redoCanvas);
+  // 右键菜单的可用态 — 布尔选择器，栈长度翻转时才重渲。
+  const undoAvailable = useStore((state) => state.undoStack.length > 0);
+  const redoAvailable = useStore((state) => state.redoStack.length > 0);
+  const hasCanvasClipboard = useStore((state) => state.copiedCanvasSelection !== null);
   const pushUndoSnapshot = useStore((state) => state.pushUndoSnapshot);
   const deleteSelectedNodes = useStore((state) => state.deleteSelectedNodes);
   const shortcuts = useStore((state) => state.shortcuts);
@@ -1867,9 +1871,10 @@ const InnerCanvas = () => {
           <div
             className={clsx(
               'absolute z-40 rounded-[14px] border border-white/10 bg-[#252525]/98 shadow-2xl backdrop-blur-xl',
-              contextMenu.mode === 'node-media' || contextMenu.mode === 'node-text'
-                ? 'w-[220px] p-1.5'
-                : 'w-[280px] p-2 rounded-[22px]',
+              // 根菜单/节点菜单走紧凑窄版（参考样式）；添加节点选择器保留宽版大行。
+              contextMenu.mode === 'add-node'
+                ? 'w-[280px] p-2 rounded-[22px]'
+                : 'w-[220px] p-1.5',
             )}
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
@@ -1957,24 +1962,50 @@ const InnerCanvas = () => {
               </div>
             ) : contextMenu.mode === 'root' ? (
               <div className="flex flex-col">
-                <ContextMenuButton icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
                 <ContextMenuButton
-                  icon={FolderHeart}
-                  labelZh="打开素材库"
-                  labelEn="Open Asset Library"
-                  onClick={() => { setAssetLibraryOpen(true); setContextMenu(null); }}
-                />
-                <ContextMenuButton
+                  compact
                   icon={Sparkles}
                   labelZh="添加节点"
                   labelEn="Add Node"
                   onClick={() => setContextMenu((current) => (current ? { ...current, mode: 'add-node' } : current))}
                 />
-                <div className="my-2 h-px bg-white/8" />
-                <ContextMenuButton icon={Undo2} labelZh="撤销" labelEn="Undo" shortcut="⌘Z" disabled />
-                <ContextMenuButton icon={Redo2} labelZh="重做" labelEn="Redo" shortcut="⇧⌘Z" disabled />
-                <div className="my-2 h-px bg-white/8" />
-                <ContextMenuButton icon={ClipboardPaste} labelZh="粘贴" labelEn="Paste" shortcut="⌘V" disabled />
+                <ContextMenuButton compact icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
+                <ContextMenuButton
+                  compact
+                  icon={FolderHeart}
+                  labelZh="打开素材库"
+                  labelEn="Open Asset Library"
+                  onClick={() => { setAssetLibraryOpen(true); setContextMenu(null); }}
+                />
+                <div className="my-1 h-px bg-white/8" />
+                <ContextMenuButton
+                  compact
+                  icon={ClipboardPaste}
+                  labelZh="粘贴"
+                  labelEn="Paste"
+                  shortcut="⌘/Ctrl V"
+                  disabled={!hasCanvasClipboard}
+                  onClick={() => { pasteCopiedNodes(); setContextMenu(null); }}
+                />
+                <div className="my-1 h-px bg-white/8" />
+                <ContextMenuButton
+                  compact
+                  icon={Undo2}
+                  labelZh="撤销"
+                  labelEn="Undo"
+                  shortcut="⌘/Ctrl Z"
+                  disabled={!undoAvailable}
+                  onClick={() => { undoCanvas(); setContextMenu(null); }}
+                />
+                <ContextMenuButton
+                  compact
+                  icon={Redo2}
+                  labelZh="重做"
+                  labelEn="Redo"
+                  shortcut="⌘/Ctrl ⇧Z"
+                  disabled={!redoAvailable}
+                  onClick={() => { redoCanvas(); setContextMenu(null); }}
+                />
               </div>
             ) : (
               <div className="flex flex-col">
@@ -2377,6 +2408,7 @@ function ContextMenuButton({
   shortcut,
   disabled,
   onClick,
+  compact,
 }: {
   icon: any;
   labelZh: string;
@@ -2387,10 +2419,30 @@ function ContextMenuButton({
   shortcut?: string;
   disabled?: boolean;
   onClick?: () => void;
+  /** Slim row (plain 16px icon, no tile) — the root right-click menu style;
+   *  the add-node picker keeps the larger tiled rows. */
+  compact?: boolean;
 }) {
   const language = useStore((state) => state.language);
   const label = language === 'zh' ? labelZh : labelEn;
   const subtitle = language === 'zh' ? subtitleZh : subtitleEn;
+
+  if (compact) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
+          disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-white/5'
+        }`}
+      >
+        <Icon className="h-4 w-4 shrink-0 text-neutral-400" />
+        <span className="text-[13px] text-neutral-100">{label}</span>
+        {shortcut ? <span className="ml-auto text-[11px] tabular-nums text-neutral-500">{shortcut}</span> : null}
+      </button>
+    );
+  }
 
   return (
     <button
