@@ -74,6 +74,12 @@ export const DEFAULT_ASPECT_RATIO_OPTIONS = [
 
 const OPENAI_IMAGE_SIZE_OPTIONS = ["auto", "1024x1024", "1536x1024", "1024x1536"] as const;
 
+// New API 文生图文档（2026-07，第 5 节「支持比例与分辨率」）：
+// Gemini / Nano Banana 图像家族支持的画幅比例（各档一致）。
+const GEMINI_IMAGE_ASPECT_OPTIONS = ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"] as const;
+// gpt-image-2 渠道支持的画幅比例。
+const GPT_IMAGE_2_ASPECT_OPTIONS = ["1:1", "5:4", "4:5", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"] as const;
+
 function schemaArray<T>(schema: ModelParameterSchema | undefined, snake: keyof ModelParameterSchema, camel: keyof ModelParameterSchema): T[] | undefined {
   const value = schema?.[snake] ?? schema?.[camel];
   return Array.isArray(value) ? (value.filter((item) => item !== undefined && item !== null) as T[]) : undefined;
@@ -217,7 +223,8 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsAutoAspect: true,
     supportsOutputFormat: true,
     qualityOptions: ["Auto", "High", "Medium", "Low"],
-    aspectRatioOptions: [...OPENAI_IMAGE_SIZE_OPTIONS, ...DEFAULT_ASPECT_RATIO_OPTIONS],
+    // 文档只列比例档（不再暴露 1024x… 像素尺寸；自适应由 supportsAutoAspect 提供）。
+    aspectRatioOptions: [...GPT_IMAGE_2_ASPECT_OPTIONS],
     outputFormatOptions: ["png", "jpeg", "webp"],
     defaults: {
       quality: "Auto",
@@ -360,16 +367,51 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     serviceType: "image",
     modelName: "gemini-3.0-pro-image",
     supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
     resolutionOptions: ["2k", "4k"],
-    defaults: { resolution: "2k" },
+    aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
+    defaults: { resolution: "2k", aspectRatio: "auto" },
   },
   "gemini-3.0-pro-image 4K": {
     vendor: "Google",
     serviceType: "image",
     modelName: "gemini-3.0-pro-image 4K",
     supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
     resolutionOptions: ["2k", "4k"],
-    defaults: { resolution: "4k" },
+    aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
+    defaults: { resolution: "4k", aspectRatio: "auto" },
+  },
+  // Gemini Flash / Nano Banana 家族 — 之前落在通用兜底模板上（给出全量比例表），
+  // 文档明确它们只支持上面的 7 档比例，这里显式声明。
+  "gemini-2.5-flash-image": {
+    vendor: "Google",
+    serviceType: "image",
+    modelName: "gemini-2.5-flash-image",
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
+    defaults: { aspectRatio: "auto" },
+  },
+  "Nano Banana 2": {
+    vendor: "Google",
+    serviceType: "image",
+    modelName: "Nano Banana 2",
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
+    defaults: { aspectRatio: "auto" },
+  },
+  "Nano Banana 2 4K": {
+    vendor: "Google",
+    serviceType: "image",
+    modelName: "Nano Banana 2 4K",
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
+    defaults: { aspectRatio: "auto" },
   },
   // ── 阿里云百炼 HappyHorse 快乐马（图/参/编/文 4 个 mode × 1.0 / 1.1 两个版本）
   // 文档：图生(i2v)、参考生(r2v)、视频编辑(video-edit)、文生(t2v)

@@ -496,16 +496,6 @@ const MediaParamsPopover = ({
     origin: language === 'zh' ? '保留原声' : 'Keep source',
   };
 
-  // Some resolution labels carry a qualitative hint inline (Seedance style).
-  // Falls back to just the raw value when no friendly label exists.
-  const RES_HINTS: Record<string, string> = {
-    '480p': '',
-    '720p': language === 'zh' ? '标清' : 'SD',
-    '1080p': language === 'zh' ? '高清' : 'HD',
-    '2k': '2K',
-    '4k': '4K',
-  };
-
   return (
     <div className="relative nodrag">
       <button
@@ -521,12 +511,12 @@ const MediaParamsPopover = ({
           {/* Backdrop catches outside-clicks. Higher than the panel container so
               clicking anywhere outside closes us — including in adjacent nodes. */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full left-0 z-40 mb-3 w-[320px] overflow-hidden rounded-3xl border border-white/8 bg-[#15181d]/85 p-5 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]">
+          <div className="absolute bottom-full left-0 z-40 mb-3 w-[300px] overflow-hidden rounded-2xl border border-white/8 bg-[#15181d]/85 p-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]">
             {/* ── Duration ────────────────────────────────────────────── */}
             {(hasDurationSlider || hasDurationOptions) ? (
-              <div className="mb-5">
+              <div className="mb-4">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '时长' : 'Duration'}</div>
-                <div className="mb-2 text-2xl font-medium tracking-tight text-white">{duration}s</div>
+                <div className="mb-2 text-xl font-medium tracking-tight text-white">{duration}s</div>
                 {hasDurationSlider ? (
                   <>
                     <input
@@ -561,26 +551,23 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
-            {/* ── Resolution (block-style grid like reference UI) ──────── */}
+            {/* ── Resolution (single row, reference UI) ────────────────── */}
             {hasResolution ? (
-              <div className="mb-5">
+              <div className="mb-4">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '分辨率' : 'Resolution'}</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {template.resolutionOptions!.map((option) => {
-                    const hint = RES_HINTS[option.toLowerCase()];
-                    return (
-                      <BlockButton key={option} active={option === resolution} onClick={() => onResolution(option)}>
-                        {option}{hint ? ` (${hint})` : ''}
-                      </BlockButton>
-                    );
-                  })}
+                <div className="flex gap-1.5">
+                  {template.resolutionOptions!.map((option) => (
+                    <BlockButton key={option} className="min-w-0 flex-1" active={option === resolution} onClick={() => onResolution(option)}>
+                      {option}
+                    </BlockButton>
+                  ))}
                 </div>
               </div>
             ) : null}
 
             {/* ── Quality (image only) ────────────────────────────────── */}
             {hasQuality ? (
-              <div className="mb-5">
+              <div className="mb-4">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '质量' : 'Quality'}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {template.qualityOptions!.map((option) => (
@@ -594,7 +581,7 @@ const MediaParamsPopover = ({
 
             {/* ── Output format ──────────────────────────────────────── */}
             {hasOutputFormat ? (
-              <div className="mb-5">
+              <div className="mb-4">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '输出格式' : 'Output format'}</div>
                 <div className="flex flex-wrap gap-1.5">
                   {template.outputFormatOptions!.map((option) => (
@@ -606,11 +593,11 @@ const MediaParamsPopover = ({
               </div>
             ) : null}
 
-            {/* ── Aspect ratio (block grid w/ shape icon) ──────────────── */}
+            {/* ── Aspect ratio (one row of compact shape chips) ────────── */}
             {hasAspect ? (
               <div>
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '宽高比' : 'Aspect ratio'}</div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-5 gap-1.5">
                   {template.supportsAutoAspect ? (
                     <AspectBlockButton
                       ratio="auto"
@@ -625,7 +612,7 @@ const MediaParamsPopover = ({
                       ratio={option}
                       active={option === aspectRatio}
                       onClick={() => onAspectRatio(option)}
-                      label={ASPECT_LABEL[option] ?? option}
+                      label={option}
                     />
                   ))}
                 </div>
@@ -634,7 +621,7 @@ const MediaParamsPopover = ({
 
             {/* ── Audio (HappyHorse video-edit only) ───────────────────── */}
             {hasAudioSetting ? (
-              <div className="mt-5">
+              <div className="mt-4">
                 <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
                 <div className="grid grid-cols-2 gap-2">
                   {template.audioSettingOptions!.map((option) => (
@@ -648,7 +635,7 @@ const MediaParamsPopover = ({
 
             {/* ── Seed (reproducible generation) ───────────────────────── */}
             {hasSeed ? (
-              <div className="mt-5">
+              <div className="mt-4">
                 <div className="mb-2 flex items-center justify-between text-[11px] text-neutral-400">
                   <span>{language === 'zh' ? '随机种子' : 'Seed'}</span>
                   {typeof seed === 'number' ? (
@@ -717,19 +704,22 @@ function BlockButton({
   active,
   onClick,
   children,
+  className,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
     <button
       onClick={onClick}
       className={clsx(
-        'flex items-center justify-center rounded-xl px-3 py-2.5 text-xs transition',
+        'flex items-center justify-center rounded-xl px-3 py-2 text-xs transition',
         active
           ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
           : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
+        className,
       )}
     >
       {children}
@@ -737,8 +727,8 @@ function BlockButton({
   );
 }
 
-/** Aspect-ratio block button — small rect icon scaled to the actual W:H above
- *  the label so users can see the shape at a glance. */
+/** Aspect-ratio chip — compact square: a rect icon scaled to the actual W:H
+ *  on top, the bare "W:H" value underneath (reference-style one-row picker). */
 function AspectBlockButton({
   ratio,
   active,
@@ -753,47 +743,32 @@ function AspectBlockButton({
   // Parse "W:H"; default to a horizontal box for "auto" / unparseable.
   const dims = (() => {
     const m = /^(\d+):(\d+)$/.exec(ratio);
-    if (!m) return { w: 22, h: 14 };
+    if (!m) return { w: 17, h: 11 };
     const w = Number(m[1]);
     const h = Number(m[2]);
-    if (!w || !h) return { w: 22, h: 14 };
-    const max = 22;
-    if (w >= h) return { w: max, h: Math.max(8, Math.round((max * h) / w)) };
-    return { w: Math.max(8, Math.round((max * w) / h)), h: max };
+    if (!w || !h) return { w: 17, h: 11 };
+    const max = 17;
+    if (w >= h) return { w: max, h: Math.max(7, Math.round((max * h) / w)) };
+    return { w: Math.max(7, Math.round((max * w) / h)), h: max };
   })();
   return (
     <button
       onClick={onClick}
       className={clsx(
-        'flex flex-col items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-[11px] transition',
+        'flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] leading-none transition',
         active
           ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
           : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
       )}
     >
       <span
-        className={clsx('rounded-[2px] border', active ? 'border-white/80' : 'border-white/40')}
+        className={clsx('shrink-0 rounded-[2px] border', active ? 'border-white/80' : 'border-white/40')}
         style={{ width: dims.w, height: dims.h }}
       />
-      <span className="truncate leading-tight">{label}</span>
+      <span className="max-w-full truncate">{label}</span>
     </button>
   );
 }
-
-/** Friendly label for aspect ratios — shows orientation hint for the most
- *  common values, otherwise falls back to the raw "W:H" string. */
-const ASPECT_LABEL: Record<string, string> = {
-  '16:9': '横屏 (16:9)',
-  '9:16': '竖屏 (9:16)',
-  '1:1':  '方形 (1:1)',
-  '5:4': '横版 (5:4)',
-  '4:5': '竖版 (4:5)',
-  '4:3': '经典横版 (4:3)',
-  '3:4': '经典竖版 (3:4)',
-  '3:2': '摄影横版 (3:2)',
-  '2:3': '摄影竖版 (2:3)',
-  '21:9': '超宽屏 (21:9)',
-};
 
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
 
