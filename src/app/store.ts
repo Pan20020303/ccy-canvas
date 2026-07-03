@@ -1299,6 +1299,29 @@ function stripHeavyFromNodeData(data: unknown): unknown {
   for (const key of ['url', 'output', 'thumbnail', 'poster', 'referenceValue', 'maskImage'] as const) {
     out[key] = stripHeavyMediaString(out[key]);
   }
+  // 导演台 / 构图预览的快照字段:base64 PNG 动辄数 MB,一次「确认构图」
+  // 就能把整个 localStorage 持久化写挂(配额超限 → 整体写入失败,连
+  // activeBackendProjectId 都存不下来 → 刷新后跳项目)。正常情况下这些
+  // 字段在落盘前已被替换成 /uploads URL(上传失败才会残留 base64)。
+  for (const key of ['editorPreview', 'image'] as const) {
+    out[key] = stripHeavyMediaString(out[key]);
+  }
+  if (out.lastCapture && typeof out.lastCapture === 'object') {
+    const lc = out.lastCapture as Record<string, unknown>;
+    out.lastCapture = { ...lc, image: stripHeavyMediaString(lc.image) };
+  }
+  if (out.lastCaptures && typeof out.lastCaptures === 'object') {
+    out.lastCaptures = Object.fromEntries(
+      Object.entries(out.lastCaptures as Record<string, Record<string, unknown>>).map(([k, v]) => [
+        k,
+        v && typeof v === 'object' ? { ...v, image: stripHeavyMediaString(v.image) } : v,
+      ]),
+    );
+  }
+  if (out.referenceLayer && typeof out.referenceLayer === 'object'
+    && isHeavyMediaString((out.referenceLayer as Record<string, unknown>).image)) {
+    out.referenceLayer = null;
+  }
   if (Array.isArray(out.versions)) {
     out.versions = (out.versions as NodeVersion[])
       .map(stripHeavyFromVersion)

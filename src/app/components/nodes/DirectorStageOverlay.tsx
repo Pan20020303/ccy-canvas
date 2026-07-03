@@ -12,6 +12,7 @@ import {
 import * as THREE from 'three';
 
 import { useStore } from '../../store';
+import { uploadFile } from '../../api/projects';
 import type { DirectorStageData, ActorPose } from './DirectorStageNode';
 import { PROP_DEFS, PropMesh, propDefOf, type PropTransform } from './director-props';
 
@@ -951,6 +952,23 @@ const CameraMarker = forwardRef<THREE.Group, {
   );
 });
 
+/** 把 base64 快照上传成 /uploads URL。base64 直接进节点数据会撑爆
+ *  localStorage 配额(持久化整体写入失败,连活跃项目 id 都存不下来 →
+ *  刷新后跳项目)和后端画布保存(构图预览刷新即丢)。节点数据里只放 URL;
+ *  上传失败返回 null,调用方保留 base64 兜底(会话内可见,落盘前由
+ *  store 的 strip 剥离)。 */
+async function uploadSnapshotDataUrl(dataUrl: string, filename: string): Promise<string | null> {
+  try {
+    if (!dataUrl.startsWith('data:')) return dataUrl; // 已经是 URL,原样返回
+    const blob = await (await fetch(dataUrl)).blob();
+    const res = await uploadFile(blob, filename);
+    return res.url || null;
+  } catch (err) {
+    console.warn('[DirectorStage] snapshot upload failed', err);
+    return null;
+  }
+}
+
 /** 站位参考层 —— AI识图导入的图片半透明平铺在地面,辅助按图摆位。
  *  raycast 关闭:不挡实体点选。 */
 type ReferenceLayer = { image: string; width: number; height: number; timestamp: number };
@@ -1742,6 +1760,14 @@ export function DirectorStageOverlay() {
         const patch: Record<string, unknown> = { stageSettings, referenceLayer: refLayer };
         if (snap) patch.editorPreview = snap;
         updateNodeData(nodeId, patch);
+        if (snap) {
+          // 后台把封面快照换成 /uploads URL —— base64 不可持久化(会撑爆
+          // localStorage 与后端画布保存),先落 base64 保即时显示,传完替换。
+          const targetNodeId = nodeId;
+          void uploadSnapshotDataUrl(snap, `stage-${targetNodeId}-cover.png`).then((url) => {
+            if (url && url !== snap) updateNodeData(targetNodeId, { editorPreview: url });
+          });
+        }
       } catch (err) {
         console.warn('[DirectorStage] exit snapshot failed', err);
       }
@@ -1752,7 +1778,8 @@ export function DirectorStageOverlay() {
   /** AI识图弹窗「生成站位参考」:把上传图设为站位参考层;覆盖模式额外
    *  重置演员/道具/机位/环境到初始态(参考弹窗里两个单选的语义)。 */
   const applyReferenceLayer = useCallback((p: { image: string; width: number; height: number; overwrite: boolean }) => {
-    setRefLayer({ image: p.image, width: p.width, height: p.height, timestamp: Date.now() });
+    const ts = Date.now();
+    setRefLayer({ image: p.image, width: p.width, height: p.height, timestamp: ts });
     if (p.overwrite) {
       setActors([{ ...DEFAULT_ACTOR }]);
       setStageProps([]);
@@ -1761,6 +1788,12 @@ export function DirectorStageOverlay() {
       setSelection(null);
       setStageSettings({ ...DEFAULT_STAGE_SETTINGS });
     }
+    // 后台换成 /uploads URL(base64 不入持久化);还在当前这张时才替换。
+    void uploadSnapshotDataUrl(p.image, `stage-ref-${ts}.png`).then((url) => {
+      if (url && url !== p.image) {
+        setRefLayer((prev) => (prev && prev.timestamp === ts ? { ...prev, image: url } : prev));
+      }
+    });
   }, []);
 
   /** 右下机位面板的实时预览 —— 离屏按机位比例渲染,700ms 一帧;选中了某个
@@ -1846,6 +1879,16 @@ export function DirectorStageOverlay() {
 
       // 逐机位渲染.
       const captures: Record<string, string> = await (multiCaptureRef.current?.(cameras) ?? Promise.resolve({} as Record<string, string>));
+      // 快照换成 /uploads URL 再入节点数据(原因见 uploadSnapshotDataUrl):
+      // base64 会同时压垮 localStorage 持久化与后端画布保存。
+      if (editorPreview) {
+        editorPreview = (await uploadSnapshotDataUrl(editorPreview, `stage-${nodeId}-cover.png`)) ?? editorPreview;
+      }
+      for (const camId of Object.keys(captures)) {
+        const url = await uploadSnapshotDataUrl(captures[camId], `stage-${nodeId}-${camId}.png`);
+        if (url) captures[camId] = url;
+      }
+
       const ts = Date.now();
       const lastCaptures: Record<string, { image: string; timestamp: number }> = {};
       for (const [camId, img] of Object.entries(captures)) {
