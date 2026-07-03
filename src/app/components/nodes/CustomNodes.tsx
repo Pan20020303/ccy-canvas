@@ -195,9 +195,6 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
   }, []);
   const t0 = startedAt ?? mountedAt.current;
   const elapsedMs = Math.max(0, now - t0);
-  const seconds = Math.floor(elapsedMs / 1000);
-  const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
-  const ss = String(seconds % 60).padStart(2, '0');
   // 水位 = 缓动伪进度（3%→95%，永不到顶；完成时整层直接消失）。
   const level = getGenerationProgressPercent(t0, now);
 
@@ -254,10 +251,36 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
           ) : null}
         </div>
       </div>
-      {/* 等待计时 — 石墨灰数字 */}
-      <div className={clsx('absolute right-2.5 top-2.5 text-[11px] font-semibold tabular-nums leading-none', light ? 'text-[#5b626e]' : 'text-[#8b929c]')}>
-        {mm}:{ss}
-      </div>
+    </div>
+  );
+}
+
+/** 等待计时 — 挂在节点边框外的右上方（不占画面内空间），石墨灰数字。
+ *  时间源是持久化的 runningStartedAt，刷新页面不清零。 */
+function GenerationTimerBadge({ nodeId }: { nodeId: string }) {
+  const light = useStore((state) => state.theme) === 'light';
+  const startedAt = useStore((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    const v = (node?.data as { runningStartedAt?: number } | undefined)?.runningStartedAt;
+    return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  });
+  const mountedAt = useRef(Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.floor((now - (startedAt ?? mountedAt.current)) / 1000));
+  const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
+  const ss = String(seconds % 60).padStart(2, '0');
+  return (
+    <div
+      className={clsx(
+        'pointer-events-none absolute -top-5 right-0 text-[11px] font-semibold tabular-nums leading-none',
+        light ? 'text-[#5b626e]' : 'text-[#8b929c] drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]',
+      )}
+    >
+      {mm}:{ss}
     </div>
   );
 }
@@ -2051,7 +2074,10 @@ const PromptPanel = ({
         <div
           ref={overlayRef}
           className={clsx(
-            'pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-200',
+            // 必须和 textarea 用同款滚动容器（prompt-editor-scroll + overflow-auto）：
+            // 内容超高时 textarea 的滚动条会挤窄内容宽度，若镜像层没有同样的
+            // 滚动条，两边折行点错开 — 看到的字和真实光标就对不上了。
+            'prompt-editor-scroll pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-200',
             heightClass,
             paddingClass,
           )}
@@ -2078,7 +2104,8 @@ const PromptPanel = ({
           // its default scroll to the textarea.
           onWheel={(event) => event.stopPropagation()}
           className={clsx(
-            'prompt-editor-scroll relative block w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
+            // whitespace/break 规则与镜像层严格一致，否则折行不同步。
+            'prompt-editor-scroll relative block w-full resize-none overflow-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
             expandedMode ? 'flex-1' : '',
             paddingClass,
           )}
@@ -2462,9 +2489,11 @@ const BaseNode = ({
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
           {/* 统一生成动画：所有媒体节点默认走 GenerationOverlay（水位进度 +
-              阶段徽章 + 石墨灰计时）；loadingOverlay 仍可覆盖特殊场景。 */}
+              阶段徽章）；loadingOverlay 仍可覆盖特殊场景。 */}
           {loading ? (loadingOverlay ?? (loadingNodeId ? <GenerationOverlay nodeId={loadingNodeId} /> : null)) : null}
         </div>
+        {/* 等待计时挂在边框外右上方（shell 是 overflow-hidden，画不出去）。 */}
+        {loading && loadingNodeId ? <GenerationTimerBadge nodeId={loadingNodeId} /> : null}
 
         <Handle
           type="target"
