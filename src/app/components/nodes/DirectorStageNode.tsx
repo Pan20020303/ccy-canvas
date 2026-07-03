@@ -27,6 +27,11 @@ export type ActorPose = {
   hipR?: [number, number, number];
   kneeL?: [number, number, number];
   kneeR?: [number, number, number];
+  // 2026-07 关节扩展：手腕 / 脚踝（老数据没有这些键 — 全部可选，缺省视为 0）。
+  wristL?: [number, number, number];
+  wristR?: [number, number, number];
+  ankleL?: [number, number, number];
+  ankleR?: [number, number, number];
 };
 
 export type DirectorStageData = {

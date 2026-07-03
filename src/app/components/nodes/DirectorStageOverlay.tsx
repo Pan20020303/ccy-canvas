@@ -6,11 +6,13 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
   RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
+  ListTree, Boxes, HelpCircle, Search, Users, User,
 } from 'lucide-react';
 import * as THREE from 'three';
 
 import { useStore } from '../../store';
 import type { DirectorStageData, ActorPose } from './DirectorStageNode';
+import { PROP_DEFS, PropMesh, propDefOf, type PropTransform } from './director-props';
 
 /**
  * Full-screen 3D 导演台编辑器.
@@ -51,12 +53,14 @@ type ActorTransform = {
  *  glbUrl: 如果 public/mannequins/ 下面放了对应的 GLB,会优先用真模型.
  *  没有放就 fallback 到 procedural primitive 版本. 见
  *  public/mannequins/README.md 介绍怎么获取 CC0 / 免费素材. */
+// 配色（2026-07 参考对齐）：从暖米色改为中性浅石墨灰 — 参考产品的素体是
+// 无色温的雕塑灰，暖色调来自灯光而不是材质本身。
 const BODY_TYPES: Record<string, { label: string; defaultColor: string; widthMul: number; heightMul: number; headBoost: number; glbUrl: string }> = {
-  'mannequin-standard': { label: '标准素体', defaultColor: '#d6cdbf', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00, glbUrl: '/mannequins/standard.glb' },
-  'mannequin-female':   { label: '女性素体', defaultColor: '#e0d4c4', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00, glbUrl: '/mannequins/female.glb' },
-  'mannequin-child':    { label: '儿童素体', defaultColor: '#dfc8b0', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18, glbUrl: '/mannequins/child.glb' },
-  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#c8bda8', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98, glbUrl: '/mannequins/sturdy.glb' },
-  'mannequin-slim':     { label: '纤细素体', defaultColor: '#dad0c0', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00, glbUrl: '/mannequins/slim.glb' },
+  'mannequin-standard': { label: '标准素体', defaultColor: '#c9ccd1', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00, glbUrl: '/mannequins/standard.glb' },
+  'mannequin-female':   { label: '女性素体', defaultColor: '#d3d5d9', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00, glbUrl: '/mannequins/female.glb' },
+  'mannequin-child':    { label: '儿童素体', defaultColor: '#d8dadd', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18, glbUrl: '/mannequins/child.glb' },
+  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#bfc2c7', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98, glbUrl: '/mannequins/sturdy.glb' },
+  'mannequin-slim':     { label: '纤细素体', defaultColor: '#ced1d5', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00, glbUrl: '/mannequins/slim.glb' },
 };
 const BODY_TYPE_IDS = Object.keys(BODY_TYPES);
 function bodyTypeOf(assetId: string) {
@@ -75,7 +79,7 @@ type CameraSpec = {
   previewImage?: string;
 };
 
-type SelectionKind = 'actor' | 'camera';
+type SelectionKind = 'actor' | 'camera' | 'prop';
 type Selection = { kind: SelectionKind; id: string; obj: THREE.Object3D };
 
 const DEFAULT_POSE: Required<ActorPose> = {
@@ -89,6 +93,10 @@ const DEFAULT_POSE: Required<ActorPose> = {
   hipR: [0, 0, 0],
   kneeL: [0, 0, 0],
   kneeR: [0, 0, 0],
+  wristL: [0, 0, 0],
+  wristR: [0, 0, 0],
+  ankleL: [0, 0, 0],
+  ankleR: [0, 0, 0],
 };
 
 const DEFAULT_ACTOR: ActorTransform = {
@@ -265,9 +273,9 @@ const PRESET_KEYS = Object.keys(POSE_PRESETS);
 // 这三个常量是"标准素体"的默认值;Mannequin 内部按 bodyType + actor.color
 // 实时派生出 light / deep 两档,所以这里更多是给 CameraMarker 等其他场景
 // 物件兜底用.
-const POSE_MAT = '#d6cdbf';      // 主肢体表面色
-const POSE_MAT_DEEP = '#b9b0a0'; // 关节/腹/下肢深一档
-const POSE_HEAD = '#e1d6c4';     // 头/颈/手 略亮,做高光区
+const POSE_MAT = '#c9ccd1';      // 主肢体表面色 —— 中性雕塑灰（参考色调）
+const POSE_MAT_DEEP = '#a9adb3'; // 关节/腹/下肢深一档
+const POSE_HEAD = '#d8dade';     // 头/颈/手 略亮,做高光区
 
 /** Hex 颜色 +/- 亮度. amount 在 [-1, 1] 之间. 用于从用户选的 actor.color
  *  自动派生关节深色和高光浅色,避免再让用户挑两次. */
@@ -315,6 +323,7 @@ const Mannequin = forwardRef<THREE.Group, {
   return (
     <group
       ref={setRef}
+      name={`stage-actor-${actor.id}`}
       position={actor.position}
       rotation={finalRotation}
       scale={[finalScale[0] * bt.widthMul, finalScale[1] * bt.heightMul, finalScale[2] * bt.widthMul]}
@@ -389,8 +398,8 @@ const Mannequin = forwardRef<THREE.Group, {
                 <capsuleGeometry args={[0.037, 0.24, 6, 16]} />
                 <meshStandardMaterial color={bodyColor} roughness={0.55} />
               </mesh>
-              {/* 手 —— 手掌 + 拇指 */}
-              <group position={[0, -0.36, 0]}>
+              {/* 手 —— 腕关节枢轴 + 手掌 + 拇指 */}
+              <group position={[0, -0.36, 0]} rotation={p.wristL}>
                 <mesh castShadow scale={[1, 1.5, 0.5]}>
                   <sphereGeometry args={[0.044, 16, 16]} />
                   <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
@@ -422,7 +431,7 @@ const Mannequin = forwardRef<THREE.Group, {
                 <capsuleGeometry args={[0.037, 0.24, 6, 16]} />
                 <meshStandardMaterial color={bodyColor} roughness={0.55} />
               </mesh>
-              <group position={[0, -0.36, 0]}>
+              <group position={[0, -0.36, 0]} rotation={p.wristR}>
                 <mesh castShadow scale={[1, 1.5, 0.5]}>
                   <sphereGeometry args={[0.044, 16, 16]} />
                   <meshStandardMaterial color={bodyColorLight} roughness={0.55} />
@@ -457,8 +466,8 @@ const Mannequin = forwardRef<THREE.Group, {
               <capsuleGeometry args={[0.046, 0.24, 6, 16]} />
               <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
-            {/* 脚 —— 脚跟球 + 脚掌长椭球 */}
-            <group position={[0, -0.32, 0]}>
+            {/* 脚 —— 踝关节枢轴 + 脚跟球 + 脚掌长椭球 */}
+            <group position={[0, -0.32, 0]} rotation={p.ankleL}>
               <mesh position={[0, -0.005, -0.02]} castShadow>
                 <sphereGeometry args={[0.045, 14, 14]} />
                 <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
@@ -490,7 +499,7 @@ const Mannequin = forwardRef<THREE.Group, {
               <capsuleGeometry args={[0.046, 0.24, 6, 16]} />
               <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
-            <group position={[0, -0.32, 0]}>
+            <group position={[0, -0.32, 0]} rotation={p.ankleR}>
               <mesh position={[0, -0.005, -0.02]} castShadow>
                 <sphereGeometry args={[0.045, 14, 14]} />
                 <meshStandardMaterial color={bodyColorDeep} roughness={0.6} />
@@ -532,16 +541,22 @@ const Mannequin = forwardRef<THREE.Group, {
  *  rig 不用改就能用. 自定义 rig 加进去也只是加几个字符串. */
 
 const BONE_NAME_PATTERNS: Record<keyof Required<ActorPose>, string[]> = {
-  torso:     ['Spine', 'Spine1', 'Spine2', 'spine', 'mixamorigSpine'],
-  head:      ['Head', 'head', 'mixamorigHead'],
-  shoulderL: ['LeftArm', 'arm_L', 'arm.L', 'LeftShoulder', 'mixamorigLeftArm'],
-  shoulderR: ['RightArm', 'arm_R', 'arm.R', 'RightShoulder', 'mixamorigRightArm'],
-  elbowL:    ['LeftForeArm', 'forearm_L', 'forearm.L', 'mixamorigLeftForeArm'],
-  elbowR:    ['RightForeArm', 'forearm_R', 'forearm.R', 'mixamorigRightForeArm'],
-  hipL:      ['LeftUpLeg', 'upper_leg_L', 'upper_leg.L', 'thigh_L', 'thigh.L', 'mixamorigLeftUpLeg'],
-  hipR:      ['RightUpLeg', 'upper_leg_R', 'upper_leg.R', 'thigh_R', 'thigh.R', 'mixamorigRightUpLeg'],
-  kneeL:     ['LeftLeg', 'lower_leg_L', 'lower_leg.L', 'shin_L', 'shin.L', 'mixamorigLeftLeg'],
-  kneeR:     ['RightLeg', 'lower_leg_R', 'lower_leg.R', 'shin_R', 'shin.R', 'mixamorigRightLeg'],
+  // 每组末尾的 Skeleton_* / leg_joint_* 是项目自带素体 GLB 的实测骨名
+  // （链条顺序用骨骼世界坐标验证过：肩 0.10m→肘 0.31m→腕 0.45m 离躯干渐远）。
+  torso:     ['Spine', 'Spine1', 'Spine2', 'spine', 'mixamorigSpine', 'Skeleton_torso_joint_2'],
+  head:      ['Head', 'head', 'mixamorigHead', 'Skeleton_neck_joint_2'],
+  shoulderL: ['LeftArm', 'arm_L', 'arm.L', 'LeftShoulder', 'mixamorigLeftArm', 'Skeleton_arm_joint_L__4_'],
+  shoulderR: ['RightArm', 'arm_R', 'arm.R', 'RightShoulder', 'mixamorigRightArm', 'Skeleton_arm_joint_R'],
+  elbowL:    ['LeftForeArm', 'forearm_L', 'forearm.L', 'mixamorigLeftForeArm', 'Skeleton_arm_joint_L__3_'],
+  elbowR:    ['RightForeArm', 'forearm_R', 'forearm.R', 'mixamorigRightForeArm', 'Skeleton_arm_joint_R__2_'],
+  hipL:      ['LeftUpLeg', 'upper_leg_L', 'upper_leg.L', 'thigh_L', 'thigh.L', 'mixamorigLeftUpLeg', 'leg_joint_L_1'],
+  hipR:      ['RightUpLeg', 'upper_leg_R', 'upper_leg.R', 'thigh_R', 'thigh.R', 'mixamorigRightUpLeg', 'leg_joint_R_1'],
+  kneeL:     ['LeftLeg', 'lower_leg_L', 'lower_leg.L', 'shin_L', 'shin.L', 'mixamorigLeftLeg', 'leg_joint_L_2'],
+  kneeR:     ['RightLeg', 'lower_leg_R', 'lower_leg.R', 'shin_R', 'shin.R', 'mixamorigRightLeg', 'leg_joint_R_2'],
+  wristL:    ['LeftHand', 'hand_L', 'hand.L', 'mixamorigLeftHand', 'Skeleton_arm_joint_L__2_'],
+  wristR:    ['RightHand', 'hand_R', 'hand.R', 'mixamorigRightHand', 'Skeleton_arm_joint_R__3_'],
+  ankleL:    ['LeftFoot', 'foot_L', 'foot.L', 'mixamorigLeftFoot', 'leg_joint_L_3'],
+  ankleR:    ['RightFoot', 'foot_R', 'foot.R', 'mixamorigRightFoot', 'leg_joint_R_3'],
 };
 
 function findBoneInScene(root: THREE.Object3D, candidates: string[]): THREE.Bone | null {
@@ -600,10 +615,12 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
   // 每个 actor 独立一份 clone, 避免共享 skeleton 一动全动.
   const cloned = useMemo(() => cloneSkeleton(scene), [scene]);
   const bones = useMemo(() => {
-    const map: Partial<Record<keyof ActorPose, THREE.Bone>> = {};
+    // 连 rest 姿态一起存:骨骼在绑定姿态下自带旋转(这套素体的臂骨 rest rx≈-π),
+    // 姿势必须做成 rest + 偏移的加性应用,直接覆盖会把模型拧碎.
+    const map: Partial<Record<keyof ActorPose, { bone: THREE.Bone; rest: THREE.Euler }>> = {};
     for (const key of Object.keys(BONE_NAME_PATTERNS) as Array<keyof Required<ActorPose>>) {
       const bone = findBoneInScene(cloned, BONE_NAME_PATTERNS[key]);
-      if (bone) map[key] = bone;
+      if (bone) map[key] = { bone, rest: bone.rotation.clone() };
     }
     return map;
   }, [cloned]);
@@ -625,9 +642,11 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
   useFrame(() => {
     const p = { ...DEFAULT_POSE, ...(actor.pose ?? {}) };
     for (const key of Object.keys(BONE_NAME_PATTERNS) as Array<keyof Required<ActorPose>>) {
-      const bone = bones[key];
+      const entry = bones[key];
       const r = p[key];
-      if (bone && r) bone.rotation.set(r[0], r[1], r[2]);
+      if (entry && r) {
+        entry.bone.rotation.set(entry.rest.x + r[0], entry.rest.y + r[1], entry.rest.z + r[2]);
+      }
     }
   });
 
@@ -637,6 +656,7 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
   return (
     <group
       ref={setRef}
+      name={`stage-actor-${actor.id}`}
       position={actor.position}
       rotation={finalRotation}
       scale={[finalScale[0] * bt.widthMul, finalScale[1] * bt.heightMul, finalScale[2] * bt.widthMul]}
@@ -714,7 +734,7 @@ const CameraMarker = forwardRef<THREE.Group, {
   };
 
   return (
-    <group ref={setRef} position={cam.position} onClick={handleClick}>
+    <group ref={setRef} name={`stage-camera-${cam.id}`} position={cam.position} onClick={handleClick}>
       {/* 主体外壳 */}
       <mesh castShadow>
         <boxGeometry args={[0.22, 0.18, 0.3]} />
@@ -740,6 +760,29 @@ const CameraMarker = forwardRef<THREE.Group, {
     </group>
   );
 });
+
+/** 把 three 场景根暴露给 Canvas 外的 UI（大纲面板按名字找 Object3D 选中）. */
+function SceneBridge({ sceneRef }: { sceneRef: React.MutableRefObject<THREE.Scene | null> }) {
+  const { scene, advance } = useThree();
+  useEffect(() => {
+    sceneRef.current = scene;
+    if (import.meta.env.DEV) {
+      // E2E 探针:隐藏页面里 rAF 挂起、帧循环不跑,测试脚本用 __stageAdvance
+      // 手动推一帧(useFrame 订阅会同步执行)。生产构建下两者都不存在。
+      const w = window as unknown as Record<string, unknown>;
+      w.__stageScene = scene;
+      w.__stageAdvance = (t: number) => advance(t, true);
+    }
+    return () => { sceneRef.current = null; };
+  }, [scene, sceneRef, advance]);
+  useFrame(() => {
+    if (import.meta.env.DEV) {
+      const w = window as unknown as Record<string, number>;
+      w.__stageFrames = (w.__stageFrames ?? 0) + 1;
+    }
+  });
+  return null;
+}
 
 /** 把 r3f 内部的 toDataURL 暴露给 overlay 外部.
  *  - `singleRef` 当前主视口截一帧 (用于"应用到机位"等流程)
@@ -829,7 +872,29 @@ export function DirectorStageOverlay() {
     () => data.activeCameraId ?? cameras[0]?.id ?? 'cam-1',
   );
 
-  // 选中态 (actor 或 camera).
+  // 道具状态（持久化字段 data.props 之前只是类型占位，这里正式接通）.
+  const [stageProps, setStageProps] = useState<PropTransform[]>(() => {
+    if (data.props && data.props.length > 0) {
+      return (data.props as Array<Record<string, unknown>>).map((p, i) => {
+        const seed = p as unknown as PropTransform;
+        return {
+          ...seed,
+          id: String(p.id ?? `prop-seed-${i}`),
+          // 老数据没有 label 字段 —— 用资产定义的中文名回填.
+          label: seed.label ?? propDefOf(String(p.assetId ?? 'rock')).zh,
+        };
+      });
+    }
+    return [];
+  });
+
+  // 左上面板（大纲 / 资产库，互斥）与左下帮助指南.
+  const [sidePanel, setSidePanel] = useState<'outline' | 'assets' | null>(null);
+  const [assetTab, setAssetTab] = useState<'props' | 'actors' | 'cameras'>('props');
+  const [assetQuery, setAssetQuery] = useState('');
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  // 选中态 (actor / camera / prop).
   const [selection, setSelection] = useState<Selection | null>(null);
   const [mode, setMode] = useState<TransformMode>('translate');
   const [presetFlash, setPresetFlash] = useState<{ camId: string } | null>(null);
@@ -906,11 +971,24 @@ export function DirectorStageOverlay() {
     setSelection({ kind: 'camera', id, obj });
   }, []);
 
+  const onSelectProp = useCallback((id: string, obj: THREE.Object3D) => {
+    setSelection({ kind: 'prop', id, obj });
+  }, []);
+
   const onDeselect = useCallback(() => setSelection(null), []);
+
+  /** 大纲面板按 id 选中 —— UI 在 Canvas 外拿不到 Object3D，走场景名字查找
+   *  （所有实体的根 group 都挂了 stage-{kind}-{id} 名）。 */
+  const sceneRootRef = useRef<THREE.Scene | null>(null);
+  const selectFromOutline = useCallback((kind: SelectionKind, id: string) => {
+    const scene = sceneRootRef.current;
+    const obj = scene?.getObjectByName(`stage-${kind}-${id}`) ?? null;
+    if (obj) setSelection({ kind, id, obj });
+  }, []);
 
   /** ====== Actor management ====== */
 
-  const addActor = useCallback(() => {
+  const addActorOfType = useCallback((assetId: string) => {
     setActors((prev) => {
       const nextIndex = prev.length + 1;
       const labelChar = nextIndex <= 26 ? String.fromCharCode(64 + nextIndex) : null;
@@ -919,15 +997,61 @@ export function DirectorStageOverlay() {
       const offsetZ = Math.floor(prev.length / 4) * 0.8;
       const newActor: ActorTransform = {
         id: `actor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        assetId: 'mannequin-standard',
+        assetId,
         label,
         position: [offsetX, 0, offsetZ],
         rotationY: 0,
         scale: 1,
-        pose: DEFAULT_POSE,
+        // 新演员默认自然站立（双臂垂在身侧），不再是 T-pose —— 动作合理优先.
+        pose: { ...DEFAULT_POSE, ...POSE_PRESETS['站立'] },
       };
       return [...prev, newActor];
     });
+  }, []);
+
+  const addActor = useCallback(() => addActorOfType('mannequin-standard'), [addActorOfType]);
+
+  /** 群众阵列 —— 一排 n 个标准素体，间距 0.7m，居中摆在原点前方. */
+  const addCrowd = useCallback((count: number) => {
+    setActors((prev) => {
+      const base = prev.length;
+      const stamp = Date.now();
+      const row: ActorTransform[] = Array.from({ length: count }, (_, i) => ({
+        id: `actor-${stamp}-${i}-${Math.random().toString(36).slice(2, 4)}`,
+        assetId: 'mannequin-standard',
+        label: `群众${base + i + 1}`,
+        position: [(i - (count - 1) / 2) * 0.7, 0, 1.6 + Math.floor(base / 6) * 0.8],
+        rotationY: 0,
+        scale: 1,
+        pose: { ...DEFAULT_POSE, ...POSE_PRESETS['站立'] },
+      }));
+      return [...prev, ...row];
+    });
+  }, []);
+
+  /** ====== Prop management ====== */
+
+  const addProp = useCallback((assetId: string) => {
+    setStageProps((prev) => {
+      const def = propDefOf(assetId);
+      const sameKind = prev.filter((p) => p.assetId === assetId).length;
+      const idx = prev.length;
+      const newProp: PropTransform = {
+        id: `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        assetId,
+        label: sameKind > 0 ? `${def.zh}${sameKind + 1}` : def.zh,
+        // 环形错位摆放，避免连点几次全部叠在原点.
+        position: [1.6 + (idx % 3) * 0.9, 0, -0.6 - Math.floor(idx / 3) * 0.9],
+        rotationY: 0,
+        scale: 1,
+      };
+      return [...prev, newProp];
+    });
+  }, []);
+
+  const removeProp = useCallback((id: string) => {
+    setStageProps((prev) => prev.filter((p) => p.id !== id));
+    setSelection((cur) => (cur?.kind === 'prop' && cur.id === id ? null : cur));
   }, []);
 
   const removeActor = useCallback((id: string) => {
@@ -1090,6 +1214,15 @@ export function DirectorStageOverlay() {
         ...c,
         position: [obj.position.x, obj.position.y, obj.position.z],
       } : c));
+    } else if (kind === 'prop') {
+      setStageProps((prev) => prev.map((p) => p.id === id ? {
+        ...p,
+        position: [obj.position.x, obj.position.y, obj.position.z],
+        rotationY: obj.rotation.y,
+        rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z],
+        scale: obj.scale.x,
+        scaleXYZ: [obj.scale.x, obj.scale.y, obj.scale.z],
+      } : p));
     }
   }, [selection]);
 
@@ -1194,6 +1327,7 @@ export function DirectorStageOverlay() {
       const patch: Partial<DirectorStageData> = {
         status: 'done',
         characters: actors,
+        props: stageProps,
         cameras,
         activeCameraId,
         editorPreview,
@@ -1239,7 +1373,7 @@ export function DirectorStageOverlay() {
       setConfirmStage('idle');
       close();
     }
-  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, cameras, addNode, onConnect]);
+  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, stageProps, cameras, addNode, onConnect]);
 
   /** "确认构图"按钮统一入口:按当前阶段路由. */
   const onConfirm = useCallback(() => {
@@ -1280,11 +1414,12 @@ export function DirectorStageOverlay() {
         e.preventDefault();
         if (selection.kind === 'actor') removeActor(selection.id);
         else if (selection.kind === 'camera') removeCamera(selection.id);
+        else if (selection.kind === 'prop') removeProp(selection.id);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nodeId, selection, close, onDeselect, applyViewToCamera, activeCameraId, removeActor, removeCamera]);
+  }, [nodeId, selection, close, onDeselect, applyViewToCamera, activeCameraId, removeActor, removeCamera, removeProp]);
 
   if (!nodeId || !node) return null;
 
@@ -1338,8 +1473,9 @@ export function DirectorStageOverlay() {
           />
           {/* Fill light —— 左前柔光, 减弱阴影面死黑 */}
           <directionalLight position={[-3, 3, 2.5]} intensity={0.55} color="#c8d4e2" />
-          {/* Rim / back light —— 背光勾出身体轮廓 */}
-          <directionalLight position={[-1, 4, -4]} intensity={0.7} color="#d6c9b5" />
+          {/* Rim / back light —— 背光勾出身体轮廓。参考色调是中性的：
+              暖米色轮廓光会把整套灰色素体染黄，换成冷灰。 */}
+          <directionalLight position={[-1, 4, -4]} intensity={0.7} color="#ccd3dc" />
           <Suspense fallback={null}>
             <Grid
               args={[40, 40]}
@@ -1353,6 +1489,15 @@ export function DirectorStageOverlay() {
               fadeStrength={1}
               infiniteGrid
             />
+            {/* 参考同款的全场轴线：X 红 / Z 蓝，贴地细条，低饱和不抢戏。 */}
+            <mesh position={[0, 0.0015, 0]}>
+              <boxGeometry args={[40, 0.002, 0.02]} />
+              <meshBasicMaterial color="#a03c44" />
+            </mesh>
+            <mesh position={[0, 0.0015, 0]}>
+              <boxGeometry args={[0.02, 0.002, 40]} />
+              <meshBasicMaterial color="#3c55a0" />
+            </mesh>
             {/* 坐标轴 —— 仅在有选中时(actor 或 camera)显示, 没选时
                 场景干净, 跟最终出图风格一致. 0.5 长度刚好够辨认 X/Y/Z
                 方向不喧宾夺主. */}
@@ -1379,6 +1524,14 @@ export function DirectorStageOverlay() {
                 </GLBErrorBoundary>
               ) : procedural;
             })}
+            {stageProps.map((p) => (
+              <PropMesh
+                key={p.id}
+                prop={p}
+                selected={selection?.kind === 'prop' && selection.id === p.id}
+                onSelect={onSelectProp}
+              />
+            ))}
             {cameras.map((cam) => (
               <CameraMarker
                 key={cam.id}
@@ -1398,6 +1551,7 @@ export function DirectorStageOverlay() {
             ) : null}
           </Suspense>
           <CameraControls ref={cameraControlsRef} makeDefault />
+          <SceneBridge sceneRef={sceneRootRef} />
           <CaptureBridge
             singleRef={captureRef}
             multiRef={multiCaptureRef}
@@ -1405,53 +1559,113 @@ export function DirectorStageOverlay() {
           />
         </Canvas>
 
-        {/* 左上工具栏 */}
-        <div className="absolute left-4 top-4 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={addActor}
-            className="flex items-center gap-1.5 rounded-md border border-white/12 bg-black/70 px-3 py-1.5 text-[11.5px] text-white/80 backdrop-blur-md transition hover:border-white/30 hover:bg-black/90 hover:text-white"
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            <span>{language === 'zh' ? '新建演员' : 'New Actor'}</span>
-          </button>
-          {selection ? (
-            <>
-              <div className="pointer-events-none flex items-center gap-2 rounded-md border border-white/12 bg-black/70 px-3 py-1.5 text-[11.5px] text-white/80 backdrop-blur-md">
-                <span className="text-white/40">{language === 'zh' ? '选中' : 'Selected'}</span>
-                <span className="font-medium text-white">
-                  {selection.kind === 'actor'
-                    ? actors.find((a) => a.id === selection.id)?.label ?? selection.id
-                    : cameras.find((c) => c.id === selection.id)?.label ?? selection.id}
-                </span>
-                <span className="text-white/30">·</span>
-                <span className="inline-flex items-center gap-1 text-violet-200">
-                  {(selection.kind === 'camera' ? 'translate' : mode) === 'translate' && <><Move3D className="h-3 w-3" /> {language === 'zh' ? '移动' : 'Move'}</>}
-                  {mode === 'rotate' && selection.kind === 'actor' && <><RotateCw className="h-3 w-3" /> {language === 'zh' ? '旋转' : 'Rotate'}</>}
-                  {mode === 'scale' && selection.kind === 'actor' && <><Maximize2 className="h-3 w-3" /> {language === 'zh' ? '缩放' : 'Scale'}</>}
-                </span>
+        {/* 左上工具栏：大纲 / 资产库 切换 + 新建演员 + 选中态 */}
+        <div className="absolute left-4 top-4 flex flex-col items-start gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSidePanel((p) => (p === 'outline' ? null : 'outline'))}
+              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11.5px] backdrop-blur-md transition ${
+                sidePanel === 'outline'
+                  ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                  : 'border-white/12 bg-black/70 text-white/80 hover:border-white/30 hover:text-white'
+              }`}
+            >
+              <ListTree className="h-3.5 w-3.5" />
+              <span>{language === 'zh' ? '大纲' : 'Outline'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSidePanel((p) => (p === 'assets' ? null : 'assets'))}
+              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[11.5px] backdrop-blur-md transition ${
+                sidePanel === 'assets'
+                  ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                  : 'border-white/12 bg-black/70 text-white/80 hover:border-white/30 hover:text-white'
+              }`}
+            >
+              <Boxes className="h-3.5 w-3.5" />
+              <span>{language === 'zh' ? '资产' : 'Assets'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={addActor}
+              className="flex items-center gap-1.5 rounded-md border border-white/12 bg-black/70 px-3 py-1.5 text-[11.5px] text-white/80 backdrop-blur-md transition hover:border-white/30 hover:bg-black/90 hover:text-white"
+            >
+              <UserPlus className="h-3.5 w-3.5" />
+              <span>{language === 'zh' ? '新建演员' : 'New Actor'}</span>
+            </button>
+            {selection ? (
+              <>
+                <div className="pointer-events-none flex items-center gap-2 rounded-md border border-white/12 bg-black/70 px-3 py-1.5 text-[11.5px] text-white/80 backdrop-blur-md">
+                  <span className="text-white/40">{language === 'zh' ? '选中' : 'Selected'}</span>
+                  <span className="font-medium text-white">
+                    {selection.kind === 'actor'
+                      ? actors.find((a) => a.id === selection.id)?.label ?? selection.id
+                      : selection.kind === 'camera'
+                        ? cameras.find((c) => c.id === selection.id)?.label ?? selection.id
+                        : stageProps.find((p) => p.id === selection.id)?.label ?? selection.id}
+                  </span>
+                  <span className="text-white/30">·</span>
+                  <span className="inline-flex items-center gap-1 text-violet-200">
+                    {(selection.kind === 'camera' ? 'translate' : mode) === 'translate' && <><Move3D className="h-3 w-3" /> {language === 'zh' ? '移动' : 'Move'}</>}
+                    {mode === 'rotate' && selection.kind !== 'camera' && <><RotateCw className="h-3 w-3" /> {language === 'zh' ? '旋转' : 'Rotate'}</>}
+                    {mode === 'scale' && selection.kind !== 'camera' && <><Maximize2 className="h-3 w-3" /> {language === 'zh' ? '缩放' : 'Scale'}</>}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selection.kind === 'actor') removeActor(selection.id);
+                    else if (selection.kind === 'camera') removeCamera(selection.id);
+                    else if (selection.kind === 'prop') removeProp(selection.id);
+                  }}
+                  disabled={selection.kind === 'actor' ? actors.length <= 1 : selection.kind === 'camera' ? cameras.length <= 1 : false}
+                  className="flex items-center gap-1.5 rounded-md border border-rose-400/30 bg-rose-500/[0.08] px-2.5 py-1.5 text-[11.5px] text-rose-200 backdrop-blur-md transition hover:border-rose-400/60 hover:bg-rose-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  <span>{language === 'zh' ? '删除' : 'Delete'}</span>
+                  <span className="font-mono text-[10px] text-rose-200/50">Del</span>
+                </button>
+              </>
+            ) : (
+              <div className="pointer-events-none flex items-center gap-2 rounded-md border border-white/[0.06] bg-black/40 px-3 py-1.5 text-[11px] text-white/40 backdrop-blur-md">
+                {language === 'zh'
+                  ? '点演员、道具或相机选中,再拖 Gizmo 调位置'
+                  : 'Click an actor, prop or camera to select, then drag the gizmo'}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selection.kind === 'actor') removeActor(selection.id);
-                  else if (selection.kind === 'camera') removeCamera(selection.id);
-                }}
-                disabled={selection.kind === 'actor' ? actors.length <= 1 : cameras.length <= 1}
-                className="flex items-center gap-1.5 rounded-md border border-rose-400/30 bg-rose-500/[0.08] px-2.5 py-1.5 text-[11.5px] text-rose-200 backdrop-blur-md transition hover:border-rose-400/60 hover:bg-rose-500/[0.18] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Trash2 className="h-3 w-3" />
-                <span>{language === 'zh' ? '删除' : 'Delete'}</span>
-                <span className="font-mono text-[10px] text-rose-200/50">Del</span>
-              </button>
-            </>
-          ) : (
-            <div className="pointer-events-none flex items-center gap-2 rounded-md border border-white/[0.06] bg-black/40 px-3 py-1.5 text-[11px] text-white/40 backdrop-blur-md">
-              {language === 'zh'
-                ? '点演员或相机选中,再拖 Gizmo 调位置'
-                : 'Click an actor or camera to select, then drag the gizmo'}
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* 场景大纲面板 */}
+          {sidePanel === 'outline' ? (
+            <OutlinePanel
+              actors={actors}
+              stageProps={stageProps}
+              cameras={cameras}
+              activeCameraId={activeCameraId}
+              selection={selection}
+              onSelectEntity={selectFromOutline}
+              onAddActor={addActor}
+              onAddCamera={addCameraFromCurrentView}
+              onAddCrowd={addCrowd}
+              onClose={() => setSidePanel(null)}
+            />
+          ) : null}
+
+          {/* 资产库面板 */}
+          {sidePanel === 'assets' ? (
+            <AssetLibraryPanel
+              tab={assetTab}
+              setTab={setAssetTab}
+              query={assetQuery}
+              setQuery={setAssetQuery}
+              onAddProp={addProp}
+              onAddActorType={addActorOfType}
+              onAddCrowd={addCrowd}
+              onAddCameraFromView={addCameraFromCurrentView}
+              onClose={() => setSidePanel(null)}
+            />
+          ) : null}
         </div>
 
         {/* 右侧:选中演员时,「属性 / 姿势」双 Tab 面板. */}
@@ -1478,8 +1692,23 @@ export function DirectorStageOverlay() {
           />
         ) : null}
 
+        {/* 左下:操作指南 "?" —— 打开控制说明面板（参考样式）. */}
+        <button
+          type="button"
+          onClick={() => setHelpOpen((v) => !v)}
+          title={language === 'zh' ? '操作指南' : 'Controls guide'}
+          className={`absolute bottom-4 left-4 flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur-md transition ${
+            helpOpen
+              ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+              : 'border-white/12 bg-black/70 text-white/70 hover:border-white/30 hover:text-white'
+          }`}
+        >
+          <HelpCircle className="h-4 w-4" />
+        </button>
+        {helpOpen ? <StageHelpPanel onClose={() => setHelpOpen(false)} /> : null}
+
         {/* 左下:操作模式 + 应用到机位 + 重置. */}
-        <div className="absolute bottom-4 left-4 flex gap-1 rounded-md border border-white/12 bg-black/70 p-1 backdrop-blur-md">
+        <div className="absolute bottom-4 left-[60px] flex gap-1 rounded-md border border-white/12 bg-black/70 p-1 backdrop-blur-md">
           <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} hint="W" icon={Move3D} />
           <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="E" icon={RotateCw} />
           <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="S" icon={Maximize2} />
@@ -1930,32 +2159,36 @@ function ActorPoseContent({
       ) : (
         <div className="flex max-h-[420px] flex-col gap-2 overflow-y-auto pr-1">
           <PoseSection title={language === 'zh' ? '躯干' : 'Torso'}>
-            <PoseSlider label={language === 'zh' ? '前倾' : 'Pitch'} value={pose.torso[0]} onChange={(v) => onUpdatePose({ torso: [v, pose.torso[1], pose.torso[2]] })} />
-            <PoseSlider label={language === 'zh' ? '转身' : 'Yaw'} value={pose.torso[1]} onChange={(v) => onUpdatePose({ torso: [pose.torso[0], v, pose.torso[2]] })} />
-            <PoseSlider label={language === 'zh' ? '侧倾' : 'Roll'} value={pose.torso[2]} onChange={(v) => onUpdatePose({ torso: [pose.torso[0], pose.torso[1], v] })} />
+            <PoseSlider label={language === 'zh' ? '前倾' : 'Pitch'} min={-30} max={45} value={pose.torso[0]} onChange={(v) => onUpdatePose({ torso: [v, pose.torso[1], pose.torso[2]] })} />
+            <PoseSlider label={language === 'zh' ? '转身' : 'Yaw'} min={-45} max={45} value={pose.torso[1]} onChange={(v) => onUpdatePose({ torso: [pose.torso[0], v, pose.torso[2]] })} />
+            <PoseSlider label={language === 'zh' ? '侧倾' : 'Roll'} min={-30} max={30} value={pose.torso[2]} onChange={(v) => onUpdatePose({ torso: [pose.torso[0], pose.torso[1], v] })} />
           </PoseSection>
           <PoseSection title={language === 'zh' ? '头部' : 'Head'}>
-            <PoseSlider label={language === 'zh' ? '点头' : 'Nod'} value={pose.head[0]} onChange={(v) => onUpdatePose({ head: [v, pose.head[1], pose.head[2]] })} />
-            <PoseSlider label={language === 'zh' ? '转头' : 'Yaw'} value={pose.head[1]} onChange={(v) => onUpdatePose({ head: [pose.head[0], v, pose.head[2]] })} />
-            <PoseSlider label={language === 'zh' ? '歪头' : 'Tilt'} value={pose.head[2]} onChange={(v) => onUpdatePose({ head: [pose.head[0], pose.head[1], v] })} />
+            <PoseSlider label={language === 'zh' ? '点头' : 'Nod'} min={-40} max={40} value={pose.head[0]} onChange={(v) => onUpdatePose({ head: [v, pose.head[1], pose.head[2]] })} />
+            <PoseSlider label={language === 'zh' ? '转头' : 'Yaw'} min={-70} max={70} value={pose.head[1]} onChange={(v) => onUpdatePose({ head: [pose.head[0], v, pose.head[2]] })} />
+            <PoseSlider label={language === 'zh' ? '歪头' : 'Tilt'} min={-35} max={35} value={pose.head[2]} onChange={(v) => onUpdatePose({ head: [pose.head[0], pose.head[1], v] })} />
           </PoseSection>
           <PoseSection title={language === 'zh' ? '左臂' : 'Left Arm'}>
             <PoseSlider label={language === 'zh' ? '前举' : 'Lift'} value={pose.shoulderL[0]} onChange={(v) => onUpdatePose({ shoulderL: [v, pose.shoulderL[1], pose.shoulderL[2]] })} />
             <PoseSlider label={language === 'zh' ? '外展' : 'Abduct'} value={pose.shoulderL[2]} onChange={(v) => onUpdatePose({ shoulderL: [pose.shoulderL[0], pose.shoulderL[1], v] })} />
-            <PoseSlider label={language === 'zh' ? '肘弯' : 'Elbow'} value={pose.elbowL[0]} onChange={(v) => onUpdatePose({ elbowL: [v, pose.elbowL[1], pose.elbowL[2]] })} />
+            <PoseSlider label={language === 'zh' ? '肘弯' : 'Elbow'} min={0} max={150} value={pose.elbowL[0]} onChange={(v) => onUpdatePose({ elbowL: [v, pose.elbowL[1], pose.elbowL[2]] })} />
+            <PoseSlider label={language === 'zh' ? '手腕' : 'Wrist'} min={-60} max={60} value={pose.wristL[0]} onChange={(v) => onUpdatePose({ wristL: [v, pose.wristL[1], pose.wristL[2]] })} />
           </PoseSection>
           <PoseSection title={language === 'zh' ? '右臂' : 'Right Arm'}>
             <PoseSlider label={language === 'zh' ? '前举' : 'Lift'} value={pose.shoulderR[0]} onChange={(v) => onUpdatePose({ shoulderR: [v, pose.shoulderR[1], pose.shoulderR[2]] })} />
             <PoseSlider label={language === 'zh' ? '外展' : 'Abduct'} value={pose.shoulderR[2]} onChange={(v) => onUpdatePose({ shoulderR: [pose.shoulderR[0], pose.shoulderR[1], v] })} />
-            <PoseSlider label={language === 'zh' ? '肘弯' : 'Elbow'} value={pose.elbowR[0]} onChange={(v) => onUpdatePose({ elbowR: [v, pose.elbowR[1], pose.elbowR[2]] })} />
+            <PoseSlider label={language === 'zh' ? '肘弯' : 'Elbow'} min={0} max={150} value={pose.elbowR[0]} onChange={(v) => onUpdatePose({ elbowR: [v, pose.elbowR[1], pose.elbowR[2]] })} />
+            <PoseSlider label={language === 'zh' ? '手腕' : 'Wrist'} min={-60} max={60} value={pose.wristR[0]} onChange={(v) => onUpdatePose({ wristR: [v, pose.wristR[1], pose.wristR[2]] })} />
           </PoseSection>
           <PoseSection title={language === 'zh' ? '左腿' : 'Left Leg'}>
-            <PoseSlider label={language === 'zh' ? '抬腿' : 'Lift'} value={pose.hipL[0]} onChange={(v) => onUpdatePose({ hipL: [v, pose.hipL[1], pose.hipL[2]] })} />
-            <PoseSlider label={language === 'zh' ? '膝弯' : 'Knee'} value={pose.kneeL[0]} onChange={(v) => onUpdatePose({ kneeL: [v, pose.kneeL[1], pose.kneeL[2]] })} />
+            <PoseSlider label={language === 'zh' ? '抬腿' : 'Lift'} min={-120} max={30} value={pose.hipL[0]} onChange={(v) => onUpdatePose({ hipL: [v, pose.hipL[1], pose.hipL[2]] })} />
+            <PoseSlider label={language === 'zh' ? '膝弯' : 'Knee'} min={0} max={140} value={pose.kneeL[0]} onChange={(v) => onUpdatePose({ kneeL: [v, pose.kneeL[1], pose.kneeL[2]] })} />
+            <PoseSlider label={language === 'zh' ? '脚踝' : 'Ankle'} min={-45} max={30} value={pose.ankleL[0]} onChange={(v) => onUpdatePose({ ankleL: [v, pose.ankleL[1], pose.ankleL[2]] })} />
           </PoseSection>
           <PoseSection title={language === 'zh' ? '右腿' : 'Right Leg'}>
-            <PoseSlider label={language === 'zh' ? '抬腿' : 'Lift'} value={pose.hipR[0]} onChange={(v) => onUpdatePose({ hipR: [v, pose.hipR[1], pose.hipR[2]] })} />
-            <PoseSlider label={language === 'zh' ? '膝弯' : 'Knee'} value={pose.kneeR[0]} onChange={(v) => onUpdatePose({ kneeR: [v, pose.kneeR[1], pose.kneeR[2]] })} />
+            <PoseSlider label={language === 'zh' ? '抬腿' : 'Lift'} min={-120} max={30} value={pose.hipR[0]} onChange={(v) => onUpdatePose({ hipR: [v, pose.hipR[1], pose.hipR[2]] })} />
+            <PoseSlider label={language === 'zh' ? '膝弯' : 'Knee'} min={0} max={140} value={pose.kneeR[0]} onChange={(v) => onUpdatePose({ kneeR: [v, pose.kneeR[1], pose.kneeR[2]] })} />
+            <PoseSlider label={language === 'zh' ? '脚踝' : 'Ankle'} min={-45} max={30} value={pose.ankleR[0]} onChange={(v) => onUpdatePose({ ankleR: [v, pose.ankleR[1], pose.ankleR[2]] })} />
           </PoseSection>
           <button
             type="button"
@@ -2020,18 +2253,26 @@ function PoseSection({ title, children }: { title: string; children: React.React
   );
 }
 
-/** 滑杆值是欧拉角度,显示成度数(°),内部存弧度. */
-function PoseSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+/** 滑杆值是欧拉角度,显示成度数(°),内部存弧度.
+ *  min/max = 该关节该轴的人体活动度（ROM）——肘/膝只能往生理方向弯,
+ *  「动作合理」由输入端保证,不靠用户自觉. */
+function PoseSlider({ label, value, onChange, min = -180, max = 180 }: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
   const deg = Math.round((value * 180) / PI);
   return (
     <div className="flex items-center gap-1.5 text-[10px]">
       <span className="w-10 shrink-0 text-white/50">{label}</span>
       <input
         type="range"
-        min={-180}
-        max={180}
+        min={min}
+        max={max}
         step={1}
-        value={deg}
+        value={Math.max(min, Math.min(max, deg))}
         onChange={(e) => onChange((Number(e.target.value) * PI) / 180)}
         className="flex-1 accent-violet-400"
       />
@@ -2084,6 +2325,280 @@ function CameraDetailPanel({ camera, isActive, onApplyViewToCamera, onSwitchToCa
           {language === 'zh' ? '切换到此机位' : 'Switch to this camera'}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+/* ─── 场景大纲 / 资产库 / 操作指南（2026-07 参考样式三面板）──────────── */
+
+/** 大纲行的公共样式。 */
+function OutlineRow({ active, onClick, icon: Icon, label, badge }: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  badge?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[11.5px] transition ${
+        active ? 'bg-violet-500/25 text-violet-100' : 'text-white/70 hover:bg-white/[0.06] hover:text-white'
+      }`}
+    >
+      <Icon className="h-3 w-3 shrink-0 opacity-70" />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge ? <span className="shrink-0 rounded bg-violet-500/30 px-1 py-px text-[9px] text-violet-100">{badge}</span> : null}
+    </button>
+  );
+}
+
+function OutlineSection({ icon: Icon, title, children }: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1.5 px-1 py-1 text-[10.5px] font-medium text-white/50">
+        <Icon className="h-3 w-3" />
+        <span>{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** 场景大纲 —— 导演台里全部资产（人物 / 道具 / 机位）的统计与直选。 */
+function OutlinePanel({ actors, stageProps, cameras, activeCameraId, selection, onSelectEntity, onAddActor, onAddCamera, onAddCrowd, onClose }: {
+  actors: ActorTransform[];
+  stageProps: PropTransform[];
+  cameras: CameraSpec[];
+  activeCameraId: string;
+  selection: Selection | null;
+  onSelectEntity: (kind: SelectionKind, id: string) => void;
+  onAddActor: () => void;
+  onAddCamera: () => void;
+  onAddCrowd: (n: number) => void;
+  onClose: () => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  return (
+    <div className="flex max-h-[70vh] w-[250px] flex-col gap-2 overflow-y-auto rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-medium text-white/85">{zh ? '场景大纲' : 'Scene outline'}</span>
+        <button type="button" onClick={onClose} className="rounded p-0.5 text-white/40 transition hover:bg-white/[0.08] hover:text-white">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <OutlineSection icon={Users} title={`${zh ? '人物' : 'Actors'} (${actors.length})`}>
+        {actors.map((a) => (
+          <OutlineRow
+            key={a.id}
+            active={selection?.kind === 'actor' && selection.id === a.id}
+            onClick={() => onSelectEntity('actor', a.id)}
+            icon={User}
+            label={a.label}
+          />
+        ))}
+      </OutlineSection>
+      <OutlineSection icon={Boxes} title={`${zh ? '道具' : 'Props'} (${stageProps.length})`}>
+        {stageProps.length === 0 ? (
+          <div className="px-2 py-1 text-[10.5px] text-white/35">{zh ? '从「资产」面板添加' : 'Add from the Assets panel'}</div>
+        ) : stageProps.map((p) => (
+          <OutlineRow
+            key={p.id}
+            active={selection?.kind === 'prop' && selection.id === p.id}
+            onClick={() => onSelectEntity('prop', p.id)}
+            icon={Boxes}
+            label={p.label}
+          />
+        ))}
+      </OutlineSection>
+      <OutlineSection icon={VideoIcon} title={`${zh ? '机位' : 'Cameras'} (${cameras.length})`}>
+        {cameras.map((c) => (
+          <OutlineRow
+            key={c.id}
+            active={selection?.kind === 'camera' && selection.id === c.id}
+            onClick={() => onSelectEntity('camera', c.id)}
+            icon={VideoIcon}
+            label={c.label}
+            badge={c.id === activeCameraId ? (zh ? '当前' : 'active') : undefined}
+          />
+        ))}
+      </OutlineSection>
+      <div className="mt-1 grid grid-cols-2 gap-1.5">
+        <button type="button" onClick={onAddActor} className="rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 text-[10.5px] text-white/75 transition hover:border-white/30 hover:text-white">
+          + {zh ? '人物' : 'Actor'}
+        </button>
+        <button type="button" onClick={onAddCamera} className="rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 text-[10.5px] text-white/75 transition hover:border-white/30 hover:text-white">
+          + {zh ? '机位' : 'Camera'}
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => onAddCrowd(3)}
+        className="flex items-center justify-center gap-1.5 rounded border border-dashed border-white/20 px-2 py-1.5 text-[10.5px] text-white/60 transition hover:border-white/40 hover:text-white"
+      >
+        <Users className="h-3 w-3" />
+        <span>+ {zh ? '群众阵列' : 'Crowd row'}</span>
+      </button>
+    </div>
+  );
+}
+
+/** 资产库 —— 道具 / 人物 / 机位 三个标签页，点击条目即放置到舞台。 */
+function AssetLibraryPanel({ tab, setTab, query, setQuery, onAddProp, onAddActorType, onAddCrowd, onAddCameraFromView, onClose }: {
+  tab: 'props' | 'actors' | 'cameras';
+  setTab: (t: 'props' | 'actors' | 'cameras') => void;
+  query: string;
+  setQuery: (q: string) => void;
+  onAddProp: (assetId: string) => void;
+  onAddActorType: (assetId: string) => void;
+  onAddCrowd: (n: number) => void;
+  onAddCameraFromView: () => void;
+  onClose: () => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  const filteredProps = PROP_DEFS.filter((d) => !query.trim() || d.zh.includes(query.trim()) || d.en.toLowerCase().includes(query.trim().toLowerCase()));
+  const actorEntries = [
+    ...BODY_TYPE_IDS.map((id) => ({ id, title: BODY_TYPES[id].label, sub: zh ? '关节人偶素体 · 可摆姿势' : 'Articulated mannequin', crowd: 0 })),
+    { id: 'crowd-3', title: zh ? '群众 (3人)' : 'Crowd (3)', sub: zh ? '一排 3 个素体人偶' : 'Row of 3 mannequins', crowd: 3 },
+    { id: 'crowd-5', title: zh ? '群众 (5人)' : 'Crowd (5)', sub: zh ? '一排 5 个素体人偶' : 'Row of 5 mannequins', crowd: 5 },
+  ].filter((e) => !query.trim() || e.title.includes(query.trim()));
+  const tabs: Array<{ key: typeof tab; zh: string; en: string }> = [
+    { key: 'props', zh: '道具', en: 'Props' },
+    { key: 'actors', zh: '人物', en: 'Actors' },
+    { key: 'cameras', zh: '机位', en: 'Cameras' },
+  ];
+  return (
+    <div className="flex max-h-[70vh] w-[268px] flex-col gap-2 rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-medium text-white/85">{zh ? '资产库' : 'Asset library'}</span>
+        <button type="button" onClick={onClose} className="rounded p-0.5 text-white/40 transition hover:bg-white/[0.08] hover:text-white">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="flex gap-1 border-b border-white/[0.08] pb-1.5">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={`rounded px-2.5 py-1 text-[11px] transition ${
+              tab === t.key ? 'bg-white/12 text-white' : 'text-white/55 hover:bg-white/[0.06] hover:text-white'
+            }`}
+          >
+            {zh ? t.zh : t.en}
+          </button>
+        ))}
+      </div>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-white/35" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={zh ? '搜索资产…' : 'Search assets…'}
+          className="w-full rounded border border-white/10 bg-white/[0.03] py-1.5 pl-7 pr-2 text-[11px] text-white/85 outline-none placeholder:text-white/30 focus:border-violet-400/60"
+        />
+      </div>
+      <div className="flex-1 overflow-y-auto pr-0.5">
+        {tab === 'props' ? (
+          <div className="grid grid-cols-2 gap-1.5">
+            {filteredProps.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => onAddProp(d.id)}
+                title={zh ? `添加${d.zh}` : `Add ${d.en}`}
+                className="flex flex-col items-center gap-1.5 rounded border border-white/10 bg-white/[0.02] px-2 py-3 text-[10.5px] text-white/75 transition hover:border-white/30 hover:bg-white/[0.07] hover:text-white"
+              >
+                <Boxes className="h-4 w-4 opacity-70" />
+                <span className="max-w-full truncate">{zh ? d.zh : d.en}</span>
+              </button>
+            ))}
+          </div>
+        ) : tab === 'actors' ? (
+          <div className="flex flex-col gap-1.5">
+            {actorEntries.map((e) => (
+              <button
+                key={e.id}
+                type="button"
+                onClick={() => (e.crowd ? onAddCrowd(e.crowd) : onAddActorType(e.id))}
+                className="flex items-center gap-2.5 rounded border border-white/10 bg-white/[0.02] px-2.5 py-2 text-left transition hover:border-white/30 hover:bg-white/[0.07]"
+              >
+                {e.crowd ? <Users className="h-4 w-4 shrink-0 text-white/60" /> : <PersonStanding className="h-4 w-4 shrink-0 text-white/60" />}
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-[11.5px] text-white/85">{e.title}</span>
+                  <span className="truncate text-[10px] text-white/40">{e.sub}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={onAddCameraFromView}
+              className="flex items-center gap-2.5 rounded border border-white/10 bg-white/[0.02] px-2.5 py-2 text-left transition hover:border-white/30 hover:bg-white/[0.07]"
+            >
+              <VideoIcon className="h-4 w-4 shrink-0 text-amber-300/80" />
+              <span className="flex min-w-0 flex-col">
+                <span className="text-[11.5px] text-white/85">{zh ? '从当前视角新建机位' : 'Camera from current view'}</span>
+                <span className="text-[10px] text-white/40">{zh ? '记录此刻的位置与朝向' : 'Snapshots position & look-at'}</span>
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 操作指南面板 —— 文档化真实按键/手势（不是愿望清单）。 */
+function StageHelpPanel({ onClose }: { onClose: () => void }) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  const Key = ({ children }: { children: React.ReactNode }) => (
+    <span className="rounded border border-white/15 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-white/85">{children}</span>
+  );
+  const Row = ({ label, keys }: { label: string; keys: React.ReactNode }) => (
+    <div className="flex items-center justify-between gap-3 py-1">
+      <span className="text-[11px] text-white/60">{label}</span>
+      <span className="flex shrink-0 items-center gap-1">{keys}</span>
+    </div>
+  );
+  const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
+    <div className="flex flex-col gap-0.5">
+      <div className="pb-1 pt-2 text-[11.5px] font-medium text-white/85 first:pt-0">{title}</div>
+      {children}
+    </div>
+  );
+  return (
+    <div className="absolute bottom-16 left-4 w-[290px] rounded-lg border border-white/12 bg-black/85 p-4 backdrop-blur-xl">
+      <div className="flex items-center justify-between pb-1">
+        <span className="text-[12.5px] font-medium text-white">{zh ? '操作指南' : 'Controls'}</span>
+        <button type="button" onClick={onClose} className="rounded p-0.5 text-white/40 transition hover:bg-white/[0.08] hover:text-white">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <Section title={zh ? '视角' : 'View'}>
+        <Row label={zh ? '旋转视角' : 'Orbit'} keys={<Key>{zh ? '左键拖拽' : 'Left drag'}</Key>} />
+        <Row label={zh ? '平移视角' : 'Pan'} keys={<Key>{zh ? '右键拖拽' : 'Right drag'}</Key>} />
+        <Row label={zh ? '缩放' : 'Zoom'} keys={<Key>{zh ? '滚轮' : 'Wheel'}</Key>} />
+      </Section>
+      <Section title={zh ? '编辑' : 'Edit'}>
+        <Row label={zh ? '移动 / 旋转 / 缩放' : 'Move / Rotate / Scale'} keys={<><Key>W</Key><Key>E</Key><Key>S</Key></>} />
+        <Row label={zh ? '删除选中' : 'Delete selection'} keys={<Key>Del</Key>} />
+        <Row label={zh ? '取消选中 / 退出' : 'Deselect / Exit'} keys={<Key>Esc</Key>} />
+      </Section>
+      <Section title={zh ? '机位' : 'Cameras'}>
+        <Row label={zh ? '应用当前视角到机位' : 'Apply view to camera'} keys={<Key>C</Key>} />
+        <Row label={zh ? '确认构图 · 派生预览' : 'Confirm & derive previews'} keys={<Key>{zh ? '确认构图 ×2' : 'Confirm ×2'}</Key>} />
+      </Section>
     </div>
   );
 }
