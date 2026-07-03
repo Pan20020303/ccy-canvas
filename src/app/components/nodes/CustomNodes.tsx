@@ -2202,6 +2202,7 @@ const BaseNode = ({
   tone = 'neutral',
   width,
   shellBackground,
+  smoothResize,
 }: {
   icon: any;
   title: React.ReactNode;
@@ -2222,6 +2223,9 @@ const BaseNode = ({
   /** Optional override for the media/content shell background (e.g. the text
    *  node's user-picked background color). Inline style beats the tone class. */
   shellBackground?: string;
+  /** 切换宽高比等参数导致 width 变化时平滑过渡（媒体节点用）。默认关闭，
+   *  避免给交互式改宽（如文本节点）加上迟滞感。 */
+  smoothResize?: boolean;
 }) => {
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
@@ -2300,7 +2304,7 @@ const BaseNode = ({
 
   return (
     <div
-      className="group"
+      className={clsx('group', smoothResize && 'transition-[width] duration-300 ease-out motion-reduce:transition-none')}
       style={{ width: width ?? 300 }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -4971,12 +4975,13 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       width={genBox.width}
+      smoothResize
       topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       {data.url ? (
         <div
-          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
+          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
           onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
@@ -5001,7 +5006,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
         <MediaEmptyPlaceholder
           icon={ImageIcon}
           zh={language === 'zh'}
-          className={clsx('w-full', NODE_TONE_STYLES.image.surface)}
+          className={clsx('w-full transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
@@ -6440,6 +6445,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
       width={genBox.width}
+      smoothResize
       topFloatingPanel={
         annotate
           ? (
@@ -6477,7 +6483,13 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative w-full overflow-hidden rounded-[12px]', annotate ? 'cursor-crosshair' : 'cursor-zoom-in', NODE_TONE_STYLES.image.surface)}
+          className={clsx(
+            'relative w-full overflow-hidden rounded-[12px]',
+            annotate ? 'cursor-crosshair' : 'cursor-zoom-in',
+            // 标注中不做高度过渡 — 画笔层按最终尺寸测量位图，动画中间值会量错。
+            !annotate && 'transition-[height] duration-300 ease-out motion-reduce:transition-none',
+            NODE_TONE_STYLES.image.surface,
+          )}
           style={{ height: genBox.height }}
           onDoubleClick={() => {
             if (annotate) return;
@@ -6526,7 +6538,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
         <MediaEmptyPlaceholder
           icon={ImageIcon}
           zh={language === 'zh'}
-          className={clsx('w-full', NODE_TONE_STYLES.image.surface)}
+          className={clsx('w-full transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
@@ -6620,13 +6632,14 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       loadingNodeId={id}
       error={data.error}
       width={videoBox.width}
+      smoothResize
       topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
     >
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>
         <div
           className={clsx(
-            'relative flex w-full items-center justify-center overflow-hidden rounded-[12px] text-violet-100/40',
+            'relative flex w-full items-center justify-center overflow-hidden rounded-[12px] text-violet-100/40 transition-[height] duration-300 ease-out motion-reduce:transition-none',
             NODE_TONE_STYLES.video.surface,
             data.url && 'cursor-zoom-in',
           )}
