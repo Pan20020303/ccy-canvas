@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	announcementshttp "ccy-canvas/backend/internal/announcements/interfaces"
 	creditapp "ccy-canvas/backend/internal/credits/application"
 	creditinfra "ccy-canvas/backend/internal/credits/infrastructure"
 	identityapp "ccy-canvas/backend/internal/identity/application"
@@ -207,6 +208,10 @@ func main() {
 	skillsHandler.RegisterRoutes(api)
 	skillsAdminHandler := skillshttp.NewAdminHandler(queries)
 	skillsAdminHandler.RegisterRoutes(api)
+
+	// Announcements routes (admin publish/delete + user-visible list for the bell).
+	announcementsHandler := announcementshttp.NewHandler(queries)
+	announcementsHandler.RegisterRoutes(api)
 
 	// Agent SSE run endpoint sits on chi directly (huma envelopes JSON,
 	// which would break Server-Sent Events).

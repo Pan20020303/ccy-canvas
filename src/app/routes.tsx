@@ -5,6 +5,7 @@ import { listAppProviderConfigs } from "./api/providerConfigs";
 import { useAuth } from "./auth/AuthProvider";
 import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { AdminCreditLedgerPage } from "./components/admin/AdminCreditLedgerPage";
+import { AdminAnnouncementsPage } from "./components/admin/AdminAnnouncementsPage";
 import { AdminInvitationsPage } from "./components/admin/AdminInvitationsPage";
 import { AdminLogsPage } from "./components/admin/AdminLogsPage";
 import { AdminMembersPage } from "./components/admin/AdminMembersPage";
@@ -168,6 +169,14 @@ export const router = createBrowserRouter([
     Component: () => (
       <ProtectedRoute requireRole="admin">
         <AdminInvitationsPage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/announcements",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminAnnouncementsPage />
       </ProtectedRoute>
     ),
   },

@@ -4,6 +4,8 @@ import {
   FolderOpen,
   Globe,
   Image as ImageIcon,
+  Layers,
+  Layers3,
   Music,
   Package,
   Pencil,
@@ -21,15 +23,30 @@ import { AssetLibraryModal } from './AssetLibraryModal';
 import { Dock, DockItem } from './reactbits/Dock';
 
 type PanelKey = 'add' | null;
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode';
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode' | 'directorStageNode' | 'layerEditorNode';
 
-const NODE_OPTIONS: Array<{ kind: NodeKind; icon: typeof Pencil; zh: string; en: string }> = [
-  { kind: 'textNode', icon: Pencil, zh: '生成文本', en: 'Generate Text' },
-  { kind: 'imageNode', icon: ImageIcon, zh: '生成图像', en: 'Generate Image' },
-  { kind: 'videoNode', icon: Video, zh: '生成视频', en: 'Generate Video' },
-  { kind: 'audioNode', icon: Music, zh: '生成音频', en: 'Generate Audio' },
-  { kind: 'panoramaNode', icon: Globe, zh: '生成 360°', en: 'Generate 360°' },
-  { kind: 'stickyNoteNode', icon: StickyNote, zh: '便签', en: 'Sticky note' },
+// 加号菜单(2026-07 参考样式):「添加节点」分组 + 「临时资源」分组;
+// 视频合成 / 3D World 尚未落地,占位置灰(Beta 徽标)。
+const NODE_OPTIONS: Array<{
+  kind?: NodeKind;
+  icon: typeof Pencil;
+  zh: string;
+  en: string;
+  badge?: string;
+  subZh?: string;
+  subEn?: string;
+  disabled?: boolean;
+}> = [
+  { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text', subZh: '脚本、广告词、品牌文案', subEn: 'Scripts, ad copy, brand text' },
+  { kind: 'imageNode', icon: ImageIcon, zh: '图片', en: 'Image' },
+  { kind: 'videoNode', icon: Video, zh: '视频', en: 'Video' },
+  { kind: 'audioNode', icon: Music, zh: '音频', en: 'Audio' },
+  { kind: 'panoramaNode', icon: Globe, zh: '生成 360°', en: '360° Panorama' },
+  { icon: Video, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subZh: '多视频/音轨合成', subEn: 'Multi-track compose', disabled: true },
+  { kind: 'directorStageNode', icon: Layers3, zh: '导演台', en: 'Director Stage', subZh: '3D 构图编辑器', subEn: '3D composition editor' },
+  { icon: Globe, zh: '3D World', en: '3D World', badge: 'Beta', subZh: '生成可漫游的 3D 世界', subEn: 'Explorable 3D worlds', disabled: true },
+  { kind: 'stickyNoteNode', icon: StickyNote, zh: '评论便签', en: 'Comment note' },
+  { kind: 'layerEditorNode', icon: Layers, zh: '图层编辑', en: 'Layer Editor', subZh: '图层编辑、合成，宫格拼接', subEn: 'Layers, compose, grid' },
 ];
 
 export const Toolbar = () => {
@@ -202,28 +219,42 @@ export const Toolbar = () => {
         <div ref={panelRef} className="max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
           {open === 'add' ? (
             <>
-              <PanelTitle>{language === 'zh' ? '画布自由生成' : 'Free Generation'}</PanelTitle>
+              <PanelTitle>{language === 'zh' ? '添加节点' : 'Add Node'}</PanelTitle>
               <div className="flex flex-col gap-0.5">
                 {NODE_OPTIONS.map((option) => {
                   const Icon = option.icon;
-
+                  const sub = language === 'zh' ? option.subZh : option.subEn;
                   return (
                     <button
-                      key={option.kind}
-                      onClick={() => handleAddNode(option.kind)}
-                      className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-neutral-200 transition hover:bg-white/5"
+                      key={option.zh}
+                      onClick={() => { if (option.kind && !option.disabled) handleAddNode(option.kind); }}
+                      disabled={option.disabled}
+                      className={`flex items-center gap-3 rounded-lg px-3 py-2 text-left transition ${
+                        option.disabled ? 'cursor-default text-neutral-500' : 'text-neutral-200 hover:bg-white/5'
+                      }`}
                     >
-                      <Icon className="h-4 w-4 text-neutral-400" />
-                      <span className="text-sm">{language === 'zh' ? option.zh : option.en}</span>
+                      <Icon className={`h-4 w-4 shrink-0 ${option.disabled ? 'text-neutral-600' : 'text-neutral-400'}`} />
+                      <span className="flex min-w-0 flex-col">
+                        <span className="flex items-center gap-2 text-sm">
+                          {language === 'zh' ? option.zh : option.en}
+                          {option.badge ? (
+                            <span className="rounded bg-white/[0.08] px-1.5 py-px text-[9px] uppercase tracking-wide text-neutral-400">{option.badge}</span>
+                          ) : null}
+                        </span>
+                        {sub ? <span className="truncate text-[11px] text-neutral-500">{sub}</span> : null}
+                      </span>
                     </button>
                   );
                 })}
               </div>
               <div className="my-2 h-px bg-white/10" />
-              <PanelTitle>{language === 'zh' ? '添加资源' : 'Add Resource'}</PanelTitle>
-              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-neutral-200 transition hover:bg-white/5">
-                <Upload className="h-4 w-4 text-neutral-400" />
-                <span className="text-sm">{language === 'zh' ? '上传文件' : 'Upload File'}</span>
+              <PanelTitle>{language === 'zh' ? '临时资源' : 'Temp Resources'}</PanelTitle>
+              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-neutral-200 transition hover:bg-white/5">
+                <Upload className="h-4 w-4 shrink-0 text-neutral-400" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="text-sm">{language === 'zh' ? '上传本地' : 'Upload local'}</span>
+                  <span className="text-[11px] text-neutral-500">{language === 'zh' ? '图片、视频、音频' : 'Images, video, audio'}</span>
+                </span>
               </button>
             </>
           ) : null}

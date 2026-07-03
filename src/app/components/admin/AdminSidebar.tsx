@@ -1,5 +1,5 @@
 import { NavLink } from "react-router";
-import { BarChart3, BookKey, Bot, BrainCircuit, Coins, FileText, Logs, Monitor, ShieldCheck, Sparkles, UserCog, Users } from "lucide-react";
+import { BarChart3, BookKey, Bot, BrainCircuit, Coins, FileText, Logs, Megaphone, Monitor, ShieldCheck, Sparkles, UserCog, Users } from "lucide-react";
 
 import logoUrl from "../../../imports/logo.png";
 
@@ -8,6 +8,7 @@ const items = [
   { to: "/admin/members", label: "成员", icon: Users },
   { to: "/admin/credits", label: "积分流水", icon: Coins },
   { to: "/admin/invitations", label: "邀请码", icon: BookKey },
+  { to: "/admin/announcements", label: "公告", icon: Megaphone },
   { to: "/admin", label: "模型服务", icon: Monitor },
   { to: "/admin/agents", label: "Agent配置", icon: UserCog },
   { to: "/admin/prompts", label: "提示词管理", icon: FileText },

@@ -4670,7 +4670,7 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className={actionButtonClass}>
               <LayoutTemplate className="h-3.5 w-3.5" />
-              {language === 'zh' ? '九宫格' : 'Grid'}
+              {language === 'zh' ? '工具' : 'Tools'}
               <ChevronDown className="h-3 w-3 opacity-60" />
             </Button>
           </DropdownMenuTrigger>
@@ -4731,8 +4731,11 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) closeSession(); }}>
         <DialogContent className={clsx(
           // UI 适配:限高 + 内滚动,小窗口/低分辨率下弹窗不再溢出屏幕。
-          'max-h-[88vh] overflow-y-auto border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)]',
-          isPrecisionEditor ? 'max-w-4xl' : 'max-w-3xl',
+          // 宽度必须 !important:DialogContent 基类的 sm:max-w-lg(512px)
+          // 带媒体查询变体,在生成 CSS 里排在无前缀工具类之后,普通
+          // max-w-* 会被压住 → 弹窗卡在 512 宽,右列被裁。
+          'max-h-[88vh] overflow-y-auto overflow-x-hidden border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)] !max-w-none',
+          isPrecisionEditor ? 'w-[min(94vw,920px)]' : 'w-[min(94vw,768px)]',
         )}>
           <DialogHeader>
             <DialogTitle>{dialogTitle}</DialogTitle>
