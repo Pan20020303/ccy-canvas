@@ -58,15 +58,10 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
   const data = (rawData ?? {}) as CompositionPreviewData;
   const language = useStore((s) => s.language);
   const isConnectionDragging = useStore((s) => s.isConnectionDragging);
-  const openDirectorStage = useStore((s) => s.openDirectorStage);
 
   const aspectClass = ASPECT_TO_TAILWIND[data.aspect ?? '16:9'];
   const widthClass = ASPECT_TO_WIDTH[data.aspect ?? '16:9'];
   const hasImage = !!data.image;
-
-  const onEditParent = () => {
-    if (data.directorNodeId) openDirectorStage(data.directorNodeId);
-  };
 
   return (
     <div className={clsx('group', widthClass)}>
@@ -141,21 +136,8 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
               {language === 'zh' ? '(无预览)' : '(no preview)'}
             </div>
           )}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-8 opacity-0 transition-opacity group-hover:opacity-100">
-            <span className="font-mono text-[10px] text-white/60">
-              {new Date(data.timestamp || 0).toLocaleTimeString()}
-            </span>
-            {data.directorNodeId ? (
-              <button
-                type="button"
-                onClick={onEditParent}
-                className="pointer-events-auto rounded border border-white/15 bg-black/50 px-2 py-0.5 text-[10.5px] text-white/80 backdrop-blur-sm transition hover:border-white/35 hover:bg-black/70 hover:text-white"
-                title={language === 'zh' ? '回到父导演台编辑' : 'Edit parent stage'}
-              >
-                {language === 'zh' ? '回到导演台' : 'Edit stage'}
-              </button>
-            ) : null}
-          </div>
+          {/* 2026-07 反馈:构图预览就是一张图片节点(可直接当参考图),
+              不再放「回到导演台」按钮 —— 要改场景去导演台节点点「编辑」。 */}
         </div>
 
         {/* 右 + 泡泡(source 端口) */}

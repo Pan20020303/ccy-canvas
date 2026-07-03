@@ -2062,6 +2062,25 @@ const InnerCanvas = () => {
                   onClick={() => { redoCanvas(); setContextMenu(null); }}
                 />
               </div>
+            ) : contextMenu.fromConnection
+              && nodesRef.current.find((n) => n.id === connectingFrom.current?.nodeId)?.type === 'directorStageNode' ? (
+              // 从导演台节点拉线落空:只给 图片生成 / 视频生成(参考交互),
+              // 导演台的输出是镜头画面,接文本/音频没有意义。
+              <div className="flex flex-col">
+                <div className="px-2.5 pb-1 pt-1.5 text-[11px] text-neutral-500">
+                  {language === 'zh' ? '连接到新节点' : 'Connect to new node'}
+                </div>
+                {PICKER_OPTIONS.filter((o) => o.kind === 'imageNode' || o.kind === 'videoNode').map((option) => (
+                  <ContextMenuButton
+                    key={option.kind}
+                    compact
+                    icon={option.icon}
+                    labelZh={option.zh}
+                    labelEn={option.en}
+                    onClick={() => onPickerSelect(option.kind)}
+                  />
+                ))}
+              </div>
             ) : (
               <div className="flex flex-col">
                 <div className="px-2.5 pb-1 pt-1.5 text-[11px] text-neutral-500">

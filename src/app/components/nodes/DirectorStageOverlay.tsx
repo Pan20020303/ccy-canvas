@@ -7,6 +7,7 @@ import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
   RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
   ListTree, Boxes, HelpCircle, Search, Users, User, Globe2, Type, Monitor,
+  Magnet, Undo2, Redo2, ArrowDown, RectangleHorizontal,
 } from 'lucide-react';
 import * as THREE from 'three';
 
@@ -1130,6 +1131,8 @@ export function DirectorStageOverlay() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [mode, setMode] = useState<TransformMode>('translate');
   const [presetFlash, setPresetFlash] = useState<{ camId: string } | null>(null);
+  // 吸附(X 切换):开启时 Gizmo 拖动按 0.25m / 15° / 0.1 步进对齐。
+  const [snapping, setSnapping] = useState(false);
 
   // 两段式确认构图状态:
   //   idle    —— 显示"确认构图"按钮,点击后变 armed.
@@ -1545,6 +1548,80 @@ export function DirectorStageOverlay() {
     );
   }, []);
 
+  /** ====== 舞台编辑撤销 / 重做 ======
+   *  快照 = { 演员, 道具, 机位, 活跃机位 }。状态变化 350ms 防抖入栈
+   *  (滑杆连续拖动合并成一步),undo/redo 应用时跳过入栈。 */
+  type StageSnapshot = {
+    actors: ActorTransform[];
+    stageProps: PropTransform[];
+    cameras: CameraSpec[];
+    activeCameraId: string;
+  };
+  const historyRef = useRef<{ past: StageSnapshot[]; future: StageSnapshot[] }>({ past: [], future: [] });
+  const presentRef = useRef<StageSnapshot | null>(null);
+  const applyingHistoryRef = useRef(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
+
+  useEffect(() => {
+    if (!nodeId) return;
+    const cur: StageSnapshot = { actors, stageProps, cameras, activeCameraId };
+    if (applyingHistoryRef.current) {
+      applyingHistoryRef.current = false;
+      presentRef.current = cur;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      if (presentRef.current) {
+        historyRef.current.past.push(presentRef.current);
+        if (historyRef.current.past.length > 50) historyRef.current.past.shift();
+        historyRef.current.future = [];
+      }
+      presentRef.current = cur;
+      setHistoryVersion((v) => v + 1);
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [nodeId, actors, stageProps, cameras, activeCameraId]);
+
+  const applySnapshot = useCallback((snap: StageSnapshot) => {
+    applyingHistoryRef.current = true;
+    setActors(snap.actors);
+    setStageProps(snap.stageProps);
+    setCameras(snap.cameras);
+    setActiveCameraId(snap.activeCameraId);
+    setSelection(null); // 快照里可能没有当前选中的实体,直接清选
+    setHistoryVersion((v) => v + 1);
+  }, []);
+
+  const undoStage = useCallback(() => {
+    const h = historyRef.current;
+    const prev = h.past.pop();
+    if (!prev || !presentRef.current) return;
+    h.future.push(presentRef.current);
+    presentRef.current = prev;
+    applySnapshot(prev);
+  }, [applySnapshot]);
+
+  const redoStage = useCallback(() => {
+    const h = historyRef.current;
+    const next = h.future.pop();
+    if (!next || !presentRef.current) return;
+    h.past.push(presentRef.current);
+    presentRef.current = next;
+    applySnapshot(next);
+  }, [applySnapshot]);
+
+  const canUndo = historyRef.current.past.length > 0;
+  const canRedo = historyRef.current.future.length > 0;
+  void historyVersion; // 只为触发重渲染刷新 canUndo/canRedo
+
+  /** 俯视(T) / 正面(Y) —— 参考的视角快切。 */
+  const viewTop = useCallback(() => {
+    cameraControlsRef.current?.setLookAt(0, 14, 0.02, 0, 0, 0, true);
+  }, []);
+  const viewFront = useCallback(() => {
+    cameraControlsRef.current?.setLookAt(0, 1.3, 9, 0, 1.1, 0, true);
+  }, []);
+
   /** 主视口焦距([ / ] 调整,顶栏实时显示,参考快捷键方案)。 */
   const [mainFov, setMainFov] = useState(50);
   const adjustFov = useCallback((delta: number) => {
@@ -1777,6 +1854,19 @@ export function DirectorStageOverlay() {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const k = e.key.toLowerCase();
+      // Ctrl/⌘ 组合只处理撤销重做,其余(复制/刷新等)放行浏览器默认 ——
+      // 否则 Ctrl+C 会误触发「应用视图到机位」。
+      if (e.ctrlKey || e.metaKey) {
+        if (k === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) redoStage();
+          else undoStage();
+        } else if (k === 'y') {
+          e.preventDefault();
+          redoStage();
+        }
+        return;
+      }
       if (k === 'escape') {
         if (selection) onDeselect();
         else closeWithSnapshot();
@@ -1784,6 +1874,9 @@ export function DirectorStageOverlay() {
       }
       if (k === 'c') { applyViewToCamera(activeCameraId); return; }
       if (k === 'f') { focusSelection(); return; }
+      if (k === 'x') { setSnapping((s) => !s); return; }
+      if (k === 't') { viewTop(); return; }
+      if (k === 'y') { viewFront(); return; }
       if (k === '0') { resetView(); return; }
       if (k === '[' || k === ']') {
         e.preventDefault();
@@ -1813,7 +1906,7 @@ export function DirectorStageOverlay() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nodeId, selection, closeWithSnapshot, onDeselect, applyViewToCamera, activeCameraId, focusSelection, resetView, adjustFov, removeActor, removeCamera, removeProp]);
+  }, [nodeId, selection, closeWithSnapshot, onDeselect, applyViewToCamera, activeCameraId, focusSelection, resetView, adjustFov, removeActor, removeCamera, removeProp, undoStage, redoStage, viewTop, viewFront]);
 
   if (!nodeId || !node) return null;
 
@@ -1956,6 +2049,9 @@ export function DirectorStageOverlay() {
                 object={selection.obj}
                 mode={selection.kind === 'camera' ? 'translate' : mode}
                 size={1.1}
+                translationSnap={snapping ? 0.25 : null}
+                rotationSnap={snapping ? PI / 12 : null}
+                scaleSnap={snapping ? 0.1 : null}
               />
             ) : null}
           </Suspense>
@@ -2124,6 +2220,36 @@ export function DirectorStageOverlay() {
           <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="" icon={RotateCw} label={language === 'zh' ? '旋转' : 'Rotate'} />
           <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="" icon={Maximize2} label={language === 'zh' ? '缩放' : 'Scale'} />
           <div className="mx-1 w-px self-stretch bg-white/10" />
+          {/* 吸附:开关按钮(X),开启时 Gizmo 步进对齐。 */}
+          <ModeButton active={snapping} onClick={() => setSnapping((s) => !s)} hint="X" icon={Magnet} label={language === 'zh' ? '吸附' : 'Snap'} />
+          <div className="mx-1 w-px self-stretch bg-white/10" />
+          {/* 视角快切:俯视 / 正面 / 重置。 */}
+          <ModeButton active={false} onClick={viewTop} hint="T" icon={ArrowDown} label={language === 'zh' ? '俯视' : 'Top'} />
+          <ModeButton active={false} onClick={viewFront} hint="Y" icon={RectangleHorizontal} label={language === 'zh' ? '正面' : 'Front'} />
+          <ModeButton active={false} onClick={resetView} hint="0" icon={RefreshCw} label={language === 'zh' ? '重置' : 'Reset'} />
+          <div className="mx-1 w-px self-stretch bg-white/10" />
+          {/* 撤销 / 重做(舞台编辑历史,Ctrl+Z / Ctrl+Shift+Z)。 */}
+          <button
+            type="button"
+            onClick={undoStage}
+            disabled={!canUndo}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent"
+          >
+            <Undo2 className="h-3 w-3" />
+            <span>{language === 'zh' ? '撤销' : 'Undo'}</span>
+            <span className="font-mono text-[10px] text-white/40">⌘Z</span>
+          </button>
+          <button
+            type="button"
+            onClick={redoStage}
+            disabled={!canRedo}
+            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent"
+          >
+            <Redo2 className="h-3 w-3" />
+            <span>{language === 'zh' ? '重做' : 'Redo'}</span>
+            <span className="font-mono text-[10px] text-white/40">⌘⇧Z</span>
+          </button>
+          <div className="mx-1 w-px self-stretch bg-white/10" />
           <button
             type="button"
             onClick={() => applyViewToCamera(activeCameraId)}
@@ -2132,14 +2258,6 @@ export function DirectorStageOverlay() {
             <VideoIcon className="h-3 w-3" />
             <span>{language === 'zh' ? '应用到机位' : 'Apply to Camera'}</span>
             <span className="font-mono text-[10px] text-white/40">C</span>
-          </button>
-          <button
-            type="button"
-            onClick={resetView}
-            className="flex items-center gap-1.5 rounded px-2 py-1 text-[11px] text-white/70 transition hover:bg-white/[0.06] hover:text-white"
-          >
-            <RefreshCw className="h-3 w-3" />
-            <span>{language === 'zh' ? '重置视图' : 'Reset'}</span>
           </button>
         </div>
 
@@ -2396,7 +2514,7 @@ function ActorPanel({
   const [poseTab, setPoseTab] = useState<'preset' | 'manual'>('preset');
 
   return (
-    <div className="absolute right-4 top-4 flex w-[280px] flex-col gap-2 rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
+    <div className="absolute right-4 top-4 z-30 flex w-[280px] flex-col gap-2 rounded-md border border-white/12 bg-black/80 p-3 backdrop-blur-xl">
       {/* Tab header. */}
       <div className="flex items-center gap-2 border-b border-white/[0.06] pb-2">
         <button
@@ -2762,7 +2880,7 @@ function CameraDetailPanel({ camera, isActive, onApplyViewToCamera, onSwitchToCa
 }) {
   const language = useStore((s) => s.language);
   return (
-    <div className="absolute right-4 top-4 flex w-[260px] flex-col gap-2 rounded-md border border-amber-300/30 bg-black/80 p-3 backdrop-blur-xl">
+    <div className="absolute right-4 top-4 z-30 flex w-[260px] flex-col gap-2 rounded-md border border-amber-300/30 bg-black/80 p-3 backdrop-blur-xl">
       <div className="flex items-center gap-2 text-[11.5px] text-white/80">
         <VideoIcon className="h-3.5 w-3.5 text-amber-300" />
         <span className="font-medium">{camera.label}</span>
@@ -3087,6 +3205,9 @@ function StageHelpPanel({ onClose }: { onClose: () => void }) {
       </Section>
       <Section title={zh ? '编辑' : 'Edit'}>
         <Row label={zh ? '移动 / 旋转 / 缩放' : 'Gizmo modes'} keys={<Key>{zh ? '底栏按钮' : 'Toolbar'}</Key>} />
+        <Row label={zh ? '吸附开关' : 'Snap'} keys={<Key>X</Key>} />
+        <Row label={zh ? '俯视 / 正面' : 'Top / Front'} keys={<><Key>T</Key><Key>Y</Key></>} />
+        <Row label={zh ? '撤销 / 重做' : 'Undo / Redo'} keys={<><Key>⌘Z</Key><Key>⌘⇧Z</Key></>} />
         <Row label={zh ? '删除选中' : 'Delete selection'} keys={<><Key>Del</Key><Key>⌫</Key></>} />
         <Row label={zh ? '取消选中 / 退出' : 'Deselect / Exit'} keys={<Key>Esc</Key>} />
       </Section>
