@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import gsap from 'gsap';
@@ -772,6 +772,21 @@ function AspectBlockButton({
 
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
 
+/** HappyHorse 各模式的参考数量上限 — reference-modes.ts 里这套限额只存在于
+ *  happyHorseSuffixSatisfied 的命令式 switch（1/9/5 散落在代码和 toast 文案里），
+ *  参考条下方的限额提示需要一份结构化数据。数字与 switch 保持一致。 */
+const HAPPYHORSE_SUFFIX_REQUIRES: Record<string, { images: { min: number; max: number }; videos: { min: number; max: number } }> = {
+  't2v': { images: { min: 0, max: 0 }, videos: { min: 0, max: 0 } },
+  'i2v': { images: { min: 1, max: 1 }, videos: { min: 0, max: 0 } },
+  'r2v': { images: { min: 1, max: 9 }, videos: { min: 0, max: 0 } },
+  'video-edit': { images: { min: 0, max: 5 }, videos: { min: 1, max: 1 } },
+};
+
+// 紧凑提示面板编辑器的自适应高度范围：初始约两行（参考图一的紧凑态），
+// 随内容长高到上限（参考图二）后改为内部滚动。
+const PROMPT_EDITOR_MIN_H = 76;
+const PROMPT_EDITOR_MAX_H = 280;
+
 /** Empty-state placeholder for media generation nodes. Renders a large
  *  centered icon over a softly-glowing background, with a placeholder
  *  caption underneath ("输入提示词生成视频" / "输入提示词生成图片" / etc.).
@@ -1113,6 +1128,25 @@ const PromptPanel = ({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const compactOverlayRef = useRef<HTMLDivElement>(null);
   const expandedOverlayRef = useRef<HTMLDivElement>(null);
+
+  // 紧凑面板的编辑器自适应高度：初始一两行（参考态），随内容长高，到上限后
+  // 改用滚动条。展开弹窗里的编辑器走 flex-1，不参与。
+  const [editorHeight, setEditorHeight] = useState(PROMPT_EDITOR_MIN_H);
+  useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (!ta || expanded) return;
+    // 量内容高度：先压到 0 再读 scrollHeight（同一布局帧内完成，不闪）。
+    // 必须临时关掉 height 过渡 — 否则压到 0 的瞬间布局高度还停在动画旧值，
+    // scrollHeight 取到 max(内容, 旧高)，缩回永远失败。
+    const prevHeight = ta.style.height;
+    const prevTransition = ta.style.transition;
+    ta.style.transition = 'none';
+    ta.style.height = '0px';
+    const next = Math.min(PROMPT_EDITOR_MAX_H, Math.max(PROMPT_EDITOR_MIN_H, ta.scrollHeight));
+    ta.style.height = prevHeight;
+    ta.style.transition = prevTransition;
+    setEditorHeight(next);
+  }, [text, expanded]);
 
   // Esc closes the expanded modal — the X button alone is too easy to miss
   // when the panel has no preview yet and the textarea fills the surface.
@@ -1503,11 +1537,13 @@ const PromptPanel = ({
   const refCounts = useMemo(() => {
     let images = 0;
     let videos = 0;
+    let audios = 0;
     for (const up of upstreamNodes) {
       if (up.type === 'imageNode' || up.type === 'referenceImageNode') images += 1;
       else if (up.type === 'videoNode' || up.type === 'referenceVideoNode') videos += 1;
+      else if (up.type === 'audioNode' || up.type === 'referenceAudioNode') audios += 1;
     }
-    return { images, videos };
+    return { images, videos, audios };
   }, [upstreamNodes]);
 
   // The modes this model supports, in registry order. Video always gets the
@@ -1843,8 +1879,48 @@ const PromptPanel = ({
   // square thumbnail with a numbered badge in the corner. Hovering shows
   // a delete X that removes the EDGE (the upstream node itself stays on
   // canvas). Trailing dashed `+` slot opens the asset picker.
+
+  // 当前模式的参考数量上限（注册表模式 / HappyHorse 模式二选一），驱动参考条
+  // 下方的「图片 ≤ N」提示与超限红字。
+  const activeRequires = happyHorse?.suffix
+    ? HAPPYHORSE_SUFFIX_REQUIRES[happyHorse.suffix] ?? null
+    : activeReferenceMode
+      ? REFERENCE_MODE_SPECS[activeReferenceMode].requires
+      : null;
+
+  const refLimitBar = (() => {
+    if (upstreamNodes.length === 0 || !activeRequires) return null;
+    const zh = language === 'zh';
+    const chips: string[] = [];
+    if (activeRequires.images.max > 0) chips.push(zh ? `图片 ≤ ${activeRequires.images.max}` : `Images ≤ ${activeRequires.images.max}`);
+    if (activeRequires.videos.max > 0) chips.push(zh ? `视频 ≤ ${activeRequires.videos.max}` : `Videos ≤ ${activeRequires.videos.max}`);
+    const warnings: string[] = [];
+    if (refCounts.images > activeRequires.images.max) {
+      warnings.push(activeRequires.images.max === 0
+        ? (zh ? '当前模式不支持图片参考' : 'This mode takes no image references')
+        : (zh ? `当前模型图片最多 ${activeRequires.images.max} 张，现在 ${refCounts.images} 张` : `At most ${activeRequires.images.max} images; you have ${refCounts.images}`));
+    }
+    if (refCounts.videos > activeRequires.videos.max) {
+      warnings.push(activeRequires.videos.max === 0
+        ? (zh ? '当前模式不支持视频参考' : 'This mode takes no video references')
+        : (zh ? `当前模型视频最多 ${activeRequires.videos.max} 段，现在 ${refCounts.videos} 段` : `At most ${activeRequires.videos.max} videos; you have ${refCounts.videos}`));
+    }
+    if (chips.length === 0 && warnings.length === 0) return null;
+    return (
+      <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5 px-1">
+        {chips.map((chip) => (
+          <span key={chip} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-neutral-400">{chip}</span>
+        ))}
+        {warnings.map((warning) => (
+          <span key={warning} className="rounded-md bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-300">{warning}</span>
+        ))}
+      </div>
+    );
+  })();
+
   const previewStrip = (
-    <div className="prompt-editor-scroll mb-3 flex items-start gap-2 overflow-x-auto px-1 py-2">
+    <>
+    <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
       {upstreamNodes.map((up, idx) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id);
@@ -1922,11 +1998,16 @@ const PromptPanel = ({
         <Plus className="h-4 w-4" />
       </button>
     </div>
+    {refLimitBar}
+    </>
   );
 
   const renderPromptEditor = (expandedMode = false) => {
     const overlayRef = expandedMode ? expandedOverlayRef : compactOverlayRef;
-    const heightClass = expandedMode ? 'flex-1' : 'h-[160px]';
+    // 紧凑态高度由 editorHeight 状态驱动（内容自适应，见 useLayoutEffect）；
+    // 展开弹窗仍然填满列（flex-1）。镜像层是 inset-0，跟着 textarea 的
+    // 高度走，不需要单独定高。
+    const heightClass = expandedMode ? 'flex-1' : '';
     const paddingClass = expandedMode ? 'px-4 py-4' : 'px-3 py-3';
 
     return (
@@ -1961,11 +2042,11 @@ const PromptPanel = ({
           // its default scroll to the textarea.
           onWheel={(event) => event.stopPropagation()}
           className={clsx(
-            'prompt-editor-scroll relative w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
-            expandedMode ? 'flex-1' : 'h-[160px]',
+            'prompt-editor-scroll relative block w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 transition-[height] duration-150 ease-out focus:outline-none motion-reduce:transition-none',
+            expandedMode ? 'flex-1' : '',
             paddingClass,
           )}
-          style={{ caretColor: '#e5e5e5' }}
+          style={expandedMode ? { caretColor: '#e5e5e5' } : { caretColor: '#e5e5e5', height: editorHeight }}
         />
         {mentionOpen && upstreamNodes.length > 0 ? (
           <div
@@ -2102,7 +2183,7 @@ const PromptPanel = ({
           node's bottom-center as it scales. */}
       <div className="relative" style={{ height: 0, marginTop: `${16 * inverseZoom}px` }}>
         <div
-          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-2xl border border-white/[0.06] bg-[#15181d]/92 px-5 py-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.8)] backdrop-blur-2xl nodrag"
+          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#15181d]/92 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
           style={{
             transform: `translateX(-50%) scale(${inverseZoom})`,
             transformOrigin: 'top center',
