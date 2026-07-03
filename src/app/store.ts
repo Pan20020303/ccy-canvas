@@ -750,6 +750,12 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
                   status: 'running',
                   taskId: task.id,
                   queuedAfterTimeout: true,
+                  // 真实任务阶段（排队中/生成中/返回中），生成覆盖层按它切文案。
+                  taskPhase: task.status === 'queued' || task.status === 'pending'
+                    ? 'queued'
+                    : task.status === 'persisting'
+                      ? 'persisting'
+                      : 'generating',
                   error: undefined,
                   ...(task.result_url
                     ? {
@@ -871,6 +877,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             status: 'done',
             taskId: task.id,
             queuedAfterTimeout: false,
+            taskPhase: undefined,
             error: undefined,
             assetStatus: 'ready',
             assetSyncing: false,
@@ -894,6 +901,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
           status: 'error',
           taskId: task.id,
           queuedAfterTimeout: false,
+          taskPhase: undefined,
           error: `Queued task failed: ${task.error_msg || 'Generation failed'}`,
         },
       };
@@ -1182,9 +1190,14 @@ function applyActiveTasksToNodes(
         // parsed.
         const parsedStart = task.created_at ? Date.parse(task.created_at) : NaN;
         const runningStartedAt = Number.isFinite(parsedStart) ? parsedStart : Date.now();
+        const taskPhase = task.status === 'queued' || task.status === 'pending'
+          ? 'queued'
+          : task.status === 'persisting'
+            ? 'persisting'
+            : 'generating';
         return {
           ...node,
-          data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, error: undefined, runningStartedAt },
+          data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt },
         };
       });
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
@@ -3242,6 +3255,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                   status: 'running',
                   taskId: result.task_id,
                   queuedAfterTimeout: true,
+                  taskPhase: 'queued',
                   error: undefined,
                 },
               }
@@ -3439,7 +3453,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     runAborters[nodeId]?.abort();
     delete runAborters[nodeId];
     set((state) => {
-      const nodes = state.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, status: 'idle' } } : node);
+      // 一并清掉任务引用：留着 taskId 的话轮询协调器会把节点重新挂回任务、
+      // 孤儿恢复还会在完成时把结果塞回来 — 取消就白点了。
+      const nodes = state.nodes.map((node) => node.id === nodeId
+        ? { ...node, data: { ...node.data, status: 'idle', taskId: undefined, queuedAfterTimeout: false, taskPhase: undefined } }
+        : node);
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
       return {
         activeRun: state.activeRun?.nodeId === nodeId ? null : state.activeRun,

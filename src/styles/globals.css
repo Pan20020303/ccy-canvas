@@ -837,3 +837,15 @@ html.theme-light .bg-\[\#26272b\]\/97 {
 html.theme-light .hover\:bg-white\/25:hover {
   background-color: rgba(0, 0, 0, 0.12) !important;
 }
+
+/* ─── 生成中水面动画 ─────────────────────────────────────────────────────
+   drift：宽 200% 的双拼波形平移半宽 = 无缝循环，方向从左往右；
+   bob：水体整体轻微浮沉（容器底部外扩了 8px，浮起不露缝）。 */
+@keyframes ccy-water-drift {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+@keyframes ccy-water-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}

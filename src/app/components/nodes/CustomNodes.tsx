@@ -128,55 +128,136 @@ async function downloadAsset(src: string, filename: string) {
 
 // ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
 
-/** Water sweep �?left-to-right fill inside the node (lives inside overflow-hidden container). */
-function NodeLoadingWater() {
-  const [elapsed, setElapsed] = useState(0);
-  useEffect(() => {
-    const t0 = Date.now();
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 200);
-    return () => clearInterval(id);
-  }, []);
-  const progress = Math.min(100, (elapsed / 60) * 100);
+/** 单层波峰 — 宽 200% 的双拼波形沿 X 轴循环平移（从左往右涌）。两层不同
+ *  速度叠加出视差，就有了"物理感"。波形首尾斜率一致，平移半宽无缝循环。 */
+function WaterWave({ fill, height, duration, phaseShift = false }: {
+  fill: string;
+  height: number;
+  duration: number;
+  /** 错开半个波长，两层波峰不同步。 */
+  phaseShift?: boolean;
+}) {
+  const wave = (
+    <svg className="h-full w-1/2 shrink-0" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden>
+      <path d="M0 22 Q 75 8, 150 22 T 300 22 T 450 22 T 600 22 L 600 40 L 0 40 Z" fill={fill} />
+    </svg>
+  );
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[22px]">
+    <div className="absolute inset-x-0 top-0" style={{ height, transform: `translateY(-${height - 2}px)` }}>
       <div
-        className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500/20 via-cyan-400/10 to-transparent transition-[width] duration-1000 ease-linear"
-        style={{ width: `${progress}%` }}
-      />
-      <div
-        className="absolute inset-y-0 w-10 animate-pulse bg-gradient-to-r from-transparent via-cyan-400/25 to-transparent transition-[left] duration-1000 ease-linear"
-        style={{ left: `${progress}%` }}
-      />
+        className="flex h-full w-[200%]"
+        style={{
+          animation: `ccy-water-drift ${duration}s linear infinite`,
+          marginLeft: phaseShift ? '-25%' : undefined,
+        }}
+      >
+        {wave}
+        {wave}
+      </div>
     </div>
   );
 }
 
-/** Timer badge — sits OUTSIDE the node frame, at top-right corner.
- *  Reads the persisted `runningStartedAt` from the node's data so a page
- *  refresh in the middle of a long generation doesn't reset elapsed back
- *  to 00:00. Falls back to mount time if the field is missing (legacy
- *  nodes, or new submits before the store has caught up). */
-function NodeLoadingTimer({ nodeId }: { nodeId?: string }) {
-  const persistedStart = useStore((state) => {
-    if (!nodeId) return undefined;
+/** 统一的生成中覆盖层 — 图片 / 视频 / 音频 / 全景共用（消除两套动画）。
+ *  - 水面从底部随（伪）进度上涨，双层石墨色波峰从左向右涌动并整体浮沉；
+ *  - 中央阶段徽章：发起任务 → 排队中 → 生成中 → 生成完成·返回中，
+ *    文案由 store 写入的 data.taskPhase（真实后端任务状态）驱动；
+ *  - 右上角石墨灰 mm:ss 计时（persisted runningStartedAt，刷新不清零）；
+ *  - 取消只在「排队中」提供 — 任务一旦开始执行就不可取消。 */
+function GenerationOverlay({ nodeId }: { nodeId: string }) {
+  const language = useStore((state) => state.language);
+  const light = useStore((state) => state.theme) === 'light';
+  const cancelNode = useStore((state) => state.cancelNode);
+  const startedAt = useStore((state) => {
     const node = state.nodes.find((n) => n.id === nodeId);
     const v = (node?.data as { runningStartedAt?: number } | undefined)?.runningStartedAt;
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
   });
-  const [elapsed, setElapsed] = useState(0);
+  const taskPhase = useStore((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    return (node?.data as { taskPhase?: string } | undefined)?.taskPhase;
+  });
+  const hasTaskId = useStore((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    return Boolean((node?.data as { taskId?: string } | undefined)?.taskId);
+  });
+  const hasPreview = useStore((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    const d = (node?.data ?? {}) as { url?: string; poster?: string };
+    return Boolean(d.url || d.poster);
+  });
+
+  const mountedAt = useRef(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const t0 = persistedStart ?? Date.now();
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
-    tick();
-    const id = setInterval(tick, 500);
-    return () => clearInterval(id);
-  }, [persistedStart]);
-  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
-  const ss = String(elapsed % 60).padStart(2, '0');
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, []);
+  const t0 = startedAt ?? mountedAt.current;
+  const elapsedMs = Math.max(0, now - t0);
+  const seconds = Math.floor(elapsedMs / 1000);
+  const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
+  const ss = String(seconds % 60).padStart(2, '0');
+  // 水位 = 缓动伪进度（3%→95%，永不到顶；完成时整层直接消失）。
+  const level = getGenerationProgressPercent(t0, now);
+
+  const phase: 'submitting' | 'queued' | 'generating' | 'persisting' =
+    taskPhase === 'queued'
+      ? 'queued'
+      : taskPhase === 'persisting'
+        ? 'persisting'
+        : !hasTaskId && elapsedMs < 2500
+          ? 'submitting'
+          : 'generating';
+  const PHASE_TEXT: Record<typeof phase, [string, string]> = {
+    submitting: ['发起任务', 'Submitting'],
+    queued: ['排队中', 'Queued'],
+    generating: ['生成中', 'Generating'],
+    persisting: ['生成完成 · 返回中', 'Finalizing'],
+  };
+  const phaseText = PHASE_TEXT[phase][language === 'zh' ? 0 : 1];
+
+  // 石墨水体配色（高级感：低饱和石墨蓝 + 银灰波峰）。
+  const bodyGrad = light
+    ? 'linear-gradient(180deg, rgba(148,158,172,0.30), rgba(108,118,132,0.42))'
+    : 'linear-gradient(180deg, rgba(74,86,102,0.5), rgba(18,22,29,0.85))';
+  const crestA = light ? 'rgba(104,116,132,0.34)' : 'rgba(152,166,186,0.30)';
+  const crestB = light ? 'rgba(104,116,132,0.20)' : 'rgba(152,166,186,0.16)';
+
   return (
-    <div className="pointer-events-none absolute -top-5 right-0 flex items-center gap-1 rounded bg-black/60 px-1.5 py-[2px] text-[9px] font-mono leading-none text-cyan-300/80 backdrop-blur-sm">
-      <div className="h-1 w-1 animate-pulse rounded-full bg-cyan-400" />
-      {mm}:{ss}
+    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-[12px]">
+      {hasPreview ? <div className="absolute inset-0 bg-black/20 backdrop-blur-[8px]" /> : null}
+      {/* 水体：随进度上涨；内层整体浮沉（底部外扩 8px，浮起时不露缝）。 */}
+      <div className="absolute inset-x-0 bottom-0" style={{ height: `${level}%`, transition: 'height 1s linear' }}>
+        <div className="absolute -bottom-2 left-0 right-0 top-0" style={{ animation: 'ccy-water-bob 4.2s ease-in-out infinite' }}>
+          <div className="absolute inset-0" style={{ background: bodyGrad }} />
+          <WaterWave fill={crestA} height={16} duration={5.5} />
+          <WaterWave fill={crestB} height={24} duration={9.5} phaseShift />
+        </div>
+      </div>
+      {/* 阶段徽章 */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/12 bg-[#15181d]/85 px-4 py-2 text-sm font-medium text-neutral-100 shadow-[0_14px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
+          <LoadingSpinner size={16} tone={light ? 'light' : 'dark'} />
+          <span>{phaseText}</span>
+          {phase === 'queued' ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                cancelNode(nodeId);
+              }}
+              className="rounded-full px-2 py-0.5 text-xs text-neutral-400 transition hover:bg-white/10 hover:text-rose-300"
+            >
+              {language === 'zh' ? '取消' : 'Cancel'}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {/* 等待计时 — 石墨灰数字 */}
+      <div className={clsx('absolute right-2.5 top-2.5 text-[11px] font-semibold tabular-nums leading-none', light ? 'text-[#5b626e]' : 'text-[#8b929c]')}>
+        {mm}:{ss}
+      </div>
     </div>
   );
 }
@@ -247,49 +328,6 @@ function LoadingSpinner({
         strokeDasharray={`${arc} ${c - arc}`}
       />
     </svg>
-  );
-}
-
-function NodeLoadingCenterBadge({ nodeId: _nodeId }: { nodeId: string }) {
-  const language = useStore((state) => state.language);
-  // 白天模式下徽章底翻白（globals.css），SVG 描边是内联色 — tone 跟随主题。
-  const light = useStore((state) => state.theme) === 'light';
-  return (
-    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-      <div className="flex items-center gap-2.5 rounded-2xl border border-white/15 bg-[#0e1116]/78 px-4 py-2 text-sm font-medium text-white shadow-[0_18px_48px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-        <LoadingSpinner size={18} tone={light ? 'light' : 'dark'} />
-        <span>{language === 'zh' ? '生成中' : 'Generating'}</span>
-      </div>
-    </div>
-  );
-}
-
-function ImageGenerationOverlay({ nodeId, loading, hasPreview }: { nodeId: string; loading: boolean; hasPreview: boolean }) {
-  const language = useStore((state) => state.language);
-  const cancelNode = useStore((state) => state.cancelNode);
-  if (!loading) return null;
-  return (
-    <div
-      className={clsx(
-        'absolute inset-0 z-20 flex items-center justify-center',
-        hasPreview ? 'bg-black/18 backdrop-blur-[10px]' : 'bg-black/12 backdrop-blur-[4px]',
-      )}
-    >
-      <div className="flex items-center gap-3 rounded-2xl border border-white/35 bg-white/78 px-4 py-2 text-sm font-medium text-neutral-900 shadow-[0_16px_44px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-        <LoadingSpinner size={18} tone="light" />
-        <span>{language === 'zh' ? '生成中' : 'Generating'}</span>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            cancelNode(nodeId);
-          }}
-          className="rounded-full px-2 py-0.5 text-xs text-neutral-500 transition hover:bg-black/6 hover:text-neutral-800"
-        >
-          {language === 'zh' ? '取消' : 'Cancel'}
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -2423,10 +2461,10 @@ const BaseNode = ({
           >
           <div>{children}</div>
           {error ? <NodeErrorBanner error={error} /> : null}
-          {loading && !loadingOverlay ? <NodeLoadingWater /> : null}
-          {loading ? (loadingOverlay ?? (loadingNodeId ? <NodeLoadingCenterBadge nodeId={loadingNodeId} /> : null)) : null}
+          {/* 统一生成动画：所有媒体节点默认走 GenerationOverlay（水位进度 +
+              阶段徽章 + 石墨灰计时）；loadingOverlay 仍可覆盖特殊场景。 */}
+          {loading ? (loadingOverlay ?? (loadingNodeId ? <GenerationOverlay nodeId={loadingNodeId} /> : null)) : null}
         </div>
-        {loading && !loadingOverlay ? <NodeLoadingTimer nodeId={loadingNodeId} /> : null}
 
         <Handle
           type="target"
@@ -5046,7 +5084,6 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       width={genBox.width}
       smoothResize
@@ -5928,7 +5965,6 @@ export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       topFloatingPanel={data.url && data.status !== 'uploading' ? <ImageActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
@@ -6551,7 +6587,6 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       }
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
@@ -6813,7 +6848,6 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      loadingOverlay={<ImageGenerationOverlay nodeId={id} loading={data.status === 'generating' || data.status === 'running'} hasPreview={Boolean(data.url)} />}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
