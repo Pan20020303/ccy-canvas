@@ -7640,6 +7640,7 @@ import { DirectorStageNode } from './DirectorStageNode';
 import { NodeVersionsBadge } from './NodeVersions';
 import type { NodeVersion } from '../../store';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
+import { LayerEditorNode } from './LayerEditorNode';
 
 // Every node component is memoized: React Flow re-renders ALL registered node
 // components whenever its nodes array changes identity (i.e. every drag frame
@@ -7659,5 +7660,6 @@ export const nodeTypes = {
   stickyNoteNode: memo(StickyNoteNode),
   directorStageNode: memo(DirectorStageNode),
   compositionPreviewNode: memo(CompositionPreviewNode),
+  layerEditorNode: memo(LayerEditorNode),
 };
 

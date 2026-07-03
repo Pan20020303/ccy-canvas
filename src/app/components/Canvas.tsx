@@ -22,6 +22,7 @@ import {
   FolderHeart,
   HelpCircle,
   Image as ImageIcon,
+  Layers,
   Layers3,
   LayoutGrid,
   Map,
@@ -76,12 +77,17 @@ const DirectorStageOverlay = lazy(() =>
   import('./nodes/DirectorStageOverlay').then((m) => ({ default: m.DirectorStageOverlay })),
 );
 
+// 图层编辑器同样按需加载:打开时才拉代码,关闭即卸载。
+const LayerEditorOverlay = lazy(() =>
+  import('./nodes/LayerEditorOverlay').then((m) => ({ default: m.LayerEditorOverlay })),
+);
+
 const edgeTypes = { flow: FlowEdge };
 const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode';
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode';
 type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
 type ContextMenuState = {
   x: number;
@@ -99,6 +105,7 @@ const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string; subti
   { kind: 'imageNode', icon: ImageIcon, zh: '图片生成', en: 'Image' },
   { kind: 'videoNode', icon: Video, zh: '视频生成', en: 'Video' },
   { kind: 'audioNode', icon: Music, zh: '音频生成', en: 'Audio' },
+  { kind: 'layerEditorNode', icon: Layers, zh: '图层编辑', en: 'Layer Editor', subtitleZh: '图层编辑、合成，宫格拼接', subtitleEn: 'Layers, compose, grid collage' },
 ];
 
 const FUTURE_NODE_OPTIONS = [
@@ -362,6 +369,7 @@ const InnerCanvas = () => {
   const sendNodeToBack = useStore((state) => state.sendNodeToBack);
   const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
   const directorStageNodeId = useStore((state) => state.directorStageNodeId);
+  const layerEditorNodeId = useStore((state) => state.layerEditorNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
   const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
@@ -516,10 +524,10 @@ const InnerCanvas = () => {
       // Never hijack keys while the user is typing in an input/textarea/editor.
       if (isEditableTarget(event.target)) return;
 
-      // 导演台 overlay 打开时,画布全局快捷键整体让位 —— 尤其 Backspace/
-      // Delete 在 overlay 里删的是选中的演员/道具/机位,落到这里会把导演台
-      // 节点本身删掉。
-      if (useStore.getState().directorStageNodeId) return;
+      // 导演台 / 图层编辑器 overlay 打开时,画布全局快捷键整体让位 ——
+      // 尤其 Backspace/Delete 在 overlay 里删的是选中的演员/道具/图层,
+      // 落到这里会把节点本身删掉。
+      if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId) return;
 
       // ── Delete / Backspace ─────────────────────────────────────────────
       // Office-standard: Del removes the current selection. A selected group
@@ -2353,6 +2361,13 @@ const InnerCanvas = () => {
       {directorStageNodeId ? (
         <Suspense fallback={null}>
           <DirectorStageOverlay key={directorStageNodeId} />
+        </Suspense>
+      ) : null}
+
+      {/* 图层编辑器 overlay — 同导演台:打开才挂载,key=节点 id 防旧状态残留. */}
+      {layerEditorNodeId ? (
+        <Suspense fallback={null}>
+          <LayerEditorOverlay key={layerEditorNodeId} />
         </Suspense>
       ) : null}
 

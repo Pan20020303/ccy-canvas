@@ -330,6 +330,10 @@ type AppState = {
   runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean }) => void;
   cancelNode: (nodeId: string) => void;
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
+  /** 图层编辑器:当前打开的 layerEditorNode id(null = 关闭)。 */
+  layerEditorNodeId: string | null;
+  openLayerEditor: (nodeId: string) => void;
+  closeLayerEditor: () => void;
   /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。 */
   confirmBeforeGenerate: boolean;
   setConfirmBeforeGenerate: (v: boolean) => void;
@@ -1614,7 +1618,8 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
       continue;
     }
 
-    if (node.type === 'referenceImageNode' || node.type === 'imageNode') {
+    // 图层编辑节点保存后把合成图写在 data.url —— 作为图片参考输出。
+    if (node.type === 'referenceImageNode' || node.type === 'imageNode' || node.type === 'layerEditorNode') {
       imageUrls.push(url);
     } else if (node.type === 'referenceVideoNode' || node.type === 'videoNode') {
       videoUrls.push(url);
@@ -3581,6 +3586,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   isSettingsOpen: false,
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),
+
+  layerEditorNodeId: null,
+  openLayerEditor: (nodeId) => set({ layerEditorNodeId: nodeId }),
+  closeLayerEditor: () => set({ layerEditorNodeId: null }),
 
   confirmBeforeGenerate: false,
   setConfirmBeforeGenerate: (v) => {
