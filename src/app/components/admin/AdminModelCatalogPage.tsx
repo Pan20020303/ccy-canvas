@@ -914,7 +914,8 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
     setProtocol(tpl.protocol || "openai_compatible");
     setAdapterRuntime("go");
     setAdapterCode("");
-    setIconKey("");
+    // 模板可声明品牌图标（如可灵走阿里渠道但用 kling 图标）；未声明则清空。
+    setIconKey(tpl.iconKey ?? "");
     setIconUrl("");
     setModelListText(tpl.models.join("\n"));
     setDefaultModel(tpl.models[0] ?? "");
@@ -1060,7 +1061,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
                   onClick={() => applyTemplate(tpl)}
                   className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.045] px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white"
                 >
-                  <ModelBrandIcon model={tpl.models[0]} vendor={tpl.vendor} providerName={tpl.label} size={18} />
+                  <ModelBrandIcon model={tpl.models[0]} vendor={tpl.vendor} providerName={tpl.label} iconKey={tpl.iconKey} size={18} />
                   <span className="min-w-0 flex-1 truncate">{tpl.label}</span>
                 </button>
               ))}

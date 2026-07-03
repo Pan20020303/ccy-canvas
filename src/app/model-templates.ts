@@ -512,6 +512,42 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     referenceModes: ["video-edit"] as ReferenceModeKey[],
     defaults: { resolution: "1080P" },
   },
+  // ── 可灵 Kling v3（阿里云百炼渠道，DashScope 异步）────────────────────────
+  // 文档（2026-07 百炼可灵-视频生成）：单模型多能力 — 文生 / 首帧 / 首尾帧，
+  // Omni 额外支持参考生（refer ≤7）与视频编辑（base ≤1 + refer ≤4）。
+  // 分辨率档位映射 mode：1080P → pro（默认）、720P → std（后端换算，不发
+  // resolution）；aspect_ratio 仅 16:9 / 9:16 / 1:1，图生场景跟随首帧（自适应）。
+  // audio 是布尔（生成音效），复用 audioSetting 通道：off / on。
+  "kling/kling-v3-video-generation": {
+    vendor: "Alibaba",
+    serviceType: "video",
+    modelName: "kling/kling-v3-video-generation",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    supportsDuration: true,
+    audioSettingOptions: ["off", "on"],
+    resolutionOptions: ["1080P", "720P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "first-last"] as ReferenceModeKey[],
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
+  },
+  "kling/kling-v3-omni-video-generation": {
+    vendor: "Alibaba",
+    serviceType: "video",
+    modelName: "kling/kling-v3-omni-video-generation",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    supportsDuration: true,
+    audioSettingOptions: ["off", "on"],
+    resolutionOptions: ["1080P", "720P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "first-last", "multi-image", "video-edit"] as ReferenceModeKey[],
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
+  },
 };
 
 function inferProviderTemplate(modelName: string, provider?: Pick<AppProviderConfig, "service_type" | "vendor" | "parameter_schema"> | null): ModelTemplate | null {

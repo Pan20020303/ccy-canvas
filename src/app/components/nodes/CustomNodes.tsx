@@ -558,6 +558,9 @@ const MediaParamsPopover = ({
   const AUDIO_LABEL: Record<string, string> = {
     auto: language === 'zh' ? '自动' : 'Auto',
     origin: language === 'zh' ? '保留原声' : 'Keep source',
+    // 可灵 Kling：audio 是布尔（是否生成音效），复用 audioSetting 通道。
+    off: language === 'zh' ? '无声' : 'Silent',
+    on: language === 'zh' ? '生成音效' : 'With audio',
   };
 
   return (

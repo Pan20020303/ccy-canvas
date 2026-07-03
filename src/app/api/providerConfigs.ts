@@ -204,6 +204,9 @@ export type VendorTemplate = {
   submitEndpoint?: string;
   queryEndpoint?: string;
   parameterSchema?: ModelParameterSchema;
+  /** 品牌图标 key（ModelBrandIcon 的 icon_key）。渠道归属和品牌不一致时用 —
+   *  例如「可灵 · 阿里云百炼」：vendor 是 Alibaba（渠道），图标是 kling。 */
+  iconKey?: string;
 };
 
 export function supportsCustomSubmitQueryEndpoints(apiSpec: string): boolean {
@@ -837,8 +840,30 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       },
     },
     {
+      // 可灵走阿里云百炼渠道（北京地域）：DashScope 异步提交 + 轮询，
+      // 与万相/HappyHorse 同一套管道；品牌图标用可灵。
+      vendor: "Alibaba",
+      label: "可灵 · 阿里云百炼 Kling v3",
+      baseURL: "https://dashscope.aliyuncs.com/api/v1",
+      apiSpec: "dashscope",
+      iconKey: "kling",
+      models: [
+        "kling/kling-v3-video-generation",
+        "kling/kling-v3-omni-video-generation",
+      ],
+      submitEndpoint: "/services/aigc/video-generation/video-synthesis",
+      queryEndpoint: "/tasks/{taskId}",
+      parameterSchema: {
+        // 备注性质：video 侧后端按类型化字段构造 parameters（mode/aspect_ratio/
+        // duration/audio/watermark），此清单仅作文档与管理端展示。
+        allowed_parameters: ["model", "prompt", "mode", "aspect_ratio", "duration", "audio", "watermark"],
+        supports_duration: true,
+        defaults: { duration: 5 },
+      },
+    },
+    {
       vendor: "Kling",
-      label: "可灵 · Kling 视频",
+      label: "可灵 · Kling 视频（直连）",
       baseURL: "https://api.klingai.com",
       apiSpec: "custom",
       models: ["kling-v1", "kling-v1-pro", "kling-v1-6", "kling-v1-6-pro"],

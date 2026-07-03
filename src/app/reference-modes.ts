@@ -11,6 +11,7 @@
 // See docs/dev/2026-06-reference-mode-capability-plan.md
 
 export type ReferenceModeKey =
+  | "text-to-video"
   | "first-frame"
   | "first-last"
   | "multi-image"
@@ -52,6 +53,20 @@ export type ReferenceModeSpec = {
 };
 
 export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> = {
+  // 纯文生视频 — 单模型多能力的家族（可灵 Kling v3 等）需要一个「无引用也
+  // 满足」的模式，否则 0 引用时所有 tab 都不可满足，提交会被前置校验拦下。
+  // （HappyHorse 不需要它：t2v 是独立模型，由专属 tab 条处理。）
+  "text-to-video": {
+    key: "text-to-video",
+    label: { zh: "文生视频", en: "Text to video" },
+    requires: { images: { min: 0, max: 0 }, videos: { min: 0, max: 0 } },
+    backendMode: "auto",
+    slots: [],
+    disabledHint: {
+      zh: "文生视频不接受参考素材，请先断开引用",
+      en: "Text-to-video takes no references; disconnect them first",
+    },
+  },
   "first-last": {
     key: "first-last",
     label: { zh: "首尾帧", en: "First / Last" },
@@ -170,6 +185,7 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
 
 /** Ordered list used to render tabs left-to-right. */
 export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
+  "text-to-video",
   "first-frame",
   "first-last",
   "multi-image",

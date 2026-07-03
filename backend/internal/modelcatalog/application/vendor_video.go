@@ -486,7 +486,65 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 	return s.pollVideoDashScopeTask(ctx, baseURL, queryPath, apiKey, taskID)
 }
 
+// isKlingDashScopeModel reports whether the model is 可灵 Kling hosted on the
+// Aliyun 百炼 DashScope channel (ids are prefixed "kling/", e.g.
+// "kling/kling-v3-video-generation").
+func isKlingDashScopeModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "kling/")
+}
+
+// buildKlingVideoParameters — 可灵的参数集与万相/HappyHorse 不同：
+//   - mode(std/pro) 由分辨率档位换算（1080P→pro 默认、720P→std），不发 resolution；
+//   - 宽高比键名是 aspect_ratio（万相是 ratio），仅文生/参考生场景发送 —
+//     图生（首帧/首尾帧）与视频编辑跟随输入素材，发送会被拒；
+//   - duration 3~15s（传入视频时上限 10s）；
+//   - audio 是布尔（是否生成音效），复用 audioSetting 通道（"on" → true），
+//     传入视频（base）时文档规定只能 false；
+//   - 无 seed；水印沿用产品口径：不加。
+func buildKlingVideoParameters(req GenerateRequest) map[string]interface{} {
+	parameters := map[string]interface{}{"watermark": false}
+
+	mode := "pro"
+	if strings.EqualFold(strings.TrimSpace(req.Resolution), "720p") {
+		mode = "std"
+	}
+	parameters["mode"] = mode
+
+	refMode := strings.ToLower(strings.TrimSpace(req.ReferenceMode))
+	isVideoEdit := refMode == "video_edit"
+
+	if req.Duration > 0 {
+		duration := req.Duration
+		if duration < 3 {
+			duration = 3
+		}
+		maxDuration := 15
+		if isVideoEdit {
+			maxDuration = 10
+		}
+		if duration > maxDuration {
+			duration = maxDuration
+		}
+		parameters["duration"] = duration
+	}
+
+	aspectAllowed := refMode == "" || refMode == "auto" || refMode == "image_reference"
+	if r := strings.TrimSpace(req.AspectRatio); r != "" && !strings.EqualFold(r, "auto") && aspectAllowed {
+		parameters["aspect_ratio"] = r
+	}
+
+	audio := strings.EqualFold(strings.TrimSpace(req.AudioSetting), "on")
+	if isVideoEdit {
+		audio = false
+	}
+	parameters["audio"] = audio
+	return parameters
+}
+
 func buildDashScopeVideoParameters(req GenerateRequest) map[string]interface{} {
+	if isKlingDashScopeModel(req.Model) {
+		return buildKlingVideoParameters(req)
+	}
 	parameters := map[string]interface{}{
 		// Intentional product choice: HappyHorse's default is watermark=true
 		// ("Happy Horse" bottom-right), but we deliberately ship watermark-free
@@ -543,8 +601,67 @@ var happyHorseRatios = map[string]bool{
 // fails locally with a clear message instead of spending an upstream request.
 // Only HappyHorse models carry these constraints; other DashScope video models
 // pass through untouched.
+var klingRatios = map[string]bool{"16:9": true, "9:16": true, "1:1": true}
+
+// validateKlingVideoRequest — 可灵（百炼渠道）的本地约束校验（文档 2026-07）：
+// 标准版仅支持文生/首帧/首尾帧；Omni 额外支持参考生（refer ≤7）与视频编辑
+//（base 1 段 + refer ≤4）。宽高比仅 16:9/9:16/1:1，时长 3~15s。
+func validateKlingVideoRequest(req GenerateRequest) error {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	isOmni := strings.Contains(model, "omni")
+	refMode := strings.ToLower(strings.TrimSpace(req.ReferenceMode))
+	imgs := len(req.ReferenceImages)
+	vids := len(req.ReferenceVideos)
+	if strings.TrimSpace(req.ReferenceVideo) != "" {
+		vids++
+	}
+
+	if r := strings.TrimSpace(req.AspectRatio); r != "" && !strings.EqualFold(r, "auto") && !klingRatios[r] {
+		return apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("宽高比 %q 无效，可灵仅支持 16:9 / 9:16 / 1:1", req.AspectRatio))
+	}
+	if req.Duration > 0 && (req.Duration < 3 || req.Duration > 15) {
+		return apperror.New(apperror.CodeInvalidInput, "可灵视频时长需为 3~15 秒之间的整数")
+	}
+
+	switch refMode {
+	case "", "auto":
+		if imgs > 0 || vids > 0 {
+			return apperror.New(apperror.CodeInvalidInput, "文生视频不接受参考媒体，请切换到对应的参考模式")
+		}
+	case "first_frame":
+		if imgs != 1 || vids > 0 {
+			return apperror.New(apperror.CodeInvalidInput, "首帧模式需要且仅需 1 张图片")
+		}
+	case "start_end":
+		if imgs < 1 || imgs > 2 || vids > 0 {
+			return apperror.New(apperror.CodeInvalidInput, "首尾帧模式需要 1~2 张图片（首帧必填，尾帧可选）")
+		}
+	case "image_reference":
+		if !isOmni {
+			return apperror.New(apperror.CodeInvalidInput, "参考生视频仅 Omni 版可灵支持")
+		}
+		if imgs < 1 || imgs > 7 || vids > 0 {
+			return apperror.New(apperror.CodeInvalidInput, "参考生需要 1~7 张参考图")
+		}
+	case "video_edit":
+		if !isOmni {
+			return apperror.New(apperror.CodeInvalidInput, "视频编辑仅 Omni 版可灵支持")
+		}
+		if vids != 1 {
+			return apperror.New(apperror.CodeInvalidInput, "视频编辑需要且仅需 1 段待编辑视频")
+		}
+		if imgs > 4 {
+			return apperror.New(apperror.CodeInvalidInput, "视频编辑最多 4 张参考图")
+		}
+	}
+	return nil
+}
+
 func validateDashScopeVideoRequest(req GenerateRequest) error {
 	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if isKlingDashScopeModel(model) {
+		return validateKlingVideoRequest(req)
+	}
 	if !strings.HasPrefix(model, "happyhorse-") {
 		return nil
 	}
@@ -609,7 +726,75 @@ func validateDashScopeVideoRequest(req GenerateRequest) error {
 // 1h comfortably covers submit → queue → fetch without over-exposing the object.
 const videoEditPresignTTL = time.Hour
 
+// buildKlingVideoMedia — 可灵（百炼渠道）的 media 词汇与万相/HappyHorse 不同：
+// 逐素材角色 first_frame / last_frame / refer / base，且图片必须是可公开访问的
+// HTTP(S) URL（文档不接受 base64）——私有 COS 对象照视频编辑的做法预签名。
+func buildKlingVideoMedia(ctx context.Context, req GenerateRequest) ([]map[string]interface{}, error) {
+	media := make([]map[string]interface{}, 0, len(req.ReferenceImages)+1)
+	refMode := strings.ToLower(strings.TrimSpace(req.ReferenceMode))
+
+	if refMode == "video_edit" {
+		videoURL := strings.TrimSpace(req.ReferenceVideo)
+		if videoURL == "" && len(req.ReferenceVideos) > 0 {
+			videoURL = strings.TrimSpace(req.ReferenceVideos[0])
+		}
+		if videoURL == "" {
+			return nil, apperror.New(apperror.CodeInvalidInput, "视频编辑需要连接 1 段待编辑视频")
+		}
+		publicURL, err := resolveDashScopePublicVideoURL(ctx, videoURL)
+		if err != nil {
+			return nil, err
+		}
+		media = append(media, map[string]interface{}{
+			"type": "base",
+			"url":  publicURL,
+		})
+	}
+
+	for i, raw := range req.ReferenceImages {
+		publicURL, err := resolveKlingPublicImageURL(ctx, raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图片 #%d 处理失败", i+1), err)
+		}
+		role := "first_frame"
+		switch refMode {
+		case "start_end":
+			if i > 0 {
+				role = "last_frame"
+			}
+		case "image_reference", "video_edit":
+			role = "refer"
+		}
+		media = append(media, map[string]interface{}{
+			"type": role,
+			"url":  publicURL,
+		})
+	}
+	return media, nil
+}
+
+// resolveKlingPublicImageURL turns a reference-image URL into one DashScope 可灵
+// can fetch. Mirrors resolveDashScopePublicVideoURL: presign private COS
+// objects, pass public URLs through, reject base64/local paths (可灵图片要求
+// HTTP/HTTPS，不接受 data URL).
+func resolveKlingPublicImageURL(ctx context.Context, rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "data:") {
+		return "", apperror.New(apperror.CodeInvalidInput, "可灵参考图片必须是可公开访问的 URL，不支持 base64")
+	}
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return "", apperror.New(apperror.CodeInvalidInput, "可灵参考图片必须是公网可访问的 URL")
+	}
+	if signed, err := assetstore.PresignGet(ctx, rawURL, videoEditPresignTTL); err == nil && signed != "" {
+		return signed, nil
+	}
+	return rawURL, nil
+}
+
 func buildDashScopeVideoMedia(ctx context.Context, req GenerateRequest) ([]map[string]interface{}, error) {
+	if isKlingDashScopeModel(req.Model) {
+		return buildKlingVideoMedia(ctx, req)
+	}
 	media := make([]map[string]interface{}, 0, len(req.ReferenceImages)+1)
 
 	// 视频编辑(video-edit): the DashScope contract requires exactly 1
