@@ -376,7 +376,7 @@ const Dropdown = ({
     <div className="relative nodrag">
       <button
         onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-neutral-300 transition hover:bg-white/5"
+        className="flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1.5 text-xs text-neutral-200 transition hover:bg-white/10"
       >
         {label}
         <span>{value}</span>
@@ -500,7 +500,7 @@ const MediaParamsPopover = ({
     <div className="relative nodrag">
       <button
         onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-neutral-300 transition hover:bg-white/[0.06]"
+        className="flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/10"
       >
         <LayoutTemplate className="h-3 w-3 text-neutral-400" />
         <span>{labelParts.join(' · ')}</span>
@@ -1136,15 +1136,13 @@ const PromptPanel = ({
     const ta = taRef.current;
     if (!ta || expanded) return;
     // 量内容高度：先压到 0 再读 scrollHeight（同一布局帧内完成，不闪）。
-    // 必须临时关掉 height 过渡 — 否则压到 0 的瞬间布局高度还停在动画旧值，
-    // scrollHeight 取到 max(内容, 旧高)，缩回永远失败。
+    // 高度变化是瞬时的（不加 CSS 过渡）：面板带 backdrop-blur，逐帧动画高度
+    // 会引发连环重绘，粘贴大段文本时表现为频闪；且动画中的高度会污染
+    // scrollHeight 测量。
     const prevHeight = ta.style.height;
-    const prevTransition = ta.style.transition;
-    ta.style.transition = 'none';
     ta.style.height = '0px';
     const next = Math.min(PROMPT_EDITOR_MAX_H, Math.max(PROMPT_EDITOR_MIN_H, ta.scrollHeight));
     ta.style.height = prevHeight;
-    ta.style.transition = prevTransition;
     setEditorHeight(next);
   }, [text, expanded]);
 
@@ -2042,7 +2040,7 @@ const PromptPanel = ({
           // its default scroll to the textarea.
           onWheel={(event) => event.stopPropagation()}
           className={clsx(
-            'prompt-editor-scroll relative block w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 transition-[height] duration-150 ease-out focus:outline-none motion-reduce:transition-none',
+            'prompt-editor-scroll relative block w-full resize-none overflow-auto bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
             expandedMode ? 'flex-1' : '',
             paddingClass,
           )}
@@ -2163,7 +2161,8 @@ const PromptPanel = ({
             'nodrag nopan flex h-8 w-8 items-center justify-center rounded-full border transition',
             isBusy
               ? 'cursor-not-allowed border-white/10 bg-white/5 text-neutral-400'
-              : 'border-cyan-400/30 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/40',
+              // 参考风格：中性石墨圆钮，不再用青色。
+              : 'border-white/15 bg-white/15 text-neutral-100 hover:bg-white/25',
           )}
         >
           {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
@@ -2183,7 +2182,7 @@ const PromptPanel = ({
           node's bottom-center as it scales. */}
       <div className="relative" style={{ height: 0, marginTop: `${16 * inverseZoom}px` }}>
         <div
-          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#15181d]/92 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
+          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#26272b]/97 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
           style={{
             transform: `translateX(-50%) scale(${inverseZoom})`,
             transformOrigin: 'top center',

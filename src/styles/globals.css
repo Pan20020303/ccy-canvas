@@ -828,3 +828,12 @@ html.theme-light input[type="checkbox"] {
   accent-color: #3b4250;
 }
 
+
+/* 提示面板的石墨底（参考风格换色）+ 中性发送钮的悬停态 */
+html.theme-light .bg-\[\#26272b\]\/97 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .hover\:bg-white\/25:hover {
+  background-color: rgba(0, 0, 0, 0.12) !important;
+}

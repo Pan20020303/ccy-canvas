@@ -1388,6 +1388,30 @@ const InnerCanvas = () => {
     zoomTo(z);
   }, [ZOOM_RULER.max, ZOOM_RULER.min, zoomTo]);
 
+  // 标尺只在缩放时浮现（参考样式）：zoom 变化 → 亮起，静止约 1.3s 后淡出；
+  // 悬停/拖动中不消失。
+  const [zoomRulerVisible, setZoomRulerVisible] = useState(false);
+  const zoomRulerHoverRef = useRef(false);
+  const zoomRulerHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomRulerPrevZoom = useRef(viewport.zoom);
+  useEffect(() => {
+    if (zoomRulerPrevZoom.current === viewport.zoom) return;
+    zoomRulerPrevZoom.current = viewport.zoom;
+    setZoomRulerVisible(true);
+    if (zoomRulerHideTimer.current) clearTimeout(zoomRulerHideTimer.current);
+    const tick = () => {
+      if (zoomRulerHoverRef.current) {
+        zoomRulerHideTimer.current = setTimeout(tick, 600);
+        return;
+      }
+      setZoomRulerVisible(false);
+    };
+    zoomRulerHideTimer.current = setTimeout(tick, 1300);
+    return () => {
+      if (zoomRulerHideTimer.current) clearTimeout(zoomRulerHideTimer.current);
+    };
+  }, [viewport.zoom]);
+
   return (
     <div
       ref={wrapperRef}
@@ -2111,61 +2135,89 @@ const InnerCanvas = () => {
       </button>
       {guideOpen ? <CanvasGuideModal onClose={() => setGuideOpen(false)} /> : null}
 
-      {/* Zoom % indicator — read-only pill at the top center of the
-          canvas. Matches NeoWOW's `极简 · NNN%` chip; the "极简" render
-          mode is deferred until a real implementation lands, so for now
-          we surface zoom alone. */}
-      <div className="pointer-events-none absolute left-1/2 top-4 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/8 bg-black/40 px-3 py-1 text-[11px] text-neutral-400 shadow-lg backdrop-blur-xl tabular-nums">
-        {Math.round(viewport.zoom * 100)}%
-      </div>
-
-      {/* Zoom ruler (reference: the tick ruler under the % chip). Log-scale
-          track from 10% to 400%; the white cursor is the current zoom, the
-          amber tick marks 100%. Click / drag to zoom around the viewport
-          center; double-click snaps back to 100%. */}
-      <div
-        className="absolute left-1/2 top-12 z-30 flex h-7 -translate-x-1/2 cursor-ew-resize touch-none select-none items-center rounded-full border border-white/8 bg-black/40 px-3 shadow-lg backdrop-blur-xl"
-        title={language === 'zh' ? '缩放标尺 — 拖动调整，双击回到 100%' : 'Zoom ruler — drag to zoom, double-click for 100%'}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          zoomRulerSeek(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if ((event.buttons & 1) === 1) zoomRulerSeek(event.clientX);
-        }}
-        onDoubleClick={() => zoomTo(1, { duration: 200 })}
-      >
-        <div ref={zoomRulerTrackRef} className="relative h-full w-[220px]">
-          {Array.from({ length: 41 }, (_, i) => (
-            <span
-              key={i}
-              className={clsx(
-                'absolute top-1/2 w-px -translate-y-1/2',
-                // 白天模式下白色刻度落在白色胶囊上会隐形 — 按主题取色。
-                // 注意用任意值写法：bg-black/30 会被 globals.css 里针对遮罩的
-                // 全局翻白规则（!important）打成白色，刻度就又隐形了。
-                theme === 'light'
-                  ? (i % 8 === 0 ? 'h-[11px] bg-[rgba(0,0,0,0.5)]' : 'h-[6px] bg-[rgba(0,0,0,0.3)]')
-                  : clsx('bg-white/25', i % 8 === 0 ? 'h-[11px] bg-white/40' : 'h-[6px]'),
-              )}
-              style={{ left: `${(i / 40) * 100}%` }}
-            />
-          ))}
-          {/* 100% anchor */}
-          <span
-            className="absolute top-1/2 h-[11px] w-px -translate-y-1/2 bg-amber-500/90"
-            style={{ left: `${zoomToRulerT(1) * 100}%` }}
-          />
-          {/* current zoom cursor */}
-          <span
+      {/* Zoom ruler — 参考样式：裸刻度（无胶囊底），只在缩放时浮现，静止后
+          淡出。琥珀色刻度段 = 100% 锚点到当前缩放之间；百分比标签跟随游标。
+          Log-scale 10%–400%；拖动调整，双击回到 100%。 */}
+      {(() => {
+        const tAnchor = zoomToRulerT(1);
+        const tCur = zoomToRulerT(viewport.zoom);
+        const spanLo = Math.min(tAnchor, tCur) - 1e-6;
+        const spanHi = Math.max(tAnchor, tCur) + 1e-6;
+        return (
+          <div
             className={clsx(
-              'absolute top-1/2 h-[15px] w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full',
-              theme === 'light' ? 'bg-black shadow-[0_0_6px_rgba(0,0,0,0.35)]' : 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]',
+              'absolute left-1/2 top-6 z-30 flex h-12 -translate-x-1/2 cursor-ew-resize touch-none select-none items-end px-3 pb-1 transition-opacity duration-300',
+              zoomRulerVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
             )}
-            style={{ left: `${zoomToRulerT(viewport.zoom) * 100}%` }}
-          />
-        </div>
-      </div>
+            title={language === 'zh' ? '缩放标尺 — 拖动调整，双击回到 100%' : 'Zoom ruler — drag to zoom, double-click for 100%'}
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              zoomRulerSeek(event.clientX);
+            }}
+            onPointerMove={(event) => {
+              if ((event.buttons & 1) === 1) zoomRulerSeek(event.clientX);
+            }}
+            onDoubleClick={() => zoomTo(1, { duration: 200 })}
+            onMouseEnter={() => { zoomRulerHoverRef.current = true; }}
+            onMouseLeave={() => { zoomRulerHoverRef.current = false; }}
+          >
+            <div ref={zoomRulerTrackRef} className="relative h-[18px] w-[260px]">
+              {Array.from({ length: 41 }, (_, i) => {
+                const ti = i / 40;
+                const inSpan = ti >= spanLo && ti <= spanHi;
+                return (
+                  <span
+                    key={i}
+                    className={clsx(
+                      'absolute bottom-0 w-px',
+                      i % 8 === 0 ? 'h-[12px]' : 'h-[7px]',
+                      // 琥珀 = 100% 锚点到当前缩放之间的进度段；其余按主题取暗色。
+                      // 注意任意值写法：bg-black/30 会被浅色主题的遮罩翻白规则打白。
+                      inSpan
+                        ? (theme === 'light' ? 'bg-amber-600/90' : 'bg-amber-400/80')
+                        : theme === 'light'
+                          ? (i % 8 === 0 ? 'bg-[rgba(0,0,0,0.5)]' : 'bg-[rgba(0,0,0,0.3)]')
+                          : (i % 8 === 0 ? 'bg-white/40' : 'bg-white/25'),
+                    )}
+                    style={{ left: `${ti * 100}%` }}
+                  />
+                );
+              })}
+              {/* 100% 锚点 + 小标签 */}
+              <span
+                className="absolute bottom-0 h-[14px] w-px bg-amber-500/90"
+                style={{ left: `${tAnchor * 100}%` }}
+              />
+              <span
+                className={clsx(
+                  'pointer-events-none absolute -top-[7px] -translate-x-1/2 text-[8px] leading-none',
+                  theme === 'light' ? 'text-amber-700/90' : 'text-amber-400/90',
+                )}
+                style={{ left: `${tAnchor * 100}%` }}
+              >
+                100
+              </span>
+              {/* 当前缩放游标 + 跟随的百分比标签 */}
+              <span
+                className={clsx(
+                  'absolute bottom-0 h-[17px] w-[2px] -translate-x-1/2 rounded-full',
+                  theme === 'light' ? 'bg-black shadow-[0_0_6px_rgba(0,0,0,0.35)]' : 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]',
+                )}
+                style={{ left: `${tCur * 100}%` }}
+              />
+              <span
+                className={clsx(
+                  'pointer-events-none absolute -top-[22px] -translate-x-1/2 text-[11px] font-semibold tabular-nums leading-none',
+                  theme === 'light' ? 'text-neutral-900' : 'text-white',
+                )}
+                style={{ left: `${Math.min(94, Math.max(6, tCur * 100))}%` }}
+              >
+                {Math.round(viewport.zoom * 100)}%
+              </span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Canvas stats — node / edge / group counts. Reference placement: a
           bare hairline strip tucked into the bottom-right corner, directly
