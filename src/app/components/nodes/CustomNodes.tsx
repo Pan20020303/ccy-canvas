@@ -3788,32 +3788,42 @@ function AngleActionEditor({
           </button>
         ))}
       </div>
-      <div className="grid gap-5 md:grid-cols-[240px_1fr]">
+      {/* UI 适配:窄窗(<1024px)单列堆叠,宽窗才左右分栏,右列不再被挤裁。 */}
+      <div className="grid gap-5 lg:grid-cols-[240px_1fr]">
         <div
           onPointerDown={onSpherePointerDown}
           onPointerMove={onSpherePointerMove}
           onPointerUp={onSpherePointerUp}
           onPointerCancel={onSpherePointerUp}
-          className="relative flex h-60 cursor-grab touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-950/90 active:cursor-grabbing"
+          className="relative flex h-60 cursor-grab touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-800/80 to-slate-950/90 [perspective:720px] active:cursor-grabbing"
         >
-          <div className="pointer-events-none absolute h-44 w-44 rounded-full border border-white/20" />
-          <div className="pointer-events-none absolute h-44 w-28 rounded-[999px] border border-white/14" />
-          <div className="pointer-events-none absolute h-28 w-44 rounded-[999px] border border-white/12" />
-          <div className="pointer-events-none absolute h-px w-44 bg-white/16" />
-          <div className="pointer-events-none absolute h-44 w-px bg-white/16" />
-          {/* Subject stays centered; 景别缩放 (zoom) scales it. */}
+          {/* 真 3D 场景(2026-07 反馈):preserve-3d 轨道环 + 主体卡片随
+              yaw/pitch 立体旋转,拖拽即环绕。 */}
           <div
-            className="pointer-events-none relative h-24 w-20 overflow-hidden rounded-xl border border-white/25 bg-black/35 shadow-[0_18px_45px_rgba(0,0,0,0.4)] transition-transform duration-150"
-            style={{ transform: `scale(${frameScale})` }}
+            className="pointer-events-none absolute inset-0 flex items-center justify-center transition-transform duration-150 [transform-style:preserve-3d]"
+            style={{ transform: `rotateX(${(-pitch * 0.9).toFixed(1)}deg) rotateY(${(yaw * 0.9).toFixed(1)}deg)` }}
           >
-            <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+            {/* 三条正交轨道环 —— 赤道 / 子午 / 正面 */}
+            <div className="absolute h-44 w-44 rounded-full border border-white/22 [transform:rotateX(90deg)]" />
+            <div className="absolute h-44 w-44 rounded-full border border-white/12 [transform:rotateY(90deg)]" />
+            <div className="absolute h-44 w-44 rounded-full border border-white/16" />
+            <div className="absolute h-px w-44 bg-white/14 [transform:rotateX(90deg)]" />
+            {/* 主体卡片:居中,景别缩放控制大小;随场景一起 3D 翻转 */}
+            <div
+              className="relative h-24 w-20 overflow-hidden rounded-xl border border-white/25 bg-black/35 shadow-[0_18px_45px_rgba(0,0,0,0.4)] transition-transform duration-150 [backface-visibility:hidden]"
+              style={{ transform: `scale(${frameScale})` }}
+            >
+              <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+            </div>
+            {/* 背面兜底:翻过 90° 后显示卡片背板,避免镜像穿帮 */}
+            <div
+              className="absolute h-24 w-20 rounded-xl border border-white/15 bg-slate-900/90 [backface-visibility:hidden] [transform:rotateY(180deg)]"
+              style={{ scale: String(frameScale) }}
+            />
           </div>
-          {/* Camera marker orbiting the subject, driven by yaw/pitch. */}
-          <div
-            className="pointer-events-none absolute z-10 transition-transform duration-150"
-            style={{ transform: `translate(${camX}px, ${camY}px) scale(${camScale})`, opacity: camOpacity }}
-          >
-            <div className="flex h-6 w-7 items-center justify-center rounded-[6px] border border-cyan-200/50 bg-neutral-900 shadow-[0_6px_16px_rgba(0,0,0,0.55)]">
+          {/* 相机标记 = 观察者位置,固定在画面中央(场景绕它转)。 */}
+          <div className="pointer-events-none absolute z-10" style={{ opacity: camOpacity }}>
+            <div className="flex h-6 w-7 items-center justify-center rounded-[6px] border border-cyan-200/50 bg-neutral-900/95 shadow-[0_6px_16px_rgba(0,0,0,0.55)]">
               <div className="h-3 w-3 rounded-full border border-cyan-200/60 bg-neutral-600" />
             </div>
             <div className="mx-auto -mt-px h-1.5 w-2 rounded-b-[3px] bg-neutral-900" />
@@ -3924,7 +3934,8 @@ function LightingActionEditor({
   };
 
   return (
-    <div className="grid gap-5 md:grid-cols-[240px_1fr]">
+    // UI 适配:窄窗(<1024px)单列堆叠,宽窗才左右分栏。
+    <div className="grid gap-5 lg:grid-cols-[240px_1fr]">
       <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/20 p-1 text-xs">
           {(['transparent', 'front'] as const).map((view) => (
@@ -3950,19 +3961,40 @@ function LightingActionEditor({
           onPointerUp={onLightPointerUp}
           onPointerCancel={onLightPointerUp}
           className={clsx(
-            'relative flex h-48 touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-200/10 to-slate-950',
+            'relative flex h-48 touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-200/10 to-slate-950 [perspective:640px]',
             smart ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
           )}
         >
-          <div className="pointer-events-none absolute h-40 w-40 rounded-full border border-white/18 bg-[radial-gradient(circle_at_35%_25%,rgba(255,255,255,0.35),rgba(148,163,184,0.13)_42%,rgba(15,23,42,0.45)_100%)]" />
-          <div className="pointer-events-none absolute h-40 w-px bg-white/10" />
-          <div className="pointer-events-none absolute h-px w-40 bg-white/10" />
-          <span
-            className="pointer-events-none absolute z-10 h-3.5 w-3.5 rounded-full border border-white/50 bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)] transition-transform duration-150"
-            style={{ transform: `translate(${dotX}px, ${dotY}px)` }}
-          />
-          <div className="pointer-events-none relative h-24 w-20 -rotate-6 overflow-hidden rounded-lg border border-white/20 bg-black/35 opacity-80 shadow-xl">
-            <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+          {/* 真 3D 光照台(2026-07 反馈):透视模式下卡片立体倾斜、光点浮在
+              球面之上(translateZ),高光渐变跟随主光源方向;正面模式回到平视。 */}
+          <div
+            className="pointer-events-none absolute inset-0 flex items-center justify-center transition-transform duration-200 [transform-style:preserve-3d]"
+            style={{ transform: (draft.lightingView ?? 'transparent') === 'transparent' ? 'rotateX(14deg) rotateY(-20deg)' : 'none' }}
+          >
+            <div className="absolute h-40 w-40 rounded-full border border-white/18 bg-[radial-gradient(circle_at_35%_25%,rgba(255,255,255,0.35),rgba(148,163,184,0.13)_42%,rgba(15,23,42,0.45)_100%)]" />
+            <div className="absolute h-40 w-40 rounded-full border border-white/10 [transform:rotateX(90deg)]" />
+            <div className="absolute h-40 w-px bg-white/10" />
+            <div className="absolute h-px w-40 bg-white/10" />
+            <div className="relative h-24 w-20 overflow-hidden rounded-lg border border-white/20 bg-black/35 shadow-xl [transform:translateZ(12px)]">
+              <ResilientImage src={sourceUrl} alt="" className="h-full w-full object-cover" zh={language === 'zh'} />
+              {/* 高光层:位置=主光源方向,强度=亮度,颜色=灯光色 */}
+              <div
+                className="absolute inset-0 transition-opacity duration-200"
+                style={{
+                  opacity: 0.25 + (brightness / 100) * 0.55,
+                  background: `radial-gradient(circle at ${50 + lightAnchor.x * 42}% ${50 + lightAnchor.y * 42}%, ${draft.lightingColor ?? '#ffffff'}66, transparent 62%)`,
+                }}
+              />
+            </div>
+            {/* 光点:浮在球面上方 40px 的 3D 位置 */}
+            <span
+              className="absolute z-10 h-3.5 w-3.5 rounded-full border border-white/50 transition-transform duration-150"
+              style={{
+                transform: `translate3d(${dotX}px, ${dotY}px, 40px)`,
+                background: draft.lightingColor ?? '#ffffff',
+                boxShadow: `0 0 22px ${draft.lightingColor ?? '#ffffff'}`,
+              }}
+            />
           </div>
         </div>
       </div>
@@ -4352,7 +4384,8 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
       compareOpen: false,
       draft: {
         prompt: basePrompt,
-        model: action === 'panorama' ? defaultImageModel : undefined,
+        // 精修编辑器(全景/多角度/打光)都可以在底部选模型,统一给默认值。
+        model: defaultImageModel,
         outputCount: action === 'angles' ? 3 : 1,
         expandDirection: action === 'panorama' ? 'horizontal' : 'both',
         anglePreset: action === 'angles' ? 'custom' : undefined,
@@ -4476,6 +4509,7 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
           // The backend can still collapse to one output if the provider ignores n.
           await spawnDerivedNode({
             prompt: anglePrompt,
+            model: draft.model,
             outputCount: 1,
             referenceImages: [sourceUrl],
             anglePreset: draft.anglePreset,
@@ -4484,6 +4518,7 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
       } else if (session.action === 'lighting') {
         await spawnDerivedNode({
           prompt: buildLightingEditorPrompt(draft, language),
+          model: draft.model,
           outputCount: 1,
           referenceImages: [sourceUrl],
           lightingPreset: draft.lightingPreset,
@@ -4695,7 +4730,8 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
 
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) closeSession(); }}>
         <DialogContent className={clsx(
-          'border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)]',
+          // UI 适配:限高 + 内滚动,小窗口/低分辨率下弹窗不再溢出屏幕。
+          'max-h-[88vh] overflow-y-auto border-white/10 bg-[#111318] text-neutral-100 shadow-[0_30px_90px_rgba(0,0,0,0.55)]',
           isPrecisionEditor ? 'max-w-4xl' : 'max-w-3xl',
         )}>
           <DialogHeader>
@@ -4740,15 +4776,41 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
               </div>
             )
           ) : null}
-          <DialogFooter className={clsx(isPrecisionEditor && 'items-center justify-between sm:justify-between')}>
+          <DialogFooter className={clsx(isPrecisionEditor && 'flex-wrap items-center gap-2 sm:justify-between')}>
             {isPrecisionEditor ? (
-              <Button variant="ghost" onClick={resetEditorDraft} className="mr-auto text-neutral-300 hover:bg-white/[0.08] hover:text-white">
-                <RotateCcw className="mr-2 h-4 w-4" />
-                {language === 'zh' ? '重置参数' : 'Reset'}
-              </Button>
+              <div className="mr-auto flex min-w-0 items-center gap-1.5">
+                <Button variant="ghost" onClick={resetEditorDraft} className="shrink-0 text-neutral-300 hover:bg-white/[0.08] hover:text-white">
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  {language === 'zh' ? '重置参数' : 'Reset'}
+                </Button>
+                {/* 模型选择(2026-07 反馈:底部可选执行模型) */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" className="max-w-[220px] border-white/12 bg-white/[0.04] text-xs text-neutral-200 hover:bg-white/[0.08]">
+                      <span className="truncate">{session?.draft.model || defaultImageModel}</span>
+                      <ChevronDown className="ml-1.5 h-3 w-3 shrink-0 opacity-60" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto border-white/10 bg-[#16181d] text-neutral-200">
+                    {imageModelOptions.map((model) => (
+                      <DropdownMenuItem
+                        key={model}
+                        onClick={() => { if (session) setSession({ ...session, draft: { ...session.draft, model } }); }}
+                        className={clsx('text-xs', (session?.draft.model || defaultImageModel) === model && 'text-cyan-300')}
+                      >
+                        {model}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ) : null}
-            <div className="flex items-center gap-2">
-              {isPrecisionEditor ? <span className="text-xs text-neutral-400">1</span> : null}
+            <div className="flex shrink-0 items-center gap-2">
+              {isPrecisionEditor ? (
+                <span className="flex items-center gap-1 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] text-amber-200/90" title={language === 'zh' ? '每次生成消耗' : 'Cost per generation'}>
+                  ✦ 1
+                </span>
+              ) : null}
               <Button variant="outline" onClick={closeSession}>{language === 'zh' ? '取消' : 'Cancel'}</Button>
               <Button onClick={() => void handleGenerate()} disabled={busy}>
                 {busy ? (language === 'zh' ? '生成中...' : 'Working...') : (language === 'zh' ? '开始生成' : 'Generate')}
