@@ -516,6 +516,11 @@ const InnerCanvas = () => {
       // Never hijack keys while the user is typing in an input/textarea/editor.
       if (isEditableTarget(event.target)) return;
 
+      // 导演台 overlay 打开时,画布全局快捷键整体让位 —— 尤其 Backspace/
+      // Delete 在 overlay 里删的是选中的演员/道具/机位,落到这里会把导演台
+      // 节点本身删掉。
+      if (useStore.getState().directorStageNodeId) return;
+
       // ── Delete / Backspace ─────────────────────────────────────────────
       // Office-standard: Del removes the current selection. A selected group
       // takes priority (its members stay on canvas); otherwise remove the

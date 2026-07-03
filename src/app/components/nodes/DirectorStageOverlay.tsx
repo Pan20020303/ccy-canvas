@@ -6,7 +6,7 @@ import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.j
 import {
   X, Camera, Loader2, Move3D, RotateCw, Maximize2, Plus, Video as VideoIcon, Trash2, UserPlus,
   RefreshCw, PersonStanding, Settings2, ChevronDown, Eye, Lock,
-  ListTree, Boxes, HelpCircle, Search, Users, User,
+  ListTree, Boxes, HelpCircle, Search, Users, User, Globe2, Type, Monitor,
 } from 'lucide-react';
 import * as THREE from 'three';
 
@@ -26,6 +26,8 @@ import { PROP_DEFS, PropMesh, propDefOf, type PropTransform } from './director-p
 
 type CaptureFn = () => string | null;
 type MultiCaptureFn = (cams: CameraSpec[]) => Promise<Record<string, string>>;
+/** 按机位 spec 离屏出图(比例 = cam.aspect,不动主视口相机)。 */
+type SpecCaptureFn = (cam: CameraSpec, opts?: { longSide?: number }) => string | null;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '21:9';
 
@@ -67,6 +69,12 @@ function bodyTypeOf(assetId: string) {
   return BODY_TYPES[assetId] ?? BODY_TYPES['mannequin-standard'];
 }
 
+// 2026-07 反馈:自带的占位 GLB(5 份同一个低质量贴图模型)观感差,而且它的
+// 绑定姿态是 T-pose —— 姿势预设是相对 rest 的偏移,套在它身上等于没动作。
+// 默认关闭,统一走程序化雕塑灰素体(关节/ROM 全部可用);换上高质量带骨骼
+// 模型后再打开这个开关。
+const USE_SKINNED_GLB = false;
+
 type CameraSpec = {
   id: string;
   label: string;
@@ -74,6 +82,9 @@ type CameraSpec = {
   lookAt: [number, number, number];
   fov: number;
   aspect: AspectRatio;
+  /** 荷兰角(绕视轴滚转,弧度)。主视口的 CameraControls 不支持 roll,
+   *  只在离屏出图 / 实时预览里生效。 */
+  roll?: number;
   /** "应用视图到此机位"时拍下的快照. 每个机位只保留一份,
    *  下次再 apply 直接覆盖. 显示在右下角面板里. */
   previewImage?: string;
@@ -106,7 +117,9 @@ const DEFAULT_ACTOR: ActorTransform = {
   position: [0, 0, 0],
   rotationY: 0,
   scale: 1,
-  pose: DEFAULT_POSE,
+  // 自然站立(双臂下垂),不是 T-pose —— 数值同 POSE_PRESETS['站立']
+  // (它声明在下面,模块顶层引用会 TDZ,这里直接写字面量)。
+  pose: { ...DEFAULT_POSE, shoulderL: [0, 0, -1.4], shoulderR: [0, 0, 1.4] },
 };
 
 const DEFAULT_CAMERA: CameraSpec = {
@@ -125,6 +138,93 @@ function aspectRatioToCss(ar: AspectRatio): string {
   const [w, h] = ar.split(':');
   return `${w} / ${h}`;
 }
+
+/** "16:9" → [16, 9](数值)。 */
+function aspectRatioWH(ar: AspectRatio): [number, number] {
+  const [w, h] = ar.split(':').map(Number);
+  return [w, h];
+}
+
+/** ====== 舞台环境设置(全景背景 / 标签)——持久化在 node.data.stageSettings ====== */
+
+type StageSettings = {
+  skyColor: string;
+  /** 地面(网格 + 轴线)不透明度 0..1 —— 通过把网格色向天空色靠拢来模拟。 */
+  groundOpacity: number;
+  /** 地面整体抬升 / 下沉(米)。 */
+  groundY: number;
+  groundVisible: boolean;
+  labelsVisible: boolean;
+  /** 标签字号(参考滑杆 10..32,默认 18,按 18 为 1x 缩放浮标)。 */
+  labelFontSize: number;
+  /** 机位参考线 —— 从相机标记画出视锥框线。 */
+  cameraGuides: boolean;
+};
+
+const DEFAULT_STAGE_SETTINGS: StageSettings = {
+  skyColor: '#050507',
+  groundOpacity: 1,
+  groundY: 0,
+  groundVisible: true,
+  labelsVisible: true,
+  labelFontSize: 18,
+  cameraGuides: false,
+};
+
+// 天空色板(参考图两排:深色系 + 亮色系)。
+const SKY_SWATCHES = [
+  '#050507', '#0b1120', '#101a2e', '#1c2440', '#2a2350',
+  '#3a3f4a', '#9fb6c9', '#7ec8e3', '#dfe5ea', '#ffffff',
+];
+
+/** 线性混合两个 hex 颜色, t=0 → a, t=1 → b。 */
+function mixHex(a: string, b: string, t: number): string {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ch = (sa: number, sb: number) => Math.round(sa + (sb - sa) * t);
+  const r = ch((pa >> 16) & 255, (pb >> 16) & 255);
+  const g = ch((pa >> 8) & 255, (pb >> 8) & 255);
+  const bl = ch(pa & 255, pb & 255);
+  return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, '0')}`;
+}
+
+/** ====== 机位预设(参考:正面中景 / 过肩 / 荷兰角……) ======
+ *  az: 方位角(度), 0 = 人物正面(+Z 方向), 90 = 人物左侧;
+ *  el: 仰角(度), 正值从上往下俯拍, 负值贴地仰拍;
+ *  dist: 与焦点(演员质心)的距离(米); targetY: 目光落点高度(默认胸口 1.1m). */
+type CameraPresetDef = {
+  id: string;
+  zh: string;
+  en: string;
+  az: number;
+  el: number;
+  dist: number;
+  fov: number;
+  targetY?: number;
+  /** 荷兰角(度)。 */
+  roll?: number;
+  /** POV 第一视角 —— 直接站在焦点人物头部朝前看,忽略球面参数。 */
+  pov?: boolean;
+};
+
+const CAMERA_PRESETS: CameraPresetDef[] = [
+  { id: 'front-mid',   zh: '正面中景',      en: 'Front medium',   az: 0,    el: 4,   dist: 2.6, fov: 42 },
+  { id: 'front-close', zh: '正面特写',      en: 'Front close-up', az: 0,    el: 2,   dist: 1.2, fov: 34, targetY: 1.5 },
+  { id: 'front-full',  zh: '正面全景',      en: 'Front wide',     az: 0,    el: 6,   dist: 5.2, fov: 50 },
+  { id: 'side-track',  zh: '侧面跟拍',      en: 'Side tracking',  az: 90,   el: 3,   dist: 2.6, fov: 45 },
+  { id: 'side-far',    zh: '侧面远景',      en: 'Side long',      az: 90,   el: 6,   dist: 6.5, fov: 48 },
+  { id: 'back-mid',    zh: '背面中景',      en: 'Back medium',    az: 180,  el: 4,   dist: 2.6, fov: 42 },
+  { id: 'top-full',    zh: '俯拍全景',      en: 'High wide',      az: 15,   el: 52,  dist: 6,   fov: 50 },
+  { id: 'top-45',      zh: '45° 俯拍',     en: '45° high',       az: 45,   el: 45,  dist: 4,   fov: 46 },
+  { id: 'low-up',      zh: '低角度仰拍',    en: 'Low angle',      az: 0,    el: -18, dist: 2.4, fov: 45, targetY: 1.35 },
+  { id: 'low-wide',    zh: '低角度广角',    en: 'Low wide',       az: 12,   el: -14, dist: 1.9, fov: 68, targetY: 1.3 },
+  { id: 'ots-left',    zh: '过肩镜头',      en: 'Over-shoulder',  az: 152,  el: 6,   dist: 1.5, fov: 40, targetY: 1.45 },
+  { id: 'ots-right',   zh: '过肩镜头 (右)', en: 'OTS right',      az: -152, el: 6,   dist: 1.5, fov: 40, targetY: 1.45 },
+  { id: 'birdseye',    zh: '鸟瞰',          en: "Bird's-eye",     az: 0,    el: 78,  dist: 7,   fov: 50 },
+  { id: 'dutch',       zh: '荷兰角',        en: 'Dutch angle',    az: 24,   el: 5,   dist: 2.4, fov: 44, roll: 14 },
+  { id: 'far-track',   zh: '远景跟踪',      en: 'Long tracking',  az: 35,   el: 10,  dist: 8.5, fov: 42, targetY: 1.0 },
+  { id: 'pov',         zh: 'POV 第一视角',  en: 'POV',            az: 0,    el: 0,   dist: 0,   fov: 62, pov: true },
+];
 
 /** 姿势预设 —— 用 Math.PI 表达的关节欧拉角.
  *
@@ -145,9 +245,9 @@ function aspectRatioToCss(ar: AspectRatio): string {
  *         hip.x   < 0  → 大腿往身前抬(屈髋)
  *         knee.x  > 0  → 小腿往后折(屈膝)
  *
- *  procedural 回落素体的 bind pose 是 arms-down,在它上面套这些值会有
- *  视觉偏差 —— 但 procedural 现在只是"GLB 缺失时的应急显示",不是主要
- *  目标体.
+ *  procedural 素体(当前默认渲染路径, USE_SKINNED_GLB=false)的建模 rest
+ *  是 arms-down、肩部旋向与 Mixamo 镜像 —— Mannequin 内部做了一次基准
+ *  换算(shL/shR/elL/elR),预设数值本身保持 T-pose 基准约定不动.
  */
 const PI = Math.PI;
 const ARMS_DOWN_L: [number, number, number] = [0, 0, -1.4];  // ≈ -80°, 左臂从 T-pose 收到身侧
@@ -294,7 +394,8 @@ const Mannequin = forwardRef<THREE.Group, {
   actor: ActorTransform;
   selected: boolean;
   onSelect: (id: string, obj: THREE.Object3D) => void;
-}>(function Mannequin({ actor, selected, onSelect }, ref) {
+  labelScale?: number;
+}>(function Mannequin({ actor, selected, onSelect, labelScale = 1 }, ref) {
   const groupRef = useRef<THREE.Group>(null!);
   const setRef = useCallback((g: THREE.Group | null) => {
     groupRef.current = g!;
@@ -308,6 +409,14 @@ const Mannequin = forwardRef<THREE.Group, {
   };
 
   const p = { ...DEFAULT_POSE, ...(actor.pose ?? {}) };
+  // ★ 基准换算 ★ 预设/滑杆的数值约定沿用 Mixamo T-pose 基准(shoulder z
+  // ∓1.4 = 双臂下垂、elbow x>0 = 屈肘)。程序化素体的建模 rest 是「双臂
+  // 自然下垂、手臂沿 -Y」,肩部零点和旋向都不同 —— 在应用层换算一次,让
+  // 同一份预设在数据层语义不变(2026-07 反馈:站立在素体上显示成 T-pose)。
+  const shL: [number, number, number] = [p.shoulderL[0], p.shoulderL[1], -(p.shoulderL[2] + 1.4)];
+  const shR: [number, number, number] = [p.shoulderR[0], p.shoulderR[1], -(p.shoulderR[2] - 1.4)];
+  const elL: [number, number, number] = [-p.elbowL[0], p.elbowL[1], p.elbowL[2]];
+  const elR: [number, number, number] = [-p.elbowR[0], p.elbowR[1], p.elbowR[2]];
   // 体型 → 内部比例 (宽 / 高 / 头大小放大系数). 这是相对 actor.scale 之上
   // 再叠加的一层 "形态调整",让女性 / 儿童 / 壮实 / 纤细看起来不像同一
   // 个人盖印章.
@@ -371,13 +480,13 @@ const Mannequin = forwardRef<THREE.Group, {
                 <sphereGeometry args={[0.075, 16, 16]} />
                 <meshStandardMaterial color={bodyColorLight} roughness={0.5} />
               </mesh>
-              <Billboard text={actor.label} position={[0, 0.4, 0]} />
+              <Billboard text={actor.label} position={[0, 0.4, 0]} scale={labelScale} />
             </group>
           </group>
 
           {/* 左肩 + 左臂 —— 单段上臂胶囊 (无凸起肌肉) + 肘关节球 + 前臂
               + 手. 主体用 capsule 而非 cylinder, 两端自然圆润. */}
-          <group position={[-0.18, 0.22, 0]} rotation={p.shoulderL}>
+          <group position={[-0.18, 0.22, 0]} rotation={shL}>
             {/* 三角肌大球 */}
             <mesh castShadow scale={[1.15, 1, 1.05]}>
               <sphereGeometry args={[0.062, 16, 16]} />
@@ -388,7 +497,7 @@ const Mannequin = forwardRef<THREE.Group, {
               <capsuleGeometry args={[0.045, 0.28, 6, 16]} />
               <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
-            <group position={[0, -0.36, 0]} rotation={p.elbowL}>
+            <group position={[0, -0.36, 0]} rotation={elL}>
               <mesh castShadow>
                 <sphereGeometry args={[0.04, 14, 14]} />
                 <meshStandardMaterial color={bodyColor} roughness={0.5} />
@@ -413,7 +522,7 @@ const Mannequin = forwardRef<THREE.Group, {
           </group>
 
           {/* 右肩 + 右臂 (镜像) */}
-          <group position={[0.18, 0.22, 0]} rotation={p.shoulderR}>
+          <group position={[0.18, 0.22, 0]} rotation={shR}>
             <mesh castShadow scale={[1.15, 1, 1.05]}>
               <sphereGeometry args={[0.062, 16, 16]} />
               <meshStandardMaterial color={bodyColor} roughness={0.5} />
@@ -422,7 +531,7 @@ const Mannequin = forwardRef<THREE.Group, {
               <capsuleGeometry args={[0.045, 0.28, 6, 16]} />
               <meshStandardMaterial color={bodyColor} roughness={0.55} />
             </mesh>
-            <group position={[0, -0.36, 0]} rotation={p.elbowR}>
+            <group position={[0, -0.36, 0]} rotation={elR}>
               <mesh castShadow>
                 <sphereGeometry args={[0.04, 14, 14]} />
                 <meshStandardMaterial color={bodyColor} roughness={0.5} />
@@ -608,7 +717,8 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
   actor: ActorTransform;
   selected: boolean;
   onSelect: (id: string, obj: THREE.Object3D) => void;
-}>(function SkinnedMannequin({ actor, selected, onSelect }, ref) {
+  labelScale?: number;
+}>(function SkinnedMannequin({ actor, selected, onSelect, labelScale = 1 }, ref) {
   const bt = bodyTypeOf(actor.assetId);
   // useGLTF 会 Suspense, 调用方需要在 <Suspense> 里包.
   const { scene } = useGLTF(bt.glbUrl);
@@ -674,13 +784,13 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
           side={THREE.DoubleSide}
         />
       </mesh>
-      <Billboard text={actor.label} position={[0, 1.95, 0]} />
+      <Billboard text={actor.label} position={[0, 1.95, 0]} scale={labelScale} />
     </group>
   );
 });
 
-/** 文字浮标 —— 永远朝向相机. */
-function Billboard({ text, position }: { text: string; position: [number, number, number] }) {
+/** 文字浮标 —— 永远朝向相机. scale ≤ 0 表示隐藏(标签设置里的开关/字号都走它). */
+function Billboard({ text, position, scale = 1 }: { text: string; position: [number, number, number]; scale?: number }) {
   const texture = useMemo(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 256;
@@ -697,8 +807,9 @@ function Billboard({ text, position }: { text: string; position: [number, number
     tex.needsUpdate = true;
     return tex;
   }, [text]);
+  if (scale <= 0) return null;
   return (
-    <sprite position={position} scale={[0.45, 0.11, 1]}>
+    <sprite position={position} scale={[0.45 * scale, 0.11 * scale, 1]}>
       <spriteMaterial map={texture} transparent depthTest={false} />
     </sprite>
   );
@@ -711,7 +822,11 @@ const CameraMarker = forwardRef<THREE.Group, {
   isActive: boolean;
   selected: boolean;
   onSelect: (id: string, obj: THREE.Object3D) => void;
-}>(function CameraMarker({ camera: cam, isActive, selected, onSelect }, ref) {
+  /** 标签浮标缩放(≤0 隐藏)。 */
+  labelScale?: number;
+  /** 机位参考线 —— 画出到 lookAt 距离处的视锥框线。 */
+  showGuide?: boolean;
+}>(function CameraMarker({ camera: cam, isActive, selected, onSelect, labelScale = 1, showGuide = false }, ref) {
   const gRef = useRef<THREE.Group>(null!);
   const setRef = useCallback((g: THREE.Group | null) => {
     gRef.current = g!;
@@ -725,6 +840,26 @@ const CameraMarker = forwardRef<THREE.Group, {
     const target = new THREE.Vector3(...cam.lookAt);
     gRef.current.lookAt(target);
   }, [cam.lookAt]);
+
+  // 视锥参考线:原点 → lookAt 距离处按 fov/aspect 张开的取景框 4 角 + 框线。
+  // group 已经 lookAt 对准目标(本地 +Z 朝向 lookAt),在本地系里画即可。
+  const guideGeom = useMemo(() => {
+    if (!showGuide) return null;
+    const d = Math.max(0.2, new THREE.Vector3(...cam.lookAt).distanceTo(new THREE.Vector3(...cam.position)));
+    const hh = Math.tan((cam.fov * PI) / 360) * d;
+    const [aw, ah] = aspectRatioWH(cam.aspect);
+    const hw = hh * (aw / ah);
+    const corners: Array<[number, number, number]> = [
+      [-hw, -hh, d], [hw, -hh, d], [hw, hh, d], [-hw, hh, d],
+    ];
+    const pts: number[] = [];
+    for (const c of corners) pts.push(0, 0, 0, ...c);
+    for (let i = 0; i < 4; i++) pts.push(...corners[i], ...corners[(i + 1) % 4]);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    return g;
+  }, [showGuide, cam.fov, cam.aspect, cam.lookAt, cam.position]);
+  useEffect(() => () => { guideGeom?.dispose(); }, [guideGeom]);
 
   if (isActive) return null;
 
@@ -755,8 +890,14 @@ const CameraMarker = forwardRef<THREE.Group, {
         <boxGeometry args={[0.08, 0.06, 0.08]} />
         <meshStandardMaterial color="#1a1d22" roughness={0.5} />
       </mesh>
+      {/* 机位参考线(标签设置里开关) */}
+      {guideGeom ? (
+        <lineSegments geometry={guideGeom}>
+          <lineBasicMaterial color="#f59e0b" transparent opacity={0.35} depthWrite={false} />
+        </lineSegments>
+      ) : null}
       {/* 标签 */}
-      <Billboard text={cam.label} position={[0, 0.3, 0]} />
+      <Billboard text={cam.label} position={[0, 0.3, 0]} scale={labelScale} />
     </group>
   );
 });
@@ -785,22 +926,26 @@ function SceneBridge({ sceneRef }: { sceneRef: React.MutableRefObject<THREE.Scen
 }
 
 /** 把 r3f 内部的 toDataURL 暴露给 overlay 外部.
- *  - `singleRef` 当前主视口截一帧 (用于"应用到机位"等流程)
- *  - `multiRef` 接收机位列表,**逐机位 setLookAt + 渲染 + 截图**,返回每个机位的 DataURL */
+ *  - `singleRef` 当前主视口截一帧 (用于"应用到机位" / 关闭时的封面快照)
+ *  - `specRef`   按 CameraSpec 离屏出图:同步把画布缓冲改成目标比例尺寸 →
+ *    用独立 PerspectiveCamera(支持荷兰角 roll)渲染 → toDataURL → 恢复主视口.
+ *    整个过程在同一个任务里完成,中间没有 paint,主视口不会闪也不会被拽走.
+ *  - `multiRef`  逐机位调 specRef,导出图比例 = 各机位自己的 aspect. */
 function CaptureBridge({
   singleRef,
   multiRef,
-  cameraControlsRef,
+  specRef,
 }: {
   singleRef: React.MutableRefObject<CaptureFn | null>;
   multiRef: React.MutableRefObject<MultiCaptureFn | null>;
-  cameraControlsRef: React.MutableRefObject<any>;
+  specRef: React.MutableRefObject<SpecCaptureFn | null>;
 }) {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
 
   useEffect(() => {
+    const tempCam = new THREE.PerspectiveCamera();
     singleRef.current = () => {
       gl.render(scene, camera);
       try {
@@ -810,39 +955,55 @@ function CaptureBridge({
         return null;
       }
     };
-    multiRef.current = async (cams: CameraSpec[]) => {
-      const cc = cameraControlsRef.current;
-      const persp = camera as THREE.PerspectiveCamera;
-      const results: Record<string, string> = {};
-      if (!cc) return results;
-      // 记录原始 FOV 以便最后恢复.
-      const originalFov = persp.fov;
-      for (const cam of cams) {
-        cc.setLookAt(
-          cam.position[0], cam.position[1], cam.position[2],
-          cam.lookAt[0], cam.lookAt[1], cam.lookAt[2],
-          false,
-        );
-        persp.fov = cam.fov;
-        persp.updateProjectionMatrix();
-        // 等一帧让 CameraControls 内部完成更新.
-        await new Promise<void>((r) => requestAnimationFrame(() => r()));
-        gl.render(scene, persp);
-        try {
-          results[cam.id] = gl.domElement.toDataURL('image/png');
-        } catch (err) {
-          console.error('[DirectorStage] multi-capture failed for', cam.id, err);
-        }
+    const renderSpec: SpecCaptureFn = (cam, opts) => {
+      const longSide = opts?.longSide ?? 1280;
+      const [aw, ah] = aspectRatioWH(cam.aspect);
+      const w = aw >= ah ? longSide : Math.max(2, Math.round((longSide * aw) / ah));
+      const h = aw >= ah ? Math.max(2, Math.round((longSide * ah) / aw)) : longSide;
+      const prevSize = new THREE.Vector2();
+      gl.getSize(prevSize);
+      const prevPixelRatio = gl.getPixelRatio();
+      try {
+        // updateStyle=false:只换 drawing buffer,CSS 尺寸不变 → 布局不动。
+        gl.setPixelRatio(1);
+        gl.setSize(w, h, false);
+        tempCam.position.set(cam.position[0], cam.position[1], cam.position[2]);
+        tempCam.up.set(0, 1, 0);
+        tempCam.lookAt(cam.lookAt[0], cam.lookAt[1], cam.lookAt[2]);
+        if (cam.roll) tempCam.rotateZ(cam.roll);
+        tempCam.fov = cam.fov;
+        tempCam.aspect = w / h;
+        tempCam.near = 0.05;
+        tempCam.far = 200;
+        tempCam.updateProjectionMatrix();
+        tempCam.updateMatrixWorld();
+        gl.render(scene, tempCam);
+        return gl.domElement.toDataURL('image/png');
+      } catch (err) {
+        console.error('[DirectorStage] spec capture failed for', cam.id, err);
+        return null;
+      } finally {
+        gl.setPixelRatio(prevPixelRatio);
+        gl.setSize(prevSize.x, prevSize.y, false);
+        // 立刻把主视口画回来,下一次 paint 不会闪机位画面。
+        gl.render(scene, camera);
       }
-      persp.fov = originalFov;
-      persp.updateProjectionMatrix();
+    };
+    specRef.current = renderSpec;
+    multiRef.current = async (cams: CameraSpec[]) => {
+      const results: Record<string, string> = {};
+      for (const cam of cams) {
+        const img = renderSpec(cam, { longSide: 1280 });
+        if (img) results[cam.id] = img;
+      }
       return results;
     };
     return () => {
       singleRef.current = null;
       multiRef.current = null;
+      specRef.current = null;
     };
-  }, [gl, scene, camera, singleRef, multiRef, cameraControlsRef]);
+  }, [gl, scene, camera, singleRef, multiRef, specRef]);
 
   return null;
 }
@@ -894,6 +1055,17 @@ export function DirectorStageOverlay() {
   const [assetQuery, setAssetQuery] = useState('');
   const [helpOpen, setHelpOpen] = useState(false);
 
+  // 舞台环境设置(全景背景 / 标签) + 底栏弹层。老节点没有 stageSettings,
+  // 用默认值补齐;关闭和确认构图时都会落盘。
+  const [stageSettings, setStageSettings] = useState<StageSettings>(() => ({
+    ...DEFAULT_STAGE_SETTINGS,
+    ...((data as { stageSettings?: Partial<StageSettings> }).stageSettings ?? {}),
+  }));
+  const patchStageSettings = useCallback((p: Partial<StageSettings>) => {
+    setStageSettings((s) => ({ ...s, ...p }));
+  }, []);
+  const [envPopover, setEnvPopover] = useState<'panorama' | 'labels' | 'aspect' | null>(null);
+
   // 选中态 (actor / camera / prop).
   const [selection, setSelection] = useState<Selection | null>(null);
   const [mode, setMode] = useState<TransformMode>('translate');
@@ -916,6 +1088,7 @@ export function DirectorStageOverlay() {
   // magic ("glTF" = 0x676c5446). 双保险.
   const [glbAvailable, setGlbAvailable] = useState<Record<string, boolean>>({});
   useEffect(() => {
+    if (!USE_SKINNED_GLB) return; // GLB 素体停用时连探测都省了.
     const urls = Array.from(new Set(Object.values(BODY_TYPES).map((b) => b.glbUrl).filter(Boolean)));
     let cancelled = false;
     Promise.all(urls.map(async (url) => {
@@ -950,6 +1123,7 @@ export function DirectorStageOverlay() {
   const transformControlsRef = useRef<any>(null);
   const captureRef = useRef<CaptureFn | null>(null);
   const multiCaptureRef = useRef<MultiCaptureFn | null>(null);
+  const specCaptureRef = useRef<SpecCaptureFn | null>(null);
 
   const [capturing, setCapturing] = useState(false);
 
@@ -1177,6 +1351,55 @@ export function DirectorStageOverlay() {
     setActiveCameraId(id);
   }, [cameras]);
 
+  /** 机位预设(资产库·机位页签):按演员质心 + 球面参数摆一台新机位并切过去。 */
+  const addCameraFromPreset = useCallback((presetId: string) => {
+    const def = CAMERA_PRESETS.find((p) => p.id === presetId);
+    if (!def) return;
+    // 焦点 = 演员质心(x/z 平均),没有演员就取原点。
+    let fx = 0;
+    let fz = 0;
+    if (actors.length > 0) {
+      for (const a of actors) { fx += a.position[0]; fz += a.position[2]; }
+      fx /= actors.length;
+      fz /= actors.length;
+    }
+    const targetY = def.targetY ?? 1.1;
+    let position: [number, number, number];
+    let lookAt: [number, number, number];
+    if (def.pov) {
+      // POV:站在焦点人物头部,朝 +Z(人物正面)看出去。
+      position = [fx, 1.55, fz + 0.15];
+      lookAt = [fx, 1.45, fz + 4];
+    } else {
+      const az = (def.az * PI) / 180;
+      const el = (def.el * PI) / 180;
+      position = [
+        fx + Math.sin(az) * Math.cos(el) * def.dist,
+        Math.max(0.12, targetY + Math.sin(el) * def.dist),
+        fz + Math.cos(az) * Math.cos(el) * def.dist,
+      ];
+      lookAt = [fx, targetY, fz];
+    }
+    const id = `cam-${Date.now()}`;
+    const cam: CameraSpec = {
+      id,
+      label: def.zh,
+      position,
+      lookAt,
+      fov: def.fov,
+      aspect: activeCamera?.aspect ?? '16:9',
+      roll: def.roll ? (def.roll * PI) / 180 : undefined,
+    };
+    setCameras((prev) => [...prev, cam]);
+    setActiveCameraId(id);
+    // 主视口飞过去(CameraControls 不支持 roll,荷兰角只体现在预览/出图里)。
+    cameraControlsRef.current?.setLookAt(
+      position[0], position[1], position[2],
+      lookAt[0], lookAt[1], lookAt[2],
+      true,
+    );
+  }, [actors, activeCamera]);
+
   const removeCamera = useCallback((id: string) => {
     if (cameras.length <= 1) return;
     setCameras((prev) => prev.filter((c) => c.id !== id));
@@ -1262,6 +1485,46 @@ export function DirectorStageOverlay() {
     );
   }, []);
 
+  /** 关闭(取消 / X / Esc)时落一张「退出时的镜头」快照 + 环境设置。
+   *  演员/道具/机位仍然只在「确认构图」时才持久化(取消 = 放弃编辑),
+   *  但节点封面和直接拉线的输出用的就是这张退出快照。 */
+  const closeWithSnapshot = useCallback(() => {
+    if (nodeId) {
+      try {
+        const snap = captureRef.current?.();
+        const patch: Record<string, unknown> = { stageSettings };
+        if (snap) patch.editorPreview = snap;
+        updateNodeData(nodeId, patch);
+      } catch (err) {
+        console.warn('[DirectorStage] exit snapshot failed', err);
+      }
+    }
+    close();
+  }, [nodeId, stageSettings, updateNodeData, close]);
+
+  /** 右下机位面板的实时预览 —— 离屏按机位比例渲染,700ms 一帧;选中了某个
+   *  机位标记就预览它,否则预览活跃机位。finalize 抓图期间暂停,避免争抢
+   *  同一块 drawing buffer。 */
+  const previewCam = selectedCamera ?? activeCamera;
+  const [livePreview, setLivePreview] = useState<string | null>(null);
+  useEffect(() => {
+    if (!previewCam || capturing) return;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const img = specCaptureRef.current?.(previewCam, { longSide: 384 });
+      if (img) setLivePreview(img);
+    };
+    // 等 Canvas 首帧再抓第一张,之后定时刷新。
+    const t0 = window.setTimeout(tick, 80);
+    const iv = window.setInterval(tick, 700);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t0);
+      window.clearInterval(iv);
+    };
+  }, [previewCam, capturing, stageSettings]);
+
   useEffect(() => {
     if (!nodeId) return;
     const cc = cameraControlsRef.current;
@@ -1332,6 +1595,7 @@ export function DirectorStageOverlay() {
         activeCameraId,
         editorPreview,
         lastCaptures,
+        stageSettings,
       };
       updateNodeData(nodeId, patch as Record<string, unknown>);
 
@@ -1373,7 +1637,7 @@ export function DirectorStageOverlay() {
       setConfirmStage('idle');
       close();
     }
-  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, stageProps, cameras, addNode, onConnect]);
+  }, [nodeId, node, updateNodeData, close, activeCameraId, actors, stageProps, cameras, stageSettings, addNode, onConnect]);
 
   /** "确认构图"按钮统一入口:按当前阶段路由. */
   const onConfirm = useCallback(() => {
@@ -1403,15 +1667,18 @@ export function DirectorStageOverlay() {
       const k = e.key.toLowerCase();
       if (k === 'escape') {
         if (selection) onDeselect();
-        else close();
+        else closeWithSnapshot();
         return;
       }
       if (k === 'w') setMode('translate');
       else if (k === 'e' || k === 'r') setMode('rotate');
       else if (k === 's') setMode('scale');
       else if (k === 'c') applyViewToCamera(activeCameraId);
-      else if ((k === 'delete' || k === 'backspace') && selection) {
+      else if (k === 'delete' || k === 'backspace') {
+        // 没选中东西也吞掉 —— 不然事件落到画布的全局删除快捷键上,
+        // 会把导演台节点本身删掉(Canvas 侧还有 directorStageNodeId 兜底)。
         e.preventDefault();
+        if (!selection) return;
         if (selection.kind === 'actor') removeActor(selection.id);
         else if (selection.kind === 'camera') removeCamera(selection.id);
         else if (selection.kind === 'prop') removeProp(selection.id);
@@ -1419,9 +1686,14 @@ export function DirectorStageOverlay() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nodeId, selection, close, onDeselect, applyViewToCamera, activeCameraId, removeActor, removeCamera, removeProp]);
+  }, [nodeId, selection, closeWithSnapshot, onDeselect, applyViewToCamera, activeCameraId, removeActor, removeCamera, removeProp]);
 
   if (!nodeId || !node) return null;
+
+  // 标签浮标缩放:字号 18 = 1x;关掉显示标签时为 0(Billboard 直接不渲染)。
+  const labelScale = stageSettings.labelsVisible ? stageSettings.labelFontSize / 18 : 0;
+  // 地面透明度:把网格/轴线颜色向天空色靠拢, opacity=0 时完全融入背景。
+  const groundFade = 1 - stageSettings.groundOpacity;
 
   return createPortal(
     <div className="fixed inset-0 z-[100] flex flex-col bg-[#050507]">
@@ -1441,7 +1713,7 @@ export function DirectorStageOverlay() {
         </div>
         <button
           type="button"
-          onClick={close}
+          onClick={closeWithSnapshot}
           className="flex h-7 w-7 items-center justify-center rounded-md text-white/60 transition hover:bg-white/[0.06] hover:text-white"
           title="Esc"
         >
@@ -1456,7 +1728,7 @@ export function DirectorStageOverlay() {
           dpr={[1, 2]}
           gl={{ preserveDrawingBuffer: true, antialias: true }}
           camera={{ position: [3.5, 2.2, 4.5], fov: 50 }}
-          style={{ background: '#050507' }}
+          style={{ background: stageSettings.skyColor }}
           onPointerMissed={onDeselect}
         >
           {/* 三点布光: key + fill + rim. 多一层填充和轮廓光,
@@ -1477,34 +1749,38 @@ export function DirectorStageOverlay() {
               暖米色轮廓光会把整套灰色素体染黄，换成冷灰。 */}
           <directionalLight position={[-1, 4, -4]} intensity={0.7} color="#ccd3dc" />
           <Suspense fallback={null}>
-            <Grid
-              args={[40, 40]}
-              cellSize={0.5}
-              cellThickness={0.5}
-              cellColor="#1a1d24"
-              sectionSize={2}
-              sectionThickness={1}
-              sectionColor="#2a2e38"
-              fadeDistance={30}
-              fadeStrength={1}
-              infiniteGrid
-            />
-            {/* 参考同款的全场轴线：X 红 / Z 蓝，贴地细条，低饱和不抢戏。 */}
-            <mesh position={[0, 0.0015, 0]}>
-              <boxGeometry args={[40, 0.002, 0.02]} />
-              <meshBasicMaterial color="#a03c44" />
-            </mesh>
-            <mesh position={[0, 0.0015, 0]}>
-              <boxGeometry args={[0.02, 0.002, 40]} />
-              <meshBasicMaterial color="#3c55a0" />
-            </mesh>
+            {/* 地面组:全景设置里的高度 / 显隐;"透明度"通过把网格与轴线
+                颜色向天空色混合来实现(drei Grid 没有 opacity 口)。 */}
+            <group position={[0, stageSettings.groundY, 0]} visible={stageSettings.groundVisible}>
+              <Grid
+                args={[40, 40]}
+                cellSize={0.5}
+                cellThickness={0.5}
+                cellColor={mixHex('#1a1d24', stageSettings.skyColor, groundFade)}
+                sectionSize={2}
+                sectionThickness={1}
+                sectionColor={mixHex('#2a2e38', stageSettings.skyColor, groundFade)}
+                fadeDistance={30}
+                fadeStrength={1}
+                infiniteGrid
+              />
+              {/* 参考同款的全场轴线：X 红 / Z 蓝，贴地细条，低饱和不抢戏。 */}
+              <mesh position={[0, 0.0015, 0]}>
+                <boxGeometry args={[40, 0.002, 0.02]} />
+                <meshBasicMaterial color={mixHex('#a03c44', stageSettings.skyColor, groundFade)} />
+              </mesh>
+              <mesh position={[0, 0.0015, 0]}>
+                <boxGeometry args={[0.02, 0.002, 40]} />
+                <meshBasicMaterial color={mixHex('#3c55a0', stageSettings.skyColor, groundFade)} />
+              </mesh>
+            </group>
             {/* 坐标轴 —— 仅在有选中时(actor 或 camera)显示, 没选时
                 场景干净, 跟最终出图风格一致. 0.5 长度刚好够辨认 X/Y/Z
                 方向不喧宾夺主. */}
             {selection ? <axesHelper args={[0.5]} /> : null}
             {actors.map((a) => {
               const url = bodyTypeOf(a.assetId).glbUrl;
-              const haveGLB = url ? glbAvailable[url] === true : false;
+              const haveGLB = USE_SKINNED_GLB && url ? glbAvailable[url] === true : false;
               const isSelected = selection?.kind === 'actor' && selection.id === a.id;
               const procedural = (
                 <Mannequin
@@ -1512,6 +1788,7 @@ export function DirectorStageOverlay() {
                   actor={a}
                   selected={isSelected}
                   onSelect={onSelectActor}
+                  labelScale={labelScale}
                 />
               );
               return haveGLB ? (
@@ -1520,6 +1797,7 @@ export function DirectorStageOverlay() {
                     actor={a}
                     selected={isSelected}
                     onSelect={onSelectActor}
+                    labelScale={labelScale}
                   />
                 </GLBErrorBoundary>
               ) : procedural;
@@ -1539,6 +1817,8 @@ export function DirectorStageOverlay() {
                 isActive={cam.id === activeCameraId}
                 selected={selection?.kind === 'camera' && selection.id === cam.id}
                 onSelect={onSelectCamera}
+                labelScale={labelScale}
+                showGuide={stageSettings.cameraGuides}
               />
             ))}
             {selection ? (
@@ -1555,7 +1835,7 @@ export function DirectorStageOverlay() {
           <CaptureBridge
             singleRef={captureRef}
             multiRef={multiCaptureRef}
-            cameraControlsRef={cameraControlsRef}
+            specRef={specCaptureRef}
           />
         </Canvas>
 
@@ -1663,6 +1943,7 @@ export function DirectorStageOverlay() {
               onAddActorType={addActorOfType}
               onAddCrowd={addCrowd}
               onAddCameraFromView={addCameraFromCurrentView}
+              onAddCameraPreset={addCameraFromPreset}
               onClose={() => setSidePanel(null)}
             />
           ) : null}
@@ -1709,9 +1990,9 @@ export function DirectorStageOverlay() {
 
         {/* 左下:操作模式 + 应用到机位 + 重置. */}
         <div className="absolute bottom-4 left-[60px] flex gap-1 rounded-md border border-white/12 bg-black/70 p-1 backdrop-blur-md">
-          <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} hint="W" icon={Move3D} />
-          <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="E" icon={RotateCw} />
-          <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="S" icon={Maximize2} />
+          <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} hint="W" icon={Move3D} label={language === 'zh' ? '移动' : 'Move'} />
+          <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="E" icon={RotateCw} label={language === 'zh' ? '旋转' : 'Rotate'} />
+          <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="S" icon={Maximize2} label={language === 'zh' ? '缩放' : 'Scale'} />
           <div className="mx-1 w-px self-stretch bg-white/10" />
           <button
             type="button"
@@ -1791,27 +2072,30 @@ export function DirectorStageOverlay() {
               );
             })}
           </div>
-          {/* 活跃机位的预览快照 —— 「应用视图到此机位」时刚抓的那张.
-              一个机位只保留一份 previewImage,新 apply 直接覆盖. */}
-          {activeCamera ? (
+          {/* 机位实时预览 —— 离屏按机位 aspect 渲染,700ms 刷新;选中某个
+              机位标记时预览它,否则预览活跃机位(参考:右下常驻预览窗)。 */}
+          {previewCam ? (
             <div className="overflow-hidden rounded border border-white/10 bg-black/60">
               <div
                 className="relative w-full bg-black"
-                style={{ aspectRatio: aspectRatioToCss(activeCamera.aspect) }}
+                style={{ aspectRatio: aspectRatioToCss(previewCam.aspect) }}
               >
-                {activeCamera.previewImage ? (
+                {livePreview ? (
                   <img
-                    src={activeCamera.previewImage}
-                    alt={`${activeCamera.label} preview`}
+                    src={livePreview}
+                    alt={`${previewCam.label} preview`}
                     className="absolute inset-0 h-full w-full object-cover"
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center px-2 text-center text-[10px] text-white/35">
-                    {language === 'zh' ? '点「应用到机位」抓取预览' : 'Click "Apply" to capture preview'}
+                    {language === 'zh' ? '预览生成中…' : 'Rendering preview…'}
                   </div>
                 )}
                 <span className="absolute left-1 top-1 rounded bg-black/55 px-1.5 py-px text-[9px] font-medium text-white/80 backdrop-blur-sm">
-                  {activeCamera.label}
+                  {previewCam.label}
+                </span>
+                <span className="absolute right-1 top-1 rounded bg-black/55 px-1.5 py-px font-mono text-[9px] text-white/60 backdrop-blur-sm">
+                  FOV {Math.round(previewCam.fov)}° · {previewCam.aspect}
                 </span>
               </div>
             </div>
@@ -1866,17 +2150,74 @@ export function DirectorStageOverlay() {
         </div>
       ) : null}
 
+      {/* 底栏工具组的弹层(全景背景 / 标签 / 出图比例)。 */}
+      {envPopover === 'panorama' ? (
+        <PanoramaPanel settings={stageSettings} onPatch={patchStageSettings} onClose={() => setEnvPopover(null)} />
+      ) : null}
+      {envPopover === 'labels' ? (
+        <LabelsPanel settings={stageSettings} onPatch={patchStageSettings} onClose={() => setEnvPopover(null)} />
+      ) : null}
+      {envPopover === 'aspect' ? (
+        <AspectPanel
+          current={activeCamera?.aspect ?? '16:9'}
+          onPick={(ar) => { setActiveCameraAspect(ar); setEnvPopover(null); }}
+          onClose={() => setEnvPopover(null)}
+        />
+      ) : null}
+
       {/* 底部状态栏 + 确认. */}
       <div className="flex items-center justify-between border-t border-white/[0.06] px-4 py-3">
         <div className="text-[11px] text-white/40">
           {language === 'zh'
-            ? `${actors.length} 角色 · ${cameras.length} 机位 · 确认两次后按机位派生「构图预览」节点`
-            : `${actors.length} actors · ${cameras.length} cameras · click confirm twice to spawn per-camera preview nodes`}
+            ? `${actors.length} 角色 · ${cameras.length} 机位 · 确认两次派生「构图预览」节点 · 从节点直接拉线 = 退出时镜头`
+            : `${actors.length} actors · ${cameras.length} cameras · confirm twice to spawn previews · direct wire = exit view`}
         </div>
         <div className="flex items-center gap-2">
+          {/* 全景背景 / 标签 / 出图比例(参考底栏右侧工具组)。 */}
           <button
             type="button"
-            onClick={close}
+            onClick={() => setEnvPopover((p) => (p === 'panorama' ? null : 'panorama'))}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition ${
+              envPopover === 'panorama'
+                ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                : 'border-white/12 bg-white/[0.04] text-white/70 hover:border-white/20 hover:bg-white/[0.08]'
+            }`}
+          >
+            <Globe2 className="h-3.5 w-3.5" />
+            {language === 'zh' ? '全景' : 'Backdrop'}
+            <ChevronDown className="h-3 w-3 opacity-60" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setEnvPopover((p) => (p === 'labels' ? null : 'labels'))}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition ${
+              envPopover === 'labels'
+                ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                : 'border-white/12 bg-white/[0.04] text-white/70 hover:border-white/20 hover:bg-white/[0.08]'
+            }`}
+          >
+            <Type className="h-3.5 w-3.5" />
+            {language === 'zh' ? '标签' : 'Labels'}
+            <ChevronDown className="h-3 w-3 opacity-60" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setEnvPopover((p) => (p === 'aspect' ? null : 'aspect'))}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] transition ${
+              envPopover === 'aspect'
+                ? 'border-violet-300/50 bg-violet-500/20 text-violet-100'
+                : 'border-white/12 bg-white/[0.04] text-white/70 hover:border-white/20 hover:bg-white/[0.08]'
+            }`}
+            title={language === 'zh' ? '活跃机位的出图比例' : 'Active camera export ratio'}
+          >
+            <Monitor className="h-3.5 w-3.5" />
+            <span className="font-mono">{activeCamera?.aspect ?? '16:9'}</span>
+            <ChevronDown className="h-3 w-3 opacity-60" />
+          </button>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <button
+            type="button"
+            onClick={closeWithSnapshot}
             className="rounded-md border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[12px] text-white/70 transition hover:border-white/20 hover:bg-white/[0.08]"
           >
             {language === 'zh' ? '取消' : 'Cancel'}
@@ -2450,7 +2791,7 @@ function OutlinePanel({ actors, stageProps, cameras, activeCameraId, selection, 
 }
 
 /** 资产库 —— 道具 / 人物 / 机位 三个标签页，点击条目即放置到舞台。 */
-function AssetLibraryPanel({ tab, setTab, query, setQuery, onAddProp, onAddActorType, onAddCrowd, onAddCameraFromView, onClose }: {
+function AssetLibraryPanel({ tab, setTab, query, setQuery, onAddProp, onAddActorType, onAddCrowd, onAddCameraFromView, onAddCameraPreset, onClose }: {
   tab: 'props' | 'actors' | 'cameras';
   setTab: (t: 'props' | 'actors' | 'cameras') => void;
   query: string;
@@ -2459,11 +2800,13 @@ function AssetLibraryPanel({ tab, setTab, query, setQuery, onAddProp, onAddActor
   onAddActorType: (assetId: string) => void;
   onAddCrowd: (n: number) => void;
   onAddCameraFromView: () => void;
+  onAddCameraPreset: (presetId: string) => void;
   onClose: () => void;
 }) {
   const language = useStore((s) => s.language);
   const zh = language === 'zh';
   const filteredProps = PROP_DEFS.filter((d) => !query.trim() || d.zh.includes(query.trim()) || d.en.toLowerCase().includes(query.trim().toLowerCase()));
+  const filteredPresets = CAMERA_PRESETS.filter((p) => !query.trim() || p.zh.includes(query.trim()) || p.en.toLowerCase().includes(query.trim().toLowerCase()));
   const actorEntries = [
     ...BODY_TYPE_IDS.map((id) => ({ id, title: BODY_TYPES[id].label, sub: zh ? '关节人偶素体 · 可摆姿势' : 'Articulated mannequin', crowd: 0 })),
     { id: 'crowd-3', title: zh ? '群众 (3人)' : 'Crowd (3)', sub: zh ? '一排 3 个素体人偶' : 'Row of 3 mannequins', crowd: 3 },
@@ -2551,6 +2894,21 @@ function AssetLibraryPanel({ tab, setTab, query, setQuery, onAddProp, onAddActor
                 <span className="text-[10px] text-white/40">{zh ? '记录此刻的位置与朝向' : 'Snapshots position & look-at'}</span>
               </span>
             </button>
+            {/* 机位预设(参考:正面中景 / 过肩 / 荷兰角……),按演员质心自动取景。 */}
+            <div className="grid grid-cols-2 gap-1.5">
+              {filteredPresets.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => onAddCameraPreset(p.id)}
+                  title={zh ? `新建「${p.zh}」机位` : `Add ${p.en} camera`}
+                  className="flex flex-col items-center gap-1.5 rounded border border-white/10 bg-white/[0.02] px-2 py-3 text-[10.5px] text-white/75 transition hover:border-white/30 hover:bg-white/[0.07] hover:text-white"
+                >
+                  <Camera className="h-4 w-4 opacity-70" />
+                  <span className="max-w-full truncate">{zh ? p.zh : p.en}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -2592,14 +2950,201 @@ function StageHelpPanel({ onClose }: { onClose: () => void }) {
       </Section>
       <Section title={zh ? '编辑' : 'Edit'}>
         <Row label={zh ? '移动 / 旋转 / 缩放' : 'Move / Rotate / Scale'} keys={<><Key>W</Key><Key>E</Key><Key>S</Key></>} />
-        <Row label={zh ? '删除选中' : 'Delete selection'} keys={<Key>Del</Key>} />
+        <Row label={zh ? '删除选中' : 'Delete selection'} keys={<><Key>Del</Key><Key>⌫</Key></>} />
         <Row label={zh ? '取消选中 / 退出' : 'Deselect / Exit'} keys={<Key>Esc</Key>} />
       </Section>
       <Section title={zh ? '机位' : 'Cameras'}>
         <Row label={zh ? '应用当前视角到机位' : 'Apply view to camera'} keys={<Key>C</Key>} />
         <Row label={zh ? '确认构图 · 派生预览' : 'Confirm & derive previews'} keys={<Key>{zh ? '确认构图 ×2' : 'Confirm ×2'}</Key>} />
+        <Row label={zh ? '直接从节点拉线' : 'Wire node directly'} keys={<Key>{zh ? '输出退出时镜头' : 'Exit-view output'}</Key>} />
       </Section>
     </div>
+  );
+}
+
+/** 底栏弹层的公共外壳(锚在底栏上方,右对齐)。 */
+function EnvPopoverShell({ title, onClose, width = 'w-[280px]', children }: {
+  title: string;
+  onClose: () => void;
+  width?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`absolute bottom-14 right-4 z-30 flex ${width} flex-col gap-2.5 rounded-lg border border-white/12 bg-[#0b0c10]/95 p-3.5 backdrop-blur-xl`}>
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] font-medium text-white/85">{title}</span>
+        <button type="button" onClick={onClose} className="rounded p-0.5 text-white/40 transition hover:bg-white/[0.08] hover:text-white">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** 开/关 胶囊(标签面板里的显隐类设置)。 */
+function TogglePill({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`rounded-full border px-2.5 py-0.5 text-[10.5px] transition ${
+        on
+          ? 'border-violet-300/50 bg-violet-500/25 text-violet-100'
+          : 'border-white/15 bg-white/[0.04] text-white/55 hover:border-white/30 hover:text-white'
+      }`}
+    >
+      {on ? '开' : '关'}
+    </button>
+  );
+}
+
+/** 全景背景面板 —— 天空颜色 / 地面透明度 / 地面高度 / 显隐(参考图样式)。 */
+function PanoramaPanel({ settings, onPatch, onClose }: {
+  settings: StageSettings;
+  onPatch: (p: Partial<StageSettings>) => void;
+  onClose: () => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  return (
+    <EnvPopoverShell title={zh ? '全景背景' : 'Backdrop'} onClose={onClose}>
+      <div className="flex items-center gap-2">
+        <span className="w-14 shrink-0 text-[10.5px] text-white/50">{zh ? '天空颜色' : 'Sky'}</span>
+        <div className="grid flex-1 grid-cols-5 gap-1.5">
+          {SKY_SWATCHES.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => onPatch({ skyColor: c })}
+              title={c}
+              className={`h-5 w-5 rounded-full border transition ${
+                settings.skyColor === c ? 'border-violet-300 ring-1 ring-violet-300/60' : 'border-white/20 hover:border-white/50'
+              }`}
+              style={{ background: c }}
+            />
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => onPatch({ skyColor: DEFAULT_STAGE_SETTINGS.skyColor })}
+          className="shrink-0 rounded border border-white/12 bg-white/[0.03] px-1.5 py-1 text-[10px] text-white/60 transition hover:border-white/30 hover:text-white"
+        >
+          {zh ? '重置' : 'Reset'}
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-14 shrink-0 text-[10.5px] text-white/50">{zh ? '地面透明度' : 'Ground α'}</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={Math.round(settings.groundOpacity * 100)}
+          onChange={(e) => onPatch({ groundOpacity: Number(e.target.value) / 100 })}
+          className="flex-1 accent-violet-400"
+        />
+        <span className="w-9 text-right font-mono text-[10px] text-white/70">{Math.round(settings.groundOpacity * 100)}%</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-14 shrink-0 text-[10.5px] text-white/50">{zh ? '地面高度' : 'Ground Y'}</span>
+        <input
+          type="range"
+          min={-2}
+          max={2}
+          step={0.05}
+          value={settings.groundY}
+          onChange={(e) => onPatch({ groundY: Number(e.target.value) })}
+          className="flex-1 accent-violet-400"
+        />
+        <span className="w-9 text-right font-mono text-[10px] text-white/70">{settings.groundY.toFixed(1)}</span>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => onPatch({ groundVisible: !settings.groundVisible })}
+          className="flex-1 rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 text-[10.5px] text-white/70 transition hover:border-white/30 hover:text-white"
+        >
+          {settings.groundVisible ? (zh ? '隐藏地面' : 'Hide ground') : (zh ? '显示地面' : 'Show ground')}
+        </button>
+        <button
+          type="button"
+          onClick={() => onPatch({ groundY: 0 })}
+          className="flex-1 rounded border border-white/12 bg-white/[0.03] px-2 py-1.5 text-[10.5px] text-white/70 transition hover:border-white/30 hover:text-white"
+        >
+          {zh ? '重置高度' : 'Reset height'}
+        </button>
+      </div>
+    </EnvPopoverShell>
+  );
+}
+
+/** 标签面板 —— 显示标签 / 字体大小 / 相机参考线(参考图样式)。 */
+function LabelsPanel({ settings, onPatch, onClose }: {
+  settings: StageSettings;
+  onPatch: (p: Partial<StageSettings>) => void;
+  onClose: () => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  return (
+    <EnvPopoverShell title={zh ? '标签' : 'Labels'} onClose={onClose} width="w-[248px]">
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] text-white/60">{zh ? '显示标签' : 'Show labels'}</span>
+        <TogglePill on={settings.labelsVisible} onToggle={() => onPatch({ labelsVisible: !settings.labelsVisible })} />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-[10.5px] text-white/60">{zh ? '字体大小' : 'Font size'}</span>
+        <input
+          type="range"
+          min={10}
+          max={32}
+          step={1}
+          value={settings.labelFontSize}
+          onChange={(e) => onPatch({ labelFontSize: Number(e.target.value) })}
+          className="flex-1 accent-violet-400"
+        />
+        <span className="w-6 text-right font-mono text-[10px] text-white/70">{settings.labelFontSize}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-[10.5px] text-white/60">{zh ? '相机参考线' : 'Camera guides'}</span>
+        <TogglePill on={settings.cameraGuides} onToggle={() => onPatch({ cameraGuides: !settings.cameraGuides })} />
+      </div>
+    </EnvPopoverShell>
+  );
+}
+
+/** 出图比例面板 —— 设置活跃机位的 aspect(导出 / 预览都按它出图)。 */
+function AspectPanel({ current, onPick, onClose }: {
+  current: AspectRatio;
+  onPick: (ar: AspectRatio) => void;
+  onClose: () => void;
+}) {
+  const language = useStore((s) => s.language);
+  const zh = language === 'zh';
+  return (
+    <EnvPopoverShell title={zh ? '出图比例' : 'Export ratio'} onClose={onClose} width="w-[188px]">
+      <div className="flex flex-col gap-1">
+        {ASPECT_RATIOS.map((ar) => (
+          <button
+            key={ar}
+            type="button"
+            onClick={() => onPick(ar)}
+            className={`flex items-center justify-between rounded border px-2.5 py-1.5 text-[11px] transition ${
+              current === ar
+                ? 'border-violet-400/60 bg-violet-500/15 text-violet-100'
+                : 'border-white/10 bg-white/[0.02] text-white/70 hover:border-white/25 hover:bg-white/[0.06]'
+            }`}
+          >
+            <span className="font-mono">{ar}</span>
+            <span
+              className="block rounded-[2px] border border-current opacity-60"
+              style={{ width: 22, aspectRatio: aspectRatioToCss(ar), maxHeight: 22 }}
+            />
+          </button>
+        ))}
+      </div>
+    </EnvPopoverShell>
   );
 }
 
@@ -2612,11 +3157,12 @@ function Hint({ k, v }: { k: string; v: string }) {
   );
 }
 
-function ModeButton({ active, onClick, hint, icon: Icon }: {
+function ModeButton({ active, onClick, hint, icon: Icon, label }: {
   active: boolean;
   onClick: () => void;
   hint: string;
   icon: typeof Move3D;
+  label?: string;
 }) {
   return (
     <button
@@ -2629,6 +3175,7 @@ function ModeButton({ active, onClick, hint, icon: Icon }: {
       }`}
     >
       <Icon className="h-3 w-3" />
+      {label ? <span>{label}</span> : null}
       <span className="font-mono text-[10px] text-white/40">{hint}</span>
     </button>
   );

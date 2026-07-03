@@ -65,8 +65,20 @@ export type DirectorStageData = {
     lookAt: [number, number, number];
     fov: number;
     aspect: '16:9' | '9:16' | '1:1' | '4:3' | '21:9';
+    /** 荷兰角(绕视轴滚转,弧度),只作用在出图/预览。 */
+    roll?: number;
   }>;
   activeCameraId?: string;
+  /** 舞台环境设置(全景背景 / 标签 / 参考线)——关闭或确认构图时落盘。 */
+  stageSettings?: {
+    skyColor?: string;
+    groundOpacity?: number;
+    groundY?: number;
+    groundVisible?: boolean;
+    labelsVisible?: boolean;
+    labelFontSize?: number;
+    cameraGuides?: boolean;
+  };
   /** overlay 关闭时落下的主视口快照,作为节点主图. */
   editorPreview?: string;
   /** 每个机位独立的快照(派生 compositionPreviewNode 时用). */

@@ -1528,6 +1528,28 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
     }
 
     const data = (node.data ?? {}) as Record<string, unknown>;
+
+    // 导演台 / 构图预览节点没有 data.url —— 它们的"输出"是构图快照。
+    // 导演台直接拉线 = 引用「退出时的镜头」(editorPreview,关闭时落盘),
+    // 构图预览节点则输出各自机位的渲染图。
+    if (node.type === 'directorStageNode') {
+      const stage = data as {
+        editorPreview?: string;
+        lastCapture?: { image?: string };
+        lastCaptures?: Record<string, { image?: string }>;
+      };
+      const snap = stage.editorPreview
+        || stage.lastCapture?.image
+        || (stage.lastCaptures ? Object.values(stage.lastCaptures)[0]?.image : undefined);
+      if (snap) imageUrls.push(snap);
+      continue;
+    }
+    if (node.type === 'compositionPreviewNode') {
+      const img = (data as { image?: string }).image;
+      if (img) imageUrls.push(img);
+      continue;
+    }
+
     const payloadValue = getReferencePayloadValue(node.id, data);
     const url = resolveReferenceTransportUrl(data, payloadValue);
     if (!url) {
