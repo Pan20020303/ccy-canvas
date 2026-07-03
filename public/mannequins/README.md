@@ -7,16 +7,17 @@
 
 ## 文件清单
 
-放进 5 个 `.glb` 文件,**任意缺一个就走 procedural 回落**(不会报错):
+当前(2026-07)五种体型共用一个模型,按 `widthMul/heightMul` 派生差异:
 
 ```
 public/mannequins/
-├── standard.glb    ← 标准素体
-├── female.glb      ← 女性素体
-├── child.glb       ← 儿童素体
-├── sturdy.glb      ← 壮实素体
-└── slim.glb        ← 纤细素体
+└── xbot.glb   ← Mixamo X Bot(取自 three.js 官方示例库,~2.8 MB,
+                  标准 mixamorig 骨架 + 手指骨,自带 idle/walk/run 等动画,
+                  材质在运行时被覆写成雕塑灰)
 ```
+
+想按体型放不同模型:丢新的 `.glb` 进来,把 `BODY_TYPES[*].glbUrl` 指过去
+即可;**加载失败自动走 procedural 回落**(不会报错)。
 
 每个文件建议 **< 2 MB**(我们要在浏览器 fetch + cache,不能放几十 MB 的高
 模);如果原始模型大,用 [gltfpack](https://github.com/zeux/meshoptimizer/tree/master/gltf)

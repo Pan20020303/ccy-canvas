@@ -57,23 +57,24 @@ type ActorTransform = {
  *  public/mannequins/README.md 介绍怎么获取 CC0 / 免费素材. */
 // 配色（2026-07 参考对齐）：从暖米色改为中性浅石墨灰 — 参考产品的素体是
 // 无色温的雕塑灰，暖色调来自灯光而不是材质本身。
+// 2026-07:五个体型共用一个高质量绑定模型(three.js 示例库的 Mixamo X Bot,
+// 标准 mixamorig 骨架 + 手指骨),按 widthMul/heightMul 派生体型差异。
+// 想按体型换不同模型,放不同的 glb 再把 glbUrl 指过去即可。
 const BODY_TYPES: Record<string, { label: string; defaultColor: string; widthMul: number; heightMul: number; headBoost: number; glbUrl: string }> = {
-  'mannequin-standard': { label: '标准素体', defaultColor: '#c9ccd1', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00, glbUrl: '/mannequins/standard.glb' },
-  'mannequin-female':   { label: '女性素体', defaultColor: '#d3d5d9', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00, glbUrl: '/mannequins/female.glb' },
-  'mannequin-child':    { label: '儿童素体', defaultColor: '#d8dadd', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18, glbUrl: '/mannequins/child.glb' },
-  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#bfc2c7', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98, glbUrl: '/mannequins/sturdy.glb' },
-  'mannequin-slim':     { label: '纤细素体', defaultColor: '#ced1d5', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00, glbUrl: '/mannequins/slim.glb' },
+  'mannequin-standard': { label: '标准素体', defaultColor: '#c9ccd1', widthMul: 1.00, heightMul: 1.00, headBoost: 1.00, glbUrl: '/mannequins/xbot.glb' },
+  'mannequin-female':   { label: '女性素体', defaultColor: '#d3d5d9', widthMul: 0.92, heightMul: 0.96, headBoost: 1.00, glbUrl: '/mannequins/xbot.glb' },
+  'mannequin-child':    { label: '儿童素体', defaultColor: '#d8dadd', widthMul: 0.78, heightMul: 0.72, headBoost: 1.18, glbUrl: '/mannequins/xbot.glb' },
+  'mannequin-sturdy':   { label: '壮实素体', defaultColor: '#bfc2c7', widthMul: 1.14, heightMul: 1.02, headBoost: 0.98, glbUrl: '/mannequins/xbot.glb' },
+  'mannequin-slim':     { label: '纤细素体', defaultColor: '#ced1d5', widthMul: 0.88, heightMul: 1.04, headBoost: 1.00, glbUrl: '/mannequins/xbot.glb' },
 };
 const BODY_TYPE_IDS = Object.keys(BODY_TYPES);
 function bodyTypeOf(assetId: string) {
   return BODY_TYPES[assetId] ?? BODY_TYPES['mannequin-standard'];
 }
 
-// 2026-07 反馈:自带的占位 GLB(5 份同一个低质量贴图模型)观感差,而且它的
-// 绑定姿态是 T-pose —— 姿势预设是相对 rest 的偏移,套在它身上等于没动作。
-// 默认关闭,统一走程序化雕塑灰素体(关节/ROM 全部可用);换上高质量带骨骼
-// 模型后再打开这个开关。
-const USE_SKINNED_GLB = false;
+// 2026-07:换上真模型(xbot.glb, Mixamo 骨架)后重新启用蒙皮素体;
+// 程序化胶囊素体保留作 GLB 加载失败时的回落。
+const USE_SKINNED_GLB = true;
 
 type CameraSpec = {
   id: string;
@@ -668,6 +669,12 @@ const BONE_NAME_PATTERNS: Record<keyof Required<ActorPose>, string[]> = {
   ankleR:    ['RightFoot', 'foot_R', 'foot.R', 'mixamorigRightFoot', 'leg_joint_R_3'],
 };
 
+/** 骨名归一化 —— 去掉大小写与分隔符差异('mixamorig:LeftArm' / 'hand.L'
+ *  / 'arm_L' 全部拉平),不同导出器的命名就都能对上。 */
+function normalizeBoneName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 function findBoneInScene(root: THREE.Object3D, candidates: string[]): THREE.Bone | null {
   // pass 1: exact match
   for (const name of candidates) {
@@ -678,19 +685,20 @@ function findBoneInScene(root: THREE.Object3D, candidates: string[]): THREE.Bone
     });
     if (hit) return hit;
   }
-  // pass 2: includes match (case-insensitive). Mixamo 喜欢加前缀 mixamorig 之类.
-  const lowered = candidates.map((c) => c.toLowerCase());
-  let hit: THREE.Bone | null = null;
-  root.traverse((obj) => {
-    if (hit) return;
-    if ((obj as THREE.Bone).isBone) {
-      const n = obj.name.toLowerCase();
-      for (const c of lowered) {
-        if (n.includes(c)) { hit = obj as THREE.Bone; return; }
+  // pass 2: 归一化后的 includes 匹配。按候选优先级逐个找(不是按骨骼顺序),
+  // 否则 'LeftShoulder'(锁骨)会先于 'LeftArm'(上臂)命中,肩关节接错骨头。
+  for (const cand of candidates) {
+    const c = normalizeBoneName(cand);
+    let hit: THREE.Bone | null = null;
+    root.traverse((obj) => {
+      if (hit) return;
+      if ((obj as THREE.Bone).isBone && normalizeBoneName(obj.name).includes(c)) {
+        hit = obj as THREE.Bone;
       }
-    }
-  });
-  return hit;
+    });
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** ErrorBoundary 包 SkinnedMannequin —— GLB 加载就算最后一步出问题
@@ -722,8 +730,29 @@ const SkinnedMannequin = forwardRef<THREE.Group, {
   const bt = bodyTypeOf(actor.assetId);
   // useGLTF 会 Suspense, 调用方需要在 <Suspense> 里包.
   const { scene } = useGLTF(bt.glbUrl);
+  const bodyColor = actor.color || bt.defaultColor;
   // 每个 actor 独立一份 clone, 避免共享 skeleton 一动全动.
-  const cloned = useMemo(() => cloneSkeleton(scene), [scene]);
+  const cloned = useMemo(() => {
+    const c = cloneSkeleton(scene);
+    const deepColor = shadeColor(bodyColor, -0.35);
+    c.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.castShadow = true;
+        // 骨骼大幅摆姿势后包围盒会失真,禁用视锥剔除防止模型被误裁掉。
+        mesh.frustumCulled = false;
+        // 统一雕塑灰材质(参考色调)——覆盖模型自带配色(xbot 是肤色),
+        // 关节件压深一档,和程序化素体一个观感;actor.color 也因此生效。
+        const isJoint = /joint/i.test(mesh.name) || /joint/i.test((mesh.material as THREE.Material)?.name ?? '');
+        mesh.material = new THREE.MeshStandardMaterial({
+          color: isJoint ? deepColor : bodyColor,
+          roughness: isJoint ? 0.5 : 0.58,
+          metalness: 0.05,
+        });
+      }
+    });
+    return c;
+  }, [scene, bodyColor]);
   const bones = useMemo(() => {
     // 连 rest 姿态一起存:骨骼在绑定姿态下自带旋转(这套素体的臂骨 rest rx≈-π),
     // 姿势必须做成 rest + 偏移的加性应用,直接覆盖会把模型拧碎.
@@ -902,6 +931,36 @@ const CameraMarker = forwardRef<THREE.Group, {
   );
 });
 
+/** 参考快捷键方案:WASD 平移 + E/Q 升降 + Shift 加速(按住持续移动),
+ *  以及鼠标键位配置 —— 左键只做选中,右键/中键拖拽环视。 */
+function FlyBridge({ keysRef, controlsRef }: {
+  keysRef: React.MutableRefObject<Set<string>>;
+  controlsRef: React.MutableRefObject<any>;
+}) {
+  useEffect(() => {
+    const cc = controlsRef.current;
+    if (!cc) return;
+    const ACTION = (cc.constructor as { ACTION?: Record<string, number> }).ACTION;
+    if (!ACTION) return;
+    cc.mouseButtons.left = ACTION.NONE;
+    cc.mouseButtons.right = ACTION.ROTATE;
+    cc.mouseButtons.middle = ACTION.ROTATE;
+  }, [controlsRef]);
+  useFrame((_, dt) => {
+    const cc = controlsRef.current;
+    const k = keysRef.current;
+    if (!cc || k.size === 0) return;
+    const sp = (k.has('shift') ? 9 : 3) * Math.min(dt, 0.1);
+    if (k.has('w')) cc.forward(sp, false);
+    if (k.has('s')) cc.forward(-sp, false);
+    if (k.has('a')) cc.truck(-sp, 0, false);
+    if (k.has('d')) cc.truck(sp, 0, false);
+    if (k.has('e')) cc.elevate(sp, false);
+    if (k.has('q')) cc.elevate(-sp, false);
+  });
+  return null;
+}
+
 /** 把 three 场景根暴露给 Canvas 外的 UI（大纲面板按名字找 Object3D 选中）. */
 function SceneBridge({ sceneRef }: { sceneRef: React.MutableRefObject<THREE.Scene | null> }) {
   const { scene, advance } = useThree();
@@ -993,7 +1052,8 @@ function CaptureBridge({
     multiRef.current = async (cams: CameraSpec[]) => {
       const results: Record<string, string> = {};
       for (const cam of cams) {
-        const img = renderSpec(cam, { longSide: 1280 });
+        // 1600 长边:构图预览是全面屏大卡,1280 在 2x 屏上会发虚。
+        const img = renderSpec(cam, { longSide: 1600 });
         if (img) results[cam.id] = img;
       }
       return results;
@@ -1485,6 +1545,54 @@ export function DirectorStageOverlay() {
     );
   }, []);
 
+  /** 主视口焦距([ / ] 调整,顶栏实时显示,参考快捷键方案)。 */
+  const [mainFov, setMainFov] = useState(50);
+  const adjustFov = useCallback((delta: number) => {
+    setMainFov((f) => {
+      const next = Math.min(120, Math.max(20, f + delta));
+      const cam = cameraControlsRef.current?.camera as THREE.PerspectiveCamera | undefined;
+      if (cam) {
+        cam.fov = next;
+        cam.updateProjectionMatrix();
+      }
+      return next;
+    });
+  }, []);
+
+  /** F 聚焦 —— 把视口对准选中实体;没选中就回看舞台中心。 */
+  const focusSelection = useCallback(() => {
+    const cc = cameraControlsRef.current;
+    if (!cc) return;
+    if (selection?.obj) {
+      void cc.fitToBox(selection.obj, true, { paddingTop: 0.5, paddingBottom: 0.3, paddingLeft: 0.6, paddingRight: 0.6 });
+    } else {
+      void cc.setTarget(0, 1, 0, true);
+    }
+  }, [selection]);
+
+  /** WASD / E/Q / Shift 按住集合 —— FlyBridge 每帧消费。 */
+  const flyKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!nodeId) return;
+    const relevant = new Set(['w', 'a', 's', 'd', 'e', 'q', 'shift']);
+    const down = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const k = e.key.toLowerCase();
+      if (relevant.has(k)) flyKeysRef.current.add(k);
+    };
+    const up = (e: KeyboardEvent) => { flyKeysRef.current.delete(e.key.toLowerCase()); };
+    const clear = () => flyKeysRef.current.clear();
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', clear);
+      clear();
+    };
+  }, [nodeId]);
+
   /** 关闭(取消 / X / Esc)时落一张「退出时的镜头」快照 + 环境设置。
    *  演员/道具/机位仍然只在「确认构图」时才持久化(取消 = 放弃编辑),
    *  但节点封面和直接拉线的输出用的就是这张退出快照。 */
@@ -1662,6 +1770,10 @@ export function DirectorStageOverlay() {
 
   useEffect(() => {
     if (!nodeId) return;
+    // 快捷键对齐参考方案:左键选中 / 右键中键环视(FlyBridge 配置),
+    // WASD+E/Q+Shift 飞行(独立 keydown/keyup 集合),这里处理单发按键:
+    // F 聚焦、方向键转向、[ ] 焦距、0 回原点、C 应用机位、Del/⌫ 删除、Esc。
+    // W/E/S 不再切换 Gizmo 模式(与移动键冲突),模式走底部按钮。
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const k = e.key.toLowerCase();
@@ -1670,11 +1782,26 @@ export function DirectorStageOverlay() {
         else closeWithSnapshot();
         return;
       }
-      if (k === 'w') setMode('translate');
-      else if (k === 'e' || k === 'r') setMode('rotate');
-      else if (k === 's') setMode('scale');
-      else if (k === 'c') applyViewToCamera(activeCameraId);
-      else if (k === 'delete' || k === 'backspace') {
+      if (k === 'c') { applyViewToCamera(activeCameraId); return; }
+      if (k === 'f') { focusSelection(); return; }
+      if (k === '0') { resetView(); return; }
+      if (k === '[' || k === ']') {
+        e.preventDefault();
+        adjustFov(k === '[' ? -5 : 5);
+        return;
+      }
+      if (k.startsWith('arrow')) {
+        e.preventDefault();
+        const cc = cameraControlsRef.current;
+        if (!cc) return;
+        const step = (15 * PI) / 180;
+        if (k === 'arrowleft') cc.rotate(step, 0, true);
+        else if (k === 'arrowright') cc.rotate(-step, 0, true);
+        else if (k === 'arrowup') cc.rotate(0, -step * 0.6, true);
+        else if (k === 'arrowdown') cc.rotate(0, step * 0.6, true);
+        return;
+      }
+      if (k === 'delete' || k === 'backspace') {
         // 没选中东西也吞掉 —— 不然事件落到画布的全局删除快捷键上,
         // 会把导演台节点本身删掉(Canvas 侧还有 directorStageNodeId 兜底)。
         e.preventDefault();
@@ -1686,7 +1813,7 @@ export function DirectorStageOverlay() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nodeId, selection, closeWithSnapshot, onDeselect, applyViewToCamera, activeCameraId, removeActor, removeCamera, removeProp]);
+  }, [nodeId, selection, closeWithSnapshot, onDeselect, applyViewToCamera, activeCameraId, focusSelection, resetView, adjustFov, removeActor, removeCamera, removeProp]);
 
   if (!nodeId || !node) return null;
 
@@ -1705,11 +1832,13 @@ export function DirectorStageOverlay() {
           <span className="font-mono text-[11px] text-white/40">{node.id}</span>
         </div>
         <div className="hidden items-center gap-3 md:flex">
-          <Hint k="左键拖拽" v={language === 'zh' ? '旋转' : 'Rotate'} />
-          <Hint k="右键拖拽" v={language === 'zh' ? '平移' : 'Pan'} />
-          <Hint k="滚轮" v={language === 'zh' ? '缩放' : 'Zoom'} />
-          <Hint k="W / E / S" v={language === 'zh' ? '移动 / 旋转 / 缩放' : 'Move / Rotate / Scale'} />
-          <Hint k="C" v={language === 'zh' ? '应用视图到活跃机位' : 'Apply view'} />
+          <Hint k={language === 'zh' ? '左键' : 'LMB'} v={language === 'zh' ? '选中' : 'Select'} />
+          <Hint k={language === 'zh' ? '右键 / 中键拖拽' : 'RMB/MMB drag'} v={language === 'zh' ? '环视' : 'Orbit'} />
+          <Hint k="WASD" v={language === 'zh' ? '移动' : 'Move'} />
+          <Hint k="E / Q" v={language === 'zh' ? '升降' : 'Up / Down'} />
+          <Hint k="F" v={language === 'zh' ? '聚焦' : 'Focus'} />
+          <Hint k="C" v={language === 'zh' ? '应用视图到机位' : 'Apply view'} />
+          <span className="font-mono text-[11px] text-white/50">FOV {mainFov}°</span>
         </div>
         <button
           type="button"
@@ -1831,6 +1960,7 @@ export function DirectorStageOverlay() {
             ) : null}
           </Suspense>
           <CameraControls ref={cameraControlsRef} makeDefault />
+          <FlyBridge keysRef={flyKeysRef} controlsRef={cameraControlsRef} />
           <SceneBridge sceneRef={sceneRootRef} />
           <CaptureBridge
             singleRef={captureRef}
@@ -1990,9 +2120,9 @@ export function DirectorStageOverlay() {
 
         {/* 左下:操作模式 + 应用到机位 + 重置. */}
         <div className="absolute bottom-4 left-[60px] flex gap-1 rounded-md border border-white/12 bg-black/70 p-1 backdrop-blur-md">
-          <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} hint="W" icon={Move3D} label={language === 'zh' ? '移动' : 'Move'} />
-          <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="E" icon={RotateCw} label={language === 'zh' ? '旋转' : 'Rotate'} />
-          <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="S" icon={Maximize2} label={language === 'zh' ? '缩放' : 'Scale'} />
+          <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} hint="" icon={Move3D} label={language === 'zh' ? '移动' : 'Move'} />
+          <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} hint="" icon={RotateCw} label={language === 'zh' ? '旋转' : 'Rotate'} />
+          <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} hint="" icon={Maximize2} label={language === 'zh' ? '缩放' : 'Scale'} />
           <div className="mx-1 w-px self-stretch bg-white/10" />
           <button
             type="button"
@@ -2944,12 +3074,19 @@ function StageHelpPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <Section title={zh ? '视角' : 'View'}>
-        <Row label={zh ? '旋转视角' : 'Orbit'} keys={<Key>{zh ? '左键拖拽' : 'Left drag'}</Key>} />
-        <Row label={zh ? '平移视角' : 'Pan'} keys={<Key>{zh ? '右键拖拽' : 'Right drag'}</Key>} />
+        <Row label={zh ? '选中' : 'Select'} keys={<Key>{zh ? '左键' : 'LMB'}</Key>} />
+        <Row label={zh ? '环视' : 'Orbit'} keys={<Key>{zh ? '右键 / 中键拖拽' : 'R/M drag'}</Key>} />
+        <Row label={zh ? '移动' : 'Move'} keys={<><Key>W</Key><Key>A</Key><Key>S</Key><Key>D</Key></>} />
+        <Row label={zh ? '升降' : 'Up / Down'} keys={<><Key>E</Key><Key>Q</Key></>} />
+        <Row label={zh ? '加速' : 'Sprint'} keys={<Key>Shift</Key>} />
+        <Row label={zh ? '转向' : 'Turn'} keys={<><Key>←</Key><Key>→</Key><Key>↑</Key><Key>↓</Key></>} />
+        <Row label={zh ? '聚焦选中' : 'Focus'} keys={<Key>F</Key>} />
+        <Row label={zh ? '调整焦距' : 'FOV'} keys={<><Key>[</Key><Key>]</Key></>} />
+        <Row label={zh ? '回到原点' : 'Home'} keys={<Key>0</Key>} />
         <Row label={zh ? '缩放' : 'Zoom'} keys={<Key>{zh ? '滚轮' : 'Wheel'}</Key>} />
       </Section>
       <Section title={zh ? '编辑' : 'Edit'}>
-        <Row label={zh ? '移动 / 旋转 / 缩放' : 'Move / Rotate / Scale'} keys={<><Key>W</Key><Key>E</Key><Key>S</Key></>} />
+        <Row label={zh ? '移动 / 旋转 / 缩放' : 'Gizmo modes'} keys={<Key>{zh ? '底栏按钮' : 'Toolbar'}</Key>} />
         <Row label={zh ? '删除选中' : 'Delete selection'} keys={<><Key>Del</Key><Key>⌫</Key></>} />
         <Row label={zh ? '取消选中 / 退出' : 'Deselect / Exit'} keys={<Key>Esc</Key>} />
       </Section>
@@ -3176,7 +3313,7 @@ function ModeButton({ active, onClick, hint, icon: Icon, label }: {
     >
       <Icon className="h-3 w-3" />
       {label ? <span>{label}</span> : null}
-      <span className="font-mono text-[10px] text-white/40">{hint}</span>
+      {hint ? <span className="font-mono text-[10px] text-white/40">{hint}</span> : null}
     </button>
   );
 }
