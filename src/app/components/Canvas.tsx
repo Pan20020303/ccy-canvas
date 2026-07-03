@@ -366,6 +366,9 @@ const InnerCanvas = () => {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
+  // 批量连线松手在空白处 → 弹「添加节点」菜单；这里记下所有拖出的源节点，
+  // 建好节点后一次性连上（与单根拉线的 connectingFrom 互斥）。
+  const bulkConnectFrom = useRef<string[] | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewportRef = useRef(viewport);
   // Stable ref to the latest nodes array so window-level keyboard handlers
@@ -836,6 +839,22 @@ const InnerCanvas = () => {
           existingEdges: edges,
         });
         newEdges.forEach((edge) => connectEdge(edge as never));
+      } else if (!targetNodeId && target?.closest('.react-flow__pane') && selectedIds.length >= 2 && wrapperRef.current) {
+        // 空白处松手 → 和单根拉线一致：弹「添加节点」菜单，建好后把所有
+        // 源节点一次性连上。（openContextMenu 声明在本 effect 之后，内联
+        // 等价逻辑以避开 TDZ。）
+        bulkConnectFrom.current = [...selectedIds];
+        connectingFrom.current = null;
+        const rect = wrapperRef.current.getBoundingClientRect();
+        const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        setContextMenu({
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+          flowX: flowPos.x,
+          flowY: flowPos.y,
+          fromConnection: true,
+          mode: 'add-node',
+        });
       }
       setBulkRouting(null);
       setConnectionDragging(false);
@@ -846,7 +865,7 @@ const InnerCanvas = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [bulkRouting, selectedIds, edges, connectEdge, setConnectionDragging]);
+  }, [bulkRouting, selectedIds, edges, connectEdge, setConnectionDragging, screenToFlowPosition]);
 
   /** One curve per selected node, all converging to the cursor.
    *  Each curve is in canvas-wrapper-local coordinates. */
@@ -1032,6 +1051,7 @@ const InnerCanvas = () => {
 
   const onConnectStart = useCallback((_: any, params: any) => {
     connectingFrom.current = { nodeId: params.nodeId, handleId: params.handleId };
+    bulkConnectFrom.current = null;
     setConnectionDragging(true);
   }, [setConnectionDragging]);
 
@@ -1055,6 +1075,7 @@ const InnerCanvas = () => {
     }
     if (!target.closest('.react-flow__pane')) return;
     connectingFrom.current = null;
+    bulkConnectFrom.current = null;
     openContextMenu(event, 'add-node', false);
   }, [openContextMenu]);
 
@@ -1069,7 +1090,16 @@ const InnerCanvas = () => {
       data: {},
     });
 
-    if (contextMenu.fromConnection && connectingFrom.current) {
+    if (contextMenu.fromConnection && bulkConnectFrom.current?.length) {
+      // 批量拉线落空建的节点：所有源节点一次性连上（复用去重与 id 规则）。
+      const newEdges = buildBulkOutboundEdges({
+        groupId: 'selection',
+        memberNodeIds: bulkConnectFrom.current,
+        targetNodeId: id,
+        existingEdges: edges,
+      });
+      newEdges.forEach((edge) => connectEdge(edge as never));
+    } else if (contextMenu.fromConnection && connectingFrom.current) {
       const connection: Connection = {
         source: connectingFrom.current.nodeId,
         sourceHandle: connectingFrom.current.handleId ?? null,
@@ -1081,7 +1111,8 @@ const InnerCanvas = () => {
 
     setContextMenu(null);
     connectingFrom.current = null;
-  }, [addNode, contextMenu, onConnect, snapToGrid]);
+    bulkConnectFrom.current = null;
+  }, [addNode, contextMenu, onConnect, snapToGrid, edges, connectEdge]);
 
   const uploadFilesAtPosition = useCallback(async (files: File[], flowPos: { x: number; y: number }) => {
     let offsetY = 0;
@@ -1811,20 +1842,21 @@ const InnerCanvas = () => {
         );
       })() : null}
 
-      {/* Bulk-routing converging curves with animated flow */}
+      {/* Bulk-routing converging curves — same look as the single-wire
+          preview (FreeConnectionLine)。这层 SVG 用的是屏幕坐标，而单根预览
+          画在流坐标里会随缩放变细，所以线宽/虚线间距要乘 zoom 才一致。 */}
       {bulkDragCurves && bulkDragCurves.length > 0 ? (
         <svg className="pointer-events-none absolute inset-0 z-30 h-full w-full overflow-visible">
           {bulkDragCurves.map((curve) => (
-            <g key={curve.id}>
-              {/* Soft outer glow */}
-              <path d={curve.d} fill="none" stroke="#22d3ee" strokeOpacity={0.18} strokeWidth={6} strokeLinecap="round" />
-              {/* Solid base stroke */}
-              <path d={curve.d} fill="none" stroke="#22d3ee" strokeOpacity={0.85} strokeWidth={2} strokeLinecap="round" />
-              {/* Animated dashed overlay — gives a flowing pulse along the curve */}
-              <path d={curve.d} fill="none" stroke="#a5f3fc" strokeWidth={2} strokeLinecap="round" strokeDasharray="10 14">
-                <animate attributeName="stroke-dashoffset" from="0" to="-24" dur="0.6s" repeatCount="indefinite" />
-              </path>
-            </g>
+            <path
+              key={curve.id}
+              d={curve.d}
+              fill="none"
+              stroke={theme === 'light' ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.55)'}
+              strokeWidth={2 * viewport.zoom}
+              strokeDasharray={`${6 * viewport.zoom} ${6 * viewport.zoom}`}
+              strokeLinecap="round"
+            />
           ))}
         </svg>
       ) : null}
