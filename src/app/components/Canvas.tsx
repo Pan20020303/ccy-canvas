@@ -2703,17 +2703,26 @@ function GroupColorMenu({
 /** 使用偏好「生成前确认」弹窗 —— runNode 在偏好开启时把请求挂起到
  *  pendingRunConfirm,这里确认(带 skipConfirm 重入)或取消。 */
 function RunConfirmDialog() {
-  const pending = useStore((s) => s.pendingRunConfirm);
-  const setPending = useStore((s) => s.setPendingRunConfirm);
+  const queue = useStore((s) => s.pendingRunConfirm);
+  const setQueue = useStore((s) => s.setPendingRunConfirm);
   const runNode = useStore((s) => s.runNode);
   const language = useStore((s) => s.language);
+  const pending = queue[0];
   if (!pending) return null;
   const zh = language === 'zh';
+  const rest = queue.slice(1);
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/55 backdrop-blur-sm">
       <div className="w-[440px] rounded-xl border border-white/10 bg-[#101114] p-5">
-        <div className="text-[14px] font-medium text-white">
-          {zh ? '生成前确认' : 'Confirm before generating'}
+        <div className="flex items-center justify-between">
+          <span className="text-[14px] font-medium text-white">
+            {zh ? '生成前确认' : 'Confirm before generating'}
+          </span>
+          {rest.length > 0 ? (
+            <span className="rounded bg-white/[0.06] px-2 py-0.5 text-[10.5px] text-neutral-400">
+              {zh ? `还有 ${rest.length} 个待确认` : `${rest.length} more pending`}
+            </span>
+          ) : null}
         </div>
         <p className="mt-3 text-[12.5px] leading-relaxed text-neutral-300">
           {zh
@@ -2728,7 +2737,7 @@ function RunConfirmDialog() {
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => setPending(null)}
+            onClick={() => setQueue(rest)}
             className="rounded-md border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[12px] text-white/70 transition hover:border-white/25 hover:bg-white/[0.08]"
           >
             {zh ? '再检查一下' : 'Keep editing'}
@@ -2736,9 +2745,8 @@ function RunConfirmDialog() {
           <button
             type="button"
             onClick={() => {
-              const p = pending;
-              setPending(null);
-              void runNode(p.nodeId, { ...p.payload, skipConfirm: true });
+              setQueue(rest);
+              void runNode(pending.nodeId, { ...pending.payload, skipConfirm: true });
             }}
             className="rounded-md border border-violet-400/40 bg-violet-500/[0.18] px-3 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/70 hover:bg-violet-500/[0.3]"
           >

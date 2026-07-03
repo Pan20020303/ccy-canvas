@@ -333,9 +333,10 @@ type AppState = {
   /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。 */
   confirmBeforeGenerate: boolean;
   setConfirmBeforeGenerate: (v: boolean) => void;
-  /** 待确认的生成请求 —— 确认弹窗读它,确认后带 skipConfirm 重入 runNode。 */
-  pendingRunConfirm: { nodeId: string; payload: { prompt: string; model?: string } } | null;
-  setPendingRunConfirm: (v: { nodeId: string; payload: { prompt: string; model?: string } } | null) => void;
+  /** 待确认的生成请求队列 —— 弹窗一次确认一个;做成队列是因为批量流程
+   *  (如分镜派生)会连续调用 runNode,单槽会互相覆盖丢单。 */
+  pendingRunConfirm: Array<{ nodeId: string; payload: { prompt: string; model?: string } }>;
+  setPendingRunConfirm: (v: Array<{ nodeId: string; payload: { prompt: string; model?: string } }>) => void;
   shortcuts: Record<string, string>;
   setShortcut: (action: string, combo: string) => void;
   resetShortcuts: () => void;
@@ -3006,7 +3007,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // 使用偏好「生成前确认」:先挂起请求弹确认窗,确认按钮带 skipConfirm
     // 重入。放在最前面 —— 确认之前不 abort 旧请求、不产生任何生成状态。
     if (get().confirmBeforeGenerate && !payload?.skipConfirm) {
-      set({ pendingRunConfirm: { nodeId, payload: { prompt: payload.prompt, model: payload.model } } });
+      set((state) => ({
+        pendingRunConfirm: [
+          ...state.pendingRunConfirm.filter((p) => p.nodeId !== nodeId),
+          { nodeId, payload: { prompt: payload.prompt, model: payload.model } },
+        ],
+      }));
       return;
     }
     // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
@@ -3516,7 +3522,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   confirmBeforeGenerate: false,
   setConfirmBeforeGenerate: (v) => set({ confirmBeforeGenerate: v }),
-  pendingRunConfirm: null,
+  pendingRunConfirm: [],
   setPendingRunConfirm: (v) => set({ pendingRunConfirm: v }),
 
   isTaskQueueCollapsed: false,

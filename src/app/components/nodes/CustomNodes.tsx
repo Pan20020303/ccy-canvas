@@ -940,6 +940,7 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
       return (
         <span
           key={i}
+          data-mention-id={mention.id}
           className="rounded-sm text-cyan-300"
           style={{
             backgroundColor: 'rgba(34, 211, 238, 0.10)',
@@ -953,6 +954,49 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
     }
     return <span key={i}>{part}</span>;
   });
+}
+
+/** 引用悬停预览(参考交互):图片放大 / 视频静音循环 / 音频迷你播放器。
+ *  portal 到 body + fixed 定位 —— RF 节点带 transform,fixed 在其内部会退化
+ *  成相对该节点定位,必须逃出节点树;坐标用屏幕坐标,画布缩放下依然对位。
+ *  音频要可点播放,所以浮层开 pointer-events,配合悬停延时关闭做移入交接。 */
+function RefHoverPreview({ up, left, top, onEnter, onLeave }: {
+  up: { kind: string; thumb: string; mediaUrl: string; label: string };
+  left: number;
+  top: number;
+  onEnter: () => void;
+  onLeave: () => void;
+}) {
+  const style: React.CSSProperties = {
+    left: Math.max(8, Math.min(left - 134, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 276)),
+    top: Math.max(8, top - 8),
+    transform: 'translateY(-100%)',
+  };
+  let body: React.ReactNode = null;
+  if (up.kind === 'audio' && up.mediaUrl) {
+    body = <audio src={toRenderableMediaUrl(up.mediaUrl)} controls preload="metadata" className="h-9 w-[252px]" />;
+  } else if (up.kind === 'video' && (up.mediaUrl || up.thumb)) {
+    body = up.mediaUrl ? (
+      <video src={toRenderableMediaUrl(up.mediaUrl)} muted autoPlay loop playsInline className="max-h-[180px] w-[252px] rounded-md bg-black object-contain" />
+    ) : (
+      <img src={toRenderableMediaUrl(up.thumb)} alt="" className="max-h-[180px] w-[252px] rounded-md object-contain" />
+    );
+  } else if (up.thumb) {
+    body = <img src={toRenderableMediaUrl(up.thumb)} alt="" className="max-h-[200px] max-w-[252px] rounded-md object-contain" />;
+  }
+  if (!body) return null;
+  return createPortal(
+    <div
+      className="fixed z-[140] rounded-lg border border-white/12 bg-[#101114]/95 p-2 shadow-2xl backdrop-blur-md"
+      style={style}
+      onMouseEnter={onEnter}
+      onMouseLeave={onLeave}
+    >
+      {body}
+      <div className="mt-1 text-center text-[10px] text-neutral-500">{up.label}</div>
+    </div>,
+    document.body,
+  );
 }
 
 const getAspectRatioClass = (aspectRatio: string | undefined, fallback: string) => {
@@ -1205,7 +1249,9 @@ const PromptPanel = ({
     const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'other';
     const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : isAudio ? `音频 ${idx + 1}` : `节点 ${idx + 1}`;
     const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : '节';
-    return { id, edgeId: edge.id, type, kind, thumb, label, icon, index: idx + 1 };
+    // mediaUrl:悬停预览用的原始媒体(音频/视频要能播,不只是缩略图)。
+    const mediaUrl = d.url || '';
+    return { id, edgeId: edge.id, type, kind, thumb, mediaUrl, label, icon, index: idx + 1 };
   }), [upstreamEdges, allNodes]);
 
   const currentNode = allNodes.find((node) => node.id === nodeId);
@@ -1230,6 +1276,39 @@ const PromptPanel = ({
   }, [nodeId]);
 
   const [mentionOpen, setMentionOpen] = useState(false);
+
+  // 引用悬停预览:strip 缩略图或行内 @提及 chip 悬停时浮出(屏幕坐标)。
+  // 关闭走 220ms 延时,让指针能从 chip 移进浮层里点音频播放。
+  const [refHover, setRefHover] = useState<{ id: string; left: number; top: number } | null>(null);
+  const refHoverClearTimer = useRef<number | null>(null);
+  const cancelRefHoverClear = useCallback(() => {
+    if (refHoverClearTimer.current !== null) {
+      window.clearTimeout(refHoverClearTimer.current);
+      refHoverClearTimer.current = null;
+    }
+  }, []);
+  const scheduleRefHoverClear = useCallback(() => {
+    cancelRefHoverClear();
+    refHoverClearTimer.current = window.setTimeout(() => setRefHover(null), 220);
+  }, [cancelRefHoverClear]);
+  const showRefHover = useCallback((id: string, rect: { left: number; top: number; width: number }) => {
+    cancelRefHoverClear();
+    setRefHover({ id, left: rect.left + rect.width / 2, top: rect.top });
+  }, [cancelRefHoverClear]);
+  // 行内 @提及命中检测:镜像层与 textarea 逐字符对齐,提及 span 的屏幕
+  // rect 就是文本里芯片的真实位置 —— textarea 在上层收事件,拿坐标来撞。
+  const hitTestMentionHover = useCallback((event: React.MouseEvent, overlayEl: HTMLElement | null) => {
+    if (!overlayEl) return;
+    const spans = overlayEl.querySelectorAll<HTMLElement>('[data-mention-id]');
+    for (const s of Array.from(spans)) {
+      const r = s.getBoundingClientRect();
+      if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
+        showRefHover(s.dataset.mentionId ?? '', r);
+        return;
+      }
+    }
+    scheduleRefHoverClear();
+  }, [showRefHover, scheduleRefHoverClear]);
   const [expanded, setExpanded] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const compactOverlayRef = useRef<HTMLDivElement>(null);
@@ -2037,6 +2116,8 @@ const PromptPanel = ({
             key={up.edgeId}
             className="group/ref relative shrink-0 flex flex-col items-center gap-1"
             title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
+            onMouseEnter={(event) => showRefHover(up.id, event.currentTarget.getBoundingClientRect())}
+            onMouseLeave={scheduleRefHoverClear}
           >
             <div className="relative">
               {up.thumb ? (
@@ -2143,6 +2224,8 @@ const PromptPanel = ({
           }}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={onKeyDown}
+          onMouseMove={(event) => hitTestMentionHover(event, overlayRef.current)}
+          onMouseLeave={scheduleRefHoverClear}
           onScroll={(event) => syncOverlayScroll(event.currentTarget, overlayRef.current)}
           // Keep wheel inside the textarea — without this, ReactFlow grabs
           // the wheel event and zooms the canvas instead of scrolling the
@@ -2337,6 +2420,21 @@ const PromptPanel = ({
         </div>,
         document.body,
       ) : null}
+      {/* 引用悬停预览 —— 只渲染一份(紧凑/展开两个 strip 共享状态)。 */}
+      {(() => {
+        if (!refHover) return null;
+        const up = upstreamNodes.find((u) => u.id === refHover.id);
+        if (!up) return null;
+        return (
+          <RefHoverPreview
+            up={up}
+            left={refHover.left}
+            top={refHover.top}
+            onEnter={cancelRefHoverClear}
+            onLeave={scheduleRefHoverClear}
+          />
+        );
+      })()}
       <AssetPickerModal
         isOpen={pickerOpen}
         onClose={() => setPickerOpen(false)}
