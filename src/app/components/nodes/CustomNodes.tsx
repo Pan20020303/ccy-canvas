@@ -1077,10 +1077,14 @@ const PromptPanel = ({
     const type = n?.type ?? '';
     const isImage = type === 'imageNode' || type === 'referenceImageNode';
     const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
-    const thumb = d.url || d.thumbnail || '';
-    const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : `节点 ${idx + 1}`;
-    const icon = isImage ? '图' : isVideo ? '视' : '节';
-    return { id, edgeId: edge.id, type, thumb, label, icon, index: idx + 1 };
+    const isAudio = type === 'audioNode' || type === 'referenceAudioNode';
+    // 音频没有可用缩略图（url 是 mp3，塞进 <img> 就是裂图）——留空走图标卡；
+    // 视频优先用封面帧，兜底才是原始视频 url。
+    const thumb = isAudio ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (d.url || d.thumbnail || '');
+    const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'other';
+    const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : isAudio ? `音频 ${idx + 1}` : `节点 ${idx + 1}`;
+    const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : '节';
+    return { id, edgeId: edge.id, type, kind, thumb, label, icon, index: idx + 1 };
   }), [upstreamEdges, allNodes]);
 
   const currentNode = allNodes.find((node) => node.id === nodeId);
@@ -1864,6 +1868,17 @@ const PromptPanel = ({
                   )}
                   draggable={false}
                 />
+              ) : up.kind === 'audio' ? (
+                /* 音频引用卡 — 深色底 + 音符 + 「音频 N」（参考样式）。 */
+                <div
+                  className={clsx(
+                    'flex h-12 w-12 flex-col items-center justify-center gap-1 rounded-lg bg-white/[0.06] transition',
+                    isUsed && 'ring-2 ring-cyan-400/50',
+                  )}
+                >
+                  <Music className="h-4 w-4 text-emerald-400" />
+                  <span className="max-w-[44px] truncate text-[8px] leading-none text-neutral-300">{up.label}</span>
+                </div>
               ) : (
                 <div
                   className={clsx(
@@ -1965,6 +1980,10 @@ const PromptPanel = ({
               >
                 {up.thumb ? (
                   <img src={toRenderableMediaUrl(up.thumb)} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
+                ) : up.kind === 'audio' ? (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] flex-shrink-0">
+                    <Music className="h-3.5 w-3.5 text-emerald-400" />
+                  </span>
                 ) : (
                   <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
                 )}

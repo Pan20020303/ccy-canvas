@@ -94,16 +94,16 @@ type ContextMenuState = {
   nodeId?: string;
 };
 
-const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string }[] = [
-  { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text' },
-  { kind: 'imageNode', icon: ImageIcon, zh: '图片', en: 'Image' },
-  { kind: 'videoNode', icon: Video, zh: '视频', en: 'Video' },
-  { kind: 'audioNode', icon: Music, zh: '音频', en: 'Audio' },
+const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string; subtitleZh?: string; subtitleEn?: string }[] = [
+  { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text', subtitleZh: '脚本、广告词、品牌文案', subtitleEn: 'Scripts, ad copy, brand text' },
+  { kind: 'imageNode', icon: ImageIcon, zh: '图片生成', en: 'Image' },
+  { kind: 'videoNode', icon: Video, zh: '视频生成', en: 'Video' },
+  { kind: 'audioNode', icon: Music, zh: '音频生成', en: 'Audio' },
 ];
 
 const FUTURE_NODE_OPTIONS = [
-  { key: 'video-compose', icon: Scissors, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subtitleZh: '', subtitleEn: '' },
-  { key: 'director-desk', icon: Layers3, zh: '导演台', en: 'Director Desk', badge: 'NEW', subtitleZh: '', subtitleEn: '' },
+  { key: 'video-compose', icon: Scissors, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subtitleZh: '多视频/音轨合成', subtitleEn: 'Multi-video / audio compositing' },
+  { key: 'director-desk', icon: Layers3, zh: '导演台', en: 'Director Desk', badge: 'NEW', subtitleZh: '3D 构图编辑器', subtitleEn: '3D composition editor' },
   { key: 'script', icon: SquarePen, zh: '脚本', en: 'Script', badge: 'Beta', subtitleZh: '创意脚本、生成故事板', subtitleEn: 'Create scripts and storyboards' },
 ] as const;
 
@@ -1871,10 +1871,8 @@ const InnerCanvas = () => {
           <div
             className={clsx(
               'absolute z-40 rounded-[14px] border border-white/10 bg-[#252525]/98 shadow-2xl backdrop-blur-xl',
-              // 根菜单/节点菜单走紧凑窄版（参考样式）；添加节点选择器保留宽版大行。
-              contextMenu.mode === 'add-node'
-                ? 'w-[280px] p-2 rounded-[22px]'
-                : 'w-[220px] p-1.5',
+              // 全部走紧凑版（参考样式）；添加节点选择器因带副标题略宽一点。
+              contextMenu.mode === 'add-node' ? 'w-[230px] p-1.5' : 'w-[220px] p-1.5',
             )}
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
@@ -2009,15 +2007,18 @@ const InnerCanvas = () => {
               </div>
             ) : (
               <div className="flex flex-col">
-                <div className="px-3 py-2 text-sm font-medium text-neutral-100">
+                <div className="px-2.5 pb-1 pt-1.5 text-[11px] text-neutral-500">
                   {language === 'zh' ? '添加节点' : 'Add Node'}
                 </div>
                 {PICKER_OPTIONS.map((option) => (
                   <ContextMenuButton
                     key={option.kind}
+                    compact
                     icon={option.icon}
                     labelZh={option.zh}
                     labelEn={option.en}
+                    subtitleZh={option.subtitleZh}
+                    subtitleEn={option.subtitleEn}
                     onClick={() => onPickerSelect(option.kind)}
                   />
                 ))}
@@ -2026,6 +2027,7 @@ const InnerCanvas = () => {
                   return (
                     <ContextMenuButton
                       key={option.key}
+                      compact
                       icon={option.icon}
                       labelZh={option.zh}
                       labelEn={option.en}
@@ -2037,11 +2039,12 @@ const InnerCanvas = () => {
                     />
                   );
                 })}
-                <div className="px-3 pt-3 text-xs text-neutral-500">
+                <div className="px-2.5 pb-1 pt-2 text-[11px] text-neutral-500">
                   {language === 'zh' ? '添加资源' : 'Add Resource'}
                 </div>
-                <ContextMenuButton icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
+                <ContextMenuButton compact icon={Upload} labelZh="上传" labelEn="Upload" onClick={handleMenuUpload} />
                 <ContextMenuButton
+                  compact
                   icon={ImageIcon}
                   labelZh="从生成历史选择"
                   labelEn="Choose from History"
@@ -2433,13 +2436,21 @@ function ContextMenuButton({
         type="button"
         disabled={disabled}
         onClick={onClick}
-        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${
-          disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-white/5'
-        }`}
+        className={clsx(
+          'flex gap-2.5 rounded-lg px-2.5 py-2 text-left transition',
+          subtitle ? 'items-start' : 'items-center',
+          disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-white/5',
+        )}
       >
-        <Icon className="h-4 w-4 shrink-0 text-neutral-400" />
-        <span className="text-[13px] text-neutral-100">{label}</span>
-        {shortcut ? <span className="ml-auto text-[11px] tabular-nums text-neutral-500">{shortcut}</span> : null}
+        <Icon className={clsx('h-4 w-4 shrink-0 text-neutral-400', subtitle && 'mt-0.5')} />
+        <span className="flex min-w-0 flex-col">
+          <span className="flex items-center gap-1.5 text-[13px] text-neutral-100">
+            <span className="truncate">{label}</span>
+            {badge ? <span className="rounded bg-white/10 px-1 py-px text-[9px] text-neutral-300">{badge}</span> : null}
+          </span>
+          {subtitle ? <span className="mt-0.5 truncate text-[11px] text-neutral-500">{subtitle}</span> : null}
+        </span>
+        {shortcut ? <span className="ml-auto shrink-0 text-[11px] tabular-nums text-neutral-500">{shortcut}</span> : null}
       </button>
     );
   }
