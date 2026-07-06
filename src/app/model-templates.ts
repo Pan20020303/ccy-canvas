@@ -629,6 +629,32 @@ function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSc
   };
 }
 
+// 按 model id 模式识别 Seedance 家族。中转站/自定义配置里模型 id 五花八门
+// (doubao-seedance-2.0 / -mini / -fast、seedance-2.0、doubao-seedance-2-0-260128
+// …… 点号或连字符都有),精确表里没有时会退化成默认模板,而默认视频模板没有
+// referenceModes → modesForModel 只给一个「多图参考」。这里按版本兜底成对应的
+// Seedance 视频模板,把首尾帧/多图/动作模仿/全能参考等模式补回来。
+function inferSeedanceTemplate(
+  modelName: string,
+  provider?: Pick<AppProviderConfig, "vendor"> | null,
+): ModelTemplate | null {
+  const m = modelName.toLowerCase();
+  if (!m.includes("seedance")) return null;
+  const vendor = provider?.vendor ?? "Volcengine";
+  const v = m.replace(/\./g, "-"); // 归一化点号→连字符,便于版本判断
+  const fast = v.includes("fast");
+  if (v.includes("seedance-2")) {
+    return { vendor, modelName, ...(fast ? SEEDANCE_2_FAST_TEMPLATE : SEEDANCE_2_TEMPLATE) };
+  }
+  if (v.includes("seedance-1-5")) {
+    return { vendor, modelName, ...SEEDANCE_15_PRO_TEMPLATE };
+  }
+  if (v.includes("seedance-1")) {
+    return { vendor, modelName, ...SEEDANCE_10_PRO_TEMPLATE };
+  }
+  return null;
+}
+
 export function getModelTemplate(
   modelName?: string | null,
   provider?: Pick<AppProviderConfig, "service_type" | "vendor" | "parameter_schema"> | null,
@@ -636,7 +662,9 @@ export function getModelTemplate(
   if (!modelName) {
     return null;
   }
-  const base = modelTemplates[modelName] ?? inferProviderTemplate(modelName, provider);
+  const base = modelTemplates[modelName]
+    ?? inferSeedanceTemplate(modelName, provider)
+    ?? inferProviderTemplate(modelName, provider);
   if (!base) {
     return null;
   }
