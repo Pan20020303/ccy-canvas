@@ -954,54 +954,10 @@ function migrateMentionTags(text: string, mentions: PromptMention[]): { text: st
   return changed ? { text: nextText, mentions: nextMentions } : null;
 }
 
-/** 行内 @ 提及左侧的小预览图。关键:绝对定位 + 零布局宽度(right:100% 浮在
- *  标签左侧),不占镜像层的字符排布,真实 textarea 的光标依旧逐字对齐。
- *  有缩略图(图片/视频封面)显示图片,音频/文本等无图则显示图标底片。 */
-function MentionThumb({ thumb, kind }: { thumb: string; kind?: string }) {
-  const base: React.CSSProperties = {
-    position: 'absolute',
-    right: '100%',
-    top: '50%',
-    transform: 'translateY(-50%)',
-    marginRight: 2,
-    width: 14,
-    height: 14,
-    borderRadius: 4,
-    overflow: 'hidden',
-    pointerEvents: 'none',
-  };
-  if (thumb) {
-    return (
-      <img
-        src={toRenderableMediaUrl(thumb)}
-        alt=""
-        aria-hidden
-        style={{ ...base, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.20)' }}
-      />
-    );
-  }
-  const glyph = kind === 'audio' ? '♪' : kind === 'video' ? '▶' : kind === 'text' ? 'T' : '#';
-  return (
-    <span
-      aria-hidden
-      style={{
-        ...base,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(34,211,238,0.16)',
-        border: '1px solid rgba(34,211,238,0.28)',
-        fontSize: 9,
-        lineHeight: 1,
-        color: '#a5e8f2',
-      }}
-    >
-      {glyph}
-    </span>
-  );
-}
-
-/** Render text with inline mention chips + thumbnails. Splits on `[@xxx]` tags. */
+/** Render text with inline mention chips. Splits on `[@xxx]` tags. The chip is
+ *  a caret-aligned colored label (镜像层与透明 textarea 逐字对齐);引用预览走
+ *  悬停浮层(RefHoverPreview),不再内联缩略图 —— 内联图无法在不破坏光标对齐
+ *  的前提下预留横向空间,总会盖住相邻文字。 */
 function renderMentionRichText(text: string, mentions: PromptMention[]): React.ReactNode {
   if (!mentions.length) return text;
 
@@ -1028,7 +984,6 @@ function renderMentionRichText(text: string, mentions: PromptMention[]): React.R
           }}
           title={mention.tag}
         >
-          <MentionThumb thumb={mention.thumb} kind={mention.kind} />
           {part}
         </span>
       );
@@ -1298,6 +1253,8 @@ const PromptPanel = ({
   const runNode = useStore((state) => state.runNode);
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
+  const lastVideoParams = useStore((state) => state.lastVideoParams);
+  const setLastVideoParams = useStore((state) => state.setLastVideoParams);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
@@ -1538,12 +1495,29 @@ const PromptPanel = ({
     if (typeof schema?.credit_cost === 'number') return Math.max(0, Math.round(schema.credit_cost));
     return 1;
   }, [activeConfig, activeModel]);
+  // 上次视频生成参数预填(仅视频节点),并校验对当前模型仍合法 —— 免得把
+  // 1080p / 21:9 塞给只支持 480p / 少数比例的模型。本节点已选过(params.*)时
+  // 优先其值,不被覆盖;校验不过则退回模板默认。
+  const lastVP = serviceType === 'video' ? lastVideoParams : null;
+  const lastRes = lastVP?.resolution;
+  const lastAsp = lastVP?.aspectRatio;
+  const lastDur = lastVP && typeof lastVP.durationSeconds === 'number' ? lastVP.durationSeconds : undefined;
+  const lastResolution = lastRes && template?.resolutionOptions?.includes(lastRes) ? lastRes : undefined;
+  const lastAspectRatio = lastAsp
+    && (lastAsp === 'auto' ? template?.supportsAutoAspect : template?.aspectRatioOptions?.includes(lastAsp))
+    ? lastAsp : undefined;
+  const lastDuration = lastDur !== undefined
+    && (template?.durationOptions?.includes(lastDur)
+      || (template?.durationRange ? lastDur >= template.durationRange.min && lastDur <= template.durationRange.max : false))
+    ? lastDur : undefined;
+
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
-  const currentResolution = params.resolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
+  const currentResolution = params.resolution ?? lastResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
   const currentAspectRatio = params.aspectRatio
+    ?? lastAspectRatio
     ?? (template?.supportsAutoAspect ? 'auto' : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0] ?? '');
-  const currentDuration = params.durationSeconds ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
+  const currentDuration = params.durationSeconds ?? lastDuration ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
   const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';
   const currentSeed = typeof params.seed === 'number' ? params.seed : undefined;
@@ -1725,6 +1699,14 @@ const PromptPanel = ({
       error: undefined,
       queuedAfterTimeout: false,
     });
+    // 记住这次视频生成的参数,下次新建视频节点自动预填(免去重选时长/分辨率/宽高比)。
+    if (serviceType === 'video') {
+      setLastVideoParams({
+        resolution: currentResolution || undefined,
+        aspectRatio: currentAspectRatio || undefined,
+        durationSeconds: typeof currentDuration === 'number' ? currentDuration : undefined,
+      });
+    }
     void Promise.resolve(runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel })).catch((err: unknown) => {
       updateNodeData(nodeId, {
         status: 'error',

@@ -35,14 +35,24 @@ function createStorageMock(values: Map<string, string> = new Map()): Storage {
   };
 }
 
-async function loadStore(storage = createStorageMock()): Promise<StoreModule> {
+async function loadStore(
+  storage = createStorageMock(),
+  opts: { keepConfirmDefault?: boolean } = {},
+): Promise<StoreModule> {
   vi.resetModules();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: storage,
   });
 
-  return import("./store");
+  const mod = await import("./store");
+  // 生成前确认默认已改为开启(新用户)。绝大多数用例验证的是生成/派生机制而非
+  // 确认 UX,这里默认关掉确认门,让 runNode 直接走生成路径(等价于用户点了确认)。
+  // 需要验证默认值/持久化的用例传 keepConfirmDefault: true。
+  if (!opts.keepConfirmDefault) {
+    mod.useStore.setState({ confirmBeforeGenerate: false });
+  }
+  return mod;
 }
 
 describe("workspace project state", () => {
@@ -1470,5 +1480,62 @@ describe("keyboard shortcuts + undo/redo/delete", () => {
     // Any node change (a fresh edit) invalidates redo.
     useStore.getState().onNodesChange([{ type: "add", item: { id: "kbd-b", type: "textNode", position: { x: 10, y: 10 }, data: {} } } as never]);
     expect(useStore.getState().redoStack.length).toBe(0);
+  });
+});
+
+describe("usage preferences (生成前确认 + last video params)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults 生成前确认 ON for a brand-new user", async () => {
+    const { useStore } = await loadStore(createStorageMock(), { keepConfirmDefault: true });
+    expect(useStore.getState().confirmBeforeGenerate).toBe(true);
+  });
+
+  it("persistLightPrefs merges fields without clobbering each other", async () => {
+    const storage = createStorageMock();
+    const { persistLightPrefs } = await loadStore(storage, { keepConfirmDefault: true });
+
+    persistLightPrefs({ confirmBeforeGenerate: false });
+    persistLightPrefs({ lastVideoParams: { resolution: "1080p", aspectRatio: "16:9", durationSeconds: 10 } });
+
+    const parsed = JSON.parse(storage.getItem("cineflow-prefs") as string);
+    // The second write must NOT drop the confirm flag from the first.
+    expect(parsed.confirmBeforeGenerate).toBe(false);
+    expect(parsed.lastVideoParams).toEqual({ resolution: "1080p", aspectRatio: "16:9", durationSeconds: 10 });
+  });
+
+  it("setLastVideoParams updates state and writes the independent light-prefs key", async () => {
+    const storage = createStorageMock();
+    const { useStore } = await loadStore(storage);
+
+    useStore.getState().setLastVideoParams({ resolution: "720p", aspectRatio: "auto", durationSeconds: 8 });
+
+    expect(useStore.getState().lastVideoParams).toEqual({ resolution: "720p", aspectRatio: "auto", durationSeconds: 8 });
+    const parsed = JSON.parse(storage.getItem("cineflow-prefs") as string);
+    expect(parsed.lastVideoParams).toEqual({ resolution: "720p", aspectRatio: "auto", durationSeconds: 8 });
+  });
+
+  it("keeps 生成前确认 OFF for a user who explicitly disabled it (opt-out survives the ON default)", async () => {
+    const storage = createStorageMock();
+    // A user 'u1' who previously turned the toggle OFF (independent小键 records the choice).
+    storage.setItem("cineflow-prefs-u1", JSON.stringify({ confirmBeforeGenerate: false }));
+    const { useStore, bindStorageToUser } = await loadStore(storage, { keepConfirmDefault: true });
+
+    bindStorageToUser("u1");
+    await new Promise((resolve) => setTimeout(resolve, 0)); // flush async rehydrate → override
+
+    expect(useStore.getState().confirmBeforeGenerate).toBe(false);
+  });
+
+  it("applies the ON default for a bound user who never set the preference", async () => {
+    const storage = createStorageMock();
+    const { useStore, bindStorageToUser } = await loadStore(storage, { keepConfirmDefault: true });
+
+    bindStorageToUser("u-new");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(useStore.getState().confirmBeforeGenerate).toBe(true);
   });
 });

@@ -386,9 +386,14 @@ type AppState = {
   layerEditorNodeId: string | null;
   openLayerEditor: (nodeId: string) => void;
   closeLayerEditor: () => void;
-  /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。 */
+  /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。
+   *  新用户默认开启;显式关过的用户保持关闭(独立小键权威,见 applyLightPrefsOverride)。 */
   confirmBeforeGenerate: boolean;
   setConfirmBeforeGenerate: (v: boolean) => void;
+  /** 上次视频生成用的时长/分辨率/宽高比。新建视频节点时预填,免去每次重选。
+   *  与 confirmBeforeGenerate 同存独立小键(cineflow-prefs),不随大画布 blob 丢失。 */
+  lastVideoParams: LastVideoParams | null;
+  setLastVideoParams: (params: LastVideoParams) => void;
   /** 待确认的生成请求队列 —— 弹窗一次确认一个;做成队列是因为批量流程
    *  (如分镜派生)会连续调用 runNode,单槽会互相覆盖丢单。 */
   pendingRunConfirm: Array<{ nodeId: string; payload: { prompt: string; model?: string } }>;
@@ -1391,10 +1396,12 @@ function stripHeavyFromNodeData(data: unknown): unknown {
 }
 
 function stripHeavyFromNodes(nodes: Node[]): Node[] {
+  if (!Array.isArray(nodes)) return [];
   return nodes.map((node) => ({ ...node, data: stripHeavyFromNodeData(node.data) as never }));
 }
 
 function stripHeavyFromHistory(history: HistoryItem[]): HistoryItem[] {
+  if (!Array.isArray(history)) return [];
   return history.slice(0, MAX_PERSISTED_HISTORY_ITEMS).map((item) => ({
     ...item,
     thumbnail: isHeavyMediaString(item.thumbnail) ? '' : item.thumbnail,
@@ -1407,6 +1414,7 @@ function stripHeavyFromHistory(history: HistoryItem[]): HistoryItem[] {
 }
 
 function stripHeavyFromProjectStateById(projectStateById: Record<string, ProjectCanvasState>): Record<string, ProjectCanvasState> {
+  if (!projectStateById || typeof projectStateById !== 'object') return {};
   const out: Record<string, ProjectCanvasState> = {};
   for (const [key, snapshot] of Object.entries(projectStateById)) {
     out[key] = { ...snapshot, nodes: stripHeavyFromNodes(snapshot.nodes) };
@@ -1417,6 +1425,7 @@ function stripHeavyFromProjectStateById(projectStateById: Record<string, Project
 function stripHeavyFromSpaceSnapshots<T extends { projectStateById?: Record<string, ProjectCanvasState>; history?: HistoryItem[] }>(
   snapshots: Record<string, T>,
 ): Record<string, T> {
+  if (!snapshots || typeof snapshots !== 'object') return {} as Record<string, T>;
   const out: Record<string, T> = {} as Record<string, T>;
   for (const [key, snap] of Object.entries(snapshots)) {
     out[key] = {
@@ -1560,21 +1569,41 @@ export const appStorage = {
  *  关键小设置单独落盘,不与大画布共命运。 */
 const LIGHT_PREFS_KEY = 'cineflow-prefs';
 
-export function persistLightPrefs(prefs: { confirmBeforeGenerate: boolean }) {
+/** 上次视频生成参数(会预填新视频节点)。 */
+export type LastVideoParams = { resolution?: string; aspectRatio?: string; durationSeconds?: number };
+
+type LightPrefs = { confirmBeforeGenerate?: boolean; lastVideoParams?: LastVideoParams | null };
+
+function readLightPrefs(): LightPrefs {
   try {
-    localStorage.setItem(storageKey(LIGHT_PREFS_KEY), JSON.stringify(prefs));
+    const raw = localStorage.getItem(storageKey(LIGHT_PREFS_KEY));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as LightPrefs) : {};
+  } catch { return {}; }
+}
+
+/** 合并写入独立小键(各字段互不覆盖)。confirmBeforeGenerate 的“是否写过”本身
+ *  就是新旧用户的分水岭 —— 写过 = 用户显式选择,没写过 = 用默认。 */
+export function persistLightPrefs(patch: LightPrefs) {
+  try {
+    const merged = { ...readLightPrefs(), ...patch };
+    localStorage.setItem(storageKey(LIGHT_PREFS_KEY), JSON.stringify(merged));
   } catch { /* storage 不可用就算了,主持久化还有机会兜住 */ }
 }
 
 function applyLightPrefsOverride() {
-  try {
-    const raw = localStorage.getItem(storageKey(LIGHT_PREFS_KEY));
-    if (!raw) return;
-    const prefs = JSON.parse(raw) as { confirmBeforeGenerate?: boolean };
-    if (typeof prefs.confirmBeforeGenerate === 'boolean') {
-      useStore.setState({ confirmBeforeGenerate: prefs.confirmBeforeGenerate });
-    }
-  } catch { /* ignore */ }
+  const prefs = readLightPrefs();
+  const patch: { confirmBeforeGenerate: boolean; lastVideoParams?: LastVideoParams } = {
+    // 独立小键是生成前确认的唯一权威:用户显式存过(键里有该布尔)就用其值,
+    // 保住关掉的选择;从未设置过的(新用户,或老用户没碰过开关)一律用新默认
+    // = 开启。这样即便大 blob 里残留旧的 false 也压不过它。
+    confirmBeforeGenerate: typeof prefs.confirmBeforeGenerate === 'boolean' ? prefs.confirmBeforeGenerate : true,
+  };
+  if (prefs.lastVideoParams && typeof prefs.lastVideoParams === 'object') {
+    patch.lastVideoParams = prefs.lastVideoParams;
+  }
+  useStore.setState(patch);
 }
 
 export function bindStorageToUser(userId: string) {
@@ -3704,11 +3733,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   openLayerEditor: (nodeId) => set({ layerEditorNodeId: nodeId }),
   closeLayerEditor: () => set({ layerEditorNodeId: null }),
 
-  confirmBeforeGenerate: false,
+  // 默认开启(新用户);老用户显式关过的在 applyLightPrefsOverride 里被独立小键
+  // 的存值覆盖回关闭。初始 true 只对“从未设置过”的用户生效。
+  confirmBeforeGenerate: true,
   setConfirmBeforeGenerate: (v) => {
     set({ confirmBeforeGenerate: v });
     // 立即写独立小键(同步、无防抖)——主持久化超配额失败也丢不了它。
     persistLightPrefs({ confirmBeforeGenerate: v });
+  },
+  lastVideoParams: null,
+  setLastVideoParams: (params) => {
+    set({ lastVideoParams: params });
+    persistLightPrefs({ lastVideoParams: params });
   },
   pendingRunConfirm: [],
   setPendingRunConfirm: (v) => set({ pendingRunConfirm: v }),
@@ -3813,8 +3849,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       isTaskQueueCollapsed: state.isTaskQueueCollapsed,
       showMiniMap: state.showMiniMap,
       snapToGrid: state.snapToGrid,
-      // 使用偏好(storage key 按用户隔离,天然每用户独立)。
+      // 使用偏好(storage key 按用户隔离,天然每用户独立)。生成前确认另有
+      // 独立小键权威覆盖,这里只是兜底;上次视频参数同样双写。
       confirmBeforeGenerate: state.confirmBeforeGenerate,
+      lastVideoParams: state.lastVideoParams,
     };
     lastPartializedSnapshot = snapshot;
     return snapshot;
