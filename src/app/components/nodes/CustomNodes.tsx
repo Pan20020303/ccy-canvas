@@ -994,10 +994,12 @@ function renderMentionRichText(text: string, mentions: PromptMention[]): React.R
         <span
           key={i}
           data-mention-id={mention.id}
-          className="relative rounded-sm text-cyan-300"
+          // 只用颜色提亮/加清晰度 —— 镜像层必须与透明 textarea 同字重,
+          // 改 font-weight 会让提及字符变宽、光标错位,故仅提亮颜色。
+          className="relative rounded-sm text-cyan-200"
           style={{
-            backgroundColor: 'rgba(34, 211, 238, 0.10)',
-            boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.15)',
+            backgroundColor: 'rgba(34, 211, 238, 0.16)',
+            boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.28)',
           }}
           title={mention.tag}
         >
@@ -2258,7 +2260,8 @@ const PromptPanel = ({
             // 必须和 textarea 用同款滚动容器（prompt-editor-scroll + overflow-auto）：
             // 内容超高时 textarea 的滚动条会挤窄内容宽度，若镜像层没有同样的
             // 滚动条，两边折行点错开 — 看到的字和真实光标就对不上了。
-            'prompt-editor-scroll pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-200',
+            // text-neutral-100:提示词整体更亮更清晰(仅颜色,不动字重以免镜像错位)。
+            'prompt-editor-scroll pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-100',
             heightClass,
             paddingClass,
           )}

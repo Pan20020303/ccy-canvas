@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Check, CheckCircle2, ChevronDown, ChevronRight, Download, Eye, FolderHeart, FolderPlus,
-  Image as ImageIcon, LayoutGrid, Loader2, MapPin, Music, Pencil, Plus, Save, Trash2, Video, X,
+  Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  Download, Eye, FolderHeart, FolderPlus, Image as ImageIcon, LayoutGrid, Loader2, MapPin,
+  Music, Pencil, Play, Plus, Save, Trash2, Video, X,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { toast } from 'sonner';
@@ -161,6 +162,7 @@ export function AssetLibraryModal() {
   const [sourceMode, setSourceMode] = useState<'current' | string>('current'); // 'current' | projectId
   const [remoteAssets, setRemoteAssets] = useState<CanvasAssetItem[]>([]);
   const [remoteLoading, setRemoteLoading] = useState(false);
+  const [canvasPage, setCanvasPage] = useState(1); // 画布资产分页(每页 80)
 
   useEffect(() => {
     if (!isOpen) return;
@@ -239,6 +241,16 @@ export function AssetLibraryModal() {
   const filteredCanvasAssets = useMemo(
     () => canvasAssets.filter((a) => (canvasKind === 'all' ? true : a.kind === canvasKind)),
     [canvasAssets, canvasKind],
+  );
+
+  const CANVAS_PAGE_SIZE = 80;
+  const canvasPageCount = Math.max(1, Math.ceil(filteredCanvasAssets.length / CANVAS_PAGE_SIZE));
+  // 切换类型/来源后回到第 1 页;总页数变化时把越界的页码收回。
+  useEffect(() => { setCanvasPage(1); }, [canvasKind, sourceMode]);
+  useEffect(() => { setCanvasPage((p) => Math.min(p, canvasPageCount)); }, [canvasPageCount]);
+  const pagedCanvasAssets = useMemo(
+    () => filteredCanvasAssets.slice((canvasPage - 1) * CANVAS_PAGE_SIZE, canvasPage * CANVAS_PAGE_SIZE),
+    [filteredCanvasAssets, canvasPage],
   );
 
   const columnWidth = Math.round(132 + (zoom / 100) * 168); // 132..300px
@@ -388,15 +400,16 @@ export function AssetLibraryModal() {
               />
             </div>
             <div className="h-4 w-px bg-white/10" />
-            {/* live preview toggle */}
+            {/* live preview toggle —— inline-flex 居中,不再用绝对定位的滑块
+                (旧版滑块会溢出轨道 / 叠到文字上)。 */}
             <button
               type="button"
               onClick={() => { setLivePreview((v) => !v); if (livePreview) setHoverItem(null); }}
-              className="flex items-center gap-2 text-xs text-neutral-300"
+              className="flex shrink-0 items-center gap-2 text-xs text-neutral-200"
               title={zh ? '开启后悬停缩略图可在左下角预览' : 'Hover a thumbnail to preview it bottom-left'}
             >
-              <span className={clsx('relative h-4 w-8 rounded-full border transition', livePreview ? 'border-cyan-300/50 bg-cyan-400/40' : 'border-white/12 bg-white/12')}>
-                <span className={clsx('absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-white shadow transition-transform', livePreview ? 'translate-x-[14px]' : 'translate-x-[2px]')} />
+              <span className={clsx('relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors', livePreview ? 'bg-cyan-500/70' : 'bg-white/15')}>
+                <span className={clsx('inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform', livePreview ? 'translate-x-[16px]' : 'translate-x-[2px]')} />
               </span>
               {zh ? '实时预览' : 'Live preview'}
             </button>
@@ -657,31 +670,34 @@ export function AssetLibraryModal() {
               <div className="text-sm">{zh ? '该画布下没有此类资产' : 'No assets of this type on this canvas'}</div>
             </div>
           ) : (
-            <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${columnWidth}px, 1fr))` }}>
-              {filteredCanvasAssets.map((item) => {
-                const isSel = selected.has(item.nodeId);
-                return (
-                  <AssetCard
-                    key={item.nodeId}
-                    zh={zh}
-                    name={item.name}
-                    kind={item.kind}
-                    thumb={item.thumb}
-                    url={item.url}
-                    text={item.text}
-                    badge={undefined}
-                    batchMode={batchMode}
-                    selected={isSel}
-                    livePreview={livePreview}
-                    onCardClick={() => (batchMode ? toggleSelect(item.nodeId) : (isCurrentCanvas ? locateNode(item.nodeId) : view({ url: item.url, thumb: item.thumb, kind: item.kind })))}
-                    onView={() => view({ url: item.url, thumb: item.thumb, kind: item.kind })}
-                    onLocate={isCurrentCanvas ? () => locateNode(item.nodeId) : undefined}
-                    onSave={() => { close(false); openSaveAssetDialog(item.nodeId); }}
-                    onHover={(v) => setHoverItem(v ? { kind: item.kind, url: item.url, thumb: item.thumb, name: item.name, text: item.text } : null)}
-                  />
-                );
-              })}
-            </div>
+            <>
+              <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${columnWidth}px, 1fr))` }}>
+                {pagedCanvasAssets.map((item) => {
+                  const isSel = selected.has(item.nodeId);
+                  return (
+                    <AssetCard
+                      key={item.nodeId}
+                      zh={zh}
+                      name={item.name}
+                      kind={item.kind}
+                      thumb={item.thumb}
+                      url={item.url}
+                      text={item.text}
+                      badge={undefined}
+                      batchMode={batchMode}
+                      selected={isSel}
+                      livePreview={livePreview}
+                      onCardClick={() => (batchMode ? toggleSelect(item.nodeId) : (isCurrentCanvas ? locateNode(item.nodeId) : view({ url: item.url, thumb: item.thumb, kind: item.kind })))}
+                      onView={() => view({ url: item.url, thumb: item.thumb, kind: item.kind })}
+                      onLocate={isCurrentCanvas ? () => locateNode(item.nodeId) : undefined}
+                      onSave={() => { close(false); openSaveAssetDialog(item.nodeId); }}
+                      onHover={(v) => setHoverItem(v ? { kind: item.kind, url: item.url, thumb: item.thumb, name: item.name, text: item.text } : null)}
+                    />
+                  );
+                })}
+              </div>
+              <Pager page={canvasPage} pageCount={canvasPageCount} onPage={setCanvasPage} pageSize={CANVAS_PAGE_SIZE} zh={zh} />
+            </>
           )}
         </div>
 
@@ -760,11 +776,33 @@ function AssetCard({
       onMouseLeave={() => livePreview && onHover(false)}
     >
       <button type="button" onClick={onCardClick} className="block w-full text-left">
-        <div className="aspect-square overflow-hidden bg-black/40">
+        <div className="relative aspect-square overflow-hidden bg-black/40">
           {isImageLike && (thumb || url) ? (
             <MediaThumb src={thumb || url} alt="" className="h-full w-full object-cover" onDead={onDeadThumb} />
           ) : kind === 'video' ? (
-            thumb ? <MediaThumb src={thumb} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-neutral-500"><Video className="h-7 w-7" /></div>
+            <>
+              {/* 视频封面:优先 poster 缩略图,没有就用 <video> 首帧(#t 定位到
+                  0.1s,避免部分浏览器停在黑帧),而不是一片黑。 */}
+              {thumb ? (
+                <MediaThumb src={thumb} alt="" className="h-full w-full object-cover" />
+              ) : url ? (
+                <video
+                  src={`${toRenderableMediaUrl(url)}#t=0.1`}
+                  preload="metadata"
+                  muted
+                  playsInline
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-neutral-500"><Video className="h-7 w-7" /></div>
+              )}
+              {/* 播放按钮浮标 */}
+              <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-black/45 backdrop-blur-sm">
+                  <Play className="h-4 w-4 translate-x-[1px] fill-white text-white" />
+                </span>
+              </span>
+            </>
           ) : kind === 'audio' ? (
             <div className="flex h-full w-full items-center justify-center text-neutral-500"><Music className="h-7 w-7" /></div>
           ) : (
@@ -829,6 +867,43 @@ function AssetCard({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+// ─── 分页器(参考图2:« ‹ 1 2 › » + 每页条数)────────────────────────────
+
+function Pager({ page, pageCount, onPage, pageSize, zh }: {
+  page: number;
+  pageCount: number;
+  onPage: (p: number) => void;
+  pageSize: number;
+  zh: boolean;
+}) {
+  if (pageCount <= 1) return null;
+  // 页码显示:当前页附近 ±2,首尾始终可达。
+  const nums: number[] = [];
+  const from = Math.max(1, page - 2);
+  const to = Math.min(pageCount, page + 2);
+  for (let i = from; i <= to; i += 1) nums.push(i);
+  const btn = 'flex h-7 min-w-[28px] items-center justify-center rounded-lg px-1 text-xs transition disabled:opacity-30 disabled:hover:bg-transparent';
+  return (
+    <div className="mt-5 flex items-center justify-center gap-1.5 text-neutral-400">
+      <button type="button" className={clsx(btn, 'hover:bg-white/8 hover:text-white')} disabled={page <= 1} onClick={() => onPage(1)} title={zh ? '首页' : 'First'}><ChevronsLeft className="h-4 w-4" /></button>
+      <button type="button" className={clsx(btn, 'hover:bg-white/8 hover:text-white')} disabled={page <= 1} onClick={() => onPage(page - 1)} title={zh ? '上一页' : 'Prev'}><ChevronLeft className="h-4 w-4" /></button>
+      {nums.map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onPage(n)}
+          className={clsx(btn, n === page ? 'bg-[#ff6a1f]/90 font-medium text-white' : 'hover:bg-white/8 hover:text-white')}
+        >
+          {n}
+        </button>
+      ))}
+      <button type="button" className={clsx(btn, 'hover:bg-white/8 hover:text-white')} disabled={page >= pageCount} onClick={() => onPage(page + 1)} title={zh ? '下一页' : 'Next'}><ChevronRight className="h-4 w-4" /></button>
+      <button type="button" className={clsx(btn, 'hover:bg-white/8 hover:text-white')} disabled={page >= pageCount} onClick={() => onPage(pageCount)} title={zh ? '末页' : 'Last'}><ChevronsRight className="h-4 w-4" /></button>
+      <span className="ml-2 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-neutral-400">{pageSize}{zh ? '条/页' : '/page'}</span>
     </div>
   );
 }
