@@ -40,3 +40,14 @@ export async function saveAssetFolderToServer(folder: AssetFolder): Promise<void
 export async function deleteAssetFolderFromServer(id: string): Promise<void> {
   await apiClient.delete<{ ok: boolean }>("/api/app/asset-folders", { id });
 }
+
+// ─── 协作:按用户名/邮箱查真实用户(邀请用)──────────────────────────────
+
+export type CollabUserLookup = { uid: string; name: string };
+
+/** 按用户名或邮箱精确解析真实用户(用于协作邀请)。找不到返回空数组。 */
+export async function lookupUsers(query: string): Promise<CollabUserLookup[]> {
+  const q = query.trim();
+  if (!q) return [];
+  return apiClient.get<CollabUserLookup[]>(`/api/app/users/lookup?q=${encodeURIComponent(q)}`);
+}

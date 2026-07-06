@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { toast } from 'sonner';
 
 import { useAuth } from '../auth/AuthProvider';
+import { lookupUsers } from '../api/assets';
 import {
   useStore, COLLAB_ROLE_OPTIONS, collabRoleLabel,
   type CollabActivity, type CollabMember, type CollabRole,
@@ -169,7 +170,21 @@ export function CollaborationControls() {
           zh={zh}
           members={members}
           onClose={() => setMembersOpen(false)}
-          onInvite={(uid, role) => addCollabMember(activeProjectId, { uid, name: (zh ? '用户' : 'User') + uid, role })}
+          onInvite={async (username, role) => {
+            try {
+              const matches = await lookupUsers(username);
+              const u = matches[0];
+              if (!u) { toast.error(zh ? '未找到该用户名' : 'User not found'); return false; }
+              if (u.uid === user.id) { toast.error(zh ? '不能邀请自己' : "Can't invite yourself"); return false; }
+              if (members.some((m) => m.uid === u.uid)) { toast.info(zh ? '该用户已是成员' : 'Already a member'); return false; }
+              addCollabMember(activeProjectId, { uid: u.uid, name: u.name, role });
+              toast.success(zh ? `已邀请 ${u.name}` : `Invited ${u.name}`);
+              return true;
+            } catch {
+              toast.error(zh ? '邀请失败，请稍后重试' : 'Invite failed');
+              return false;
+            }
+          }}
           onRemove={(uid) => removeCollabMember(activeProjectId, uid)}
           onRoleChange={(uid, role) => setCollabMemberRole(activeProjectId, uid, role)}
         />
@@ -310,19 +325,22 @@ function MemberModal({
   zh: boolean;
   members: CollabMember[];
   onClose: () => void;
-  onInvite: (uid: string, role: CollabRole) => void;
+  onInvite: (username: string, role: CollabRole) => Promise<boolean>;
   onRemove: (uid: string) => void;
   onRoleChange: (uid: string, role: CollabRole) => void;
 }) {
   const [uid, setUid] = useState('');
   const [role, setRole] = useState<CollabRole>('visitor');
   const [roleOpen, setRoleOpen] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const send = () => {
+  const send = async () => {
     const trimmed = uid.trim();
-    if (!trimmed) return;
-    onInvite(trimmed, role);
-    setUid('');
+    if (!trimmed || sending) return;
+    setSending(true);
+    const ok = await onInvite(trimmed, role);
+    setSending(false);
+    if (ok) setUid('');
   };
 
   return createPortal(
@@ -348,8 +366,8 @@ function MemberModal({
               <input
                 value={uid}
                 onChange={(e) => setUid(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') send(); }}
-                placeholder={zh ? '输入用户UID' : 'Enter user UID'}
+                onKeyDown={(e) => { if (e.key === 'Enter') void send(); }}
+                placeholder={zh ? '输入用户名' : 'Enter username'}
                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#111318] px-3 py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-[#ff6a1f]/40"
               />
               <div className="relative shrink-0">
@@ -379,9 +397,9 @@ function MemberModal({
                   </>
                 ) : null}
               </div>
-              <button onClick={send} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-neutral-950 transition hover:bg-neutral-200">
+              <button onClick={() => void send()} disabled={sending} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-neutral-950 transition hover:bg-neutral-200 disabled:opacity-50">
                 <Send className="h-3.5 w-3.5" />
-                {zh ? '发送邀请' : 'Invite'}
+                {sending ? (zh ? '邀请中…' : 'Inviting…') : (zh ? '发送邀请' : 'Invite')}
               </button>
             </div>
           </div>
