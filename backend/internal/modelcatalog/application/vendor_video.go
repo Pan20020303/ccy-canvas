@@ -23,6 +23,9 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "ark" {
 		return s.generateVideoArk(ctx, pc, baseURL, apiKey, req)
 	}
+	if ResolveProfile(pc).ID == "dmxapi" {
+		return s.generateVideoDMX(ctx, pc, baseURL, apiKey, req)
+	}
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
 	}

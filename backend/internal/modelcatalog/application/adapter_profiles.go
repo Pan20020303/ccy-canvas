@@ -70,6 +70,18 @@ var profileDashScope = AdapterProfile{
 	VideoQueryPath:  "/tasks/{taskId}",
 }
 
+// profileDMX is DMXAPI's OpenAI-"Responses"-style Seedance 2.0 relay. Submit
+// AND poll share one endpoint (POST {base}/responses): submit sends
+// {model, input:[...], ...}; poll re-POSTs {model:"seedance-2-0-get", input:id}.
+// Image paths are placeholders (only video is wired for this profile today).
+var profileDMX = AdapterProfile{
+	ID:              "dmxapi",
+	ImageGenPath:    "/images/generations",
+	ImageEditPath:   "/images/generations",
+	VideoSubmitPath: "/responses",
+	VideoQueryPath:  "/responses", // polled via POST to the SAME path, no {taskId}
+}
+
 // profileCustom carries openai-shaped fallbacks so a custom config with
 // EMPTY endpoint fields still does something sensible instead of hitting
 // the bare base URL.
@@ -100,6 +112,8 @@ func ResolveProfile(pc *domain.ProviderConfig) AdapterProfile {
 		return profileArk
 	case "dashscope":
 		return profileDashScope
+	case "dmxapi":
+		return profileDMX
 	case "custom":
 		return profileCustom
 	default:

@@ -1139,6 +1139,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
                   <option value="openai">OpenAI</option>
                   <option value="custom">Custom</option>
                   <option value="ark">Volcengine Ark</option>
+                  <option value="dmxapi">DMXAPI (Seedance)</option>
                 </select>
               </Field>
             </div>

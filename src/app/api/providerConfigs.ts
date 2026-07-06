@@ -5,7 +5,7 @@ import { ApiClientError, apiClient } from "./client";
 // ---------------------------------------------------------------------------
 
 export type ServiceType = "text" | "image" | "video" | "audio";
-export type AdapterProfileID = "openai" | "ark" | "dashscope" | "custom";
+export type AdapterProfileID = "openai" | "ark" | "dashscope" | "dmxapi" | "custom";
 export type GatewayProtocol = "openai_compatible" | "newapi" | "native";
 export type AdapterRuntime = "go" | "ts";
 
@@ -221,7 +221,7 @@ export function getEndpointPreview(
   baseURL = "",
 ): string {
   const profile =
-    apiSpec === "ark" ? "ark" : apiSpec === "dashscope" ? "dashscope" : apiSpec === "custom" ? "custom" : "openai";
+    apiSpec === "ark" ? "ark" : apiSpec === "dashscope" ? "dashscope" : apiSpec === "dmxapi" ? "dmxapi" : apiSpec === "custom" ? "custom" : "openai";
   const customSubmit = submitEndpoint.trim();
   const customQuery = queryEndpoint.trim();
   const isRelayBases = baseURL.toLowerCase().includes("relaybases");
@@ -259,7 +259,9 @@ export function getEndpointPreview(
           ? "/contents/generations/tasks"
           : profile === "dashscope"
             ? "/services/aigc/video-generation/video-synthesis"
-            : "/videos";
+            : profile === "dmxapi"
+              ? "/responses"
+              : "/videos";
     const query =
       profile === "custom" && customQuery
         ? customQuery
@@ -267,7 +269,9 @@ export function getEndpointPreview(
           ? "/contents/generations/tasks/{taskId}"
           : profile === "dashscope"
             ? "/tasks/{taskId}"
-            : "/videos/{taskId}";
+            : profile === "dmxapi"
+              ? "/responses (POST · model=seedance-2-0-get)"
+              : "/videos/{taskId}";
     return `提交 ${submit} · 查询 ${query}`;
   }
 
@@ -813,6 +817,18 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://notoken.pro/api/v3",
       apiSpec: "ark",
       models: ["seedance-2.0"],
+    },
+    {
+      // DMXAPI(dmxapi.cn)—— OpenAI-Responses 风格的 Seedance 2.0 中转,非 Ark
+      // 原生:提交/轮询都 POST /v1/responses(轮询用 model=seedance-2-0-get),
+      // 结果嵌在 output[0].content[0].text 的 JSON 字符串里。由内置 dmxapi 适配器
+      // 处理。vendor 用 DMXAPI(避开 Ark 嗅探器)。
+      vendor: "DMXAPI",
+      label: "DMXAPI · Seedance 2.0",
+      baseURL: "https://www.dmxapi.cn/v1",
+      apiSpec: "dmxapi",
+      models: ["doubao-seedance-2-0-260128"],
+      iconKey: "doubao",
     },
     {
       vendor: "Alibaba",
