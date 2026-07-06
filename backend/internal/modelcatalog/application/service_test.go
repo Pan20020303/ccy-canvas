@@ -880,65 +880,38 @@ func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) 
 	}
 }
 
-func TestUploadPathFromURL(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"/uploads/2026-06/x.png", "/uploads/2026-06/x.png"},
-		{"http://localhost:9090/uploads/2026-06/x.png", "/uploads/2026-06/x.png"},
-		{"https://cdn.example.com/uploads/a/b.png?sig=zzz&e=1", "/uploads/a/b.png"},
-		{"https://tos-cn-beijing.volces.com/bucket/obj.png", ""},
-		{"data:image/png;base64,AAAA", ""},
-		{"", ""},
-	}
-	for _, c := range cases {
-		if got := uploadPathFromURL(c.in); got != c.want {
-			t.Errorf("uploadPathFromURL(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
+func TestArkReferenceMediaURL(t *testing.T) {
+	ctx := context.Background()
 
-func TestArkReferenceImageToDataURLInlinesLocalAndLoopbackUploads(t *testing.T) {
-	root := t.TempDir()
-	uploadsDir := filepath.Join(root, "uploads", "2026-06")
-	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	img.Set(0, 0, color.RGBA{G: 255, A: 255})
-	var pngBuf bytes.Buffer
-	if err := png.Encode(&pngBuf, img); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(uploadsDir, "ref.png"), pngBuf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	nested := filepath.Join(root, "backend")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(nested)
-
-	// A bare /uploads path AND a full URL pointing at our uploads (loopback or
-	// our own domain) must all be read from disk and inlined as base64 — never
-	// handed to the provider as a URL it can't fetch, and never rejected by the
-	// public-URL guard. This is the fix for Ark CreateAsset 403 DownloadFailed.
-	for _, in := range []string{
-		"/uploads/2026-06/ref.png",
-		"http://localhost:9090/uploads/2026-06/ref.png",
-		"https://my-canvas.example.com/uploads/2026-06/ref.png",
+	// Public http(s) links pass through unchanged (no object store is configured
+	// in tests, so PresignGet returns "" and we hand back the raw URL). A private
+	// object-store object would instead come back as a signed URL — that path
+	// needs real COS creds and is covered by manual/integration testing.
+	for _, u := range []string{
+		"https://cdn.example.com/2026-07/pic.png",
+		"http://example.com/a/b.jpg?x=1",
 	} {
-		got, err := arkReferenceImageToDataURL(context.Background(), in)
+		got, err := arkReferenceMediaURL(ctx, u)
 		if err != nil {
-			t.Fatalf("arkReferenceImageToDataURL(%q) error: %v", in, err)
+			t.Fatalf("arkReferenceMediaURL(%q) error: %v", u, err)
 		}
-		if !strings.HasPrefix(got, "data:image/jpeg;base64,") {
-			t.Fatalf("arkReferenceImageToDataURL(%q) = %q, want inline jpeg data URL", in, got)
+		if got != u {
+			t.Fatalf("arkReferenceMediaURL(%q) = %q, want passthrough", u, got)
 		}
 	}
 
-	// A data: URL passes through untouched.
-	dataURL := "data:image/png;base64,QUJD"
-	if got, err := arkReferenceImageToDataURL(context.Background(), dataURL); err != nil || got != dataURL {
-		t.Fatalf("arkReferenceImageToDataURL(data:) = %q, %v; want passthrough", got, err)
+	// base64 data URLs, empty input, and local-only paths have no address the
+	// provider can download — must error, so the user gets a clear re-upload hint
+	// instead of a cryptic provider-side download failure.
+	for _, bad := range []string{
+		"data:image/png;base64,QUJD",
+		"",
+		"/uploads/2026-07/pic.png",
+		"relative/path.png",
+	} {
+		if got, err := arkReferenceMediaURL(ctx, bad); err == nil {
+			t.Fatalf("arkReferenceMediaURL(%q) = %q, want error", bad, got)
+		}
 	}
 }
 

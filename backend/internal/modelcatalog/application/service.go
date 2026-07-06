@@ -2591,14 +2591,10 @@ func localPathToDataURL(rawURL string) (string, error) {
 	return encodeReferenceImageReader(f)
 }
 
-// encodeReferenceImageBytes decodes, downscales (to maxRefImageDim) and JPEG
-// re-encodes (down to <= maxRefImageBytes) an image, returning an inline data:
-// URL. Shared by the local-upload path and the remote-fetch path so a provider
-// never has to download a URL itself.
-func encodeReferenceImageBytes(data []byte) (string, error) {
-	return encodeReferenceImageReader(bytes.NewReader(data))
-}
-
+// encodeReferenceImageReader decodes, downscales (to maxRefImageDim) and JPEG
+// re-encodes (down to <= maxRefImageBytes) a local upload into an inline data:
+// URL. Only used for our own /uploads path (providers that need a real link get
+// a signed URL instead — see arkReferenceMediaURL).
 func encodeReferenceImageReader(r io.Reader) (string, error) {
 	src, _, err := image.Decode(r)
 	if err != nil {
@@ -2632,69 +2628,40 @@ func encodeReferenceImageReader(r io.Reader) (string, error) {
 	return "data:image/jpeg;base64," + encoded, nil
 }
 
-// uploadPathFromURL extracts the "/uploads/..." suffix from either a bare path
-// or a full URL pointing at our own upload store (stripping scheme/host and any
-// query string), or "" if the URL isn't one of ours.
-func uploadPathFromURL(raw string) string {
-	s := raw
-	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
-		i := strings.Index(s, "/uploads/")
-		if i < 0 {
-			return ""
-		}
-		s = s[i:]
-	}
-	if !strings.HasPrefix(s, "/uploads/") {
-		return ""
-	}
-	if q := strings.IndexAny(s, "?#"); q >= 0 {
-		s = s[:q]
-	}
-	return s
-}
+// arkReferenceURLTTL is how long the signed reference URLs handed to Ark stay
+// valid. Ark/Seedance downloads references (CreateAsset) at submit time; the
+// generous window also covers queueing and any retry.
+const arkReferenceURLTTL = time.Hour
 
-// arkReferenceImageToDataURL resolves a reference image to an INLINE data: URL
-// so Ark/Seedance never has to download it. Ark's CreateAsset fails with
-// InvalidParameter.DownloadFailed (HTTP 403) whenever the URL we hand it isn't
-// publicly fetchable — a reused earlier generation whose TOS signed URL has
-// expired, a private/auth'd link, or a LAN-only dev host. Our own uploads are
-// read from disk; any other http(s) URL is fetched by us and inlined.
-func arkReferenceImageToDataURL(ctx context.Context, rawURL string) (string, error) {
+// arkReferenceMediaURL resolves a reference image/video to a URL the provider
+// can download ITSELF. Ark/Seedance does not accept base64 data URLs — it must
+// fetch a real link — so we hand it a publicly reachable one:
+//   - one of our own object-store objects (e.g. a private COS bucket) → a
+//     short-lived SIGNED URL the provider can GET within the TTL (fixes the
+//     InvalidParameter.DownloadFailed / 403 on private objects);
+//   - any other public http(s) link → passed through unchanged;
+//   - a data: URL or a bare /uploads path (local storage has no address the
+//     provider can reach from the public internet) → a clear error asking the
+//     user to re-upload.
+func arkReferenceMediaURL(ctx context.Context, rawURL string) (string, error) {
 	raw := strings.TrimSpace(rawURL)
 	if raw == "" {
-		return "", fmt.Errorf("empty reference image url")
+		return "", fmt.Errorf("empty reference url")
 	}
 	if strings.HasPrefix(raw, "data:") {
+		return "", fmt.Errorf("参考素材是内嵌数据(base64),模型无法下载,请重新上传该素材后再试")
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		// Our own object-store object (e.g. a private COS bucket) 403s on a bare
+		// GET — swap in a short-lived signed URL the provider can fetch.
+		// PresignGet returns "" for anything that isn't ours; on presign error,
+		// fall back to the raw URL rather than blocking a possibly-public link.
+		if signed, err := assetstore.PresignGet(ctx, raw, arkReferenceURLTTL); err == nil && signed != "" {
+			return signed, nil
+		}
 		return raw, nil
 	}
-	isHTTP := strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
-	// Prefer local disk for our own uploads — no network round-trip, and it
-	// dodges the public-URL guard that (rightly) refuses a LAN/localhost host.
-	if uploadPath := uploadPathFromURL(raw); uploadPath != "" {
-		if du, err := localPathToDataURL(uploadPath); err == nil {
-			return du, nil
-		} else if !isHTTP {
-			return "", err
-		}
-		// Full URL but not on our disk → fall through to a remote fetch.
-	}
-	if isHTTP {
-		fetchURL := raw
-		// Objects in our own asset store (e.g. a private COS bucket) 403 on a
-		// bare GET — swap in a short-lived signed URL so we can read them
-		// server-side. PresignGet returns "" for anything that isn't ours, and
-		// on presign failure we fall back to the raw URL rather than blocking.
-		if signed, perr := assetstore.PresignGet(ctx, raw, 10*time.Minute); perr == nil && signed != "" {
-			fetchURL = signed
-		}
-		data, err := fetchRemoteReferenceBytes(ctx, fetchURL)
-		if err != nil {
-			return "", fmt.Errorf("参考图下载失败(链接可能已失效,请重新添加该参考图): %w", err)
-		}
-		return encodeReferenceImageBytes(data)
-	}
-	// Bare non-upload path — let the local resolver handle it.
-	return localPathToDataURL(raw)
+	return "", fmt.Errorf("参考素材无公网可访问地址(疑似本地存储),请配置对象存储(COS)或重新上传")
 }
 
 func resolveUploadDiskPath(rawURL string) (string, error) {

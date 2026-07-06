@@ -214,11 +214,11 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
 	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
 	for i, raw := range req.ReferenceImages {
-		// Inline every reference as base64 (local uploads from disk, remote URLs
-		// fetched by us) so Ark's CreateAsset never has to download a URL that
-		// might be a private/expired link — the InvalidParameter.DownloadFailed
-		// (HTTP 403) failure mode.
-		du, err := arkReferenceImageToDataURL(ctx, raw)
+		// Hand Ark a URL it can download itself — our own private object-store
+		// objects get a short-lived signed URL. Ark/Seedance rejects base64 data
+		// URLs and 403s on private links, so a reachable (signed) URL is the
+		// contract (fixes InvalidParameter.DownloadFailed).
+		refURL, err := arkReferenceMediaURL(ctx, raw)
 		if err != nil {
 			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
 		}
@@ -232,21 +232,22 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		}
 		content = append(content, map[string]interface{}{
 			"type":      "image_url",
-			"image_url": map[string]interface{}{"url": du},
+			"image_url": map[string]interface{}{"url": refURL},
 			"role":      role,
 		})
 	}
 
 	// Motion-mimic / video-edit reference videos ride in the same content
-	// array as video_url items so Ark can condition on them.
+	// array as video_url items so Ark can condition on them. Same URL contract
+	// as images (a signed URL for private objects) — video can't be inlined.
 	for _, rawVid := range collectArkReferenceVideos(req) {
-		du, err := localPathToDataURL(rawVid)
+		refURL, err := arkReferenceMediaURL(ctx, rawVid)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference video: %v", err), err)
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, "参考视频处理失败", err)
 		}
 		content = append(content, map[string]interface{}{
 			"type":      "video_url",
-			"video_url": map[string]interface{}{"url": du},
+			"video_url": map[string]interface{}{"url": refURL},
 		})
 	}
 
