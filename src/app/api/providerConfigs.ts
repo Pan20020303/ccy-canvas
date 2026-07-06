@@ -1080,6 +1080,9 @@ export function listAppProviderConfigs(): Promise<AppProviderConfig[]> {
 
 export type GeneratePayload = {
   node_id?: string;
+  /** Owning canvas project (backend id). Lets the server enforce collaboration
+   *  roles — a visitor (read-only) is rejected before any credit reserve. */
+  project_id?: string;
   /** Client-generated idempotency key (UUID). Two submits carrying the
    *  same request_id collapse to a single queued task / upstream call,
    *  so a network retry or double-click never double-bills. */

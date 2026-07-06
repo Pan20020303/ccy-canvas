@@ -184,6 +184,30 @@ func formatPgUUID(u pgtype.UUID) string {
 	return string(buf)
 }
 
+// isProjectVisitor reports whether userID is a read-only VISITOR on the project.
+// Owner (creator) and non-members are NOT visitors. Best-effort: any parse/lookup
+// error returns false (fail-open — saveCanvas remains the hard write gate).
+func isProjectVisitor(ctx context.Context, q *sqlc.Queries, projectID, userID string) bool {
+	pid, perr := uuid.Parse(projectID)
+	uid, uerr := uuid.Parse(userID)
+	if perr != nil || uerr != nil {
+		return false
+	}
+	pgProj := pgtype.UUID{Bytes: pid, Valid: true}
+	oc, err := q.GetProjectOwnerCollab(ctx, pgProj)
+	if err != nil {
+		return false
+	}
+	if formatPgUUID(oc.OwnerID) == userID {
+		return false // owner = creator, always allowed
+	}
+	role, rerr := q.GetProjectMemberRole(ctx, pgProj, pgtype.UUID{Bytes: uid, Valid: true})
+	if rerr != nil {
+		return false
+	}
+	return role == "visitor"
+}
+
 func toHTTPError(err error) error {
 	if err == nil {
 		return nil
@@ -1264,6 +1288,7 @@ type listAppProviderConfigsOutput struct {
 type generateInput struct {
 	Body struct {
 		NodeId           string                      `json:"node_id" doc:"Canvas node id (for log correlation)"`
+		ProjectID        string                      `json:"project_id,omitempty" doc:"Owning canvas project id — used to reject read-only (visitor) collaborators"`
 		RequestID        string                      `json:"request_id,omitempty" doc:"Client-generated idempotency key (UUID)"`
 		ProviderConfigID string                      `json:"provider_config_id,omitempty" doc:"Exact provider config id selected by frontend"`
 		ServiceType      string                      `json:"service_type" enum:"text,image,video,audio" doc:"Service type"`
@@ -1526,6 +1551,14 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	var userIDStr string
 	if claims, ok := authn.ClaimsFromContext(ctx); ok {
 		userIDStr = claims.UserID
+	}
+
+	// 协作只读:访问者不能在协作项目里生成(否则白扣积分)。仅当前端带了
+	// project_id 时校验;查不到 / 出错则放行(saveCanvas 仍会拦画布写入)。
+	if pid := strings.TrimSpace(input.Body.ProjectID); pid != "" && userIDStr != "" {
+		if isProjectVisitor(ctx, h.q, pid, userIDStr) {
+			return nil, huma.Error403Forbidden("你是访问者(只读)，无法在该协作项目生成")
+		}
 	}
 
 	// Build the request struct once — used for both Asynq path (encoded

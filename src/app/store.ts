@@ -1891,6 +1891,13 @@ const pendingAssetDeletes = new Set<string>();
 // Backfill of local-only assets to the server runs once per session.
 let assetsBackfilledThisSession = false;
 
+/** 当前打开的后端项目里「我」是否只读(访问者)。协作画布:访问者只读,不能写。 */
+function computeActiveProjectReadOnly(state: AppState): boolean {
+  const id = state.activeBackendProjectId;
+  if (!id) return false;
+  return state.backendProjects.find((p) => p.id === id)?.my_role === 'visitor';
+}
+
 export const useStore = create<AppState>()(persist((set, get) => ({
   language: 'zh',
   toggleLanguage: () => set((state) => ({ language: state.language === 'en' ? 'zh' : 'en' })),
@@ -1997,6 +2004,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   onConnect: (connection: Connection) => {
     set((state) => {
+      if (computeActiveProjectReadOnly(state)) return {};
       const decoratedConnection = { ...connection, type: 'flow' };
       const edges = addEdge(decoratedConnection, state.edges);
       const undoStack = pushUndoState(state);
@@ -2012,6 +2020,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   addNode: (node: Node) => {
     set((state) => {
+      if (computeActiveProjectReadOnly(state)) return {};
       const nodes = [...state.nodes, node];
       const undoStack = pushUndoState(state);
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
@@ -2421,6 +2430,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   }),
 
   deleteSelectedNodes: () => set((state) => {
+    if (computeActiveProjectReadOnly(state)) return {};
     const doomed = new Set(state.nodes.filter((node) => node.selected).map((node) => node.id));
     if (doomed.size === 0) return {};
 
@@ -3206,6 +3216,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
+    // 访问者(协作只读)不能生成 —— 前端早退并清掉调用方的乐观 running 态。
+    // 后端 generate 也按项目角色二次拦截(带 project_id),双保险。
+    if (computeActiveProjectReadOnly(get())) {
+      toast.warning(get().language === 'zh' ? '你是访问者(只读),无法生成' : 'Read-only (visitor): generation is disabled');
+      const optimistic = get().nodes.find((n) => n.id === nodeId);
+      if (optimistic && (optimistic.data as Record<string, unknown>)?.status === 'running') {
+        get().updateNodeData(nodeId, { status: undefined, error: undefined, queuedAfterTimeout: false });
+      }
+      return;
+    }
     // 使用偏好「生成前确认」:先挂起请求弹确认窗,确认按钮带 skipConfirm
     // 重入。放在最前面 —— 确认之前不 abort 旧请求、不产生任何生成状态。
     if (get().confirmBeforeGenerate && !payload?.skipConfirm) {
@@ -3451,6 +3471,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const result = await apiGenerate({
         node_id: nodeId,
+        project_id: get().activeBackendProjectId ?? undefined,
         request_id: requestId,
         provider_config_id: referenceProvider?.id,
         service_type: serviceType,
@@ -3858,6 +3879,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     return snapshot;
   },
 }));
+
+/** 组件订阅:当前打开的协作项目里我是否只读(访问者)。用于禁用/隐藏画布写入口。 */
+export const useActiveProjectReadOnly = (): boolean => useStore(computeActiveProjectReadOnly);
 
 // Boot the recovery poller once the store exists. Safe to call before any
 // runNode: it just ticks every 8s and finds nothing to do until a node
