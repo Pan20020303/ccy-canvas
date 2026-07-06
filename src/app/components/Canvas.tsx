@@ -56,7 +56,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, eventMatchesShortcut, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
+import { useStore, useActiveProjectReadOnly, eventMatchesShortcut, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -319,23 +319,25 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 const InnerCanvas = () => {
-  const {
-    nodes,
-    edges,
-    groups,
-    onNodesChange,
-    onEdgesChange,
-    onConnect: connectEdge,
-    addNode,
-    updateNodeData,
-    createGroup,
-    showMiniMap,
-    setShowMiniMap,
-    snapToGrid,
-    history,
-  } = useStore();
+  // 细粒度 selector 订阅 —— 不要用 useStore() 整状态解构:那样 store 里任何字段变化
+  // (包括拖动每帧之外的无关状态)都会重渲染整个画布+全部节点,是拖动卡顿的主因。
+  // actions 是稳定引用(永不触发重渲染);state 切片只在自身变化时触发。
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const groups = useStore((state) => state.groups);
+  const onNodesChange = useStore((state) => state.onNodesChange);
+  const onEdgesChange = useStore((state) => state.onEdgesChange);
+  const connectEdge = useStore((state) => state.onConnect);
+  const addNode = useStore((state) => state.addNode);
+  const updateNodeData = useStore((state) => state.updateNodeData);
+  const createGroup = useStore((state) => state.createGroup);
+  const showMiniMap = useStore((state) => state.showMiniMap);
+  const setShowMiniMap = useStore((state) => state.setShowMiniMap);
+  const snapToGrid = useStore((state) => state.snapToGrid);
+  const history = useStore((state) => state.history);
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
+  const readOnly = useActiveProjectReadOnly();
   const canvasHydrated = useStore((state) => state.canvasHydrated);
   const language = useStore((state) => state.language);
   const theme = useStore((state) => state.theme);
@@ -1602,6 +1604,8 @@ const InnerCanvas = () => {
         }}
         nodes={nodes}
         edges={normalizedEdges}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

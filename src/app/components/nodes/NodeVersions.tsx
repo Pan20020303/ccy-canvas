@@ -65,7 +65,7 @@ export function NodeVersionsBadge({
   );
 }
 
-function NodeVersionsModal({
+export function NodeVersionsModal({
   nodeId, activeUrl, activePrompt, activeModel, versions, mediaKind, onClose,
 }: {
   nodeId: string;

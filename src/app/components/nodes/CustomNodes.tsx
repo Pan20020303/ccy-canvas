@@ -25,6 +25,7 @@ import {
   Plus,
   X,
   Expand,
+  History,
   Play,
   Pause,
   Camera,
@@ -51,7 +52,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { useStore } from '../../store';
+import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
 import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
@@ -934,7 +935,11 @@ type PromptMention = { tag: string; id: string; thumb: string; kind?: string };
 // 镜像层都不占宽度,光标依旧逐字对齐;词连接符不可打印,也不会把用户手打的
 // 「图片1」误判成提及(必须两侧都带 U+2060 才匹配)。
 const MENTION_WRAP = String.fromCharCode(0x2060); // WORD JOINER(零宽/非断行/不可打印)
-const wrapMentionTag = (label: string) => `${MENTION_WRAP}${label}${MENTION_WRAP}`;
+// 标签开头预留一个全角空格(≈1em)作为缩略图的位置槽:缩略图绝对定位盖在这个槽
+// 上,既不盖住相邻文字、也不破坏 textarea↔镜像层的逐字光标对齐(两层都含这个空格、
+// 宽度一致)。resolveTagsToMentions 会把整段标签替换成 @id,槽字符不会进模型提示词。
+const MENTION_THUMB_SLOT = String.fromCharCode(0x3000); // IDEOGRAPHIC SPACE(全角空格,≈1em)
+const wrapMentionTag = (label: string) => `${MENTION_WRAP}${MENTION_THUMB_SLOT}${label}${MENTION_WRAP}`;
 const OLD_MENTION_TAG_RE = /^\[@(.+)\]$/; // 旧格式 [@图片 1]
 
 /** 把旧的 [@图片 1] 提及迁移为零宽包裹的干净标签(顺手去掉标签里的空格)。
@@ -942,22 +947,75 @@ const OLD_MENTION_TAG_RE = /^\[@(.+)\]$/; // 旧格式 [@图片 1]
 function migrateMentionTags(text: string, mentions: PromptMention[]): { text: string; mentions: PromptMention[] } | null {
   let changed = false;
   let nextText = text;
-  const nextMentions = mentions.map((m) => {
-    const match = OLD_MENTION_TAG_RE.exec(m.tag);
-    if (!match) return m;
+  const rewrite = (m: PromptMention, label: string): PromptMention => {
     changed = true;
-    const cleanLabel = match[1].replace(/\s+/g, '');
-    const newTag = wrapMentionTag(cleanLabel);
+    const newTag = wrapMentionTag(label);
     if (nextText.includes(m.tag)) nextText = nextText.split(m.tag).join(newTag);
     return { ...m, tag: newTag };
+  };
+  const nextMentions = mentions.map((m) => {
+    // 旧格式 [@图片 1] → 零宽包裹 + 缩略图槽(顺手去空格)。
+    const oldMatch = OLD_MENTION_TAG_RE.exec(m.tag);
+    if (oldMatch) return rewrite(m, oldMatch[1].replace(/\s+/g, ''));
+    // v1 包裹(有零宽包裹但无缩略图槽)→ 补上槽,让老提及也显示缩略图。
+    if (m.tag.startsWith(MENTION_WRAP) && m.tag.endsWith(MENTION_WRAP) && m.tag[1] !== MENTION_THUMB_SLOT) {
+      return rewrite(m, m.tag.slice(MENTION_WRAP.length, m.tag.length - MENTION_WRAP.length));
+    }
+    return m;
   });
   return changed ? { text: nextText, mentions: nextMentions } : null;
 }
 
-/** Render text with inline mention chips. Splits on `[@xxx]` tags. The chip is
- *  a caret-aligned colored label (镜像层与透明 textarea 逐字对齐);引用预览走
- *  悬停浮层(RefHoverPreview),不再内联缩略图 —— 内联图无法在不破坏光标对齐
- *  的前提下预留横向空间,总会盖住相邻文字。 */
+/** 行内 @ 提及开头的小预览图:绝对定位盖在标签开头预留的全角空格槽上,不占布局、
+ *  不破坏光标对齐、也不盖住相邻文字。有缩略图(图片/视频封面)显示图片,音频/文本
+ *  等无图则显示类型图标底片。 */
+function MentionThumb({ thumb, kind }: { thumb: string; kind?: string }) {
+  const base: React.CSSProperties = {
+    position: 'absolute',
+    left: 0,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: 13,
+    height: 13,
+    borderRadius: 3,
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  };
+  if (thumb) {
+    return (
+      <img
+        src={toRenderableMediaUrl(thumb)}
+        alt=""
+        aria-hidden
+        style={{ ...base, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.20)' }}
+      />
+    );
+  }
+  const glyph = kind === 'audio' ? '♪' : kind === 'video' ? '▶' : kind === 'text' ? 'T' : '#';
+  return (
+    <span
+      aria-hidden
+      style={{
+        ...base,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'rgba(34,211,238,0.16)',
+        border: '1px solid rgba(34,211,238,0.28)',
+        fontSize: 9,
+        lineHeight: 1,
+        color: '#a5e8f2',
+      }}
+    >
+      {glyph}
+    </span>
+  );
+}
+
+/** Render text with inline mention chips. Splits on the mention tags. The chip is
+ *  a caret-aligned colored label (镜像层与透明 textarea 逐字对齐);标签开头预留一个
+ *  全角空格槽,缩略图(MentionThumb)绝对定位盖在槽上 —— 既显示缩略图又不破坏光标
+ *  对齐、不盖相邻文字。 */
 function renderMentionRichText(text: string, mentions: PromptMention[]): React.ReactNode {
   if (!mentions.length) return text;
 
@@ -969,8 +1027,9 @@ function renderMentionRichText(text: string, mentions: PromptMention[]): React.R
   return parts.map((part, i) => {
     const mention = mentions.find((m) => m.tag === part);
     if (mention) {
-      // 镜像层逐字对齐真实 textarea → 提及标签文本按原样渲染(等宽),缩略图
-      // 用 MentionThumb 以零布局宽度浮在左侧,不破坏光标定位。
+      // 缩略图只在标签带槽(第 2 个字符是全角空格)时渲染 —— 无槽的老标签不放缩略图,
+      // 免得像以前那样盖住相邻文字(迁移后基本都会带槽)。
+      const hasSlot = mention.tag[1] === MENTION_THUMB_SLOT;
       return (
         <span
           key={i}
@@ -984,6 +1043,7 @@ function renderMentionRichText(text: string, mentions: PromptMention[]): React.R
           }}
           title={mention.tag}
         >
+          {hasSlot ? <MentionThumb thumb={mention.thumb} kind={mention.kind} /> : null}
           {part}
         </span>
       );
@@ -1295,6 +1355,8 @@ const PromptPanel = ({
   const currentNode = allNodes.find((node) => node.id === nodeId);
   const params = getNodeParams(currentNode?.data);
   const nodeData = (currentNode?.data ?? {}) as Record<string, unknown>;
+  // 协作只读(访问者):禁用生成入口。写操作在 store 层也已早退,这里只做 UX。
+  const readOnly = useActiveProjectReadOnly();
 
   /** Persisted draft prompt — survives node deselect / page refresh / canvas reload.
    *  初始化时把旧的 [@图片 1] 提及迁移成零宽包裹的干净标签(见 migrateMentionTags)。 */
@@ -1627,10 +1689,18 @@ const PromptPanel = ({
     const before = text.slice(0, cursor).replace(/@\S*$/, '');
     const after = text.slice(cursor);
     const tag = wrapMentionTag(upstream.label);
+    // 插入后光标应停在「标签 + 空格」之后(接着往下打字),而不是被 setText 的
+    // 重渲染重置回开头。显式 setSelectionRange 把光标放回原位。
+    const caret = (before + tag + ' ').length;
     setText(before + tag + ' ' + after);
     setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     setMentionOpen(false);
-    setTimeout(() => taRef.current?.focus(), 0);
+    setTimeout(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(caret, caret);
+    }, 0);
   };
 
   const resolveTagsToMentions = (raw: string): string => {
@@ -2414,18 +2484,21 @@ const PromptPanel = ({
         </div>
         <button
           type="button"
-          disabled={isBusy}
-          title={isBusy ? (language === 'zh' ? '生成中…' : 'Generating…') : undefined}
+          disabled={isBusy || readOnly}
+          title={readOnly
+            ? (language === 'zh' ? '访问者只读，无法生成' : 'Read-only (visitor)')
+            : isBusy ? (language === 'zh' ? '生成中…' : 'Generating…') : undefined}
           onPointerDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
+            if (readOnly) return;
             submit();
           }}
           className={clsx(
             'nodrag nopan flex h-8 w-8 items-center justify-center rounded-full border transition',
-            isBusy
+            isBusy || readOnly
               ? 'cursor-not-allowed border-white/10 bg-white/5 text-neutral-400'
               // 参考风格：中性石墨圆钮，不再用青色。
               : 'border-white/15 bg-white/15 text-neutral-100 hover:bg-white/25',
@@ -4478,9 +4551,35 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const sourceTitle = language === 'zh' ? '视频二次处理' : 'Video actions';
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
+  // 未开发的工具:置灰、不可点。
+  const disabledActionButtonClass = 'flex cursor-not-allowed items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-500/50';
+
+  // 音视频分离:直接提取整段视频的音频 —— 后端无解复用能力,这里让音频节点直接
+  // 指向视频文件(浏览器播放其音轨),即时生成一个「提取音频」参考音频节点,不走生成。
+  const extractAudio = () => {
+    if (!sourceNode || !sourceUrl) return;
+    const base = sourceNode.position ?? { x: 0, y: 0 };
+    const derivedId = `referenceAudioNode-extract-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const ext = (sourceUrl.split('?')[0].split('.').pop() || 'mp4').toLowerCase();
+    addNode({
+      id: derivedId,
+      type: 'referenceAudioNode',
+      position: { x: base.x + 380, y: base.y + Math.random() * 40 - 20 },
+      data: {
+        url: sourceUrl,
+        sourceName: `${language === 'zh' ? '提取音频' : 'extracted-audio'}.${ext}`,
+        customTitle: language === 'zh' ? '提取音频' : 'Extracted audio',
+        sourceKind: 'derived',
+        derivedFromNodeId: sourceNodeId,
+        status: 'idle',
+      },
+    } as never);
+    onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+  };
 
   const openSession = (action: VideoActionKind, draft: Partial<VideoActionDraft> = {}) => {
     const defaults: VideoActionDraft = {
@@ -4664,66 +4763,32 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <Scissors className="h-3.5 w-3.5" />
           {language === 'zh' ? '剪辑' : 'Trim'}
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => openSession('crop')} className={actionButtonClass}>
+        {/* 未开发:裁剪 / 高清 / 解析 / 智能去字幕 —— 置灰不可点。 */}
+        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
           <Crop className="h-3.5 w-3.5" />
           {language === 'zh' ? '裁剪' : 'Crop'}
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => openSession('enhance')} className={actionButtonClass}>
+        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
           <Sparkles className="h-3.5 w-3.5" />
           {language === 'zh' ? '高清' : 'HD'}
         </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={actionButtonClass}>
-              <FileText className="h-3.5 w-3.5" />
-              {language === 'zh' ? '解析' : 'Parse'}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {VIDEO_PARSE_PRESETS.map((preset) => (
-              <DropdownMenuItem
-                key={preset.id}
-                onClick={() => openSession('parse', { prompt: language === 'zh' ? `解析视频并输出${preset.labelZh}` : `Parse the video and output ${preset.labelEn.toLowerCase()}.`, targetTracks: preset.targetTracks })}
-              >
-                {language === 'zh' ? preset.labelZh : preset.labelEn}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={actionButtonClass}>
-              <Highlighter className="h-3.5 w-3.5" />
-              {language === 'zh' ? '智能去字幕' : 'Subtitle clean'}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {VIDEO_EDIT_PRESETS.map((preset) => (
-              <DropdownMenuItem key={preset.id} onClick={() => openSession('subtitle-clean', { prompt: preset.prompt })}>
-                {language === 'zh' ? preset.labelZh : preset.labelEn}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className={actionButtonClass}>
-              <Music className="h-3.5 w-3.5" />
-              {language === 'zh' ? '音频分离' : 'Audio split'}
-              <ChevronDown className="h-3 w-3 opacity-60" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            {VIDEO_AUDIO_PRESETS.map((preset) => (
-              <DropdownMenuItem key={preset.id} onClick={() => openSession('audio-separate', { targetTracks: preset.targetTracks })}>
-                {language === 'zh' ? preset.labelZh : preset.labelEn}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+          <FileText className="h-3.5 w-3.5" />
+          {language === 'zh' ? '解析' : 'Parse'}
+        </Button>
+        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+          <Highlighter className="h-3.5 w-3.5" />
+          {language === 'zh' ? '智能去字幕' : 'Subtitle clean'}
+        </Button>
+        {/* 音视频分离:直接提取整段音频(无下拉)。 */}
+        <Button variant="ghost" size="sm" onClick={extractAudio} className={actionButtonClass}>
+          <Music className="h-3.5 w-3.5" />
+          {language === 'zh' ? '音视频分离' : 'Audio/video split'}
+        </Button>
         <div className="mx-1 h-5 w-px bg-white/10" />
+        <Button variant="ghost" size="icon" onClick={() => setHistoryOpen(true)} title={language === 'zh' ? '节点生成历史' : 'Node history'}>
+          <History className="h-4 w-4" />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -4738,6 +4803,17 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <Expand className="h-4 w-4" />
         </Button>
       </div>
+
+      {historyOpen ? (
+        <NodeVersionsModal
+          nodeId={sourceNodeId}
+          activeUrl={sourceUrl}
+          activeModel={sourceModel}
+          versions={(sourceData.versions ?? []) as never}
+          mediaKind="video"
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
 
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) setSession(null); }}>
         <DialogContent className="max-w-2xl border-white/10 bg-[#111318] text-neutral-100">
@@ -7298,7 +7374,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
 import { AgentNode } from './AgentNode';
 import { StickyNoteNode } from './StickyNoteNode';
 import { DirectorStageNode } from './DirectorStageNode';
-import { NodeVersionsBadge } from './NodeVersions';
+import { NodeVersionsBadge, NodeVersionsModal } from './NodeVersions';
 import type { NodeVersion } from '../../store';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 import { LayerEditorNode } from './LayerEditorNode';
