@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
+	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/platform/crypto"
 	"ccy-canvas/backend/internal/shared/apperror"
 	"ccy-canvas/backend/internal/shared/safehttp"
@@ -2678,7 +2679,15 @@ func arkReferenceImageToDataURL(ctx context.Context, rawURL string) (string, err
 		// Full URL but not on our disk → fall through to a remote fetch.
 	}
 	if isHTTP {
-		data, err := fetchRemoteReferenceBytes(ctx, raw)
+		fetchURL := raw
+		// Objects in our own asset store (e.g. a private COS bucket) 403 on a
+		// bare GET — swap in a short-lived signed URL so we can read them
+		// server-side. PresignGet returns "" for anything that isn't ours, and
+		// on presign failure we fall back to the raw URL rather than blocking.
+		if signed, perr := assetstore.PresignGet(ctx, raw, 10*time.Minute); perr == nil && signed != "" {
+			fetchURL = signed
+		}
+		data, err := fetchRemoteReferenceBytes(ctx, fetchURL)
 		if err != nil {
 			return "", fmt.Errorf("参考图下载失败(链接可能已失效,请重新添加该参考图): %w", err)
 		}
