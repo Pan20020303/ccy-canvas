@@ -929,6 +929,31 @@ function MediaEmptyPlaceholder({
 
 type PromptMention = { tag: string; id: string; thumb: string; kind?: string };
 
+// 提及标签用零宽词连接符(U+2060)包裹干净标签,而非可见的 [@图片 1] ——
+// 镜像层显示成「图片1」这类干净文本(参考需求图),零宽字符在 textarea 与
+// 镜像层都不占宽度,光标依旧逐字对齐;词连接符不可打印,也不会把用户手打的
+// 「图片1」误判成提及(必须两侧都带 U+2060 才匹配)。
+const MENTION_WRAP = String.fromCharCode(0x2060); // WORD JOINER(零宽/非断行/不可打印)
+const wrapMentionTag = (label: string) => `${MENTION_WRAP}${label}${MENTION_WRAP}`;
+const OLD_MENTION_TAG_RE = /^\[@(.+)\]$/; // 旧格式 [@图片 1]
+
+/** 把旧的 [@图片 1] 提及迁移为零宽包裹的干净标签(顺手去掉标签里的空格)。
+ *  返回 null 表示无需改动。text + mentions 一并改写,持久化后即完成清洗。 */
+function migrateMentionTags(text: string, mentions: PromptMention[]): { text: string; mentions: PromptMention[] } | null {
+  let changed = false;
+  let nextText = text;
+  const nextMentions = mentions.map((m) => {
+    const match = OLD_MENTION_TAG_RE.exec(m.tag);
+    if (!match) return m;
+    changed = true;
+    const cleanLabel = match[1].replace(/\s+/g, '');
+    const newTag = wrapMentionTag(cleanLabel);
+    if (nextText.includes(m.tag)) nextText = nextText.split(m.tag).join(newTag);
+    return { ...m, tag: newTag };
+  });
+  return changed ? { text: nextText, mentions: nextMentions } : null;
+}
+
 /** 行内 @ 提及左侧的小预览图。关键:绝对定位 + 零布局宽度(right:100% 浮在
  *  标签左侧),不占镜像层的字符排布,真实 textarea 的光标依旧逐字对齐。
  *  有缩略图(图片/视频封面)显示图片,音频/文本等无图则显示图标底片。 */
@@ -1303,7 +1328,7 @@ const PromptPanel = ({
     // 视频优先用封面帧，兜底才是原始视频 url。
     const thumb = isAudio ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
     const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'other';
-    const label = isImage ? `图片 ${idx + 1}` : isVideo ? `视频 ${idx + 1}` : isAudio ? `音频 ${idx + 1}` : `节点 ${idx + 1}`;
+    const label = isImage ? `图片${idx + 1}` : isVideo ? `视频${idx + 1}` : isAudio ? `音频${idx + 1}` : `节点${idx + 1}`;
     const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : '节';
     // mediaUrl:悬停预览用的原始媒体(音频/视频要能播,不只是缩略图)。
     const mediaUrl = d.url || '';
@@ -1314,20 +1339,27 @@ const PromptPanel = ({
   const params = getNodeParams(currentNode?.data);
   const nodeData = (currentNode?.data ?? {}) as Record<string, unknown>;
 
-  /** Persisted draft prompt — survives node deselect / page refresh / canvas reload. */
-  const [text, setText] = useState<string>(() => String(nodeData.promptDraft ?? ''));
-  const [mentions, setMentions] = useState<PromptMention[]>(
-    () => Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as PromptMention[]) : [],
-  );
+  /** Persisted draft prompt — survives node deselect / page refresh / canvas reload.
+   *  初始化时把旧的 [@图片 1] 提及迁移成零宽包裹的干净标签(见 migrateMentionTags)。 */
+  const initialDraft = (() => {
+    const t = String(nodeData.promptDraft ?? '');
+    const m = Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as PromptMention[]) : [];
+    return migrateMentionTags(t, m) ?? { text: t, mentions: m };
+  })();
+  const [text, setText] = useState<string>(initialDraft.text);
+  const [mentions, setMentions] = useState<PromptMention[]>(initialDraft.mentions);
 
   // If the user switches focus to a different node and back, we re-init from
   // the freshly-loaded node data. Compare by content to avoid clobbering an
   // in-flight edit when the same data round-trips through the store.
   useEffect(() => {
-    const incoming = String(nodeData.promptDraft ?? '');
+    const rawText = String(nodeData.promptDraft ?? '');
+    const rawMentions = Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as PromptMention[]) : [];
+    const migrated = migrateMentionTags(rawText, rawMentions);
+    const incoming = migrated ? migrated.text : rawText;
+    const incomingMentions = migrated ? migrated.mentions : rawMentions;
     setText((prev) => (prev === incoming ? prev : incoming));
-    const m = Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as typeof mentions) : [];
-    setMentions((prev) => (JSON.stringify(prev) === JSON.stringify(m) ? prev : m));
+    setMentions((prev) => (JSON.stringify(prev) === JSON.stringify(incomingMentions) ? prev : incomingMentions));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId]);
 
@@ -1620,7 +1652,7 @@ const PromptPanel = ({
     const cursor = taRef.current?.selectionStart ?? text.length;
     const before = text.slice(0, cursor).replace(/@\S*$/, '');
     const after = text.slice(cursor);
-    const tag = `[@${upstream.label}]`;
+    const tag = wrapMentionTag(upstream.label);
     setText(before + tag + ' ' + after);
     setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     setMentionOpen(false);
@@ -1634,7 +1666,8 @@ const PromptPanel = ({
         result = result.replace(m.tag, `@${m.id.slice(0, 12)}`);
       }
     }
-    return result;
+    // 清掉任何残留的零宽包裹符(理论上已随标签替换掉,兜底防止漏进后端提示词)。
+    return result.split(MENTION_WRAP).join('');
   };
 
   const handleModelChange = (nextModel: string) => {
