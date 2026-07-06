@@ -2664,6 +2664,116 @@ func arkReferenceMediaURL(ctx context.Context, rawURL string) (string, error) {
 	return "", fmt.Errorf("参考素材无公网可访问地址(疑似本地存储),请配置对象存储(COS)或重新上传")
 }
 
+// Ark/Seedance reference images must be between 300px and 6000px on each side.
+const (
+	arkRefMinDim = 300
+	arkRefMaxDim = 6000
+)
+
+// arkReferenceImageURL returns a provider-downloadable URL for a reference IMAGE
+// whose dimensions satisfy Ark's 300–6000px constraint. Most images pass through
+// as their signed/public URL untouched; only when the original is out of range
+// do we download, rescale, and upload a normalized copy (keyed by content hash
+// so identical images aren't re-uploaded), handing Ark that copy's signed URL.
+func arkReferenceImageURL(ctx context.Context, rawURL string) (string, error) {
+	downloadURL, err := arkReferenceMediaURL(ctx, rawURL)
+	if err != nil {
+		return "", err
+	}
+	// Fetch to inspect dimensions. On any read/decode trouble, fall back to the
+	// URL as-is (may be a host/format we can't read but the provider can) — the
+	// size guard is best-effort normalization, not a hard gate.
+	data, ferr := fetchRemoteReferenceBytes(ctx, downloadURL)
+	if ferr != nil {
+		return downloadURL, nil
+	}
+	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data))
+	if cerr != nil {
+		return downloadURL, nil
+	}
+	if cfg.Width >= arkRefMinDim && cfg.Width <= arkRefMaxDim &&
+		cfg.Height >= arkRefMinDim && cfg.Height <= arkRefMaxDim {
+		return downloadURL, nil
+	}
+	// Out of range → normalize and upload a compliant copy.
+	src, _, derr := image.Decode(bytes.NewReader(data))
+	if derr != nil {
+		return "", fmt.Errorf("参考图解码失败,可能已损坏,请重新上传:%w", derr)
+	}
+	normalized, rerr := resizeToArkBounds(src)
+	if rerr != nil {
+		return "", rerr
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, normalized, &jpeg.Options{Quality: 92}); err != nil {
+		return "", fmt.Errorf("参考图重编码失败:%w", err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	key := "ark-ref/" + hex.EncodeToString(sum[:]) + ".jpg"
+	publicURL, serr := assetstore.Save(ctx, key, bytes.NewReader(buf.Bytes()), "image/jpeg")
+	if serr != nil {
+		return "", fmt.Errorf("规范化参考图上传失败:%w", serr)
+	}
+	if signed, e := assetstore.PresignGet(ctx, publicURL, arkReferenceURLTTL); e == nil && signed != "" {
+		return signed, nil
+	}
+	return publicURL, nil
+}
+
+// arkTargetDims computes the target dimensions that bring (w,h) within
+// [arkRefMinDim, arkRefMaxDim] on both sides while preserving aspect ratio:
+// shrink an oversized image, then enlarge if that pushed a side below the
+// minimum. An aspect ratio too extreme to satisfy both bounds at once errors.
+func arkTargetDims(w, h int) (int, int, error) {
+	if w <= 0 || h <= 0 {
+		return 0, 0, fmt.Errorf("参考图尺寸无效")
+	}
+	nw, nh := w, h
+	if m := max(nw, nh); m > arkRefMaxDim {
+		s := float64(arkRefMaxDim) / float64(m)
+		nw = int(float64(nw)*s + 0.5)
+		nh = int(float64(nh)*s + 0.5)
+		if nw > arkRefMaxDim {
+			nw = arkRefMaxDim
+		}
+		if nh > arkRefMaxDim {
+			nh = arkRefMaxDim
+		}
+	}
+	if m := min(nw, nh); m < arkRefMinDim {
+		s := float64(arkRefMinDim) / float64(m)
+		nw = int(float64(nw)*s + 0.5)
+		nh = int(float64(nh)*s + 0.5)
+		if max(nw, nh) > arkRefMaxDim {
+			return 0, 0, fmt.Errorf("参考图长宽比过于极端(%dx%d),无法同时满足 300–6000px,请裁剪后重试", w, h)
+		}
+	}
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	return nw, nh, nil
+}
+
+// resizeToArkBounds rescales src to arkTargetDims (a no-op when already within
+// bounds), preserving aspect ratio.
+func resizeToArkBounds(src image.Image) (image.Image, error) {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	nw, nh, err := arkTargetDims(w, h)
+	if err != nil {
+		return nil, err
+	}
+	if nw == w && nh == h {
+		return src, nil
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	draw.BiLinear.Scale(dst, dst.Bounds(), src, b, draw.Over, nil)
+	return dst, nil
+}
+
 func resolveUploadDiskPath(rawURL string) (string, error) {
 	rel := strings.TrimSpace(rawURL)
 	rel = strings.TrimPrefix(rel, "/uploads/")

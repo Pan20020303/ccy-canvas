@@ -880,6 +880,40 @@ func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) 
 	}
 }
 
+func TestArkTargetDims(t *testing.T) {
+	// {w, h, wantW, wantH} — wantW<0 means "expect an error".
+	cases := [][4]int{
+		{4000, 4000, 4000, 4000},   // already in range → unchanged
+		{6000, 6000, 6000, 6000},   // exactly at the max → unchanged
+		{300, 300, 300, 300},       // exactly at the min → unchanged
+		{7000, 3500, 6000, 3000},   // oversized → shrink, aspect kept
+		{12000, 6000, 6000, 3000},  // very wide → shrink to max
+		{200, 200, 300, 300},       // too small → enlarge
+		{150, 600, 300, 1200},      // small side scaled up to the min
+		{12000, 100, -1, -1},       // extreme ratio → cannot satisfy both bounds
+		{0, 500, -1, -1},           // invalid
+	}
+	for _, c := range cases {
+		gotW, gotH, err := arkTargetDims(c[0], c[1])
+		if c[2] < 0 {
+			if err == nil {
+				t.Errorf("arkTargetDims(%d,%d) = %d,%d; want error", c[0], c[1], gotW, gotH)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("arkTargetDims(%d,%d) error: %v", c[0], c[1], err)
+			continue
+		}
+		if gotW != c[2] || gotH != c[3] {
+			t.Errorf("arkTargetDims(%d,%d) = %d,%d; want %d,%d", c[0], c[1], gotW, gotH, c[2], c[3])
+		}
+		if gotW < arkRefMinDim || gotW > arkRefMaxDim || gotH < arkRefMinDim || gotH > arkRefMaxDim {
+			t.Errorf("arkTargetDims(%d,%d) = %d,%d; out of [300,6000]", c[0], c[1], gotW, gotH)
+		}
+	}
+}
+
 func TestArkReferenceMediaURL(t *testing.T) {
 	ctx := context.Background()
 

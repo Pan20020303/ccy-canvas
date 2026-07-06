@@ -217,8 +217,9 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		// Hand Ark a URL it can download itself — our own private object-store
 		// objects get a short-lived signed URL. Ark/Seedance rejects base64 data
 		// URLs and 403s on private links, so a reachable (signed) URL is the
-		// contract (fixes InvalidParameter.DownloadFailed).
-		refURL, err := arkReferenceMediaURL(ctx, raw)
+		// contract. arkReferenceImageURL also normalizes any image outside Ark's
+		// 300–6000px bounds (uploads a rescaled copy) to avoid WidthTooLarge.
+		refURL, err := arkReferenceImageURL(ctx, raw)
 		if err != nil {
 			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
 		}
