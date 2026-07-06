@@ -1,54 +1,83 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AlertCircle, ArrowRight, Check, ChevronDown, ChevronUp, Coins, Info, Lock,
-  ScrollText, Send, ShieldCheck, Trash2, Users, X, Zap,
+  AlertCircle, ArrowLeft, ArrowRight, Calendar, Check, ChevronDown, ChevronUp, Coins, Info,
+  Lock, RotateCcw, ScrollText, Send, Settings, ShieldCheck, Trash2, Users, Wallet, X, Zap,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { toast } from 'sonner';
 
 import { useAuth } from '../auth/AuthProvider';
 import {
   useStore, COLLAB_ROLE_OPTIONS, collabRoleLabel,
-  type CollabMember, type CollabRole,
+  type CollabActivity, type CollabMember, type CollabRole,
 } from '../store';
 
 /**
- * 协作控件 —— 画布顶栏右侧。
- *   · 私有画布:显示「协作」按钮 → 打开「转为协作项目」弹窗。
- *   · 协作画布:显示「创建者 ▾」(成员管理/操作日志/转为私有) +「⚡ ▾」
- *     (积分管理/积分记录) +「● 协作中」状态。
- *   · 成员管理弹窗:邀请成员(UID + 身份:访问者/协作者/管理者)+ 项目成员列表。
- * 本轮只搭 UI 外壳(会话态),真实邀请/权限/积分逻辑后续接入。
+ * 协作控件 —— 画布顶栏右侧。私有:「协作」按钮 → 转为协作弹窗;协作中:「创建者 ▾」
+ * (成员管理/操作日志/转为私有) +「⚡ ▾」(积分管理/积分记录) +「● 协作中」。
+ * 本轮把各页面按参考图做成真实弹窗(会话态);真实邀请/权限/积分账单/计费归属
+ * 需后端协作层,后续接入。
  */
 
 const pillBase = 'rounded-full border border-white/[0.10] bg-black/55 backdrop-blur-xl shadow-[0_10px_32px_-12px_rgba(0,0,0,0.65)]';
+
+function relTime(ts: number, zh: boolean): string {
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return zh ? '刚刚' : 'just now';
+  if (m < 60) return zh ? `${m} 分钟前` : `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return zh ? `${h} 小时前` : `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return zh ? `${d} 天前` : `${d}d ago`;
+}
 
 export function CollaborationControls() {
   const language = useStore((s) => s.language);
   const activeProjectId = useStore((s) => s.activeBackendProjectId);
   const collabProjects = useStore((s) => s.collabProjects);
   const membersByProject = useStore((s) => s.collabMembersByProject);
+  const activityByProject = useStore((s) => s.collabActivityByProject);
   const setProjectCollaborative = useStore((s) => s.setProjectCollaborative);
   const addCollabMember = useStore((s) => s.addCollabMember);
   const removeCollabMember = useStore((s) => s.removeCollabMember);
   const setCollabMemberRole = useStore((s) => s.setCollabMemberRole);
-  const { user } = useAuth();
+  const logCollabActivity = useStore((s) => s.logCollabActivity);
+  // 只订阅节点数量,避免每次画布编辑都重渲染顶栏。
+  const nodeCount = useStore((s) => s.nodes.length);
+  const { user, creditSummary } = useAuth();
   const zh = language === 'zh';
 
   const [convertOpen, setConvertOpen] = useState(false);
+  const [privateOpen, setPrivateOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [pointsManageOpen, setPointsManageOpen] = useState(false);
+  const [pointsLogOpen, setPointsLogOpen] = useState(false);
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
   const [pointsMenuOpen, setPointsMenuOpen] = useState(false);
-  const [placeholder, setPlaceholder] = useState<{ title: string; desc: string } | null>(null);
+
+  const isCollab = Boolean(activeProjectId && collabProjects[activeProjectId]);
+
+  // 操作日志(会话态):协作中,节点数变化时记一条 update_node(当前用户)。
+  const prevCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (!activeProjectId || !isCollab || !user) { prevCount.current = nodeCount; return; }
+    if (prevCount.current !== null && nodeCount !== prevCount.current) {
+      logCollabActivity(activeProjectId, { action: 'update_node', uid: user.id, name: user.name, avatar: user.avatar });
+    }
+    prevCount.current = nodeCount;
+  }, [nodeCount, activeProjectId, isCollab, user, logCollabActivity]);
 
   if (!user || !activeProjectId) return null;
 
-  const isCollab = Boolean(collabProjects[activeProjectId]);
   const invited = membersByProject[activeProjectId] ?? [];
   const members: CollabMember[] = [
     { uid: user.id, name: user.name, avatar: user.avatar, role: 'creator' },
     ...invited,
   ];
+  const activity = activityByProject[activeProjectId] ?? [];
 
   return (
     <>
@@ -70,9 +99,9 @@ export function CollaborationControls() {
                 <div className="fixed inset-0 z-40" onClick={() => setRoleMenuOpen(false)} />
                 <div className="absolute right-0 top-full z-50 mt-2 w-44 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
                   <MenuRow icon={Users} label={zh ? '成员管理' : 'Members'} onClick={() => { setRoleMenuOpen(false); setMembersOpen(true); }} />
-                  <MenuRow icon={ScrollText} label={zh ? '操作日志' : 'Activity log'} onClick={() => { setRoleMenuOpen(false); setPlaceholder({ title: zh ? '操作日志' : 'Activity log', desc: zh ? '成员在本项目的操作记录将在此展示。' : 'Member activity on this project will appear here.' }); }} />
+                  <MenuRow icon={ScrollText} label={zh ? '操作日志' : 'Activity log'} onClick={() => { setRoleMenuOpen(false); setLogOpen(true); }} />
                   <div className="my-1 border-t border-white/5" />
-                  <MenuRow icon={Lock} label={zh ? '转为私有' : 'Make private'} onClick={() => { setRoleMenuOpen(false); setProjectCollaborative(activeProjectId, false); }} />
+                  <MenuRow icon={Lock} label={zh ? '转为私有' : 'Make private'} onClick={() => { setRoleMenuOpen(false); setPrivateOpen(true); }} />
                 </div>
               </>
             ) : null}
@@ -93,8 +122,8 @@ export function CollaborationControls() {
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setPointsMenuOpen(false)} />
                 <div className="absolute right-0 top-full z-50 mt-2 w-40 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
-                  <MenuRow icon={Coins} label={zh ? '积分管理' : 'Points'} onClick={() => { setPointsMenuOpen(false); setPlaceholder({ title: zh ? '积分管理' : 'Points management', desc: zh ? '把充值积分划转到本协作项目中统一管理。' : 'Transfer top-up points into this project.' }); }} />
-                  <MenuRow icon={ScrollText} label={zh ? '积分记录' : 'Points log'} onClick={() => { setPointsMenuOpen(false); setPlaceholder({ title: zh ? '积分记录' : 'Points log', desc: zh ? '项目积分的划转与消耗明细将在此展示。' : 'Project point transfers and usage will appear here.' }); }} />
+                  <MenuRow icon={Coins} label={zh ? '积分管理' : 'Points'} onClick={() => { setPointsMenuOpen(false); setPointsManageOpen(true); }} />
+                  <MenuRow icon={ScrollText} label={zh ? '积分记录' : 'Points log'} onClick={() => { setPointsMenuOpen(false); setPointsLogOpen(true); }} />
                 </div>
               </>
             ) : null}
@@ -120,8 +149,18 @@ export function CollaborationControls() {
       {convertOpen ? (
         <ConvertModal
           zh={zh}
+          mode="toCollab"
           onCancel={() => setConvertOpen(false)}
           onConfirm={() => { setProjectCollaborative(activeProjectId, true); setConvertOpen(false); }}
+        />
+      ) : null}
+
+      {privateOpen ? (
+        <ConvertModal
+          zh={zh}
+          mode="toPrivate"
+          onCancel={() => setPrivateOpen(false)}
+          onConfirm={() => { setProjectCollaborative(activeProjectId, false); setPrivateOpen(false); }}
         />
       ) : null}
 
@@ -136,9 +175,19 @@ export function CollaborationControls() {
         />
       ) : null}
 
-      {placeholder ? (
-        <PlaceholderModal zh={zh} title={placeholder.title} desc={placeholder.desc} onClose={() => setPlaceholder(null)} />
+      {logOpen ? <ActivityLogModal zh={zh} activity={activity} onClose={() => setLogOpen(false)} /> : null}
+
+      {pointsManageOpen ? (
+        <PointsManageModal
+          zh={zh}
+          members={members}
+          rechargeBalance={creditSummary?.current_balance ?? 0}
+          rechargeTotal={creditSummary?.daily_quota ?? 0}
+          onClose={() => setPointsManageOpen(false)}
+        />
       ) : null}
+
+      {pointsLogOpen ? <PointsLogModal zh={zh} creatorName={user.name} avatar={user.avatar} onClose={() => setPointsLogOpen(false)} /> : null}
     </>
   );
 }
@@ -152,53 +201,71 @@ function MenuRow({ icon: Icon, label, onClick }: { icon: React.ComponentType<{ c
   );
 }
 
-// ─── 转为协作项目 ────────────────────────────────────────────────────────────
+// ─── 转为协作 / 转为私有(镜像布局)─────────────────────────────────────────
 
-function ConvertModal({ zh, onCancel, onConfirm }: { zh: boolean; onCancel: () => void; onConfirm: () => void }) {
+function ConvertModal({ zh, mode, onCancel, onConfirm }: { zh: boolean; mode: 'toCollab' | 'toPrivate'; onCancel: () => void; onConfirm: () => void }) {
+  const toPrivate = mode === 'toPrivate';
+  const privateCard = (
+    <PlanCard
+      icon={<Lock className="h-4 w-4" />}
+      title={zh ? '私有项目' : 'Private'}
+      highlight={toPrivate}
+      bullets={zh
+        ? ['仅您一人可以编辑和查看', '适合个人创作', '无法邀请成员协作', '使用个人积分']
+        : ['Only you can edit and view', 'Best for solo work', 'No member invites', 'Uses your personal points']}
+    />
+  );
+  const collabCard = (
+    <PlanCard
+      icon={<Users className="h-4 w-4" />}
+      title={zh ? '协作项目' : 'Collaborative'}
+      highlight={!toPrivate}
+      bullets={zh
+        ? ['可邀请团队成员共同创作', '支持角色权限管理', '实时协作，提升效率', '划转积分到项目中管理']
+        : ['Invite teammates to co-create', 'Role-based permissions', 'Real-time collaboration', 'Pool points into the project']}
+    />
+  );
+
   return createPortal(
     <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 p-8 backdrop-blur-sm" onClick={onCancel}>
       <div className="w-[640px] max-w-[94vw] rounded-2xl border border-white/10 bg-[#17191e] p-8 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex flex-col items-center text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#ff6a1f]/15 text-[#ff9b68]">
-            <Users className="h-6 w-6" />
+          <div className={clsx('flex h-14 w-14 items-center justify-center rounded-2xl', toPrivate ? 'bg-white/[0.06] text-neutral-300' : 'bg-[#ff6a1f]/15 text-[#ff9b68]')}>
+            {toPrivate ? <Lock className="h-6 w-6" /> : <Users className="h-6 w-6" />}
           </div>
-          <h3 className="mt-4 text-xl font-semibold text-white">{zh ? '转为协作项目' : 'Convert to collaborative'}</h3>
-          <p className="mt-1.5 text-sm text-neutral-500">{zh ? '开启团队协作，共同创作精彩故事' : 'Enable team collaboration and co-create'}</p>
+          <h3 className="mt-4 text-xl font-semibold text-white">{toPrivate ? (zh ? '转为私有项目' : 'Convert to private') : (zh ? '转为协作项目' : 'Convert to collaborative')}</h3>
+          <p className="mt-1.5 text-sm text-neutral-500">
+            {toPrivate ? (zh ? '关闭协作，回归个人创作模式' : 'Turn off collaboration, back to solo') : (zh ? '开启团队协作，共同创作精彩故事' : 'Enable team collaboration and co-create')}
+          </p>
         </div>
 
         <div className="mt-7 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-          <PlanCard
-            icon={<Lock className="h-4 w-4" />}
-            title={zh ? '私有项目' : 'Private'}
-            highlight={false}
-            bullets={zh
-              ? ['仅您一人可以编辑和查看', '适合个人创作', '无法邀请成员协作', '使用个人积分']
-              : ['Only you can edit and view', 'Best for solo work', 'No member invites', 'Uses your personal points']}
-          />
-          <ArrowRight className="h-5 w-5 text-neutral-600" />
-          <PlanCard
-            icon={<Users className="h-4 w-4" />}
-            title={zh ? '协作项目' : 'Collaborative'}
-            highlight
-            bullets={zh
-              ? ['可邀请团队成员共同创作', '支持角色权限管理', '实时协作，提升效率', '划转积分到项目中管理']
-              : ['Invite teammates to co-create', 'Role-based permissions', 'Real-time collaboration', 'Pool points into the project']}
-          />
+          {privateCard}
+          {toPrivate ? <ArrowLeft className="h-5 w-5 text-neutral-600" /> : <ArrowRight className="h-5 w-5 text-neutral-600" />}
+          {collabCard}
         </div>
 
-        <div className="mt-6 rounded-xl border border-[#ff6a1f]/25 bg-[#ff6a1f]/[0.06] p-4">
-          <div className="flex items-center gap-2 text-[13px] font-medium text-[#ffb183]">
+        <div className={clsx('mt-6 rounded-xl border p-4', toPrivate ? 'border-rose-500/25 bg-rose-500/[0.06]' : 'border-[#ff6a1f]/25 bg-[#ff6a1f]/[0.06]')}>
+          <div className={clsx('flex items-center gap-2 text-[13px] font-medium', toPrivate ? 'text-rose-300' : 'text-[#ffb183]')}>
             <AlertCircle className="h-4 w-4" />
             {zh ? '重要提示：' : 'Important:'}
           </div>
-          <p className="mt-2 text-[12.5px] leading-6 text-[#e6b98f]">
-            {zh
-              ? '转换为协作项目后可以再转回私有项目，但会移除所有协作成员。'
-              : 'You can switch back to private later, but that removes all collaborators.'}
-            <br />
-            {zh
-              ? '仅限充值积分可划转到项目中，会员积分不支持划转。'
-              : 'Only top-up points can be pooled into the project; membership points cannot.'}
+          <p className={clsx('mt-2 text-[12.5px] leading-6', toPrivate ? 'text-rose-200/85' : 'text-[#e6b98f]')}>
+            {toPrivate ? (
+              <>
+                {zh ? '转换为私有项目后，所有协作成员将被移除，且他们将无法再访问此项目。' : 'After converting to private, all collaborators are removed and can no longer access this project.'}
+                <br />
+                {zh ? '项目剩余积分将自动回退到您的个人积分中。' : 'Remaining project points return to your personal balance.'}
+                <br />
+                {zh ? '此操作不可撤销！' : 'This action cannot be undone!'}
+              </>
+            ) : (
+              <>
+                {zh ? '转换为协作项目后可以再转回私有项目，但会移除所有协作成员。' : 'You can switch back to private later, but that removes all collaborators.'}
+                <br />
+                {zh ? '仅限充值积分可划转到项目中，会员积分不支持划转。' : 'Only top-up points can be pooled into the project; membership points cannot.'}
+              </>
+            )}
           </p>
         </div>
 
@@ -272,7 +339,6 @@ function MemberModal({
         </div>
 
         <div className="space-y-5 px-6 py-5">
-          {/* 邀请成员 */}
           <div className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
             <div className="mb-3 flex items-center gap-2 text-xs font-medium text-neutral-300">
               <Send className="h-3.5 w-3.5 text-neutral-400" />
@@ -286,7 +352,6 @@ function MemberModal({
                 placeholder={zh ? '输入用户UID' : 'Enter user UID'}
                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#111318] px-3 py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-[#ff6a1f]/40"
               />
-              {/* 身份选择 */}
               <div className="relative shrink-0">
                 <button
                   type="button"
@@ -314,17 +379,13 @@ function MemberModal({
                   </>
                 ) : null}
               </div>
-              <button
-                onClick={send}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-neutral-950 transition hover:bg-neutral-200"
-              >
+              <button onClick={send} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-neutral-950 transition hover:bg-neutral-200">
                 <Send className="h-3.5 w-3.5" />
                 {zh ? '发送邀请' : 'Invite'}
               </button>
             </div>
           </div>
 
-          {/* 项目成员 */}
           <div className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
             <div className="mb-3 flex items-center gap-1.5 text-xs font-medium text-neutral-300">
               {zh ? '项目成员' : 'Project members'}
@@ -333,17 +394,8 @@ function MemberModal({
             <div className="space-y-1">
               {members.map((m) => (
                 <div key={m.uid} className="group flex items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-white/[0.03]">
-                  <div className="relative">
-                    {m.avatar ? (
-                      <img src={m.avatar} alt="" className="h-8 w-8 rounded-full object-cover" />
-                    ) : (
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500/20 text-xs text-cyan-200">{m.name.slice(0, 1).toUpperCase()}</div>
-                    )}
-                    {m.role === 'creator' ? <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#17191e] bg-emerald-400" /> : null}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm text-neutral-100">{m.name}</div>
-                  </div>
+                  <Avatar name={m.name} avatar={m.avatar} creator={m.role === 'creator'} />
+                  <div className="min-w-0 flex-1"><div className="truncate text-sm text-neutral-100">{m.name}</div></div>
                   {m.role === 'creator' ? (
                     <span className="flex items-center gap-1 rounded-md bg-[#ff6a1f]/15 px-2 py-1 text-[11px] text-[#ff9b68]">
                       <ShieldCheck className="h-3 w-3" />
@@ -365,6 +417,19 @@ function MemberModal({
       </div>
     </div>,
     document.body,
+  );
+}
+
+function Avatar({ name, avatar, creator }: { name: string; avatar?: string; creator?: boolean }) {
+  return (
+    <div className="relative shrink-0">
+      {avatar ? (
+        <img src={avatar} alt="" className="h-8 w-8 rounded-full object-cover" />
+      ) : (
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500/20 text-xs text-cyan-200">{name.slice(0, 1).toUpperCase()}</div>
+      )}
+      {creator ? <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#17191e] bg-emerald-400" /> : null}
+    </div>
   );
 }
 
@@ -401,24 +466,195 @@ function MemberRolePicker({ zh, role, onChange }: { zh: boolean; role: CollabRol
   );
 }
 
-// ─── 占位页(操作日志 / 积分管理 / 积分记录,功能后续接入)────────────────────
+// ─── 操作日志 ────────────────────────────────────────────────────────────────
 
-function PlaceholderModal({ zh, title, desc, onClose }: { zh: boolean; title: string; desc: string; onClose: () => void }) {
+const LOG_PAGE_SIZE = 13;
+
+function ActivityLogModal({ zh, activity, onClose }: { zh: boolean; activity: CollabActivity[]; onClose: () => void }) {
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(activity.length / LOG_PAGE_SIZE));
+  const rows = activity.slice((page - 1) * LOG_PAGE_SIZE, page * LOG_PAGE_SIZE);
+
   return createPortal(
     <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 p-8 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-[460px] max-w-[92vw] rounded-2xl border border-white/10 bg-[#17191e] shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-white/8 px-6 py-4">
-          <h3 className="text-[15px] font-semibold text-white">{title}</h3>
-          <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 transition hover:bg-white/8 hover:text-white">
+      <div className="flex h-[80vh] w-[880px] max-w-[94vw] flex-col rounded-2xl border border-white/10 bg-[#17191e] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between px-6 py-4">
+          <div>
+            <h3 className="text-[15px] font-semibold text-white">{zh ? '操作日志' : 'Activity log'}</h3>
+            <p className="mt-0.5 text-xs text-neutral-500">{zh ? '查看项目的操作历史记录' : 'Project operation history'}</p>
+          </div>
+          <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition hover:bg-white/12 hover:text-white">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.04] text-neutral-500">
-            <Info className="h-6 w-6" />
+
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-6 pb-3">
+          {activity.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-neutral-500">
+              <ScrollText className="h-8 w-8" />
+              <div className="text-sm">{zh ? '暂无操作记录' : 'No activity yet'}</div>
+            </div>
+          ) : rows.map((r) => (
+            <div key={r.id} className="flex items-center gap-3 rounded-xl border border-white/6 bg-white/[0.02] px-4 py-2.5">
+              <Avatar name={r.name} avatar={r.avatar} />
+              <span className="text-sm text-neutral-100">{r.name}</span>
+              <span className="rounded-md bg-cyan-500/12 px-2 py-0.5 text-[11px] text-cyan-300">{r.action}</span>
+              <span className="text-neutral-700">—</span>
+              <span className="ml-auto text-xs text-neutral-500">{relTime(r.ts, zh)}</span>
+            </div>
+          ))}
+        </div>
+
+        {activity.length > 0 ? (
+          <div className="flex items-center justify-center gap-3 border-t border-white/8 px-6 py-3.5 text-xs text-neutral-400">
+            <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 transition hover:bg-white/[0.08] disabled:opacity-35">{zh ? '上一页' : 'Prev'}</button>
+            <span>{zh ? '第' : 'Page'} <span className="rounded bg-white/10 px-2 py-0.5 text-neutral-100">{page}</span> / {pageCount} {zh ? '页' : ''}</span>
+            <button disabled={page >= pageCount} onClick={() => setPage((p) => Math.min(pageCount, p + 1))} className="rounded-lg bg-white px-4 py-1.5 font-medium text-neutral-950 transition hover:bg-neutral-200 disabled:opacity-35">{zh ? '下一页' : 'Next'}</button>
           </div>
-          <p className="max-w-[320px] text-sm text-neutral-400">{desc}</p>
-          <span className="rounded-full bg-white/[0.05] px-3 py-1 text-[11px] text-neutral-500">{zh ? '功能开发中，敬请期待' : 'Coming soon'}</span>
+        ) : null}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ─── 积分管理 ────────────────────────────────────────────────────────────────
+
+function PointsManageModal({ zh, members, rechargeBalance, rechargeTotal, onClose }: { zh: boolean; members: CollabMember[]; rechargeBalance: number; rechargeTotal: number; onClose: () => void }) {
+  const pct = rechargeTotal > 0 ? Math.round(((rechargeTotal - rechargeBalance) / rechargeTotal) * 100) : 0;
+  const stub = () => toast.info(zh ? '积分划转功能开发中，敬请期待' : 'Points transfer coming soon');
+  return createPortal(
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 p-8 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-[960px] max-w-[94vw] rounded-2xl border border-white/10 bg-[#17191e] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4">
+          <div>
+            <h3 className="text-[15px] font-semibold text-white">{zh ? '项目积分' : 'Project points'}</h3>
+            <p className="mt-0.5 text-xs text-neutral-500">{zh ? '管理项目积分与成员分配' : 'Manage project points and allocation'}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={stub} className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/[0.08]"><RotateCcw className="h-3.5 w-3.5" />{zh ? '积分退回' : 'Refund'}</button>
+            <button onClick={stub} className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/[0.08]"><Wallet className="h-3.5 w-3.5" />{zh ? '积分划转' : 'Transfer'}</button>
+            <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition hover:bg-white/12 hover:text-white"><X className="h-4 w-4" /></button>
+          </div>
+        </div>
+
+        <div className="space-y-4 px-6 pb-6">
+          <div className="grid grid-cols-2 gap-4">
+            <StatCard zh={zh} label={zh ? '充值积分' : 'Top-up points'} balance={rechargeBalance} total={rechargeTotal} pct={pct} />
+            <StatCard zh={zh} label={zh ? '团队积分' : 'Team points'} balance={0} total={0} pct={0} />
+          </div>
+
+          <div className="flex items-center justify-between rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3.5">
+            <div>
+              <div className="text-sm text-neutral-100">{zh ? '项目周期限额' : 'Project period limit'}</div>
+              <div className="mt-0.5 text-[11px] text-neutral-500">{zh ? '配额' : 'Quota'}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-neutral-400">{zh ? '无限额' : 'Unlimited'}</span>
+              <button onClick={stub} className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-500 transition hover:bg-white/8 hover:text-neutral-200"><Settings className="h-4 w-4" /></button>
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-neutral-200">
+              <Users className="h-4 w-4 text-neutral-400" />
+              {zh ? '成员周期限额' : 'Member period limits'}
+              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-white/10 px-1 text-[10px] text-neutral-300">{members.length}</span>
+            </div>
+            <div className="space-y-1.5">
+              {members.map((m) => (
+                <div key={m.uid} className="flex items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.02] px-3 py-3">
+                  <Avatar name={m.name} avatar={m.avatar} creator={m.role === 'creator'} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-neutral-100">{m.name}</div>
+                    <div className="mt-0.5 text-[10.5px] text-neutral-500">{collabRoleLabel(m.role, zh)}</div>
+                  </div>
+                  <span className="text-xs text-neutral-400">{zh ? '无限额' : 'Unlimited'}</span>
+                  <span className="rounded-md bg-[#ff6a1f]/15 px-2 py-0.5 text-[11px] text-[#ff9b68]">{zh ? '已用 0' : 'Used 0'}</span>
+                  <button onClick={stub} className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-500 transition hover:bg-white/8 hover:text-neutral-200"><Settings className="h-4 w-4" /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function StatCard({ zh, label, balance, total, pct }: { zh: boolean; label: string; balance: number; total: number; pct: number }) {
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.02] p-4">
+      <div className="flex items-center justify-between text-xs text-neutral-400">
+        <span>{label}</span>
+        <span>{zh ? '已用' : 'Used'} {pct}%</span>
+      </div>
+      <div className="mt-2 flex items-baseline justify-between">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-2xl font-semibold text-neutral-100">{balance}</span>
+          <span className="text-[11px] text-neutral-500">{zh ? '剩余' : 'left'}</span>
+        </div>
+        <span className="text-[11px] text-neutral-500">{zh ? '总量' : 'total'} {total}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── 积分记录 / 积分账单 ─────────────────────────────────────────────────────
+
+function PointsLogModal({ zh, creatorName, avatar, onClose }: { zh: boolean; creatorName: string; avatar?: string; onClose: () => void }) {
+  const [filter, setFilter] = useState<'all' | 'spend' | 'earn'>('all');
+  const filters: { key: 'all' | 'spend' | 'earn'; zh: string; en: string }[] = [
+    { key: 'all', zh: '全部', en: 'All' },
+    { key: 'spend', zh: '消耗', en: 'Spent' },
+    { key: 'earn', zh: '获得', en: 'Earned' },
+  ];
+  return createPortal(
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 p-8 backdrop-blur-sm" onClick={onClose}>
+      <div className="flex h-[80vh] w-[1000px] max-w-[95vw] flex-col rounded-2xl border border-white/10 bg-[#17191e] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        {/* 成员卡 */}
+        <div className="flex items-center gap-3 border-b border-white/8 px-6 py-4">
+          <Avatar name={creatorName} avatar={avatar} creator />
+          <div className="min-w-0">
+            <div className="truncate text-sm text-neutral-100">{creatorName}</div>
+            <div className="mt-0.5 text-[10.5px] text-neutral-500">{collabRoleLabel('creator', zh)}</div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs text-neutral-400">{zh ? '无限额' : 'Unlimited'}</span>
+            <span className="rounded-md bg-[#ff6a1f]/15 px-2 py-0.5 text-[11px] text-[#ff9b68]">{zh ? '已用 0' : 'Used 0'}</span>
+            <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/[0.06] text-neutral-400 transition hover:bg-white/12 hover:text-white"><X className="h-4 w-4" /></button>
+          </div>
+        </div>
+
+        {/* 账单头 */}
+        <div className="flex items-center justify-between px-6 py-4">
+          <h3 className="text-[15px] font-semibold text-white">{zh ? '积分账单' : 'Points statement'}</h3>
+          <div className="flex items-center gap-2">
+            <button className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-neutral-300 transition hover:bg-white/[0.08]">
+              <Calendar className="h-3.5 w-3.5" />
+              {zh ? '本月（全月）' : 'This month'}
+            </button>
+            <div className="flex items-center gap-1 rounded-lg border border-white/8 bg-white/[0.03] p-0.5">
+              {filters.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setFilter(f.key)}
+                  className={clsx('rounded-md px-3 py-1 text-xs transition', filter === f.key ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                >
+                  {zh ? f.zh : f.en}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* 账单列表(暂空,需后端账单数据) */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-neutral-500">
+            <Coins className="h-8 w-8" />
+            <div className="text-sm">{zh ? '暂无积分记录' : 'No points records yet'}</div>
+          </div>
         </div>
       </div>
     </div>,

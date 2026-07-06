@@ -141,6 +141,9 @@ export const collabRoleLabel = (role: CollabRole, zh: boolean): string => {
   return opt ? (zh ? opt.zh : opt.en) : role;
 };
 
+/** 协作操作日志条目(会话态;真正的多人日志需后端记录)。 */
+export type CollabActivity = { id: string; action: string; ts: number; uid: string; name: string; avatar?: string };
+
 export const ASSET_CATEGORIES: { key: SavedAssetCategory | 'all'; zh: string; en: string }[] = [
   { key: 'all', zh: '全部', en: 'All' },
   { key: 'other', zh: '其它', en: 'Other' },
@@ -349,6 +352,8 @@ type AppState = {
   addCollabMember: (projectId: string, member: CollabMember) => void;
   removeCollabMember: (projectId: string, uid: string) => void;
   setCollabMemberRole: (projectId: string, uid: string, role: CollabRole) => void;
+  collabActivityByProject: Record<string, CollabActivity[]>;
+  logCollabActivity: (projectId: string, entry: Omit<CollabActivity, 'id' | 'ts'>) => void;
   saveAssetDialogNodeId: string | null;
   /** Which directorStageNode currently has its full-screen overlay open.
    *  null = closed. The overlay component reads this and renders accordingly. */
@@ -2832,6 +2837,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setCollabMemberRole: (projectId, uid, role) => set((state) => {
     const list = state.collabMembersByProject[projectId] ?? [];
     return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: list.map((m) => (m.uid === uid ? { ...m, role } : m)) } };
+  }),
+  collabActivityByProject: {},
+  logCollabActivity: (projectId, entry) => set((state) => {
+    const list = state.collabActivityByProject[projectId] ?? [];
+    const next = [{ ...entry, id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, ts: Date.now() }, ...list].slice(0, 300);
+    return { collabActivityByProject: { ...state.collabActivityByProject, [projectId]: next } };
   }),
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),

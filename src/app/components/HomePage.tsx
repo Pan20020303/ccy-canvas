@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import clsx from 'clsx';
 import {
   Check,
   ChevronLeft,
@@ -13,8 +14,10 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Search,
   Shield,
   Trash2,
+  Users,
   Zap,
 } from 'lucide-react';
 
@@ -74,6 +77,7 @@ export function HomePage() {
   const backendProjects = useStore((s) => s.backendProjects);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const activeBackendProjectId = useStore((s) => s.activeBackendProjectId);
+  const collabProjects = useStore((s) => s.collabProjects);
   const switchProject = useStore((s) => s.switchProject);
   const switchBackendProject = useStore((s) => s.switchBackendProject);
   const createProject = useStore((s) => s.createProject);
@@ -91,6 +95,9 @@ export function HomePage() {
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
+  // 个人 / 协作 画布切换 + 搜索(参考图五)。协作态目前是会话态。
+  const [collabTab, setCollabTab] = useState<'all' | 'personal' | 'collab'>('all');
+  const [search, setSearch] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
   const coverTargetRef = useRef<string | null>(null);
 
@@ -131,15 +138,22 @@ export function HomePage() {
   const effectiveActiveProjectId = activeBackendProjectId ?? activeProjectId;
 
   const visibleProjects = useMemo(
-    () => projects.filter((p) => (openFolderId ? p.folderId === openFolderId : !p.folderId)),
-    [projects, openFolderId],
+    () => projects.filter((p) => {
+      if (openFolderId ? p.folderId !== openFolderId : Boolean(p.folderId)) return false;
+      if (collabTab === 'personal' && collabProjects[p.id]) return false;
+      if (collabTab === 'collab' && !collabProjects[p.id]) return false;
+      const q = search.trim().toLowerCase();
+      if (q && !p.name.toLowerCase().includes(q)) return false;
+      return true;
+    }),
+    [projects, openFolderId, collabTab, search, collabProjects],
   );
   const openFolder = openFolderId ? folders.find((f) => f.id === openFolderId) ?? null : null;
 
   // 分页：项目卡 8 个/页（开始创作卡和文件夹卡不占页额）。
   const PAGE_SIZE = 8;
   const totalPages = Math.max(1, Math.ceil(visibleProjects.length / PAGE_SIZE));
-  useEffect(() => { setPage(1); }, [openFolderId]);
+  useEffect(() => { setPage(1); }, [openFolderId, collabTab, search]);
   useEffect(() => { setPage((p) => Math.min(p, totalPages)); }, [totalPages]);
   const pagedProjects = useMemo(
     () => visibleProjects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
@@ -393,6 +407,33 @@ export function HomePage() {
           ) : null}
         </div>
 
+        {/* 个人 / 协作 切换 + 搜索(参考图五) */}
+        {!openFolder ? (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] p-0.5">
+              {([['all', zh ? '全部' : 'All'], ['personal', zh ? '个人' : 'Personal'], ['collab', zh ? '协作' : 'Collab']] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setCollabTab(key)}
+                  className={clsx('rounded-full px-4 py-1.5 text-[12.5px] transition', collabTab === key ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={zh ? '搜索' : 'Search'}
+                className="w-56 rounded-full border border-white/10 bg-white/[0.03] py-1.5 pl-9 pr-3 text-[12.5px] text-neutral-100 outline-none transition placeholder:text-neutral-600 focus:border-white/25"
+              />
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-[repeat(auto-fill,minmax(236px,1fr))] gap-x-5 gap-y-8">
           {/* 开始创作 — 参考风格：虚线空卡，无实体边框底。 */}
           <div>
@@ -482,6 +523,13 @@ export function HomePage() {
                       <div className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-full border border-white/15 bg-black/55 px-2 py-0.5 text-[10px] text-neutral-100 backdrop-blur">
                         <Check className="h-3 w-3" />
                         {zh ? '当前' : 'Current'}
+                      </div>
+                    ) : null}
+                    {/* 协作画布标记(参考图五) */}
+                    {collabProjects[project.id] ? (
+                      <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 rounded-full border border-[#8b5cf6]/40 bg-[#8b5cf6]/30 px-2 py-0.5 text-[10px] text-purple-100 backdrop-blur">
+                        <Users className="h-3 w-3" />
+                        {zh ? '协作' : 'Collab'}
                       </div>
                     ) : null}
                     {busyId === project.id ? (
