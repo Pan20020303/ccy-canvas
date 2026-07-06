@@ -927,8 +927,57 @@ function MediaEmptyPlaceholder({
   );
 }
 
-/** Render text with inline mention thumbnails. Splits on `[@xxx]` tags. */
-function renderMentionRichText(text: string, mentions: { tag: string; id: string; thumb: string }[]): React.ReactNode {
+type PromptMention = { tag: string; id: string; thumb: string; kind?: string };
+
+/** 行内 @ 提及左侧的小预览图。关键:绝对定位 + 零布局宽度(right:100% 浮在
+ *  标签左侧),不占镜像层的字符排布,真实 textarea 的光标依旧逐字对齐。
+ *  有缩略图(图片/视频封面)显示图片,音频/文本等无图则显示图标底片。 */
+function MentionThumb({ thumb, kind }: { thumb: string; kind?: string }) {
+  const base: React.CSSProperties = {
+    position: 'absolute',
+    right: '100%',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    marginRight: 2,
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  };
+  if (thumb) {
+    return (
+      <img
+        src={toRenderableMediaUrl(thumb)}
+        alt=""
+        aria-hidden
+        style={{ ...base, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.20)' }}
+      />
+    );
+  }
+  const glyph = kind === 'audio' ? '♪' : kind === 'video' ? '▶' : kind === 'text' ? 'T' : '#';
+  return (
+    <span
+      aria-hidden
+      style={{
+        ...base,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'rgba(34,211,238,0.16)',
+        border: '1px solid rgba(34,211,238,0.28)',
+        fontSize: 9,
+        lineHeight: 1,
+        color: '#a5e8f2',
+      }}
+    >
+      {glyph}
+    </span>
+  );
+}
+
+/** Render text with inline mention chips + thumbnails. Splits on `[@xxx]` tags. */
+function renderMentionRichText(text: string, mentions: PromptMention[]): React.ReactNode {
   if (!mentions.length) return text;
 
   // Build a regex that matches any of the mention tags.
@@ -939,25 +988,20 @@ function renderMentionRichText(text: string, mentions: { tag: string; id: string
   return parts.map((part, i) => {
     const mention = mentions.find((m) => m.tag === part);
     if (mention) {
-      // The overlay is a plain TEXT MIRROR of the textarea — every character
-      // must line up with the real caret. So the chip is text-only (a colored
-      // highlight occupying the exact same width as the tag); we do NOT render
-      // an absolutely-positioned thumbnail here. An earlier hover-thumbnail
-      // could leak/残留 as a stack of overlapping images over the text, and it
-      // never actually worked anyway (the overlay is pointer-events-none, so
-      // the chip can't receive :hover). `mention.thumb` is still used elsewhere
-      // (the @ picker) — the resolved reference images go to the backend.
+      // 镜像层逐字对齐真实 textarea → 提及标签文本按原样渲染(等宽),缩略图
+      // 用 MentionThumb 以零布局宽度浮在左侧,不破坏光标定位。
       return (
         <span
           key={i}
           data-mention-id={mention.id}
-          className="rounded-sm text-cyan-300"
+          className="relative rounded-sm text-cyan-300"
           style={{
             backgroundColor: 'rgba(34, 211, 238, 0.10)',
             boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.15)',
           }}
           title={mention.tag}
         >
+          <MentionThumb thumb={mention.thumb} kind={mention.kind} />
           {part}
         </span>
       );
@@ -1270,8 +1314,8 @@ const PromptPanel = ({
 
   /** Persisted draft prompt — survives node deselect / page refresh / canvas reload. */
   const [text, setText] = useState<string>(() => String(nodeData.promptDraft ?? ''));
-  const [mentions, setMentions] = useState<{ tag: string; id: string; thumb: string }[]>(
-    () => Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as { tag: string; id: string; thumb: string }[]) : [],
+  const [mentions, setMentions] = useState<PromptMention[]>(
+    () => Array.isArray(nodeData.promptMentions) ? (nodeData.promptMentions as PromptMention[]) : [],
   );
 
   // If the user switches focus to a different node and back, we re-init from
@@ -1576,7 +1620,7 @@ const PromptPanel = ({
     const after = text.slice(cursor);
     const tag = `[@${upstream.label}]`;
     setText(before + tag + ' ' + after);
-    setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb }]);
+    setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     setMentionOpen(false);
     setTimeout(() => taRef.current?.focus(), 0);
   };
