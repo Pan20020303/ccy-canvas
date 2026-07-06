@@ -2772,12 +2772,22 @@ func fetchRemoteReferenceBytes(ctx context.Context, rawURL string) ([]byte, erro
 		return nil, fmt.Errorf("remote reference returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	// Read up to 64 MB (a hi-res upload easily exceeds the old 8 MB cap; the
+	// local /uploads path has no such limit, which is why big remote images
+	// were the only ones failing). Read one extra byte so we can distinguish
+	// "exactly at the limit" from "truncated": a silently truncated JPEG blows
+	// up downstream as "invalid JPEG format: short Huffman data", so surface an
+	// honest "too large" instead of handing a half-image to the decoder.
+	const maxRemoteReferenceBytes = 64 << 20 // 64 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteReferenceBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read remote reference body: %w", err)
 	}
 	if len(body) == 0 {
 		return nil, fmt.Errorf("remote reference body is empty")
+	}
+	if len(body) > maxRemoteReferenceBytes {
+		return nil, fmt.Errorf("参考图过大(超过 %d MB),请压缩后重试", maxRemoteReferenceBytes>>20)
 	}
 	return body, nil
 }
