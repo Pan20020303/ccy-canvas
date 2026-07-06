@@ -8,6 +8,7 @@ import { t } from "../i18n";
 import { useStore } from "../store";
 import logoUrl from "../../imports/logo.png";
 import { TaskQueue } from "./TaskQueue";
+import { CollaborationControls } from "./CollaborationControls";
 
 export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
@@ -139,6 +140,9 @@ export const Navbar = () => {
         >
           <Languages className="h-4 w-4" />
         </button>
+
+        {/* 协作控件:私有→「协作」按钮;协作中→创建者/积分下拉 + 协作中状态。 */}
+        {user ? <CollaborationControls /> : null}
 
         {user ? (
           // Show the pill whenever the user is logged in, even if the

@@ -120,6 +120,27 @@ export type AssetFolder = {
   createdAt: number;
 };
 
+// ─── 协作(UI 外壳,后端逻辑后续接入)────────────────────────────────────────
+// 画布可从私有转为协作,创建者可邀请成员共创。三种身份:访问者/协作者/管理者
+// (创建者是特殊的管理者)。目前仅前端会话态,后端持久化与真实权限稍后接入。
+export type CollabRole = 'creator' | 'admin' | 'collaborator' | 'visitor';
+export type CollabMember = {
+  uid: string;
+  name: string;
+  avatar?: string;
+  role: CollabRole;
+};
+export const COLLAB_ROLE_OPTIONS: { key: Exclude<CollabRole, 'creator'>; zh: string; en: string }[] = [
+  { key: 'visitor', zh: '访问者', en: 'Visitor' },
+  { key: 'collaborator', zh: '协作者', en: 'Collaborator' },
+  { key: 'admin', zh: '管理者', en: 'Manager' },
+];
+export const collabRoleLabel = (role: CollabRole, zh: boolean): string => {
+  if (role === 'creator') return zh ? '创建者' : 'Creator';
+  const opt = COLLAB_ROLE_OPTIONS.find((o) => o.key === role);
+  return opt ? (zh ? opt.zh : opt.en) : role;
+};
+
 export const ASSET_CATEGORIES: { key: SavedAssetCategory | 'all'; zh: string; en: string }[] = [
   { key: 'all', zh: '全部', en: 'All' },
   { key: 'other', zh: '其它', en: 'Other' },
@@ -321,6 +342,13 @@ type AppState = {
   deleteAssetFolder: (id: string) => void;
   /** 把素材移动到某文件夹('' = 移回根)。就地改 folderId 并回写后端。 */
   moveAssetToFolder: (assetId: string, folderId: string) => void;
+  // 协作(UI 外壳,会话态):画布是否协作中 + 成员列表,按 projectId 归档。
+  collabProjects: Record<string, boolean>;
+  collabMembersByProject: Record<string, CollabMember[]>;
+  setProjectCollaborative: (projectId: string, collaborative: boolean) => void;
+  addCollabMember: (projectId: string, member: CollabMember) => void;
+  removeCollabMember: (projectId: string, uid: string) => void;
+  setCollabMemberRole: (projectId: string, uid: string, role: CollabRole) => void;
   saveAssetDialogNodeId: string | null;
   /** Which directorStageNode currently has its full-screen overlay open.
    *  null = closed. The overlay component reads this and renders accordingly. */
@@ -2786,6 +2814,25 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }));
     if (moved) void saveAssetToServer(moved).catch(() => {});
   },
+  // ─── 协作(UI 外壳)────────────────────────────────────────────────────
+  collabProjects: {},
+  collabMembersByProject: {},
+  setProjectCollaborative: (projectId, collaborative) => set((state) => ({
+    collabProjects: { ...state.collabProjects, [projectId]: collaborative },
+  })),
+  addCollabMember: (projectId, member) => set((state) => {
+    const list = state.collabMembersByProject[projectId] ?? [];
+    if (list.some((m) => m.uid === member.uid)) return {};
+    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: [...list, member] } };
+  }),
+  removeCollabMember: (projectId, uid) => set((state) => {
+    const list = state.collabMembersByProject[projectId] ?? [];
+    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: list.filter((m) => m.uid !== uid) } };
+  }),
+  setCollabMemberRole: (projectId, uid, role) => set((state) => {
+    const list = state.collabMembersByProject[projectId] ?? [];
+    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: list.map((m) => (m.uid === uid ? { ...m, role } : m)) } };
+  }),
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
   closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
