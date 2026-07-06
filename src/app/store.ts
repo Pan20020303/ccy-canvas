@@ -311,6 +311,10 @@ type AppState = {
   closeSaveAssetDialog: () => void;
   isAssetLibraryOpen: boolean;
   setAssetLibraryOpen: (open: boolean) => void;
+  // 资产库「定位」:请求把画布平移/缩放到某个节点。Canvas 订阅 nonce 变化后
+  // 调 setCenter(useReactFlow 只在 Canvas 内可用,故用 store 中转)。
+  canvasFocusRequest: { nodeId: string; nonce: number } | null;
+  requestCanvasFocus: (nodeId: string) => void;
   undoStack: ProjectCanvasState[];
   redoStack: ProjectCanvasState[];
   pushUndoSnapshot: () => void;
@@ -2720,6 +2724,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   closeDirectorStage: () => set({ directorStageNodeId: null }),
   isAssetLibraryOpen: false,
   setAssetLibraryOpen: (open) => set({ isAssetLibraryOpen: open }),
+  canvasFocusRequest: null,
+  requestCanvasFocus: (nodeId) => set((state) => ({
+    canvasFocusRequest: { nodeId, nonce: (state.canvasFocusRequest?.nonce ?? 0) + 1 },
+  })),
   setGroupMembers: (groupId, nodeIds) => set((state) => {
     const undoStack = pushUndoState(state);
     const groups = state.groups

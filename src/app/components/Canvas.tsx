@@ -374,6 +374,25 @@ const InnerCanvas = () => {
   const dict = t[language];
   const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
   const viewport = useViewport();
+
+  // 资产库「定位」:store 里的 canvasFocusRequest nonce 变化时,平移到目标节点
+  // 并选中(useReactFlow 只能在 Canvas 内用,故经 store 中转)。
+  const canvasFocusRequest = useStore((state) => state.canvasFocusRequest);
+  useEffect(() => {
+    if (!canvasFocusRequest) return;
+    const node = nodes.find((n) => n.id === canvasFocusRequest.nodeId);
+    if (!node) return;
+    setCenter(node.position.x + 170, node.position.y + 130, {
+      zoom: Math.max(viewport.zoom, 0.6),
+      duration: 420,
+    });
+    onNodesChange([
+      ...nodes.filter((n) => n.selected && n.id !== node.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
+      { id: node.id, type: 'select' as const, selected: true },
+    ]);
+    // 只在 nonce 变化时触发一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasFocusRequest?.nonce]);
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
