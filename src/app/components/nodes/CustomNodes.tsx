@@ -5941,6 +5941,12 @@ function ResilientImage({
   const [failed, setFailed] = useState(false);
   const [useProxy, setUseProxy] = useState(false);
   const [bust, setBust] = useState(0);
+  // 自动退避重试次数(across direct+proxy 之后的软重试)。刚生成成功的图常因
+  // COS 最终一致性/代理瞬时抖动首次加载失败,退避几次多半就好了 —— 之前直接
+  // 弹「点击重试」,用户手动点一下才成,体验割裂。
+  const autoRetries = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const MAX_AUTO_RETRIES = 4;
 
   // First load: try the raw asset directly. If that fails and it's a remote
   // URL, automatically retry via the backend's /api/app/proxy-media endpoint —
@@ -5958,16 +5964,32 @@ function ResilientImage({
     setFailed(false);
     setUseProxy(false);
     setBust(0);
+    autoRetries.current = 0;
+    return () => { if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; } };
   }, [src]);
 
   const handleError = () => {
     // First failure on a remote URL → fall back to backend proxy silently.
-    // Only surface the retry UI if the proxy ALSO fails.
     if (isRemote && !useProxy) {
       setUseProxy(true);
       return;
     }
+    // 直连 + 代理都失败:先做退避软重试(700/1400/2800/5600ms,带 cache-bust
+    // 绕过负缓存),仍不行才亮「点击重试」。
+    if (autoRetries.current < MAX_AUTO_RETRIES) {
+      const n = (autoRetries.current += 1);
+      const delay = Math.min(6000, 700 * 2 ** (n - 1));
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => { setBust((b) => b + 1); }, delay);
+      return;
+    }
     setFailed(true);
+  };
+
+  const handleLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    autoRetries.current = 0;
+    if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
+    onLoad?.(event);
   };
 
   if (failed) {
@@ -5977,6 +5999,7 @@ function ResilientImage({
         onClick={(event) => {
           event.stopPropagation();
           setFailed(false);
+          autoRetries.current = 0;
           setBust((n) => n + 1);
         }}
         className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[12px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
@@ -5999,7 +6022,7 @@ function ResilientImage({
       // header entirely — fixes the silent-blank-image case for direct
       // loads (we also have the backend proxy fallback above).
       referrerPolicy="no-referrer"
-      onLoad={onLoad}
+      onLoad={handleLoad}
       onError={handleError}
     />
   );
