@@ -16,6 +16,10 @@ import (
 type collabUser struct {
 	UID  string `json:"uid"`
 	Name string `json:"name"`
+	// Email is the UNIQUE identifier — display names collide (multiple users can
+	// share a name), so the frontend needs email to disambiguate and to let the
+	// inviter target the exact account by email.
+	Email string `json:"email"`
 }
 
 // RegisterCollabRoutes wires collaboration-support endpoints. For now: resolve
@@ -38,7 +42,7 @@ func RegisterCollabRoutes(r chi.Router, sm session.Manager, q *sqlc.Queries) {
 		}
 		out := make([]collabUser, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, collabUser{UID: formatCollabUUID(row.ID.Bytes), Name: row.Name})
+			out = append(out, collabUser{UID: formatCollabUUID(row.ID.Bytes), Name: row.Name, Email: row.Email})
 		}
 		httpx.WriteJSON(w, r, http.StatusOK, out)
 	})

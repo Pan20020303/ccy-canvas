@@ -114,17 +114,29 @@ export function CollaborationControls() {
     }
   };
 
-  const invite = async (username: string, role: CollabRole): Promise<boolean> => {
+  const invite = async (query: string, role: CollabRole): Promise<boolean> => {
     if (role === 'creator') return false;
     try {
-      const matches = await lookupUsers(username);
+      const matches = await lookupUsers(query);
+      if (matches.length === 0) {
+        toast.error(zh ? '未找到该用户，请检查用户名或邮箱' : 'User not found');
+        return false;
+      }
+      // 显示名不唯一（可能多个同名用户）。若命中多个,绝不猜第一个——那正是
+      // 之前把邀请发给同名错误账号、被邀请人看不到画布的根因。要求用邮箱精确邀请。
+      if (matches.length > 1) {
+        const emails = matches.map((m) => m.email).filter(Boolean).slice(0, 3).join('、');
+        toast.error(zh
+          ? `存在多个同名用户，请改用邮箱精确邀请(如:${emails})`
+          : `Multiple users share that name — invite by email (e.g. ${emails})`);
+        return false;
+      }
       const u = matches[0];
-      if (!u) { toast.error(zh ? '未找到该用户名' : 'User not found'); return false; }
       if (u.uid === user.id) { toast.error(zh ? '不能邀请自己' : "Can't invite yourself"); return false; }
       if (members.some((m) => m.uid === u.uid)) { toast.info(zh ? '该用户已是成员' : 'Already a member'); return false; }
       await inviteProjectMember(activeProjectId, u.uid, role);
       await loadMembers();
-      toast.success(zh ? `已邀请 ${u.name}` : `Invited ${u.name}`);
+      toast.success(zh ? `已邀请 ${u.name}（${u.email}）` : `Invited ${u.name} (${u.email})`);
       return true;
     } catch {
       toast.error(zh ? '邀请失败，请稍后重试' : 'Invite failed');
@@ -440,7 +452,7 @@ function MemberModal({
                 value={uid}
                 onChange={(e) => setUid(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void send(); }}
-                placeholder={zh ? '输入用户名' : 'Enter username'}
+                placeholder={zh ? '输入用户名或邮箱（同名请用邮箱）' : 'Username or email'}
                 className="min-w-0 flex-1 rounded-lg border border-white/10 bg-[#111318] px-3 py-2 text-sm text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-[#ff6a1f]/40"
               />
               <div className="relative shrink-0">
