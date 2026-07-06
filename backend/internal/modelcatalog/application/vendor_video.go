@@ -207,30 +207,30 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		})
 	}
 	// Role assignment is driven by the explicit reference_mode, not by the
-	// image count. Only the first/last-frame mode tags images with frame
-	// roles; multi-image / all-in-one / motion modes leave them untagged so
-	// Ark treats them as consistency references.
-	//   start_end       → img[0]=first_frame, img[1]=last_frame (if present)
-	//   start_frame     → img[0]=first_frame (legacy single-frame alias)
-	//   (other / empty) → no roles
+	// image count. Ark/Seedance 要求 content 里每张图都带 role,否则报
+	// 400 "role must be specified for image contents"。
+	//   start_end   → img[0]=first_frame, img[1]=last_frame(第 3 张起兜 reference_image)
+	//   start_frame → img[0]=first_frame(其余 reference_image)
+	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
 	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
 	for i, raw := range req.ReferenceImages {
 		du, err := localPathToDataURL(raw)
 		if err != nil {
 			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
 		}
-		item := map[string]interface{}{
-			"type":      "image_url",
-			"image_url": map[string]interface{}{"url": du},
-		}
+		role := "reference_image"
 		if useFrameRoles {
 			if i == 0 {
-				item["role"] = "first_frame"
+				role = "first_frame"
 			} else if i == 1 {
-				item["role"] = "last_frame"
+				role = "last_frame"
 			}
 		}
-		content = append(content, item)
+		content = append(content, map[string]interface{}{
+			"type":      "image_url",
+			"image_url": map[string]interface{}{"url": du},
+			"role":      role,
+		})
 	}
 
 	// Motion-mimic / video-edit reference videos ride in the same content
