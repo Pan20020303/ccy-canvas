@@ -1685,21 +1685,26 @@ const PromptPanel = ({
   };
 
   const insertMention = (upstream: typeof upstreamNodes[0]) => {
-    const cursor = taRef.current?.selectionStart ?? text.length;
+    const ta = taRef.current;
+    // setText 触发的重渲染会把 textarea 的 scrollTop 重置回 0,长提示词里插入提及
+    // 就会「跳到开头」。先记下滚动位置,插入后连同光标一起还原,并同步镜像层。
+    const prevScrollTop = ta?.scrollTop ?? 0;
+    const cursor = ta?.selectionStart ?? text.length;
     const before = text.slice(0, cursor).replace(/@\S*$/, '');
     const after = text.slice(cursor);
     const tag = wrapMentionTag(upstream.label);
-    // 插入后光标应停在「标签 + 空格」之后(接着往下打字),而不是被 setText 的
-    // 重渲染重置回开头。显式 setSelectionRange 把光标放回原位。
     const caret = (before + tag + ' ').length;
     setText(before + tag + ' ' + after);
     setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     setMentionOpen(false);
     setTimeout(() => {
-      const ta = taRef.current;
-      if (!ta) return;
-      ta.focus();
-      ta.setSelectionRange(caret, caret);
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+      el.scrollTop = prevScrollTop;
+      syncOverlayScroll(el, compactOverlayRef.current);
+      syncOverlayScroll(el, expandedOverlayRef.current);
     }, 0);
   };
 
