@@ -20,7 +20,10 @@ import { generate as apiGenerate } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
-import { saveAssetToServer, deleteAssetsFromServer, listAssetsFromServer } from './api/assets';
+import {
+  saveAssetToServer, deleteAssetsFromServer, listAssetsFromServer,
+  listAssetFoldersFromServer, saveAssetFolderToServer, deleteAssetFolderFromServer,
+} from './api/assets';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
 import {
@@ -105,6 +108,15 @@ export type SavedAsset = {
   url: string;
   kind: 'image' | 'video' | 'audio' | 'text';
   text?: string;
+  /** 所属素材库文件夹 id;'' 或 undefined = 根目录。 */
+  folderId?: string;
+  createdAt: number;
+};
+
+/** 素材库用户自建文件夹(后端持久化,migration 026)。 */
+export type AssetFolder = {
+  id: string;
+  name: string;
   createdAt: number;
 };
 
@@ -301,6 +313,14 @@ type AppState = {
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
   hydrateAssets: () => void;
+  // 素材库文件夹(后端持久化)。
+  assetFolders: AssetFolder[];
+  hydrateAssetFolders: () => void;
+  createAssetFolder: (name: string) => AssetFolder;
+  renameAssetFolder: (id: string, name: string) => void;
+  deleteAssetFolder: (id: string) => void;
+  /** 把素材移动到某文件夹('' = 移回根)。就地改 folderId 并回写后端。 */
+  moveAssetToFolder: (assetId: string, folderId: string) => void;
   saveAssetDialogNodeId: string | null;
   /** Which directorStageNode currently has its full-screen overlay open.
    *  null = closed. The overlay component reads this and renders accordingly. */
@@ -2716,6 +2736,56 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       return { savedAssets };
     });
   },
+  assetFolders: [],
+  hydrateAssetFolders: async () => {
+    let remote: AssetFolder[];
+    try {
+      remote = await listAssetFoldersFromServer();
+    } catch {
+      return; // best-effort; keep local
+    }
+    set((state) => {
+      const byId = new Map<string, AssetFolder>();
+      for (const f of remote) byId.set(f.id, f);
+      for (const f of state.assetFolders) if (!byId.has(f.id)) byId.set(f.id, f);
+      return { assetFolders: Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt) };
+    });
+  },
+  createAssetFolder: (name) => {
+    const created: AssetFolder = {
+      id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: name.trim() || '新建文件夹',
+      createdAt: Date.now(),
+    };
+    set((state) => ({ assetFolders: [created, ...state.assetFolders] }));
+    void saveAssetFolderToServer(created).catch(() => {});
+    return created;
+  },
+  renameAssetFolder: (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    let next: AssetFolder | undefined;
+    set((state) => {
+      const assetFolders = state.assetFolders.map((f) => (f.id === id ? (next = { ...f, name: trimmed }) : f));
+      return { assetFolders };
+    });
+    if (next) void saveAssetFolderToServer(next).catch(() => {});
+  },
+  deleteAssetFolder: (id) => {
+    void deleteAssetFolderFromServer(id).catch(() => {});
+    // 删文件夹不删素材:把里面的素材移回根目录(前端就地,后端 DELETE 一并处理)。
+    set((state) => ({
+      assetFolders: state.assetFolders.filter((f) => f.id !== id),
+      savedAssets: state.savedAssets.map((a) => (a.folderId === id ? { ...a, folderId: '' } : a)),
+    }));
+  },
+  moveAssetToFolder: (assetId, folderId) => {
+    let moved: SavedAsset | undefined;
+    set((state) => ({
+      savedAssets: state.savedAssets.map((a) => (a.id === assetId ? (moved = { ...a, folderId }) : a)),
+    }));
+    if (moved) void saveAssetToServer(moved).catch(() => {});
+  },
   saveAssetDialogNodeId: null,
   openSaveAssetDialog: (nodeId) => set({ saveAssetDialogNodeId: nodeId }),
   closeSaveAssetDialog: () => set({ saveAssetDialogNodeId: null }),
@@ -3703,6 +3773,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       invitations: state.invitations,
       groups: state.groups,
       savedAssets: stripHeavyFromSavedAssets(state.savedAssets),
+      assetFolders: state.assetFolders,
       shortcuts: state.shortcuts,
       isTaskQueueCollapsed: state.isTaskQueueCollapsed,
       showMiniMap: state.showMiniMap,

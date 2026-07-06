@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Check, CheckCircle2, ChevronDown, Download, Eye, FolderHeart, Image as ImageIcon,
-  LayoutGrid, Loader2, MapPin, Music, Plus, Save, Trash2, Video, X,
+  Check, CheckCircle2, ChevronDown, ChevronRight, Download, Eye, FolderHeart, FolderPlus,
+  Image as ImageIcon, LayoutGrid, Loader2, MapPin, Music, Pencil, Plus, Save, Trash2, Video, X,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { toast } from 'sonner';
 
-import { useStore, ASSET_CATEGORIES, type SavedAsset, type SavedAssetCategory } from '../store';
+import { useStore, ASSET_CATEGORIES, type AssetFolder, type SavedAsset, type SavedAssetCategory } from '../store';
 import { getCanvas } from '../api/projects';
 import { toRenderableMediaUrl } from '../reference-media';
 import { MediaThumb } from './MediaThumb';
+import Folder from './ui/Folder';
 
 /**
  * 资产库 — 居中弹窗。两个页签:素材库(后端持久化的收藏)与画布资产(画布上的
@@ -124,6 +125,12 @@ export function AssetLibraryModal() {
   const saveAsset = useStore((s) => s.saveAsset);
   const backendProjects = useStore((s) => s.backendProjects);
   const activeBackendProjectId = useStore((s) => s.activeBackendProjectId);
+  const assetFolders = useStore((s) => s.assetFolders);
+  const hydrateAssetFolders = useStore((s) => s.hydrateAssetFolders);
+  const createAssetFolder = useStore((s) => s.createAssetFolder);
+  const renameAssetFolder = useStore((s) => s.renameAssetFolder);
+  const deleteAssetFolder = useStore((s) => s.deleteAssetFolder);
+  const moveAssetToFolder = useStore((s) => s.moveAssetToFolder);
   const zh = language === 'zh';
 
   const [tab, setTab] = useState<'library' | 'canvas'>('library');
@@ -142,6 +149,12 @@ export function AssetLibraryModal() {
 
   const [lightbox, setLightbox] = useState<{ url: string; kind: 'image' | 'video' } | null>(null);
 
+  // 素材库文件夹:folderView=null 根目录;否则展示该文件夹内的素材。
+  const [folderView, setFolderView] = useState<string | null>(null);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(null);
+
   // 画布资产:来源(当前画布 / 其它画布)
   const [sourceTab, setSourceTab] = useState<'personal' | 'team'>('personal');
   const [sourceOpen, setSourceOpen] = useState(false);
@@ -152,6 +165,7 @@ export function AssetLibraryModal() {
   useEffect(() => {
     if (!isOpen) return;
     void Promise.resolve(hydrateAssets()).then(() => setHydrated(true)).catch(() => { /* keep auto-delete disarmed */ });
+    void hydrateAssetFolders();
     setTab('library');
     setCategory('all');
     setLibKind('all');
@@ -161,11 +175,13 @@ export function AssetLibraryModal() {
     setSelected(new Set());
     setHoverItem(null);
     setLightbox(null);
+    setFolderView(null);
+    setRenamingFolderId(null);
     setSourceMode('current');
     setSourceOpen(false);
     setSourceTab('personal');
     setRemoteAssets([]);
-  }, [isOpen, hydrateAssets]);
+  }, [isOpen, hydrateAssets, hydrateAssetFolders]);
 
   // 切换画布来源 → 拉取该画布节点(当前画布用内存态)。
   useEffect(() => {
@@ -189,8 +205,28 @@ export function AssetLibraryModal() {
   const filteredAssets = useMemo(() => savedAssets.filter((asset) => {
     if (category !== 'all' && asset.category !== category) return false;
     if (libKind !== 'all' && asset.kind !== libKind) return false;
+    // 根目录只看无文件夹的素材;进入文件夹后只看该文件夹的素材。
+    const inFolder = asset.folderId || '';
+    if (folderView === null ? inFolder !== '' : inFolder !== folderView) return false;
     return true;
-  }), [savedAssets, category, libKind]);
+  }), [savedAssets, category, libKind, folderView]);
+
+  // 各文件夹的素材数量 + 前 3 张缩略图(做文件夹「纸片」预览)。
+  const folderMeta = useMemo(() => {
+    const map = new Map<string, { count: number; thumbs: string[] }>();
+    for (const f of assetFolders) map.set(f.id, { count: 0, thumbs: [] });
+    for (const a of savedAssets) {
+      const fid = a.folderId || '';
+      if (!fid) continue;
+      const m = map.get(fid);
+      if (!m) continue;
+      m.count += 1;
+      if (m.thumbs.length < 3 && (a.thumbnail || a.url)) m.thumbs.push(a.thumbnail || a.url);
+    }
+    return map;
+  }, [assetFolders, savedAssets]);
+
+  const currentFolder = folderView ? assetFolders.find((f) => f.id === folderView) : null;
 
   const currentCanvasAssets = useMemo(
     () => nodes.map((n) => nodeToAsset(n as { id?: unknown; type?: unknown; data?: unknown }, zh)).filter((x): x is CanvasAssetItem => Boolean(x)),
@@ -210,6 +246,21 @@ export function AssetLibraryModal() {
   const clearBatch = useCallback(() => { setBatchMode(false); setSelected(new Set()); }, []);
 
   if (!isOpen) return null;
+
+  const handleCreateFolder = () => {
+    const f = createAssetFolder(zh ? '新建文件夹' : 'New folder');
+    // 立即进入重命名,方便直接改名。
+    setRenamingFolderId(f.id);
+    setRenameDraft(f.name);
+  };
+  const commitRename = () => {
+    if (renamingFolderId) renameAssetFolder(renamingFolderId, renameDraft);
+    setRenamingFolderId(null);
+  };
+  const handleDeleteFolder = (id: string) => {
+    if (folderView === id) setFolderView(null);
+    deleteAssetFolder(id);
+  };
 
   const useAsset = (asset: SavedAsset) => {
     const id = `asset-use-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
@@ -421,16 +472,37 @@ export function AssetLibraryModal() {
                 </>
               ) : null}
             </div>
-            {LIBRARY_CHIPS.map((chip) => (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => setLibKind(chip.key)}
-                className={clsx('rounded-full px-3 py-1.5 text-xs transition', libKind === chip.key ? 'bg-white/12 text-white' : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200')}
-              >
-                {zh ? chip.zh : chip.en}
-              </button>
-            ))}
+            {folderView ? (
+              // 文件夹内:面包屑 + 返回
+              <div className="flex items-center gap-1.5 text-xs">
+                <button type="button" onClick={() => setFolderView(null)} className="rounded-full px-2 py-1 text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200">
+                  {zh ? '素材库' : 'Library'}
+                </button>
+                <ChevronRight className="h-3.5 w-3.5 text-neutral-600" />
+                <span className="rounded-full bg-white/10 px-2.5 py-1 text-neutral-100">{currentFolder?.name ?? (zh ? '文件夹' : 'Folder')}</span>
+              </div>
+            ) : (
+              LIBRARY_CHIPS.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={() => setLibKind(chip.key)}
+                  className={clsx('rounded-full px-3 py-1.5 text-xs transition', libKind === chip.key ? 'bg-white/12 text-white' : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-200')}
+                >
+                  {zh ? chip.zh : chip.en}
+                </button>
+              ))
+            )}
+            {/* 新建文件夹(图2:筛选行右侧) */}
+            <button
+              type="button"
+              onClick={handleCreateFolder}
+              className="ml-auto flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-neutral-200 transition hover:border-white/20 hover:bg-white/[0.07]"
+              title={zh ? '新建文件夹' : 'New folder'}
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              {zh ? '新建文件夹' : 'New folder'}
+            </button>
           </div>
         ) : (
           <div className="flex items-center gap-3 px-6 py-3">
@@ -520,10 +592,35 @@ export function AssetLibraryModal() {
         {/* ─── Content ─────────────────────────────────────────────── */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
           {tab === 'library' ? (
-            filteredAssets.length === 0 ? (
+            (folderView === null && assetFolders.length === 0 && filteredAssets.length === 0) ? (
               <EmptyLibrary zh={zh} />
+            ) : (folderView !== null && filteredAssets.length === 0) ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-neutral-500">
+                <FolderHeart className="h-8 w-8" />
+                <div className="text-sm">{zh ? '该文件夹为空 —— 把素材拖进来吧' : 'Empty folder — drag assets in'}</div>
+              </div>
             ) : (
-              <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${columnWidth}px, 1fr))` }}>
+              <div className="grid items-end gap-4" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${columnWidth}px, 1fr))` }}>
+                {folderView === null ? assetFolders.map((folder) => (
+                  <FolderCard
+                    key={folder.id}
+                    zh={zh}
+                    folder={folder}
+                    count={folderMeta.get(folder.id)?.count ?? 0}
+                    thumbs={folderMeta.get(folder.id)?.thumbs ?? []}
+                    dragOver={dragOverFolderId === folder.id}
+                    renaming={renamingFolderId === folder.id}
+                    renameDraft={renameDraft}
+                    onOpen={() => setFolderView(folder.id)}
+                    onStartRename={() => { setRenamingFolderId(folder.id); setRenameDraft(folder.name); }}
+                    onRenameChange={setRenameDraft}
+                    onCommitRename={commitRename}
+                    onDelete={() => handleDeleteFolder(folder.id)}
+                    onDragEnterFolder={() => setDragOverFolderId(folder.id)}
+                    onDragLeaveFolder={() => setDragOverFolderId((cur) => (cur === folder.id ? null : cur))}
+                    onDropAsset={(assetId) => { moveAssetToFolder(assetId, folder.id); setDragOverFolderId(null); }}
+                  />
+                )) : null}
                 {filteredAssets.map((asset) => {
                   const isSel = selected.has(asset.id);
                   return (
@@ -535,6 +632,7 @@ export function AssetLibraryModal() {
                       thumb={asset.thumbnail || asset.url}
                       url={asset.url}
                       text={asset.text}
+                      dragId={!batchMode ? asset.id : undefined}
                       badge={(() => { const c = ASSET_CATEGORIES.find((x) => x.key === asset.category); return c ? (zh ? c.zh : c.en) : asset.category; })()}
                       batchMode={batchMode}
                       selected={isSel}
@@ -542,6 +640,7 @@ export function AssetLibraryModal() {
                       onCardClick={() => (batchMode ? toggleSelect(asset.id) : useAsset(asset))}
                       onView={() => view({ url: asset.url, thumb: asset.thumbnail || asset.url, kind: asset.kind })}
                       onLocate={undefined}
+                      onMoveOut={folderView !== null ? () => moveAssetToFolder(asset.id, '') : undefined}
                       onDelete={() => removeAsset(asset.id)}
                       onHover={(v) => setHoverItem(v ? { kind: asset.kind, url: asset.url, thumb: asset.thumbnail || asset.url, name: asset.name, text: asset.text } : null)}
                       onDeadThumb={hydrated ? () => removeAsset(asset.id) : undefined}
@@ -624,8 +723,8 @@ export function AssetLibraryModal() {
 // ─── 单张资产卡片 ────────────────────────────────────────────────────────────
 
 function AssetCard({
-  zh, name, kind, thumb, url, text, badge, batchMode, selected, livePreview,
-  onCardClick, onView, onLocate, onDelete, onSave, onHover, onDeadThumb,
+  zh, name, kind, thumb, url, text, badge, batchMode, selected, livePreview, dragId,
+  onCardClick, onView, onLocate, onDelete, onSave, onMoveOut, onHover, onDeadThumb,
 }: {
   zh: boolean;
   name: string;
@@ -637,20 +736,25 @@ function AssetCard({
   batchMode: boolean;
   selected: boolean;
   livePreview: boolean;
+  dragId?: string;
   onCardClick: () => void;
   onView: () => void;
   onLocate?: () => void;
   onDelete?: () => void;
   onSave?: () => void;
+  onMoveOut?: () => void;
   onHover: (v: boolean) => void;
   onDeadThumb?: () => void;
 }) {
   const isImageLike = kind === 'image' || kind === 'world';
   return (
     <div
+      draggable={Boolean(dragId)}
+      onDragStart={dragId ? (e) => { e.dataTransfer.setData('text/asset-id', dragId); e.dataTransfer.effectAllowed = 'move'; } : undefined}
       className={clsx(
         'group relative overflow-hidden rounded-xl border bg-white/[0.02] transition',
         selected ? 'border-cyan-400/70 ring-1 ring-cyan-400/40' : 'border-white/8 hover:border-white/16',
+        dragId && 'cursor-grab active:cursor-grabbing',
       )}
       onMouseEnter={() => livePreview && onHover(true)}
       onMouseLeave={() => livePreview && onHover(false)}
@@ -703,6 +807,12 @@ function AssetCard({
                   {zh ? '定位' : 'Locate'}
                 </button>
               ) : null}
+              {onMoveOut ? (
+                <button type="button" onClick={(e) => { e.stopPropagation(); onMoveOut(); }} className="flex flex-col items-center gap-0.5 rounded-lg px-3 py-1.5 text-[11px] text-neutral-200 transition hover:bg-white/10">
+                  <FolderHeart className="h-4 w-4" />
+                  {zh ? '移出' : 'Move out'}
+                </button>
+              ) : null}
             </div>
           </div>
           {/* Corner actions */}
@@ -719,6 +829,90 @@ function AssetCard({
           ) : null}
         </>
       )}
+    </div>
+  );
+}
+
+// ─── 文件夹卡片(拖入素材 / 命名 / 删除 / 进入)────────────────────────────
+
+function FolderCard({
+  zh, folder, count, thumbs, dragOver, renaming, renameDraft,
+  onOpen, onStartRename, onRenameChange, onCommitRename, onDelete,
+  onDragEnterFolder, onDragLeaveFolder, onDropAsset,
+}: {
+  zh: boolean;
+  folder: AssetFolder;
+  count: number;
+  thumbs: string[];
+  dragOver: boolean;
+  renaming: boolean;
+  renameDraft: string;
+  onOpen: () => void;
+  onStartRename: () => void;
+  onRenameChange: (v: string) => void;
+  onCommitRename: () => void;
+  onDelete: () => void;
+  onDragEnterFolder: () => void;
+  onDragLeaveFolder: () => void;
+  onDropAsset: (assetId: string) => void;
+}) {
+  const papers = thumbs.map((t, i) => (
+    <img key={i} src={toRenderableMediaUrl(t)} alt="" className="h-full w-full object-cover" />
+  ));
+  return (
+    <div
+      className={clsx(
+        'group/folder relative flex flex-col items-center gap-1 rounded-xl border border-transparent p-2 transition',
+        dragOver && 'border-[#ff6a1f]/60 bg-[#ff6a1f]/10',
+      )}
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onDragEnterFolder(); }}
+      onDragLeave={onDragLeaveFolder}
+      onDrop={(e) => {
+        e.preventDefault();
+        const id = e.dataTransfer.getData('text/asset-id');
+        if (id) onDropAsset(id);
+      }}
+    >
+      {/* Folder 动画组件:点击进入文件夹(内部的展开动画作为 hover 装饰)。 */}
+      <div
+        className="flex h-[104px] w-full cursor-pointer items-center justify-center"
+        onClick={onOpen}
+        title={zh ? '打开文件夹' : 'Open folder'}
+      >
+        <Folder color="#ff6a1f" size={0.82} items={papers} />
+      </div>
+      {renaming ? (
+        <input
+          autoFocus
+          value={renameDraft}
+          onChange={(e) => onRenameChange(e.target.value)}
+          onBlur={onCommitRename}
+          onKeyDown={(e) => { if (e.key === 'Enter') onCommitRename(); if (e.key === 'Escape') onCommitRename(); }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-full rounded-md border border-white/15 bg-black/40 px-2 py-1 text-center text-xs text-neutral-100 outline-none focus:border-[#ff6a1f]/50"
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={onOpen}
+          onDoubleClick={(e) => { e.stopPropagation(); onStartRename(); }}
+          className="max-w-full truncate text-xs text-neutral-200"
+          title={folder.name}
+        >
+          {folder.name}
+        </button>
+      )}
+      <span className="text-[10px] text-neutral-500">{count} {zh ? '项' : 'items'}</span>
+
+      {/* Hover 操作:重命名 / 删除 */}
+      <div className="absolute right-1.5 top-1.5 hidden items-center gap-1 group-hover/folder:flex">
+        <button type="button" onClick={(e) => { e.stopPropagation(); onStartRename(); }} className="flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-neutral-300 transition hover:bg-white/15 hover:text-white" title={zh ? '重命名' : 'Rename'}>
+          <Pencil className="h-3 w-3" />
+        </button>
+        <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }} className="flex h-6 w-6 items-center justify-center rounded-md bg-black/60 text-rose-300 transition hover:bg-rose-500/25" title={zh ? '删除文件夹(素材移回根目录)' : 'Delete folder'}>
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
     </div>
   );
 }

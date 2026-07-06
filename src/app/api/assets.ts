@@ -1,5 +1,5 @@
 import { apiClient } from "./client";
-import type { SavedAsset } from "../store";
+import type { SavedAsset, AssetFolder } from "../store";
 
 // Server-side persistence for the user asset library (素材库 / 我的素材, previously
 // localStorage-only). All calls are user-scoped on the backend and best-effort
@@ -24,4 +24,19 @@ export async function saveAssetToServer(asset: SavedAsset): Promise<void> {
 export async function deleteAssetsFromServer(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await apiClient.delete<{ ok: boolean }>("/api/app/assets", { ids });
+}
+
+// ─── 素材库文件夹 ────────────────────────────────────────────────────────────
+
+export async function listAssetFoldersFromServer(): Promise<AssetFolder[]> {
+  return apiClient.get<AssetFolder[]>("/api/app/asset-folders");
+}
+
+/** Create or rename a folder (idempotent by id server-side). */
+export async function saveAssetFolderToServer(folder: AssetFolder): Promise<void> {
+  await apiClient.post<{ ok: boolean }>("/api/app/asset-folders", folder);
+}
+
+export async function deleteAssetFolderFromServer(id: string): Promise<void> {
+  await apiClient.delete<{ ok: boolean }>("/api/app/asset-folders", { id });
 }

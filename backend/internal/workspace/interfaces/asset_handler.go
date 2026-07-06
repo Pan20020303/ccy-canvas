@@ -22,11 +22,24 @@ type savedAsset struct {
 	Thumbnail string `json:"thumbnail"`
 	URL       string `json:"url"`
 	Text      string `json:"text"`
+	FolderID  string `json:"folderId"`
 	CreatedAt int64  `json:"createdAt"`
 }
 
 type deleteAssetsInput struct {
 	IDs []string `json:"ids"`
+}
+
+// assetFolder is the wire shape for素材库文件夹, mirroring the frontend
+// AssetFolder (camelCase) so the store round-trips it without translation.
+type assetFolder struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+type deleteAssetFolderInput struct {
+	ID string `json:"id"`
 }
 
 const maxAssetListLimit = 500
@@ -65,6 +78,7 @@ func RegisterAssetRoutes(r chi.Router, sm session.Manager, q *sqlc.Queries) {
 			Thumbnail:   in.Thumbnail,
 			URL:         in.URL,
 			TextContent: in.Text,
+			FolderID:    in.FolderID,
 			ClientTs:    in.CreatedAt,
 		}); err != nil {
 			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save asset"})
@@ -97,6 +111,7 @@ func RegisterAssetRoutes(r chi.Router, sm session.Manager, q *sqlc.Queries) {
 				Thumbnail: row.Thumbnail,
 				URL:       row.URL,
 				Text:      row.TextContent,
+				FolderID:  row.FolderID,
 				CreatedAt: row.ClientTs,
 			})
 		}
@@ -119,6 +134,66 @@ func RegisterAssetRoutes(r chi.Router, sm session.Manager, q *sqlc.Queries) {
 		}
 		if err := q.DeleteSavedAssets(r.Context(), uid, in.IDs); err != nil {
 			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to delete assets"})
+			return
+		}
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	// ─── 素材库文件夹 ────────────────────────────────────────────────────
+
+	r.Get("/api/app/asset-folders", func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := historyUserID(w, r, sm)
+		if !ok {
+			return
+		}
+		rows, err := q.ListAssetFolders(r.Context(), uid)
+		if err != nil {
+			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load folders"})
+			return
+		}
+		items := make([]assetFolder, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, assetFolder{ID: row.ClientID, Name: row.Name, CreatedAt: row.ClientTs})
+		}
+		httpx.WriteJSON(w, r, http.StatusOK, items)
+	})
+
+	// POST creates a new folder or renames an existing one (idempotent by id).
+	r.Post("/api/app/asset-folders", func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := historyUserID(w, r, sm)
+		if !ok {
+			return
+		}
+		var in assetFolder
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" {
+			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Invalid folder"})
+			return
+		}
+		if err := q.UpsertAssetFolder(r.Context(), sqlc.UpsertAssetFolderParams{
+			UserID:   uid,
+			ClientID: in.ID,
+			Name:     in.Name,
+			ClientTs: in.CreatedAt,
+		}); err != nil {
+			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save folder"})
+			return
+		}
+		httpx.WriteJSON(w, r, http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	// DELETE removes a folder and re-parents its assets to the root.
+	r.Delete("/api/app/asset-folders", func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := historyUserID(w, r, sm)
+		if !ok {
+			return
+		}
+		var in deleteAssetFolderInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" {
+			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+			return
+		}
+		if err := q.DeleteAssetFolder(r.Context(), uid, in.ID); err != nil {
+			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to delete folder"})
 			return
 		}
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]bool{"ok": true})
