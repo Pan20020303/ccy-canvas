@@ -322,6 +322,13 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     modelName: "doubao-seedance-2-0-fast-260128",
     ...SEEDANCE_2_FAST_TEMPLATE,
   },
+  // NoToken(notoken.pro)中转站的 Seedance 2.0 —— 模型 id 用点号 `seedance-2.0`,
+  // 走 Ark 任务式接口(/api/v3/contents/generations/tasks),能力与官方 2.0 一致。
+  "seedance-2.0": {
+    vendor: "Volcengine",
+    modelName: "seedance-2.0",
+    ...SEEDANCE_2_TEMPLATE,
+  },
   "doubao-seedance-1-5-pro-251215": {
     vendor: "Volcengine",
     modelName: "doubao-seedance-1-5-pro-251215",

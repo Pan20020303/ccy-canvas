@@ -1769,7 +1769,9 @@ func isVolcengine(pc *domain.ProviderConfig) bool {
 
 func isSeedance20Model(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	return strings.Contains(m, "seedance-2-0")
+	// 官方 id 用连字符(doubao-seedance-2-0-260128),NoToken 中转站用点号
+	// (seedance-2.0)—— 两种都算 Seedance 2.0(放开 1~9 张多图参考)。
+	return strings.Contains(m, "seedance-2-0") || strings.Contains(m, "seedance-2.0")
 }
 
 func isArkVideoContract(pc *domain.ProviderConfig) bool {

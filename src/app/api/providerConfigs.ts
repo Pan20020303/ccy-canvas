@@ -795,10 +795,24 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://ark.cn-beijing.volces.com/api/v3",
       apiSpec: "ark",
       models: [
+        // Seedance 2.0(最新,支持首尾帧 / 1-9 多图 / 动作模仿 / 全能参考)。
+        "doubao-seedance-2-0-260128",
+        "doubao-seedance-2-0-fast-260128",
+        "doubao-seedance-1-5-pro-251215",
         "doubao-seedance-1-0-pro-250528",
+        "doubao-seedance-1-0-pro-fast-251015",
         "doubao-seedance-1-0-lite-t2v-250428",
         "doubao-seedance-1-0-lite-i2v-250428",
       ],
+    },
+    {
+      // NoToken(notoken.pro)—— Ark 兼容的 Seedance 2.0 中转站。任务式接口
+      // /api/v3/contents/generations/tasks 与官方一致,直接复用内置 ark 适配器。
+      vendor: "Volcengine",
+      label: "NoToken · Seedance 2.0",
+      baseURL: "https://notoken.pro/api/v3",
+      apiSpec: "ark",
+      models: ["seedance-2.0"],
     },
     {
       vendor: "Alibaba",
