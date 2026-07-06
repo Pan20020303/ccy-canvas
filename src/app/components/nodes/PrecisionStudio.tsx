@@ -57,8 +57,11 @@ type PrecisionStudioProps = {
   onGenerate: () => void;
 };
 
-const TARGET = new THREE.Vector3(0, 0.85, 0);
-const LIGHT_ORBIT_R = 2.7;
+const TARGET = new THREE.Vector3(0, 1, 0);
+// 主体放大后灯/相机的环绕半径:让 gizmo 贴近主体但本身做小,比例更专业。
+const LIGHT_ORBIT_R = 2.2;
+// 场景相机距离:拉近让主体填满画面(参考图主体占比更大)。
+const SCENE_CAM_R = 3.8;
 
 function sphericalPosition(radius: number, aziDeg: number, eleDeg: number) {
   const ry = (aziDeg * Math.PI) / 180;
@@ -75,7 +78,7 @@ function sphericalPosition(radius: number, aziDeg: number, eleDeg: number) {
 function SceneRig({ yaw, pitch }: { yaw: number; pitch: number }) {
   const camera = useThree((state) => state.camera);
   useEffect(() => {
-    const pos = sphericalPosition(4.6, yaw, pitch);
+    const pos = sphericalPosition(SCENE_CAM_R, yaw, pitch);
     camera.position.copy(pos);
     camera.lookAt(TARGET);
   }, [camera, yaw, pitch]);
@@ -96,8 +99,8 @@ function ImagePlaneInner({ url, lit }: { url: string; lit: boolean }) {
 
   const image = texture.image as { width?: number; height?: number } | undefined;
   const aspect = image?.width && image.height ? image.width / image.height : 0.78;
-  const height = 1.5;
-  const width = clampStudio(height * aspect, 0.6, 2.7);
+  const height = 1.9;
+  const width = clampStudio(height * aspect, 0.7, 3.2);
 
   return (
     <mesh position={[0, height / 2 + 0.02, 0]} castShadow>
@@ -115,8 +118,8 @@ function ImagePlane({ url, lit }: { url: string; lit: boolean }) {
   return (
     <Suspense
       fallback={(
-        <mesh position={[0, 0.77, 0]}>
-          <planeGeometry args={[1.1, 1.5]} />
+        <mesh position={[0, 0.97, 0]}>
+          <planeGeometry args={[1.4, 1.9]} />
           <meshBasicMaterial color="#242a33" side={THREE.DoubleSide} />
         </mesh>
       )}
@@ -144,28 +147,28 @@ function FlashlightGizmo({
     groupRef.current?.lookAt(TARGET);
   }, [position]);
 
-  const beamLength = LIGHT_ORBIT_R - 0.55;
-  const beamRadius = light.kind === 'soft' ? 0.52 : 0.3;
+  const beamLength = LIGHT_ORBIT_R - 0.5;
+  const beamRadius = light.kind === 'soft' ? 0.32 : 0.2;
 
   return (
     <group ref={groupRef}>
-      {/* 手电筒头(白色喇叭口朝向主体) */}
+      {/* 手电筒头(白色喇叭口朝向主体)—— 缩小到与主体成比例 */}
       <mesh rotation={[Math.PI / 2, 0, 0]} onPointerDown={onGrab}>
-        <cylinderGeometry args={[0.15, 0.1, 0.26, 14]} />
+        <cylinderGeometry args={[0.095, 0.062, 0.17, 14]} />
         <meshBasicMaterial color={selected ? '#ffffff' : '#d9dde3'} />
       </mesh>
-      <mesh position={[0, 0, -0.2]} rotation={[Math.PI / 2, 0, 0]} onPointerDown={onGrab}>
-        <cylinderGeometry args={[0.055, 0.055, 0.16, 10]} />
+      <mesh position={[0, 0, -0.13]} rotation={[Math.PI / 2, 0, 0]} onPointerDown={onGrab}>
+        <cylinderGeometry args={[0.036, 0.036, 0.1, 10]} />
         <meshBasicMaterial color={selected ? '#e8ecf2' : '#aeb6c2'} />
       </mesh>
       {selected ? (
         <mesh>
-          <torusGeometry args={[0.24, 0.014, 8, 28]} />
+          <torusGeometry args={[0.155, 0.01, 8, 28]} />
           <meshBasicMaterial color="#ffffff" transparent opacity={0.85} />
         </mesh>
       ) : null}
       {/* 光锥(纯展示,不参与拾取) */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, beamLength / 2 + 0.13]} raycast={() => undefined}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, beamLength / 2 + 0.09]} raycast={() => undefined}>
         <coneGeometry args={[beamRadius, beamLength, 26, 1, true]} />
         <meshBasicMaterial color={light.color} transparent opacity={0.1 + light.intensity * 0.014} side={THREE.DoubleSide} depthWrite={false} />
       </mesh>
@@ -216,32 +219,33 @@ function CameraGizmo({
   onGrab: (event: ThreeEvent<PointerEvent>) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
-  const radius = 3.1 - (zoom / 100) * 1.5;
+  const radius = 2.7 - (zoom / 100) * 1.3;
   const position = useMemo(() => sphericalPosition(radius, yaw, pitch), [radius, yaw, pitch]);
   useEffect(() => {
     groupRef.current?.position.copy(position);
     groupRef.current?.lookAt(TARGET);
   }, [position]);
 
-  const frustumLength = Math.max(0.6, radius - 0.5);
+  const frustumLength = Math.max(0.5, radius - 0.5);
 
   return (
     <group ref={groupRef}>
+      {/* 摄像头本体 —— 缩小到与主体成比例 */}
       <mesh onPointerDown={onGrab}>
-        <boxGeometry args={[0.36, 0.24, 0.2]} />
+        <boxGeometry args={[0.23, 0.155, 0.13]} />
         <meshBasicMaterial color="#e8ecf2" />
       </mesh>
-      <mesh position={[0, 0, 0.16]} rotation={[Math.PI / 2, 0, 0]} onPointerDown={onGrab}>
-        <cylinderGeometry args={[0.08, 0.06, 0.14, 14]} />
+      <mesh position={[0, 0, 0.1]} rotation={[Math.PI / 2, 0, 0]} onPointerDown={onGrab}>
+        <cylinderGeometry args={[0.052, 0.04, 0.09, 14]} />
         <meshBasicMaterial color="#ffffff" />
       </mesh>
-      <mesh position={[0.1, 0.17, 0]} onPointerDown={onGrab}>
-        <boxGeometry args={[0.12, 0.1, 0.12]} />
+      <mesh position={[0.065, 0.11, 0]} onPointerDown={onGrab}>
+        <boxGeometry args={[0.078, 0.065, 0.078]} />
         <meshBasicMaterial color="#c7cdd6" />
       </mesh>
       {/* 视锥(四棱锥,提示取景方向) */}
-      <mesh rotation={[-Math.PI / 2, 0, Math.PI / 4]} position={[0, 0, frustumLength / 2 + 0.2]} raycast={() => undefined}>
-        <coneGeometry args={[0.62, frustumLength, 4, 1, true]} />
+      <mesh rotation={[-Math.PI / 2, 0, Math.PI / 4]} position={[0, 0, frustumLength / 2 + 0.13]} raycast={() => undefined}>
+        <coneGeometry args={[0.4, frustumLength, 4, 1, true]} />
         <meshBasicMaterial color="#ffffff" transparent opacity={0.09} side={THREE.DoubleSide} depthWrite={false} />
       </mesh>
     </group>
@@ -553,7 +557,7 @@ export function PrecisionStudio({
             <span className="h-2 w-2 rounded-full" style={{ background: isLighting ? selected?.color ?? '#fff' : '#fff' }} />
             {isLighting ? selected?.name ?? (zh ? '主光' : 'Key') : zh ? '相机' : 'Camera'}
           </div>
-          <PanelSlider label={zh ? '场景' : 'Scene'} value={Math.round(sceneYaw)} min={-180} max={180} onChange={(v) => setSceneYaw(v)} />
+          <PanelSlider label={zh ? '场景' : 'Scene'} value={Math.round(normalizeAzi(sceneYaw))} min={-180} max={180} onChange={(v) => setSceneYaw(normalizeAzi(v))} />
           {isLighting && selected ? (
             <>
               <PanelSlider label={zh ? '水平' : 'Azi'} value={Math.round(selected.azi)} min={-180} max={180} onChange={(v) => patchLight({ azi: v })} />
