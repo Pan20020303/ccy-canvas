@@ -17,6 +17,24 @@ type Project struct {
 	UpdatedAt time.Time
 }
 
+// ProjectAccess is a project plus the caller's collaboration context:
+// whether it's collaborative and the caller's effective role
+// (creator/admin/collaborator/visitor).
+type ProjectAccess struct {
+	Project
+	IsCollaborative bool
+	MyRole          string
+}
+
+// ProjectMember is an invited collaborator on a project (the owner is not a
+// member row — the owner is the project's owner_id / "creator").
+type ProjectMember struct {
+	UserID    string
+	Name      string
+	Role      string // admin | collaborator | visitor
+	CreatedAt time.Time
+}
+
 // Folder groups projects on the homepage grid.
 type Folder struct {
 	ID        string

@@ -321,6 +321,148 @@ func (r *Repository) UpsertCanvasSnapshot(ctx context.Context, projectID, userID
 	return &snap, nil
 }
 
+// --- Collaboration ---
+
+// ListProjectsForUser returns owned projects PLUS projects the user was invited
+// to (as a member), each with is_collaborative and the caller's effective role.
+func (r *Repository) ListProjectsForUser(ctx context.Context, userID string) ([]domain.ProjectAccess, error) {
+	pgID, err := parsePgUUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q.ListProjectsForUser(ctx, pgID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.ProjectAccess, 0, len(rows))
+	for _, row := range rows {
+		folderID := ""
+		if row.FolderID.Valid {
+			folderID = uuidStr(row.FolderID)
+		}
+		result = append(result, domain.ProjectAccess{
+			Project: domain.Project{
+				ID:        uuidStr(row.ID),
+				OwnerID:   uuidStr(row.OwnerID),
+				Name:      row.Name,
+				CoverURL:  row.CoverUrl,
+				FolderID:  folderID,
+				CreatedAt: row.CreatedAt.Time,
+				UpdatedAt: row.UpdatedAt.Time,
+			},
+			IsCollaborative: row.IsCollaborative,
+			MyRole:          row.MyRole,
+		})
+	}
+	return result, nil
+}
+
+// SetProjectCollaborative flips the collaborative flag (owner-only). When
+// turning it off it also removes every member. Returns true if the owner
+// matched (row updated).
+func (r *Repository) SetProjectCollaborative(ctx context.Context, projectID, ownerID string, collaborative bool) (bool, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return false, err
+	}
+	pgOwner, err := parsePgUUID(ownerID)
+	if err != nil {
+		return false, err
+	}
+	n, err := r.q.SetProjectCollaborative(ctx, pgProj, pgOwner, collaborative)
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if !collaborative {
+		if err := r.q.ClearProjectMembers(ctx, pgProj); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// AccessRole returns the caller's effective role on a project:
+// "creator" (owner), "admin"/"collaborator"/"visitor" (member), or "" (no access).
+func (r *Repository) AccessRole(ctx context.Context, projectID, userID string) (string, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return "", err
+	}
+	pgUser, err := parsePgUUID(userID)
+	if err != nil {
+		return "", err
+	}
+	oc, err := r.q.GetProjectOwnerCollab(ctx, pgProj)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if uuidStr(oc.OwnerID) == userID {
+		return "creator", nil
+	}
+	role, rerr := r.q.GetProjectMemberRole(ctx, pgProj, pgUser)
+	if errors.Is(rerr, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if rerr != nil {
+		return "", rerr
+	}
+	return role, nil
+}
+
+// ListMembers returns a project's invited members (excludes the owner).
+func (r *Repository) ListMembers(ctx context.Context, projectID string) ([]domain.ProjectMember, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q.ListProjectMembers(ctx, pgProj)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.ProjectMember, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, domain.ProjectMember{
+			UserID:    uuidStr(row.UserID),
+			Name:      row.Name,
+			Role:      row.Role,
+			CreatedAt: row.CreatedAt.Time,
+		})
+	}
+	return result, nil
+}
+
+// AddMember invites / re-roles a member.
+func (r *Repository) AddMember(ctx context.Context, projectID, userID, role string) error {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return err
+	}
+	pgUser, err := parsePgUUID(userID)
+	if err != nil {
+		return err
+	}
+	return r.q.UpsertProjectMember(ctx, pgProj, pgUser, role)
+}
+
+// RemoveMember drops a member from a project.
+func (r *Repository) RemoveMember(ctx context.Context, projectID, userID string) error {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return err
+	}
+	pgUser, err := parsePgUUID(userID)
+	if err != nil {
+		return err
+	}
+	return r.q.DeleteProjectMember(ctx, pgProj, pgUser)
+}
+
 // EnsureFirstProject creates a default project for the user if they have none.
 func (r *Repository) EnsureFirstProject(ctx context.Context, ownerID string) (*domain.Project, error) {
 	existing, err := r.ListProjectsByOwner(ctx, ownerID)

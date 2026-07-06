@@ -77,7 +77,6 @@ export function HomePage() {
   const backendProjects = useStore((s) => s.backendProjects);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const activeBackendProjectId = useStore((s) => s.activeBackendProjectId);
-  const collabProjects = useStore((s) => s.collabProjects);
   const switchProject = useStore((s) => s.switchProject);
   const switchBackendProject = useStore((s) => s.switchBackendProject);
   const createProject = useStore((s) => s.createProject);
@@ -95,7 +94,7 @@ export function HomePage() {
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
-  // 个人 / 协作 画布切换 + 搜索(参考图五)。协作态目前是会话态。
+  // 个人 / 协作 画布切换 + 搜索(参考图五)。协作态来自后端 is_collaborative。
   const [collabTab, setCollabTab] = useState<'all' | 'personal' | 'collab'>('all');
   const [search, setSearch] = useState('');
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -130,23 +129,25 @@ export function HomePage() {
         name: project.name,
         coverUrl: project.cover_url ?? '',
         folderId: project.folder_id ?? '',
+        isCollaborative: project.is_collaborative ?? false,
+        myRole: project.my_role,
         createdAt: new Date(project.created_at).getTime(),
         updatedAt: new Date(project.updated_at).getTime(),
       }))
-      : localProjects.map((project) => ({ ...project, coverUrl: '', folderId: '' }))
+      : localProjects.map((project) => ({ ...project, coverUrl: '', folderId: '', isCollaborative: false, myRole: undefined }))
   ), [hasBackend, backendProjects, localProjects]);
   const effectiveActiveProjectId = activeBackendProjectId ?? activeProjectId;
 
   const visibleProjects = useMemo(
     () => projects.filter((p) => {
       if (openFolderId ? p.folderId !== openFolderId : Boolean(p.folderId)) return false;
-      if (collabTab === 'personal' && collabProjects[p.id]) return false;
-      if (collabTab === 'collab' && !collabProjects[p.id]) return false;
+      if (collabTab === 'personal' && p.isCollaborative) return false;
+      if (collabTab === 'collab' && !p.isCollaborative) return false;
       const q = search.trim().toLowerCase();
       if (q && !p.name.toLowerCase().includes(q)) return false;
       return true;
     }),
-    [projects, openFolderId, collabTab, search, collabProjects],
+    [projects, openFolderId, collabTab, search],
   );
   const openFolder = openFolderId ? folders.find((f) => f.id === openFolderId) ?? null : null;
 
@@ -526,7 +527,7 @@ export function HomePage() {
                       </div>
                     ) : null}
                     {/* 协作画布标记(参考图五) */}
-                    {collabProjects[project.id] ? (
+                    {project.isCollaborative ? (
                       <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 rounded-full border border-[#8b5cf6]/40 bg-[#8b5cf6]/30 px-2 py-0.5 text-[10px] text-purple-100 backdrop-blur">
                         <Users className="h-3 w-3" />
                         {zh ? '协作' : 'Collab'}

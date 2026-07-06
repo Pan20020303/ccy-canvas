@@ -9,8 +9,21 @@ export type BackendProject = {
   name: string;
   cover_url?: string;
   folder_id?: string;
+  /** True once the owner turns the project into a collaborative one. */
+  is_collaborative?: boolean;
+  /** The current user's effective role on this project. */
+  my_role?: BackendMemberRole;
   created_at: string;
   updated_at: string;
+};
+
+/** creator = 项目创建者(owner);其余为受邀成员角色。 */
+export type BackendMemberRole = "creator" | "admin" | "collaborator" | "visitor";
+
+export type BackendMember = {
+  uid: string;
+  name: string;
+  role: BackendMemberRole;
 };
 
 export type BackendFolder = {
@@ -61,6 +74,50 @@ export function deleteProject(projectId: string): Promise<{ deleted: boolean }> 
 
 export function duplicateProject(projectId: string): Promise<BackendProject> {
   return apiClient.post<BackendProject>(`/api/app/projects/${projectId}/duplicate`, {});
+}
+
+// ---------------------------------------------------------------------------
+// Collaboration
+// ---------------------------------------------------------------------------
+
+/** Owner-only: flip a project between private and collaborative. Turning it off
+ *  also drops every member on the backend. */
+export function setProjectCollaboration(
+  projectId: string,
+  collaborative: boolean,
+): Promise<{ is_collaborative: boolean }> {
+  return apiClient.put<{ is_collaborative: boolean }>(
+    `/api/app/projects/${projectId}/collaboration`,
+    { collaborative },
+  );
+}
+
+export function listProjectMembers(projectId: string): Promise<BackendMember[]> {
+  return apiClient.get<BackendMember[]>(`/api/app/projects/${projectId}/members`);
+}
+
+/** Invite a resolved user (uid from /users/lookup) as a member. Owner/admin only. */
+export function inviteProjectMember(
+  projectId: string,
+  uid: string,
+  role: Exclude<BackendMemberRole, "creator">,
+): Promise<BackendMember> {
+  return apiClient.post<BackendMember>(`/api/app/projects/${projectId}/members`, { uid, role });
+}
+
+export function updateProjectMemberRole(
+  projectId: string,
+  uid: string,
+  role: Exclude<BackendMemberRole, "creator">,
+): Promise<BackendMember> {
+  return apiClient.patch<BackendMember>(`/api/app/projects/${projectId}/members/${uid}`, { role });
+}
+
+export function removeProjectMember(
+  projectId: string,
+  uid: string,
+): Promise<{ removed: boolean }> {
+  return apiClient.delete<{ removed: boolean }>(`/api/app/projects/${projectId}/members/${uid}`);
 }
 
 // ---------------------------------------------------------------------------

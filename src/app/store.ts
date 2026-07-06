@@ -345,13 +345,8 @@ type AppState = {
   deleteAssetFolder: (id: string) => void;
   /** 把素材移动到某文件夹('' = 移回根)。就地改 folderId 并回写后端。 */
   moveAssetToFolder: (assetId: string, folderId: string) => void;
-  // 协作(UI 外壳,会话态):画布是否协作中 + 成员列表,按 projectId 归档。
-  collabProjects: Record<string, boolean>;
-  collabMembersByProject: Record<string, CollabMember[]>;
-  setProjectCollaborative: (projectId: string, collaborative: boolean) => void;
-  addCollabMember: (projectId: string, member: CollabMember) => void;
-  removeCollabMember: (projectId: string, uid: string) => void;
-  setCollabMemberRole: (projectId: string, uid: string, role: CollabRole) => void;
+  // 协作:是否协作中 / 成员 / 权限均由后端持久化(见 api/projects.ts 的
+  // is_collaborative + project_members)。此处仅保留会话态的操作日志。
   collabActivityByProject: Record<string, CollabActivity[]>;
   logCollabActivity: (projectId: string, entry: Omit<CollabActivity, 'id' | 'ts'>) => void;
   saveAssetDialogNodeId: string | null;
@@ -2819,25 +2814,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }));
     if (moved) void saveAssetToServer(moved).catch(() => {});
   },
-  // ─── 协作(UI 外壳)────────────────────────────────────────────────────
-  collabProjects: {},
-  collabMembersByProject: {},
-  setProjectCollaborative: (projectId, collaborative) => set((state) => ({
-    collabProjects: { ...state.collabProjects, [projectId]: collaborative },
-  })),
-  addCollabMember: (projectId, member) => set((state) => {
-    const list = state.collabMembersByProject[projectId] ?? [];
-    if (list.some((m) => m.uid === member.uid)) return {};
-    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: [...list, member] } };
-  }),
-  removeCollabMember: (projectId, uid) => set((state) => {
-    const list = state.collabMembersByProject[projectId] ?? [];
-    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: list.filter((m) => m.uid !== uid) } };
-  }),
-  setCollabMemberRole: (projectId, uid, role) => set((state) => {
-    const list = state.collabMembersByProject[projectId] ?? [];
-    return { collabMembersByProject: { ...state.collabMembersByProject, [projectId]: list.map((m) => (m.uid === uid ? { ...m, role } : m)) } };
-  }),
+  // ─── 协作:操作日志(会话态;协作标记/成员/权限由后端持久化)───────────────
   collabActivityByProject: {},
   logCollabActivity: (projectId, entry) => set((state) => {
     const list = state.collabActivityByProject[projectId] ?? [];

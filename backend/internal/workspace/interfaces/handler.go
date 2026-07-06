@@ -31,12 +31,20 @@ func NewHandler(repo *infrastructure.Repository) *Handler {
 // --- response types ---
 
 type ProjectItem struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CoverURL  string    `json:"cover_url"`
-	FolderID  string    `json:"folder_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	CoverURL        string    `json:"cover_url"`
+	FolderID        string    `json:"folder_id"`
+	IsCollaborative bool      `json:"is_collaborative"`
+	MyRole          string    `json:"my_role"` // creator | admin | collaborator | visitor
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type MemberItem struct {
+	UID  string `json:"uid"`
+	Name string `json:"name"`
+	Role string `json:"role"`
 }
 
 type FolderItem struct {
@@ -53,9 +61,22 @@ type CanvasData struct {
 	Version   int32           `json:"version"`
 }
 
+// toProjectItem is used for owner-scoped responses (create/update/duplicate) —
+// the caller is always the owner there, so my_role = creator.
 func toProjectItem(p domain.Project) ProjectItem {
-	return ProjectItem{ID: p.ID, Name: p.Name, CoverURL: p.CoverURL, FolderID: p.FolderID, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+	return ProjectItem{ID: p.ID, Name: p.Name, CoverURL: p.CoverURL, FolderID: p.FolderID, MyRole: "creator", CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 }
+
+func toProjectItemAccess(p domain.ProjectAccess) ProjectItem {
+	return ProjectItem{
+		ID: p.ID, Name: p.Name, CoverURL: p.CoverURL, FolderID: p.FolderID,
+		IsCollaborative: p.IsCollaborative, MyRole: p.MyRole,
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
+}
+
+func canManageMembers(role string) bool { return role == "creator" || role == "admin" }
+func canEditCanvas(role string) bool     { return role == "creator" || role == "admin" || role == "collaborator" }
 
 func toFolderItem(f domain.Folder) FolderItem {
 	return FolderItem{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedAt}
@@ -168,6 +189,55 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.deleteFolder)
+
+	// --- collaboration ---
+
+	huma.Register(api, huma.Operation{
+		OperationID: "set-collaboration",
+		Method:      http.MethodPut,
+		Path:        "/api/app/projects/{id}/collaboration",
+		Summary:     "Toggle a project between private and collaborative (owner only)",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.setCollaboration)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-members",
+		Method:      http.MethodGet,
+		Path:        "/api/app/projects/{id}/members",
+		Summary:     "List collaboration members of a project",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.listMembers)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "add-member",
+		Method:        http.MethodPost,
+		Path:          "/api/app/projects/{id}/members",
+		Summary:       "Invite a member to a collaborative project (owner/admin)",
+		Tags:          []string{"App", "Collaboration"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusCreated,
+	}, h.addMember)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-member",
+		Method:      http.MethodPatch,
+		Path:        "/api/app/projects/{id}/members/{uid}",
+		Summary:     "Change a member's role (owner/admin)",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.updateMember)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "remove-member",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/projects/{id}/members/{uid}",
+		Summary:       "Remove a member from a project (owner/admin, or leave self)",
+		Tags:          []string{"App", "Collaboration"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.removeMember)
 }
 
 // --- handlers ---
@@ -185,19 +255,20 @@ func (h *Handler) listProjects(ctx context.Context, _ *struct{}) (*listProjectsO
 		return nil, huma.Error401Unauthorized("Authentication required")
 	}
 
-	// Ensure user always has at least one project.
+	// Ensure user always has at least one project of their own.
 	if _, err := h.repo.EnsureFirstProject(ctx, claims.UserID); err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to ensure project", err)
 	}
 
-	projects, err := h.repo.ListProjectsByOwner(ctx, claims.UserID)
+	// Owned projects PLUS projects the user was invited to (collaborative).
+	projects, err := h.repo.ListProjectsForUser(ctx, claims.UserID)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list projects", err)
 	}
 
 	items := make([]ProjectItem, 0, len(projects))
 	for _, p := range projects {
-		items = append(items, toProjectItem(p))
+		items = append(items, toProjectItemAccess(p))
 	}
 
 	out := &listProjectsOutput{}
@@ -258,12 +329,12 @@ func (h *Handler) getCanvas(ctx context.Context, input *getCanvasInput) (*getCan
 		return nil, huma.Error401Unauthorized("Authentication required")
 	}
 
-	// Verify project ownership.
-	proj, err := h.repo.GetProjectByID(ctx, input.ID)
-	if err != nil || proj == nil {
-		return nil, huma.Error404NotFound("Project not found")
+	// Owner OR any invited member (访问者及以上都可读)。
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
 	}
-	if proj.OwnerID != claims.UserID {
+	if role == "" {
 		return nil, huma.Error403Forbidden("Access denied")
 	}
 
@@ -306,13 +377,16 @@ func (h *Handler) saveCanvas(ctx context.Context, input *saveCanvasInput) (*save
 		return nil, huma.Error401Unauthorized("Authentication required")
 	}
 
-	// Verify project ownership.
-	proj, err := h.repo.GetProjectByID(ctx, input.ID)
-	if err != nil || proj == nil {
-		return nil, huma.Error404NotFound("Project not found")
+	// 编辑权限:创建者 / 管理者 / 协作者可写;访问者只读。
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
 	}
-	if proj.OwnerID != claims.UserID {
+	if role == "" {
 		return nil, huma.Error403Forbidden("Access denied")
+	}
+	if !canEditCanvas(role) {
+		return nil, huma.Error403Forbidden("访问者为只读，无法保存画布")
 	}
 
 	snap, err := h.repo.UpsertCanvasSnapshot(ctx, input.ID, claims.UserID, input.Body.Nodes, input.Body.Edges, input.Body.Groups)
@@ -583,6 +657,229 @@ func (h *Handler) deleteFolder(ctx context.Context, input *deleteFolderInput) (*
 
 	out := &deleteFolderOutput{}
 	out.Body.Data = map[string]bool{"deleted": true}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+// --- collaboration handlers ---
+
+func normalizeMemberRole(role string) string {
+	switch role {
+	case "admin", "collaborator", "visitor":
+		return role
+	default:
+		return "visitor"
+	}
+}
+
+type setCollaborationInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		Collaborative bool `json:"collaborative"`
+	}
+}
+
+type setCollaborationOutput struct {
+	Body struct {
+		Data      map[string]bool `json:"data"`
+		RequestID string          `json:"request_id"`
+	}
+}
+
+func (h *Handler) setCollaboration(ctx context.Context, input *setCollaborationInput) (*setCollaborationOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	// Owner-only: SetProjectCollaborative matches on owner_id.
+	updated, err := h.repo.SetProjectCollaborative(ctx, input.ID, claims.UserID, input.Body.Collaborative)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update collaboration", err)
+	}
+	if !updated {
+		return nil, huma.Error403Forbidden("只有创建者可以更改协作状态")
+	}
+
+	out := &setCollaborationOutput{}
+	out.Body.Data = map[string]bool{"is_collaborative": input.Body.Collaborative}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type listMembersInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type listMembersOutput struct {
+	Body struct {
+		Data      []MemberItem `json:"data"`
+		RequestID string       `json:"request_id"`
+	}
+}
+
+func (h *Handler) listMembers(ctx context.Context, input *listMembersInput) (*listMembersOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	// Any participant (owner or member) may view the roster.
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
+	}
+	if role == "" {
+		return nil, huma.Error403Forbidden("Access denied")
+	}
+
+	members, err := h.repo.ListMembers(ctx, input.ID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list members", err)
+	}
+
+	items := make([]MemberItem, 0, len(members))
+	for _, m := range members {
+		items = append(items, MemberItem{UID: m.UserID, Name: m.Name, Role: m.Role})
+	}
+
+	out := &listMembersOutput{}
+	out.Body.Data = items
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type addMemberInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		UID  string `json:"uid" doc:"User UUID to invite"`
+		Role string `json:"role" doc:"admin | collaborator | visitor"`
+	}
+}
+
+type addMemberOutput struct {
+	Body struct {
+		Data      MemberItem `json:"data"`
+		RequestID string     `json:"request_id"`
+	}
+}
+
+func (h *Handler) addMember(ctx context.Context, input *addMemberInput) (*addMemberOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if input.Body.UID == "" {
+		return nil, huma.Error400BadRequest("缺少用户 ID")
+	}
+	if input.Body.UID == claims.UserID {
+		return nil, huma.Error400BadRequest("创建者无需邀请自己")
+	}
+
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
+	}
+	if !canManageMembers(role) {
+		return nil, huma.Error403Forbidden("只有创建者或管理者可以邀请成员")
+	}
+
+	newRole := normalizeMemberRole(input.Body.Role)
+	if err := h.repo.AddMember(ctx, input.ID, input.Body.UID, newRole); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to add member", err)
+	}
+
+	// Return the authoritative row (with resolved display name).
+	item := MemberItem{UID: input.Body.UID, Role: newRole}
+	if members, mErr := h.repo.ListMembers(ctx, input.ID); mErr == nil {
+		for _, m := range members {
+			if m.UserID == input.Body.UID {
+				item.Name = m.Name
+				item.Role = m.Role
+				break
+			}
+		}
+	}
+
+	out := &addMemberOutput{}
+	out.Body.Data = item
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type updateMemberInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	UID  string `path:"uid" doc:"Member user UUID"`
+	Body struct {
+		Role string `json:"role" doc:"admin | collaborator | visitor"`
+	}
+}
+
+type updateMemberOutput struct {
+	Body struct {
+		Data      MemberItem `json:"data"`
+		RequestID string     `json:"request_id"`
+	}
+}
+
+func (h *Handler) updateMember(ctx context.Context, input *updateMemberInput) (*updateMemberOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
+	}
+	if !canManageMembers(role) {
+		return nil, huma.Error403Forbidden("只有创建者或管理者可以调整成员权限")
+	}
+
+	newRole := normalizeMemberRole(input.Body.Role)
+	if err := h.repo.AddMember(ctx, input.ID, input.UID, newRole); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update member", err)
+	}
+
+	out := &updateMemberOutput{}
+	out.Body.Data = MemberItem{UID: input.UID, Role: newRole}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type removeMemberInput struct {
+	ID  string `path:"id" doc:"Project UUID"`
+	UID string `path:"uid" doc:"Member user UUID"`
+}
+
+type removeMemberOutput struct {
+	Body struct {
+		Data      map[string]bool `json:"data"`
+		RequestID string          `json:"request_id"`
+	}
+}
+
+func (h *Handler) removeMember(ctx context.Context, input *removeMemberInput) (*removeMemberOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+
+	role, err := h.repo.AccessRole(ctx, input.ID, claims.UserID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
+	}
+	// Managers can remove anyone; a member may remove themselves (leave).
+	if !canManageMembers(role) && input.UID != claims.UserID {
+		return nil, huma.Error403Forbidden("无权移除该成员")
+	}
+
+	if err := h.repo.RemoveMember(ctx, input.ID, input.UID); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to remove member", err)
+	}
+
+	out := &removeMemberOutput{}
+	out.Body.Data = map[string]bool{"removed": true}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
