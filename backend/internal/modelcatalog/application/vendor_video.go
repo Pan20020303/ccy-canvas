@@ -214,9 +214,13 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
 	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
 	for i, raw := range req.ReferenceImages {
-		du, err := localPathToDataURL(raw)
+		// Inline every reference as base64 (local uploads from disk, remote URLs
+		// fetched by us) so Ark's CreateAsset never has to download a URL that
+		// might be a private/expired link — the InvalidParameter.DownloadFailed
+		// (HTTP 403) failure mode.
+		du, err := arkReferenceImageToDataURL(ctx, raw)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image #%d", i+1), err)
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
 		}
 		role := "reference_image"
 		if useFrameRoles {

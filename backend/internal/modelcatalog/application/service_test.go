@@ -880,15 +880,85 @@ func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) 
 	}
 }
 
-func TestVideoGenerationTimeoutIsNineHundredSeconds(t *testing.T) {
-	if got := videoGenerationTimeout(); got != 900*time.Second {
-		t.Fatalf("videoGenerationTimeout() = %s, want %s", got, 900*time.Second)
+func TestUploadPathFromURL(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/uploads/2026-06/x.png", "/uploads/2026-06/x.png"},
+		{"http://localhost:9090/uploads/2026-06/x.png", "/uploads/2026-06/x.png"},
+		{"https://cdn.example.com/uploads/a/b.png?sig=zzz&e=1", "/uploads/a/b.png"},
+		{"https://tos-cn-beijing.volces.com/bucket/obj.png", ""},
+		{"data:image/png;base64,AAAA", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := uploadPathFromURL(c.in); got != c.want {
+			t.Errorf("uploadPathFromURL(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestArkReferenceImageToDataURLInlinesLocalAndLoopbackUploads(t *testing.T) {
+	root := t.TempDir()
+	uploadsDir := filepath.Join(root, "uploads", "2026-06")
+	if err := os.MkdirAll(uploadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{G: 255, A: 255})
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(uploadsDir, "ref.png"), pngBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "backend")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
+
+	// A bare /uploads path AND a full URL pointing at our uploads (loopback or
+	// our own domain) must all be read from disk and inlined as base64 — never
+	// handed to the provider as a URL it can't fetch, and never rejected by the
+	// public-URL guard. This is the fix for Ark CreateAsset 403 DownloadFailed.
+	for _, in := range []string{
+		"/uploads/2026-06/ref.png",
+		"http://localhost:9090/uploads/2026-06/ref.png",
+		"https://my-canvas.example.com/uploads/2026-06/ref.png",
+	} {
+		got, err := arkReferenceImageToDataURL(context.Background(), in)
+		if err != nil {
+			t.Fatalf("arkReferenceImageToDataURL(%q) error: %v", in, err)
+		}
+		if !strings.HasPrefix(got, "data:image/jpeg;base64,") {
+			t.Fatalf("arkReferenceImageToDataURL(%q) = %q, want inline jpeg data URL", in, got)
+		}
+	}
+
+	// A data: URL passes through untouched.
+	dataURL := "data:image/png;base64,QUJD"
+	if got, err := arkReferenceImageToDataURL(context.Background(), dataURL); err != nil || got != dataURL {
+		t.Fatalf("arkReferenceImageToDataURL(data:) = %q, %v; want passthrough", got, err)
+	}
+}
+
+func TestVideoGenerationTimeoutTracksRuntimeCeiling(t *testing.T) {
+	want := maxRuntimeForType("video") - videoPollSafetyMargin
+	if got := videoGenerationTimeout(); got != want {
+		t.Fatalf("videoGenerationTimeout() = %s, want %s", got, want)
+	}
+	// The poll budget must stay strictly under the hard runtime ceiling so
+	// polling ends with its own clean message before the detached context /
+	// asynq timeout cancels the request mid-flight.
+	if got := videoGenerationTimeout(); got >= maxRuntimeForType("video") {
+		t.Fatalf("videoGenerationTimeout() = %s, must be < ceiling %s", got, maxRuntimeForType("video"))
 	}
 }
 
 func TestVideoPollMaxAttemptsMatchesTimeoutBudget(t *testing.T) {
-	if got := videoPollMaxAttempts(); got != 149 {
-		t.Fatalf("videoPollMaxAttempts() = %d, want 149", got)
+	want := 1 + int((videoGenerationTimeout()-videoPollInitialDelay())/videoPollInterval())
+	if got := videoPollMaxAttempts(); got != want {
+		t.Fatalf("videoPollMaxAttempts() = %d, want %d", got, want)
 	}
 }
 

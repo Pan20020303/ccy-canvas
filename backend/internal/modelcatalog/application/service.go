@@ -47,9 +47,13 @@ import (
 
 const (
 	imageGenerationTimeoutSeconds = 600
-	videoGenerationTimeoutSeconds = 900
-	providerTLSHandshakeTimeout   = 60 * time.Second
-	providerRequestMaxAttempts    = 3
+	// videoPollSafetyMargin keeps the async poll budget a beat under the video
+	// task's hard runtime ceiling (maxRuntimeForType/asynq timeout) so polling
+	// reports its own clean "timed out after polling" instead of being cut
+	// mid-request by a context cancel.
+	videoPollSafetyMargin       = 2 * time.Minute
+	providerTLSHandshakeTimeout = 60 * time.Second
+	providerRequestMaxAttempts  = 3
 )
 
 var (
@@ -2187,7 +2191,19 @@ func providerRequestErrorMessage(err error) string {
 }
 
 func videoGenerationTimeout() time.Duration {
-	return time.Duration(videoGenerationTimeoutSeconds) * time.Second
+	// Track the video task's hard runtime ceiling minus a safety margin. The
+	// ceiling (maxRuntimeForType("video"), default 30m, env-tunable via
+	// VIDEO_TASK_MAX_RUNTIME_SECONDS) is ALSO the detached-context and asynq
+	// task timeout, so deriving the poll budget from it keeps the two from
+	// diverging. Previously this was a fixed 900s (15m) while the ceiling was
+	// 30m — a Seedance clip that finished upstream after ~15–20m was reported
+	// "timed out after polling" and its already-charged result was lost. Now
+	// polling runs almost the full window before giving up.
+	budget := maxRuntimeForType("video") - videoPollSafetyMargin
+	if budget < time.Minute {
+		budget = time.Minute
+	}
+	return budget
 }
 
 func videoPollInitialDelay() time.Duration {
@@ -2571,9 +2587,21 @@ func localPathToDataURL(rawURL string) (string, error) {
 	}
 	defer f.Close()
 
-	src, _, err := image.Decode(f)
+	return encodeReferenceImageReader(f)
+}
+
+// encodeReferenceImageBytes decodes, downscales (to maxRefImageDim) and JPEG
+// re-encodes (down to <= maxRefImageBytes) an image, returning an inline data:
+// URL. Shared by the local-upload path and the remote-fetch path so a provider
+// never has to download a URL itself.
+func encodeReferenceImageBytes(data []byte) (string, error) {
+	return encodeReferenceImageReader(bytes.NewReader(data))
+}
+
+func encodeReferenceImageReader(r io.Reader) (string, error) {
+	src, _, err := image.Decode(r)
 	if err != nil {
-		return "", fmt.Errorf("decode reference image %s: %w", diskPath, err)
+		return "", fmt.Errorf("decode reference image: %w", err)
 	}
 
 	bounds := src.Bounds()
@@ -2601,6 +2629,63 @@ func localPathToDataURL(rawURL string) (string, error) {
 
 	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 	return "data:image/jpeg;base64," + encoded, nil
+}
+
+// uploadPathFromURL extracts the "/uploads/..." suffix from either a bare path
+// or a full URL pointing at our own upload store (stripping scheme/host and any
+// query string), or "" if the URL isn't one of ours.
+func uploadPathFromURL(raw string) string {
+	s := raw
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		i := strings.Index(s, "/uploads/")
+		if i < 0 {
+			return ""
+		}
+		s = s[i:]
+	}
+	if !strings.HasPrefix(s, "/uploads/") {
+		return ""
+	}
+	if q := strings.IndexAny(s, "?#"); q >= 0 {
+		s = s[:q]
+	}
+	return s
+}
+
+// arkReferenceImageToDataURL resolves a reference image to an INLINE data: URL
+// so Ark/Seedance never has to download it. Ark's CreateAsset fails with
+// InvalidParameter.DownloadFailed (HTTP 403) whenever the URL we hand it isn't
+// publicly fetchable — a reused earlier generation whose TOS signed URL has
+// expired, a private/auth'd link, or a LAN-only dev host. Our own uploads are
+// read from disk; any other http(s) URL is fetched by us and inlined.
+func arkReferenceImageToDataURL(ctx context.Context, rawURL string) (string, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return "", fmt.Errorf("empty reference image url")
+	}
+	if strings.HasPrefix(raw, "data:") {
+		return raw, nil
+	}
+	isHTTP := strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://")
+	// Prefer local disk for our own uploads — no network round-trip, and it
+	// dodges the public-URL guard that (rightly) refuses a LAN/localhost host.
+	if uploadPath := uploadPathFromURL(raw); uploadPath != "" {
+		if du, err := localPathToDataURL(uploadPath); err == nil {
+			return du, nil
+		} else if !isHTTP {
+			return "", err
+		}
+		// Full URL but not on our disk → fall through to a remote fetch.
+	}
+	if isHTTP {
+		data, err := fetchRemoteReferenceBytes(ctx, raw)
+		if err != nil {
+			return "", fmt.Errorf("参考图下载失败(链接可能已失效,请重新添加该参考图): %w", err)
+		}
+		return encodeReferenceImageBytes(data)
+	}
+	// Bare non-upload path — let the local resolver handle it.
+	return localPathToDataURL(raw)
 }
 
 func resolveUploadDiskPath(rawURL string) (string, error) {
