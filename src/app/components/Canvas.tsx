@@ -70,6 +70,9 @@ import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
+import { RemotePresenceLayer } from './RemotePresenceLayer';
+import { usePresenceReporting } from '../collab/usePresenceReporting';
+import { updatePresence } from '../collab/presence-store';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
 // 打开导演台时按需加载,首屏 0 影响.
@@ -376,6 +379,8 @@ const InnerCanvas = () => {
   const dict = t[language];
   const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
   const viewport = useViewport();
+  // Live-collaboration presence: broadcast our cursor/selection, watch others.
+  usePresenceReporting();
 
   // 资产库「定位」:store 里的 canvasFocusRequest nonce 变化时,平移到目标节点
   // 并选中(useReactFlow 只能在 Canvas 内用,故经 store 中转)。
@@ -1624,7 +1629,7 @@ const InnerCanvas = () => {
             useStore.getState().resolveAgentNodePick(node.id);
           }
         }}
-        onNodeDragStart={() => {
+        onNodeDragStart={(_event, node, draggedNodes) => {
           // Snapshot the pre-drag state ONCE so the whole drag is a single
           // undo step (position changes during the drag are not auto-captured).
           pushUndoSnapshot();
@@ -1632,11 +1637,16 @@ const InnerCanvas = () => {
           // Drag-smoothness P0: freeze the persist partialize while the
           // gesture runs (debounced storage discards intermediates anyway).
           setCanvasInteractionActive(true);
+          // Presence (Tier 3): tell collaborators which nodes we're dragging.
+          const draggingIds = (draggedNodes && draggedNodes.length ? draggedNodes : [node]).map((n) => n.id);
+          updatePresence({ activity: { kind: 'drag', nodeIds: draggingIds } });
         }}
         onNodeDragStop={(_event, _node, draggedNodes) => {
           setNodeDragging(false);
           setGuides([]);
           setCanvasInteractionActive(false);
+          // Presence (Tier 3): clear our drag activity.
+          updatePresence({ activity: null });
           // Reconcile the project/space mirrors once — per-frame position
           // changes skipped them (see store.onNodesChange).
           commitCanvasMirrors();
@@ -1797,6 +1807,9 @@ const InnerCanvas = () => {
           ))}
         </div>
       ) : null}
+
+      {/* Live-collaboration presence: remote cursors / selection / drag overlay. */}
+      <RemotePresenceLayer />
 
       {/* Lock indicators — one small Lock icon overlaid on every node whose
           `data.locked === true`. Lives at Canvas level so we don't have to

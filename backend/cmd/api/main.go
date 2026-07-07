@@ -28,6 +28,7 @@ import (
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
+	"ccy-canvas/backend/internal/presence"
 	"ccy-canvas/backend/internal/shared/httpx"
 	skillsapp "ccy-canvas/backend/internal/skills/application"
 	skillshttp "ccy-canvas/backend/internal/skills/interfaces"
@@ -100,6 +101,17 @@ func main() {
 		taskBus = taskBus.WithTransport(transport)
 		go taskBus.StartBridge(context.Background())
 	}
+
+	// Live-collaboration presence bus (project-scoped, purely ephemeral). Same
+	// cross-replica pattern as the task bus — needs Redis for multi-replica so
+	// presence from a client on another replica is visible here. The sweeper
+	// evicts ghosts whose leave frame was missed.
+	presenceBus := presence.NewBus()
+	if cfg.RedisAddr != "" {
+		presenceBus = presenceBus.WithTransport(events.NewRedisTransport(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB))
+		go presenceBus.StartBridge(context.Background())
+	}
+	go presenceBus.StartSweeper(context.Background())
 	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).
 		WithEventBus(taskBus).
 		WithCredits(creditChargerAdapter{svc: creditService})
@@ -207,6 +219,8 @@ func main() {
 	workspaceRepo := workspaceinfra.NewRepository(queries)
 	workspaceHandler := workspacehttp.NewHandler(workspaceRepo)
 	workspaceHandler.RegisterRoutes(api)
+	// Live-collaboration presence (chi-direct: SSE stream + throttled report).
+	workspacehttp.RegisterPresenceRoutes(router, sessionManager, presenceBus, workspaceRepo)
 
 	// Skills + Agents routes (user CRUD + invoke + admin CRUD).
 	skillsExecutor := skillsapp.NewExecutor(catalogService)

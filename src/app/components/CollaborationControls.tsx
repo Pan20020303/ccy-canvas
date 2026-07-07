@@ -17,6 +17,8 @@ import {
   useStore, COLLAB_ROLE_OPTIONS, collabRoleLabel,
   type CollabActivity, type CollabMember, type CollabRole,
 } from '../store';
+import { usePresenceStore } from '../collab/presence-store';
+import { colorForUid } from '../collab/color';
 
 /**
  * 协作控件 —— 画布顶栏右侧。私有:「协作」按钮 → 转为协作弹窗(仅创建者);协作中:
@@ -36,6 +38,38 @@ function relTime(ts: number, zh: boolean): string {
   if (h < 24) return zh ? `${h} 小时前` : `${h}h ago`;
   const d = Math.floor(h / 24);
   return zh ? `${d} 天前` : `${d}d ago`;
+}
+
+/** Overlapping colored avatars of everyone currently present (self + live
+ *  collaborators), each colored by colorForUid so it matches their cursor. */
+function PresenceAvatars() {
+  const { user } = useAuth();
+  const byUid = usePresenceStore((s) => s.byUid);
+  const people: { uid: string; name: string }[] = [];
+  if (user?.id) people.push({ uid: user.id, name: user.name || user.email || '我' });
+  for (const p of Object.values(byUid)) people.push({ uid: p.uid, name: p.name || '协作者' });
+  if (people.length === 0) return null;
+  const shown = people.slice(0, 5);
+  const extra = people.length - shown.length;
+  return (
+    <div className="flex items-center -space-x-1.5">
+      {shown.map((p) => (
+        <div
+          key={p.uid}
+          className="flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-white ring-2 ring-[#15181d]"
+          style={{ background: colorForUid(p.uid) }}
+          title={p.name}
+        >
+          {(p.name.trim()[0] || '?').toUpperCase()}
+        </div>
+      ))}
+      {extra > 0 ? (
+        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-neutral-600 text-[9px] font-semibold text-white ring-2 ring-[#15181d]">
+          +{extra}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function CollaborationControls() {
@@ -221,9 +255,9 @@ export function CollaborationControls() {
             </div>
           ) : null}
 
-          {/* 协作中 status */}
-          <span className={clsx('flex h-9 items-center gap-1.5 px-3 text-[12px] text-emerald-300', pillBase)}>
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          {/* 协作中 status — 在线成员彩色头像堆叠(颜色与其光标一致)+ 状态 */}
+          <span className={clsx('flex h-9 items-center gap-2 px-3 text-[12px] text-emerald-300', pillBase)}>
+            <PresenceAvatars />
             {zh ? '协作中' : 'Collaborating'}
           </span>
         </div>
