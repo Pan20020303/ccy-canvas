@@ -5,6 +5,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	announcementshttp "ccy-canvas/backend/internal/announcements/interfaces"
@@ -120,9 +123,10 @@ func main() {
 	// handler enqueues durable tasks instead of running inline. The
 	// worker server runs in a background goroutine. Empty REDIS_ADDR
 	// keeps the legacy detached-goroutine path (no behavior change).
+	var taskWorker *tasks.Worker
 	if cfg.RedisAddr != "" {
 		taskQueue := tasks.NewQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
-		taskWorker := tasks.NewWorker(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, catalogService, queries)
+		taskWorker = tasks.NewWorker(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, catalogService, queries)
 		queueAdapter := taskQueueAdapter{q: taskQueue}
 		catalogService = catalogService.WithAssetPersistQueue(queueAdapter)
 		catalogHandler = catalogHandler.WithTasks(queueAdapter)
@@ -224,27 +228,58 @@ func main() {
 	taskStreamRouter := modelhttp.NewTaskStreamRouter(taskBus, sessionManager)
 	taskStreamRouter.RegisterChi(router)
 
+	// Graceful-shutdown context: cancelled on SIGINT/SIGTERM so the HTTP server
+	// drains in-flight requests (canvas saves, uploads, submits) instead of
+	// cutting them mid-flight, and background workers stop cleanly. In-flight
+	// generations survive regardless via the durable Asynq queue.
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Stale-task reaper (F3). Runs regardless of REDIS so the legacy inline
 	// path is covered too: any generation_logs row stuck active past its
 	// runtime budget (OOM-killed worker, crashed goroutine, double-failed
 	// persist) gets marked 'error' and the node stops spinning. Cheap
-	// indexed query; ticks every minute.
+	// indexed query; ticks every minute. Stops on shutdown.
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			if _, err := catalogService.ReapStaleGenerations(rctx); err != nil {
-				log.Printf("[tasks] reaper tick failed: %v", err)
+		for {
+			select {
+			case <-shutdownCtx.Done():
+				return
+			case <-ticker.C:
+				rctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if _, err := catalogService.ReapStaleGenerations(rctx); err != nil {
+					log.Printf("[tasks] reaper tick failed: %v", err)
+				}
+				cancel()
 			}
-			cancel()
 		}
 	}()
 
-	log.Printf("listening on %s", cfg.HTTPAddr)
-	if err := http.ListenAndServe(cfg.HTTPAddr, router); err != nil {
-		log.Fatal(err)
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router}
+	go func() {
+		log.Printf("listening on %s", cfg.HTTPAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	<-shutdownCtx.Done()
+	log.Printf("shutdown signal received — draining in-flight requests (up to 25s)…")
+	stop() // restore default signal handling so a second Ctrl-C force-quits
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
 	}
+	if taskWorker != nil {
+		// Let the currently-processing job finish; any unacked task stays in
+		// Redis and is re-delivered after restart (no generation lost).
+		taskWorker.Shutdown()
+	}
+	log.Printf("shutdown complete")
 }
 
 // creditChargerAdapter bridges the credits service to the modelcatalog

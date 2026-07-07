@@ -3,6 +3,7 @@ import { RouterProvider } from "react-router";
 import { Toaster } from "sonner";
 
 import { AuthProvider } from "./auth/AuthProvider";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 import { router } from "./routes";
 import { useStore } from "./store";
 
@@ -24,6 +25,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ThemeSync />
+      <UpdatePrompt />
       <RouterProvider router={router} />
       <Toaster
         position="top-center"

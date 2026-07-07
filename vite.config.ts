@@ -1,6 +1,16 @@
+import { readFileSync } from "node:fs";
+
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+
+// Newest release (version + 大白话 notes) from src/app/releases.json. The build
+// writes it to dist/version.json so a running (older) tab can detect a fresh
+// deploy, show what changed, and offer to reload.
+function currentRelease(): { version: string; date: string; notes: string[] } {
+  const list = JSON.parse(readFileSync("src/app/releases.json", "utf-8"));
+  return list[0];
+}
 
 // The dev proxy target must match the backend's actual port. Resolution order:
 //   1. shell env  (DEV_API_PROXY_TARGET=... npx vite)
@@ -19,8 +29,26 @@ export default defineConfig(({ mode }) => {
     ?? fileEnv.DEV_API_PROXY_TARGET
     ?? "http://127.0.0.1:8080";
 
+  const release = currentRelease();
+
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        // Emit dist/version.json (newest release: version + notes) so deployed
+        // tabs can poll it, show what changed, and prompt to reload.
+        name: "emit-version-json",
+        apply: "build",
+        generateBundle() {
+          this.emitFile({
+            type: "asset",
+            fileName: "version.json",
+            source: JSON.stringify(release),
+          });
+        },
+      },
+    ],
     // 3D model assets (React Bits Lanyard card) imported as URLs.
     assetsInclude: ["**/*.glb"],
     server: {
