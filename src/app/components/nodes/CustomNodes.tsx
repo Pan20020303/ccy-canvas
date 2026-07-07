@@ -61,6 +61,9 @@ import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
+import type { Skill } from '../../api/skills';
+import { getSkillCommandName, getSkillTemplateBody } from '../settings/skill-agent-presenters';
+import { loadPromptShortcuts, cachedPromptShortcuts, promptShortcutsLoaded } from '../../prompt-shortcuts';
 import {
   REFERENCE_MODE_SPECS,
   modesForModel,
@@ -1630,9 +1633,27 @@ const PromptPanel = ({
 
   const [mentionPos, setMentionPos] = useState<{ left: number; top: number } | null>(null);
 
-  /** Measure the pixel position of the @ trigger character inside the textarea.
-   *  Returns {left, top} relative to the textarea element's top-left corner,
-   *  where top points to just below the @ line (for placing popup underneath). */
+  // ── 快捷提示词(仅文本节点)──────────────────────────────────────────────
+  // 复用管理端「提示词管理」维护的 prompt 模板技能:输入 / 或点胶囊按钮呼出,
+  // 选中后把模板正文插入对话框。只在文本节点启用,其它节点保持原样。
+  const isTextNode = serviceType === 'text';
+  const [shortcuts, setShortcuts] = useState<Skill[]>(() => cachedPromptShortcuts());
+  const [shortcutsReady, setShortcutsReady] = useState<boolean>(() => promptShortcutsLoaded());
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
+  const [slashPos, setSlashPos] = useState<{ left: number; top: number } | null>(null);
+  useEffect(() => {
+    if (!isTextNode) return;
+    let alive = true;
+    void loadPromptShortcuts().then((rows) => { if (alive) { setShortcuts(rows); setShortcutsReady(true); } });
+    return () => { alive = false; };
+  }, [isTextNode]);
+
+  /** Measure the SCREEN (viewport) position of the @ trigger character inside
+   *  the textarea, where top points to just below the @ line. Screen coords let
+   *  the dropdown be portaled to <body> with position:fixed and escape the RF
+   *  node's transform stacking context (same trick as RefHoverPreview) — inline
+   *  it was painted under the z-50 bottom controls. */
   const measureMentionPosition = useCallback((textarea: HTMLTextAreaElement, atIndex: number) => {
     const mirror = document.createElement('div');
     const style = getComputedStyle(textarea);
@@ -1653,9 +1674,13 @@ const PromptPanel = ({
     const mirrorRect = mirror.getBoundingClientRect();
     document.body.removeChild(mirror);
     const lineHeight = parseFloat(style.lineHeight) || 20;
+    const taRect = textarea.getBoundingClientRect();
     return {
-      left: spanRect.left - mirrorRect.left,
-      top: spanRect.top - mirrorRect.top - textarea.scrollTop + lineHeight,
+      // (spanRect - mirrorRect) = the char offset within the textarea's box;
+      // add the textarea's on-screen rect to get viewport coords for the fixed
+      // portal, then drop below the @ line and account for the scroll offset.
+      left: taRect.left + (spanRect.left - mirrorRect.left),
+      top: taRect.top + (spanRect.top - mirrorRect.top) - textarea.scrollTop + lineHeight,
     };
   }, []);
 
@@ -1686,6 +1711,19 @@ const PromptPanel = ({
       const atIndex = before.lastIndexOf('@');
       setMentionPos(measureMentionPosition(taRef.current, atIndex));
     }
+    // 快捷提示词:行首或空白后的 "/xxx" 触发,列出并过滤 prompt 模板(仅文本节点)。
+    // 加载完成前乐观打开(显示加载态);加载完成后若确无模板则不打开,避免在普通
+    // 输入(如路径、日期里的 /)时反复弹空提示。
+    if (isTextNode) {
+      const slashMatch = /(?:^|\s)\/([^\s/]*)$/.exec(before);
+      const openSlash = Boolean(slashMatch) && (!shortcutsReady || shortcuts.length > 0);
+      setSlashOpen(openSlash);
+      if (openSlash && slashMatch && taRef.current) {
+        setSlashQuery(slashMatch[1] ?? '');
+        const slashIndex = cursor - (slashMatch[1] ?? '').length - 1;
+        setSlashPos(measureMentionPosition(taRef.current, slashIndex));
+      }
+    }
   };
 
   const insertMention = (upstream: typeof upstreamNodes[0]) => {
@@ -1701,6 +1739,34 @@ const PromptPanel = ({
     setText(before + tag + ' ' + after);
     setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     setMentionOpen(false);
+    setTimeout(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+      el.scrollTop = prevScrollTop;
+      syncOverlayScroll(el, compactOverlayRef.current);
+      syncOverlayScroll(el, expandedOverlayRef.current);
+    }, 0);
+  };
+
+  /** 插入选中的提示词模板正文。若是输入 "/xxx" 触发,先去掉那段触发文本;点胶囊
+   *  触发时没有 "/" 前缀,则直接在光标处插入。插入后还原滚动与光标,同步镜像层。 */
+  const insertShortcut = (skill: Skill) => {
+    const ta = taRef.current;
+    const prevScrollTop = ta?.scrollTop ?? 0;
+    const cursor = ta?.selectionStart ?? text.length;
+    const body = getSkillTemplateBody(skill);
+    if (!body) { setSlashOpen(false); return; }
+    // "/xxx" 触发时先去掉那段触发文本(保留前置空白);点胶囊触发时没有 "/" 前缀。
+    const rawBefore = text.slice(0, cursor).replace(/(^|\s)\/[^\s/]*$/, (_m, p1) => p1);
+    const rawAfter = text.slice(cursor);
+    // 与已有文本粘连时补一个换行,让模板成为独立段落(前后都判一次)。
+    const lead = rawBefore.length > 0 && !/\s$/.test(rawBefore) ? '\n' : '';
+    const trail = rawAfter.length > 0 && !/^\s/.test(rawAfter) ? '\n' : '';
+    const caret = (rawBefore + lead + body).length;
+    setText(rawBefore + lead + body + trail + rawAfter);
+    setSlashOpen(false);
     setTimeout(() => {
       const el = taRef.current;
       if (!el) return;
@@ -1795,6 +1861,13 @@ const PromptPanel = ({
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Esc 先关闭 @提及 / 快捷提示词 浮层(优先于提交/字符编辑)。
+    if (event.key === 'Escape' && (mentionOpen || slashOpen)) {
+      event.preventDefault();
+      setMentionOpen(false);
+      setSlashOpen(false);
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -2391,35 +2464,33 @@ const PromptPanel = ({
           )}
           style={expandedMode ? { caretColor: '#e5e5e5' } : { caretColor: '#e5e5e5', height: editorHeight }}
         />
-        {mentionOpen && upstreamNodes.length > 0 ? (
-          <div
-            className="absolute z-30 w-[220px] rounded-xl border border-white/10 bg-[#1a1d22]/95 py-1.5 shadow-2xl backdrop-blur-xl"
-            style={mentionPos ? { left: mentionPos.left, top: mentionPos.top } : { left: 12, top: 32 }}
-          >
-            {upstreamNodes.map((up) => (
-              <button
-                key={up.id}
-                onClick={() => insertMention(up)}
-                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
-              >
-                {up.thumb ? (
-                  <img src={toRenderableMediaUrl(up.thumb)} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
-                ) : up.kind === 'audio' ? (
-                  <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] flex-shrink-0">
-                    <Music className="h-3.5 w-3.5 text-emerald-400" />
-                  </span>
-                ) : (
-                  <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
-                )}
-                <span className="text-neutral-200">{up.label}</span>
-                <span className="ml-auto text-[10px] text-neutral-600">(@{up.id.slice(-4)})</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
+        {/* @提及下拉不在这里渲染 —— 见组件根部的 portal(逃出节点 transform 的
+            层叠上下文,避免被底部 z-50 控件盖住;紧凑/展开两态共用一份)。 */}
       </div>
     );
   };
+
+  // 「快捷提示词」入口胶囊(仅文本节点),放在输入框上方。点击呼出模板选择器;
+  // 也可直接在输入框里按 / 呼出(见 onChange)。两个调用点(紧凑/展开)共用一份。
+  const shortcutPill = (
+    <div className="mb-1.5 flex items-center">
+      <button
+        type="button"
+        onClick={(event) => {
+          const r = event.currentTarget.getBoundingClientRect();
+          setSlashQuery('');
+          setSlashPos({ left: r.left, top: r.bottom + 6 });
+          setSlashOpen((v) => !v);
+        }}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-neutral-300 transition hover:bg-white/[0.08]"
+        title={language === 'zh' ? '插入提示词模板（也可在输入框按 / 呼出）' : 'Insert a prompt template (or press / in the box)'}
+      >
+        {language === 'zh' ? '快捷提示词' : 'Prompt shortcuts'}
+        {/* 参考产品的终端风 ">_" 提示(对应「按/呼出指令」)。 */}
+        <span className="font-mono text-[10px] leading-none text-neutral-500" aria-hidden>&gt;_</span>
+      </button>
+    </div>
+  );
 
   const bottomControls = (
     <div className="relative z-50 mt-3 flex items-center justify-between gap-2">
@@ -2546,6 +2617,7 @@ const PromptPanel = ({
           </button>
           {happyHorseTabs ?? referenceTabs}
           {previewStrip}
+          {isTextNode ? shortcutPill : null}
           {renderPromptEditor(false)}
           {bottomControls}
         </div>
@@ -2568,6 +2640,7 @@ const PromptPanel = ({
             </button>
             {happyHorseTabs ?? referenceTabs}
             {previewStrip}
+            {isTextNode ? shortcutPill : null}
             {renderPromptEditor(true)}
             {bottomControls}
           </div>
@@ -2589,6 +2662,94 @@ const PromptPanel = ({
           />
         );
       })()}
+      {/* @提及下拉 —— portal 到 body + fixed，逃出 RF 节点 transform 建立的层叠
+          上下文（内联时 z-30 会被底部 z-50 控件盖住）。只渲染一份，紧凑/展开共用。 */}
+      {mentionOpen && upstreamNodes.length > 0
+        ? createPortal(
+            <div
+              className="fixed z-[140] max-h-[300px] w-[220px] overflow-auto rounded-xl border border-white/10 bg-[#1a1d22]/95 py-1.5 shadow-2xl backdrop-blur-xl"
+              style={mentionPos
+                ? {
+                    left: Math.max(8, Math.min(mentionPos.left, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 232)),
+                    top: Math.max(8, Math.min(mentionPos.top, (typeof window !== 'undefined' ? window.innerHeight : 720) - 308)),
+                  }
+                : { left: 12, top: 32 }}
+            >
+              {upstreamNodes.map((up) => (
+                <button
+                  key={up.id}
+                  onClick={() => insertMention(up)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
+                >
+                  {up.thumb ? (
+                    <img src={toRenderableMediaUrl(up.thumb)} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
+                  ) : up.kind === 'audio' ? (
+                    <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] flex-shrink-0">
+                      <Music className="h-3.5 w-3.5 text-emerald-400" />
+                    </span>
+                  ) : (
+                    <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
+                  )}
+                  <span className="text-neutral-200">{up.label}</span>
+                  <span className="ml-auto text-[10px] text-neutral-600">(@{up.id.slice(-4)})</span>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* 快捷提示词选择器 —— 同样 portal + fixed，逃出节点层叠上下文;仅文本节点。
+          输入 / 触发时按 slashQuery 过滤;点胶囊触发时列出全部。 */}
+      {slashOpen && isTextNode
+        ? createPortal(
+            (() => {
+              const q = slashQuery.trim().toLowerCase();
+              const list = shortcuts.filter((s) =>
+                !q || getSkillCommandName(s).toLowerCase().includes(q) || s.name.toLowerCase().includes(q));
+              const left = slashPos
+                ? Math.max(8, Math.min(slashPos.left, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 300))
+                : 12;
+              const top = slashPos
+                ? Math.max(8, Math.min(slashPos.top, (typeof window !== 'undefined' ? window.innerHeight : 720) - 328))
+                : 40;
+              return (
+                <div
+                  className="fixed z-[140] max-h-[320px] w-[288px] overflow-auto rounded-xl border border-white/10 bg-[#1a1d22]/96 py-1.5 shadow-2xl backdrop-blur-xl"
+                  style={{ left, top }}
+                >
+                  {!shortcutsReady ? (
+                    <div className="px-3 py-3 text-[11px] leading-relaxed text-neutral-500">
+                      {language === 'zh' ? '加载中…' : 'Loading…'}
+                    </div>
+                  ) : list.length === 0 ? (
+                    <div className="px-3 py-3 text-[11px] leading-relaxed text-neutral-500">
+                      {language === 'zh'
+                        ? '还没有提示词模板。请在管理端「提示词管理」中添加。'
+                        : 'No prompt templates yet — add them in Admin → Prompt management.'}
+                    </div>
+                  ) : (
+                    list.map((s) => (
+                      <button
+                        key={s.id}
+                        onClick={() => insertShortcut(s)}
+                        className="block w-full px-3 py-2 text-left transition hover:bg-white/5"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-xs font-medium text-neutral-100">{s.name}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-amber-300/80">{getSkillCommandName(s)}</span>
+                        </div>
+                        <div className="mt-0.5 truncate text-[11px] text-neutral-500">
+                          {getSkillTemplateBody(s).replace(/\s+/g, ' ').slice(0, 64)}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              );
+            })(),
+            document.body,
+          )
+        : null}
       <AssetPickerModal
         isOpen={pickerOpen}
         onClose={() => setPickerOpen(false)}
@@ -6962,7 +7123,6 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const title = data.customTitle || (language === 'zh' ? '文本节点' : 'Text Node');
   const activeMode = getTextNodeMode(data.textMode);
   const [isSubmittingReverse, setSubmittingReverse] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
   const fullscreenEditorRef = useRef<HTMLDivElement>(null);
@@ -7035,6 +7195,21 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       fs.innerHTML = dataContent;
     }
   }, [dataContent, isFullscreen]);
+
+  /** 双击放大后自动聚焦全屏编辑器并把光标移到末尾，双击即可开始编辑。
+   *  声明在同步 effect 之后 → 内容已填充再聚焦(effect 按声明顺序执行)。 */
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const fs = fullscreenEditorRef.current;
+    if (!fs) return;
+    fs.focus();
+    const range = document.createRange();
+    range.selectNodeContents(fs);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }, [isFullscreen]);
 
   /** Apply a document.execCommand and persist the resulting HTML. */
   const exec = useCallback((cmd: string, value?: string) => {
@@ -7164,10 +7339,6 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
     </div>
   );
 
-  const editorToolbar = activeMode === 'editor' && (isEditing || selected)
-    ? renderEditorToolbar()
-    : undefined;
-
   return (
     <BaseNode
       icon={Type}
@@ -7180,25 +7351,23 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       // grid). A user-picked tint layers OVER the solid base so pale tints
       // still read as opaque.
       shellBackground={bgColor ? `linear-gradient(${bgColor}, ${bgColor}), ${shellBase}` : shellBase}
-      topFloatingPanel={editorToolbar}
-      promptPanel={activeMode === 'chooser' ? <PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" /> : undefined}
+      promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
       <div
         className={clsx(
-          'nodrag nopan space-y-2 p-3 text-sm',
-          // Only apply the inner-bordered "surface" frame in non-editor modes.
-          // In editor mode the contentEditable sits flush on the BaseNode shell.
-          activeMode !== 'editor' && clsx('rounded-[12px] border shadow-inner', NODE_TONE_STYLES.text.surface),
+          'space-y-2 p-3 text-sm',
+          // 非编辑态：正文里有按钮/输入框，保留 nodrag + 内框「surface」样式。
+          // 编辑态：正文只读，单击可拖动整个节点(cursor-grab 提示)，双击放大编辑。
+          activeMode !== 'editor'
+            ? clsx('nodrag nopan rounded-[12px] border shadow-inner', NODE_TONE_STYLES.text.surface)
+            : 'cursor-grab active:cursor-grabbing',
         )}
-        onMouseDown={stopNodeGesture}
-        onPointerDown={stopNodeGesture}
-        onClick={(event) => event.stopPropagation()}
-        onDoubleClick={(event) => {
-          // Double-click anywhere on the text node → open fullscreen editor.
-          // We don't gate on activeMode because the chooser surface also
-          // benefits from entering fullscreen directly. The handler runs
-          // BEFORE the contentEditable's native word-select, so we let
-          // that proceed (no stopPropagation) and just trigger the modal.
+        onMouseDown={activeMode === 'editor' ? undefined : stopNodeGesture}
+        onPointerDown={activeMode === 'editor' ? undefined : stopNodeGesture}
+        onClick={activeMode === 'editor' ? undefined : (event) => event.stopPropagation()}
+        onDoubleClick={() => {
+          // 双击节点任意处 → 打开放大(全屏)编辑器改内容。正文平时只读、单击拖动，
+          // 编辑一律在全屏进行。不按 activeMode 拦截：chooser 态双击也直接进编辑。
           if (!isFullscreen) {
             // Auto-flip to editor mode if user double-clicks from chooser,
             // so the fullscreen editor has something coherent to render.
@@ -7244,23 +7413,22 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
 
         {activeMode === 'editor' ? (
           <div ref={contentBoxRef} className="relative" style={boxHeight ? { height: boxHeight } : undefined}>
+            {/* 只读展示：单击拖动整个节点，双击打开放大(全屏)编辑器改内容
+                (见外层 onDoubleClick)。仍挂 editorRef，让 data.content → DOM 的
+                同步 effect 继续填充；不再 contentEditable，也不 nodrag。 */}
             <div
               ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              onInput={(event) => updateNodeData(id, { content: (event.target as HTMLDivElement).innerHTML })}
-              onFocus={() => setIsEditing(true)}
-              onBlur={() => setIsEditing(false)}
-              onMouseDown={stopNodeGesture}
-              onPointerDown={stopNodeGesture}
+              title={language === 'zh' ? '双击编辑' : 'Double-click to edit'}
               className={clsx(
-                'nodrag nopan rich-text-editor w-full bg-transparent p-2 text-sm text-neutral-100 outline-none',
+                'rich-text-editor w-full cursor-grab select-none bg-transparent p-2 text-sm text-neutral-100 outline-none active:cursor-grabbing',
                 boxHeight ? 'prompt-editor-scroll h-full overflow-auto' : 'min-h-[220px]',
               )}
             />
             {!data.content ? (
-              <div className="pointer-events-none absolute left-2 top-2 text-sm text-neutral-500">
-                {language === 'zh' ? '输入内容...' : 'Type here...'}
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
+                <FileText className="h-6 w-6 text-neutral-600" />
+                <div className="text-sm text-neutral-400">{language === 'zh' ? '输入提示词生成文本' : 'Enter a prompt to generate text'}</div>
+                <div className="text-xs text-neutral-600">{language === 'zh' ? '双击编辑文本' : 'Double-click to edit'}</div>
               </div>
             ) : null}
           </div>
@@ -7375,7 +7543,6 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
               contentEditable
               suppressContentEditableWarning
               onInput={(event) => updateNodeData(id, { content: (event.target as HTMLDivElement).innerHTML })}
-              onFocus={() => setIsEditing(true)}
               className="prompt-editor-scroll rich-text-editor flex-1 w-full overflow-auto rounded-xl bg-transparent p-4 text-sm text-neutral-100 outline-none"
             />
           </div>

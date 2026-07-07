@@ -5,10 +5,13 @@ import type { AppProviderConfig } from "./api/providerConfigs";
 export type TextNodeMode = "chooser" | "editor" | "reverse_prompt";
 
 export function getTextNodeMode(value: unknown): TextNodeMode {
-  if (value === "editor" || value === "reverse_prompt") {
-    return value;
+  // 新形态:文本节点默认就是「正文 + 常驻对话框」的 editor 态(参考产品样式),
+  // 不再走 chooser 选择器;图片反推入口(仅在 chooser 里)也随之下线 —— 想反推
+  // 就在对话框里 @图片 + 自己写提示词。仅保留 editor,历史遗留值一律归一到 editor。
+  if (value === "reverse_prompt") {
+    return "reverse_prompt";
   }
-  return "chooser";
+  return "editor";
 }
 
 export function canUseReversePrompt(upstreamNodes: Node[]): boolean {
