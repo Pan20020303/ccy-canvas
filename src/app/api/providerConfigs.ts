@@ -1,4 +1,4 @@
-import { ApiClientError, apiClient } from "./client";
+import { ApiClientError, apiClient, resolveApiUrl } from "./client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1138,4 +1138,21 @@ export function generate(
   signal?: AbortSignal,
 ): Promise<GenerateResult> {
   return apiClient.post<GenerateResult>("/api/app/generate", payload, signal);
+}
+
+/** Token-by-token streaming text generation. Returns the raw Response so the
+ *  caller can read response.body as an SSE ReadableStream (EventSource can't
+ *  POST a body). Frames: `data: {"type":"token"|"done"|"error", ...}\n\n`.
+ *  Cookies (ccy_session) go via credentials:'include'. */
+export function generateStream(
+  body: { model: string; prompt: string; node_id?: string; project_id?: string },
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(resolveApiUrl("/api/app/text/stream"), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
 }

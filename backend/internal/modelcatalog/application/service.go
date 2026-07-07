@@ -1117,6 +1117,30 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 // {baseURL}/chat/completions; this one posts to the gateway's
 // /chat/completions instead — same schema, single auth token, no vendor
 // fan-out logic needed.
+// StreamText streams a text completion for req token-by-token, invoking onDelta
+// for each content chunk as it arrives. Mirrors dispatchToVendor's gateway-vs-
+// direct routing (both are OpenAI-compatible /chat/completions). Returns the
+// full accumulated text. Powers the POST /api/app/text/stream SSE endpoint;
+// credit reserve/refund is handled by that endpoint, not here.
+func (s *Service) StreamText(ctx context.Context, req GenerateRequest, onDelta func(string) error) (string, error) {
+	candidates, err := s.buildCandidates(req)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", apperror.New(apperror.CodeInvalidInput, "No enabled provider found for this text model")
+	}
+	c := candidates[0]
+	baseURL := c.baseURL
+	token := c.apiKey
+	// NewAPI gateway fast path — same condition as dispatchToVendor.
+	if s.newAPI != nil && s.newAPI.Configured() && c.cfg.ServiceType == "text" && strings.TrimSpace(c.cfg.BaseURL) == "" {
+		baseURL = s.newAPI.baseURL
+		token = s.newAPI.token
+	}
+	return streamChatCompletions(ctx, baseURL, token, req.Model, req.Prompt, onDelta)
+}
+
 func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
 	resp, err := s.newAPI.Chat(ctx, ChatRequest{
 		Model: req.Model,

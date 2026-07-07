@@ -16,7 +16,7 @@ import {
 } from '@xyflow/react';
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
-import { generate as apiGenerate } from './api/providerConfigs';
+import { generate as apiGenerate, generateStream } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
@@ -3507,6 +3507,95 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     const aborter = new AbortController();
     runAborters[nodeId] = aborter;
+
+    // ── Text nodes: token-by-token SSE streaming into data.content ──────────
+    // Text generation streams live via POST /api/app/text/stream instead of the
+    // task-queue apiGenerate path — reusing ALL pre-flight above (read-only,
+    // confirm, abort, and resolvedPrompt with @mention + upstream-text inlining).
+    // Writes bypass updateNodeData (which pushes an undo snapshot per call, and
+    // would flood the stack per token): one pushUndoSnapshot up-front makes the
+    // whole generation a single undo step, then a no-undo set streams tokens.
+    if (serviceType === 'text') {
+      const streamTimeout = setTimeout(() => aborter.abort(), Math.max(generationTimeoutMs, 120000));
+      const streamWrite = (patch: Record<string, unknown>) => set((s) => {
+        const nodes = s.nodes.map((n) => (n.id === nodeId ? { ...n, data: { ...(n.data ?? {}), ...patch } } : n));
+        const projectStateById = syncActiveProjectState(s, { nodes }).projectStateById;
+        return { nodes, projectStateById, ...syncActiveSpaceSnapshot(s, { projectStateById }) };
+      });
+      const fail = (msg: string) => { if (isCurrentRun()) streamWrite({ status: 'error', error: msg }); };
+      const zhFail = () => (get().language === 'zh' ? '生成失败' : 'Generation failed');
+      get().pushUndoSnapshot();
+      streamWrite({ status: 'running', error: undefined });
+      let accum = '';
+      let lastFlush = 0;
+      let cleared = false;
+      try {
+        const resp = await generateStream({ model: payload.model ?? '', prompt: resolvedPrompt, node_id: nodeId, project_id: get().activeBackendProjectId ?? undefined }, aborter.signal);
+        if (!resp.ok) {
+          let msg = zhFail();
+          try { const j = await resp.json(); if (j?.error) msg = String(j.error); } catch { /* non-JSON */ }
+          if (resp.status === 402) toast.warning(msg, { id: 'insufficient-credits' });
+          fail(msg);
+          return;
+        }
+        const reader = resp.body?.getReader();
+        if (!reader) { fail(zhFail()); return; }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!isCurrentRun()) { try { await reader.cancel(); } catch { /* superseded */ } return; }
+          buffer += decoder.decode(value, { stream: true });
+          let sep = buffer.indexOf('\n\n');
+          while (sep >= 0) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            sep = buffer.indexOf('\n\n');
+            const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+            if (!dataLine) continue; // ": connected" / ": ping" comments
+            const data = dataLine.slice(5).trim();
+            if (!data) continue;
+            let evt: { type?: string; content?: string; message?: string };
+            try { evt = JSON.parse(data); } catch { continue; }
+            if (evt.type === 'token') {
+              // Clear the old body only when the first token actually arrives, so
+              // a 402/error never wipes existing content.
+              if (!cleared) { cleared = true; streamWrite({ content: '' }); }
+              accum += evt.content ?? '';
+              const now = Date.now();
+              if (now - lastFlush > 40 && isCurrentRun()) { lastFlush = now; streamWrite({ content: accum }); }
+            } else if (evt.type === 'done') {
+              if (isCurrentRun()) {
+                const finalContent = evt.content || accum;
+                // Empty result (provider returned nothing): keep the old content
+                // rather than wiping it to ''; just clear the running state.
+                if (finalContent) streamWrite({ content: finalContent, status: 'done' });
+                else { toast.warning(get().language === 'zh' ? '生成结果为空' : 'Empty result'); streamWrite({ status: undefined }); }
+              }
+              return;
+            } else if (evt.type === 'error') {
+              fail(evt.message || zhFail());
+              return;
+            }
+          }
+        }
+        // Stream closed without an explicit done/error frame → finalize with
+        // whatever accumulated; empty → preserve old content, just clear running.
+        if (isCurrentRun()) {
+          if (accum) streamWrite({ content: accum, status: 'done' });
+          else { toast.warning(get().language === 'zh' ? '生成结果为空' : 'Empty result'); streamWrite({ status: undefined }); }
+        }
+      } catch (err) {
+        if ((err as { name?: string })?.name === 'AbortError') return;
+        fail(err instanceof Error ? err.message : zhFail());
+      } finally {
+        clearTimeout(streamTimeout);
+        if (runAborters[nodeId] === aborter) delete runAborters[nodeId];
+      }
+      return;
+    }
+
     const timeout = setTimeout(() => aborter.abort(), generationTimeoutMs);
 
     // Stable idempotency key for this submit (F6). Survives the whole

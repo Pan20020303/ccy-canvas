@@ -242,6 +242,11 @@ func main() {
 	taskStreamRouter := modelhttp.NewTaskStreamRouter(taskBus, sessionManager)
 	taskStreamRouter.RegisterChi(router)
 
+	// Text-generation token streaming (SSE) — chi-direct like the task stream.
+	// Powers the canvas text node's live "typing" generation.
+	textStreamRouter := modelhttp.NewTextStreamRouter(catalogService, sessionManager, queries)
+	textStreamRouter.RegisterChi(router)
+
 	// Graceful-shutdown context: cancelled on SIGINT/SIGTERM so the HTTP server
 	// drains in-flight requests (canvas saves, uploads, submits) instead of
 	// cutting them mid-flight, and background workers stop cleanly. In-flight

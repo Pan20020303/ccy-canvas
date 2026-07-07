@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -129,6 +130,94 @@ func (c *NewAPIClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		return nil, apperror.New(apperror.CodeInternal, "NewAPI returned no chat choices")
 	}
 	return &out, nil
+}
+
+// ─── Streaming chat completions ─────────────────────────────────────
+
+// streamHTTPClient is shared across all streaming calls so TCP connections /
+// keep-alive are pooled instead of a fresh client per request. No Timeout on
+// purpose: a stream can legitimately run for a while and the caller's ctx (the
+// SSE request context) is what bounds and cancels it.
+var streamHTTPClient = &http.Client{}
+
+// streamChatCompletions POSTs an OpenAI-compatible chat/completions request
+// with stream=true and invokes onDelta for each content delta as it arrives.
+// Works for BOTH the NewAPI gateway and a direct provider — the wire format is
+// identical, only (baseURL, token) differ. Returns the full accumulated text.
+// Blocks until the stream ends ([DONE]), errors, or ctx is cancelled. No
+// client-side Timeout: the caller's ctx (the SSE request context) bounds it.
+func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt string, onDelta func(string) error) (string, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"model":      model,
+		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens": 2048,
+		"stream":     true,
+	})
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeInternal, "Failed to marshal stream request", err)
+	}
+	url := strings.TrimRight(baseURL, "/") + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeInternal, "Failed to build stream request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := streamHTTPClient.Do(httpReq)
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider stream request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", readNewAPIError(resp, "chat stream")
+	}
+
+	var full strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	// A single SSE line can be large; grow past the default 64 KB line cap.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue // comments (": ping") and blank separators
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // skip keep-alive / non-JSON frames
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta.Content
+		if delta == "" {
+			continue
+		}
+		full.WriteString(delta)
+		if onDelta != nil {
+			if err := onDelta(delta); err != nil {
+				return full.String(), err // client disconnected — stop cleanly
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return full.String(), ctx.Err()
+		}
+		return full.String(), apperror.Wrap(apperror.CodeInternal, "Stream read failed", err)
+	}
+	return full.String(), nil
 }
 
 // readNewAPIError reads a non-2xx response, attempts to extract the OpenAI
