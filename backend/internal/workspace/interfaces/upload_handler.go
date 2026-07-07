@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,8 @@ const maxProxySize = 100 * 1024 * 1024 // 100 MB
 
 // RegisterUploadRoutes registers file upload and media proxy endpoints.
 func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
-	r.Get("/api/app/proxy-media", proxyMediaHandler(sm))
+	cache := newMediaCache() // nil unless MEDIA_CACHE_DIR is set (opt-in)
+	r.Get("/api/app/proxy-media", proxyMediaHandler(sm, cache))
 	r.Post("/api/app/upload", func(w http.ResponseWriter, r *http.Request) {
 		// Auth check.
 		cookie, err := r.Cookie(session.CookieName)
@@ -112,7 +114,7 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 	})
 }
 
-func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
+func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(session.CookieName)
 		if err != nil || cookie.Value == "" {
@@ -136,58 +138,98 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			http.Error(w, "Refusing to proxy that url", http.StatusBadRequest)
 			return
 		}
-		// Own-bucket objects are private (the bucket blocks public access, so the
-		// upload-time public-read ACL is overridden and a raw GET 403s). Presign
-		// the URL server-side so the proxy can read it; PresignGet returns "" for
-		// anything that isn't one of our objects, in which case we fetch as-is.
-		// The presigned URL keeps the same (already-validated, public) COS host,
-		// and the hardened client re-checks the dialed IP, so SSRF posture holds.
-		fetchURL := target
-		if signed, perr := assetstore.PresignGet(r.Context(), target, 10*time.Minute); perr == nil && signed != "" {
-			fetchURL = signed
-		}
-		client := safehttp.Client(60 * time.Second)
-		rangeHeader := r.Header.Get("Range")
-		buildRequest := func() (*http.Request, error) {
-			req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, fetchURL, nil)
-			if err != nil {
-				return nil, err
-			}
-			// Some buckets / CDNs (COS 防盗链, Cloudflare bot fight, etc.)
-			// reject requests with an empty or non-browser User-Agent. Set
-			// a common one. We explicitly do NOT forward Referer so
-			// referrer-based hotlink protection doesn't bite either.
-			req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
-			req.Header.Set("Accept", "image/*,video/*,audio/*,*/*;q=0.8")
-			// Forward Range so <audio>/<video> can stream and SEEK: media
-			// elements always request `bytes=0-` and scrubbing needs 206
-			// partials — swallowing Range made playback unseekable.
-			if rangeHeader != "" {
-				req.Header.Set("Range", rangeHeader)
-			}
-			return req, nil
-		}
+		// Own-bucket objects may be private (COS/OSS access rules), so presign
+		// the URL server-side; PresignGet returns "" for anything that isn't one
+		// of our objects. A non-empty result also flags "this is our asset",
+		// which drives the immutable long cache and the on-disk media cache.
+		signed, _ := assetstore.PresignGet(r.Context(), target, 10*time.Minute)
+		ourObject := signed != ""
 
-		// One retry on transport errors / upstream 5xx: the provider link
-		// occasionally drops the first connection (intermittent EOF), and a
-		// media element that 502s on its initial load stays broken until the
-		// node remounts.
-		var resp *http.Response
-		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
-			req, err := buildRequest()
-			if err != nil {
-				http.Error(w, "Failed to build request", http.StatusBadRequest)
+		// ③ Thumbnail variant: for our own OSS image objects, ?w=<px> fetches a
+		// small WebP through the OSS image pipeline instead of the multi-MB
+		// original — a big win for gallery/canvas tiles.
+		width := parseThumbWidth(r.URL.Query().Get("w"))
+		useResize := width > 0 && ourObject && isAliyunOSSURL(target) &&
+			strings.HasPrefix(sniffMediaType(target), "image/")
+
+		// Cache key is the STABLE public URL (+ thumb width), never the rotating
+		// presigned URL. Only our own assets are cached on disk.
+		cacheKey := target
+		if useResize {
+			cacheKey = target + "|w=" + strconv.Itoa(width)
+		}
+		caching := cache != nil && ourObject
+
+		// ① Cache hit — serve straight from local disk (Range via ServeContent).
+		if caching {
+			if bodyPath, ct, ok := cache.lookup(cacheKey); ok {
+				w.Header().Set("X-Cache", "HIT")
+				serveCachedFile(w, r, bodyPath, ct)
 				return
 			}
-			resp, lastErr = client.Do(req)
-			if lastErr == nil && resp.StatusCode < 500 {
-				break
+		}
+
+		fetchURL := target
+		switch {
+		case useResize:
+			fetchURL = ossResizeURL(target, width) // public object + x-oss-process
+		case signed != "":
+			fetchURL = signed
+		}
+
+		client := safehttp.Client(60 * time.Second)
+		rangeHeader := r.Header.Get("Range")
+		// On a cache miss we fetch the FULL object (drop the client Range) so the
+		// cached file is complete; the client's Range is then served from the
+		// file by ServeContent.
+		upstreamRange := rangeHeader
+		if caching {
+			upstreamRange = ""
+		}
+
+		// fetch does the request with one retry on transport error / upstream
+		// 5xx (the provider link occasionally drops the first connection).
+		fetch := func(u, rng string) (*http.Response, error) {
+			var resp *http.Response
+			var lastErr error
+			for attempt := 0; attempt < 2; attempt++ {
+				req, rerr := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+				if rerr != nil {
+					return nil, rerr
+				}
+				// Some buckets / CDNs (COS 防盗链, Cloudflare bot fight, etc.)
+				// reject empty / non-browser User-Agents. We also deliberately do
+				// NOT forward Referer so hotlink protection doesn't bite.
+				req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CCYCanvasProxy/1.0)")
+				req.Header.Set("Accept", "image/*,video/*,audio/*,*/*;q=0.8")
+				if rng != "" {
+					req.Header.Set("Range", rng)
+				}
+				resp, lastErr = client.Do(req)
+				if lastErr == nil && resp.StatusCode < 500 {
+					return resp, nil
+				}
+				if resp != nil {
+					resp.Body.Close()
+					resp = nil
+				}
 			}
+			return resp, lastErr
+		}
+
+		resp, lastErr := fetch(fetchURL, upstreamRange)
+		// If the resized fetch fails (e.g. non-image / pipeline error), fall back
+		// to the original object once.
+		if useResize && (lastErr != nil || resp == nil || resp.StatusCode >= 400) {
 			if resp != nil {
 				resp.Body.Close()
-				resp = nil
 			}
+			useResize = false
+			fallback := target
+			if signed != "" {
+				fallback = signed
+			}
+			resp, lastErr = fetch(fallback, upstreamRange)
 		}
 		if lastErr != nil {
 			http.Error(w, "Failed to fetch media: "+lastErr.Error(), http.StatusBadGateway)
@@ -243,6 +285,26 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 			}
 		}
 
+		// A resized thumbnail comes back as WebP regardless of the source ext.
+		if useResize {
+			ct = "image/webp"
+		}
+
+		// ① On a cache miss for our own asset: persist the full object to disk,
+		// then serve it (Range handled by ServeContent). `body` still holds the
+		// peeked bytes, so nothing is lost.
+		if caching {
+			if bodyPath, cerr := cache.store(cacheKey, ct, io.LimitReader(body, maxProxySize)); cerr == nil {
+				w.Header().Set("X-Cache", "MISS")
+				serveCachedFile(w, r, bodyPath, ct)
+				return
+			}
+			// Store failed and the body is already (partly) consumed — we can't
+			// safely re-stream it. Report transient; the next load re-fetches.
+			http.Error(w, "Failed to cache media", http.StatusBadGateway)
+			return
+		}
+
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// SVG can carry <script>; served same-origin it is a stored-XSS vector
@@ -257,7 +319,9 @@ func proxyMediaHandler(sm session.Manager) http.HandlerFunc {
 		// makes the browser reject any credentialed fetch (credentials:'include'
 		// + ACAO "*" is invalid), which is exactly how download / capture /
 		// re-upload calls to this proxy fail on the success path.
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		// ② Our content-addressed assets never change → immutable long cache;
+		// arbitrary passthrough URLs keep the conservative 1-day cache.
+		w.Header().Set("Cache-Control", cacheControlFor(ourObject))
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
 		}

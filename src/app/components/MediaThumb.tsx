@@ -25,13 +25,17 @@ export function MediaThumb({
   alt,
   className,
   onDead,
+  thumbWidth = 640,
 }: {
   src: string;
   alt?: string;
   className?: string;
   onDead?: () => void;
+  /** Request a downsized WebP thumbnail from the proxy (OSS images only; other
+   *  sources fall back to the original). Set 0 to always load full-res. */
+  thumbWidth?: number;
 }) {
-  const primary = useMemo(() => (src ? toRenderableMediaUrl(src) : ''), [src]);
+  const primary = useMemo(() => (src ? toRenderableMediaUrl(src, { thumbWidth }) : ''), [src, thumbWidth]);
   const fallback = useMemo(() => {
     if (!src) return '';
     if (primary !== src) return src; // proxied first — retry direct

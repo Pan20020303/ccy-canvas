@@ -107,7 +107,7 @@ export function extractOriginalMediaUrl(url?: string | null): string {
  *  double-wrap-safe: data:/blob: and relative paths pass through unchanged,
  *  and any remote http(s) URL — including one that is already wrapped in
  *  proxy-media — collapses to exactly one proxy layer. */
-export function toRenderableMediaUrl(url?: string | null): string {
+export function toRenderableMediaUrl(url?: string | null, opts?: { thumbWidth?: number }): string {
   if (!url) {
     return "";
   }
@@ -119,7 +119,11 @@ export function toRenderableMediaUrl(url?: string | null): string {
     // Relative path (e.g. /uploads/..) — leave as-is for the page/backend to serve.
     return origin;
   }
-  return `${apiBaseUrlPrefix()}${PROXY_MEDIA_PATH}?url=${encodeURIComponent(origin)}`;
+  // Optional thumbnail hint: the media proxy downsizes our own OSS images to a
+  // small WebP (`?w=`), cutting bytes for gallery/canvas tiles. It's ignored for
+  // non-OSS or non-image sources, so passing it is always safe.
+  const thumb = opts?.thumbWidth && opts.thumbWidth > 0 ? `&w=${Math.round(opts.thumbWidth)}` : "";
+  return `${apiBaseUrlPrefix()}${PROXY_MEDIA_PATH}?url=${encodeURIComponent(origin)}${thumb}`;
 }
 
 export function readFileAsDataUrl(file: Blob): Promise<string> {
