@@ -277,15 +277,28 @@ export function AssetLibraryModal() {
   const useAsset = (asset: SavedAsset) => {
     const id = `asset-use-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
     const position = { x: 240 + Math.random() * 60, y: 180 + Math.random() * 60 };
+    // Fall back to the thumbnail when the full url is missing so the node is
+    // never created blank (some saved assets only carry a thumbnail). status
+    // 'done' matches the canonical reference-node shape → no "上传中" overlay.
+    const mediaUrl = asset.url || asset.thumbnail || '';
     if (asset.kind === 'image') {
-      addNode({ id, type: 'referenceImageNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
+      addNode({ id, type: 'referenceImageNode', position, data: { url: mediaUrl, status: 'done', sourceName: asset.name, sourceKind: 'upload' } } as never);
     } else if (asset.kind === 'video') {
-      addNode({ id, type: 'referenceVideoNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
+      addNode({ id, type: 'referenceVideoNode', position, data: { url: mediaUrl, status: 'done', sourceName: asset.name, sourceKind: 'upload' } } as never);
     } else if (asset.kind === 'audio') {
-      addNode({ id, type: 'referenceAudioNode', position, data: { url: asset.url, sourceName: asset.name, sourceKind: 'upload' } } as never);
+      addNode({ id, type: 'referenceAudioNode', position, data: { url: asset.url, status: 'done', sourceName: asset.name, sourceKind: 'upload' } } as never);
     } else {
       addNode({ id, type: 'textNode', position, data: { content: asset.text ?? '', customTitle: asset.name, textMode: 'editor' } } as never);
     }
+  };
+
+  // Single-click on a card: add to canvas, then close the modal + toast so the
+  // node is actually VISIBLE (the modal covers the canvas, and a silent add read
+  // as "can't add to canvas"). Batch mode keeps the modal open for multi-select.
+  const useAssetAndClose = (asset: SavedAsset) => {
+    useAsset(asset);
+    toast.success(zh ? '已添加到画布' : 'Added to canvas');
+    close(false);
   };
 
   const locateNode = (nodeId: string) => {
@@ -650,7 +663,7 @@ export function AssetLibraryModal() {
                       batchMode={batchMode}
                       selected={isSel}
                       livePreview={livePreview}
-                      onCardClick={() => (batchMode ? toggleSelect(asset.id) : useAsset(asset))}
+                      onCardClick={() => (batchMode ? toggleSelect(asset.id) : useAssetAndClose(asset))}
                       onView={() => view({ url: asset.url, thumb: asset.thumbnail || asset.url, kind: asset.kind })}
                       onLocate={undefined}
                       onMoveOut={folderView !== null ? () => moveAssetToFolder(asset.id, '') : undefined}

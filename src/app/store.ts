@@ -508,7 +508,65 @@ const cloneCanvasState = (state: Pick<AppState, 'nodes' | 'edges' | 'groups'>): 
 // Cap the undo stack so long sessions can't accumulate hundreds of full-canvas
 // clones in memory (each entry deep-copies every node/edge/group).
 const MAX_UNDO_STACK = 50;
+
+// Shallow structural equality between an existing snapshot and the live canvas.
+// cloneCanvasState() spreads data one level deep, so when NOTHING changed the
+// live node's data keeps the same nested references as the stored clone — a
+// key-by-key Object.is check is O(nodes) and never touches large data: URLs.
+// Zero false-positive risk: it only reports "equal" when the two are actually
+// identical, so we never drop a real undo step (a genuine edit changes an id,
+// position, or an immutably-replaced value → not equal → still pushed).
+const shallowDataEqual = (
+  a?: Record<string, unknown>,
+  b?: Record<string, unknown>,
+): boolean => {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  for (const k of ak) {
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  return true;
+};
+
+const canvasStatesEqual = (
+  a: ProjectCanvasState,
+  b: Pick<AppState, 'nodes' | 'edges' | 'groups'>,
+): boolean => {
+  if (a.nodes.length !== b.nodes.length) return false;
+  if (a.edges.length !== b.edges.length) return false;
+  if (a.groups.length !== b.groups.length) return false;
+  for (let i = 0; i < a.nodes.length; i += 1) {
+    const na = a.nodes[i];
+    const nb = b.nodes[i];
+    if (na.id !== nb.id || na.type !== nb.type) return false;
+    if (na.position.x !== nb.position.x || na.position.y !== nb.position.y) return false;
+    if (!shallowDataEqual(na.data as Record<string, unknown>, nb.data as Record<string, unknown>)) return false;
+  }
+  for (let i = 0; i < a.edges.length; i += 1) {
+    const ea = a.edges[i];
+    const eb = b.edges[i];
+    if (ea.id !== eb.id || ea.source !== eb.source || ea.target !== eb.target) return false;
+  }
+  for (let i = 0; i < a.groups.length; i += 1) {
+    const ga = a.groups[i];
+    const gb = b.groups[i];
+    if (ga.id !== gb.id || ga.nodeIds.length !== gb.nodeIds.length) return false;
+    for (let j = 0; j < ga.nodeIds.length; j += 1) {
+      if (ga.nodeIds[j] !== gb.nodeIds[j]) return false;
+    }
+  }
+  return true;
+};
+
 const pushUndoState = (state: AppState) => {
+  // Skip a snapshot identical to the top of the stack: nothing changed between
+  // the two captures, so it would only add a phantom no-op undo step — the
+  // "Ctrl+Z that appears to do nothing" the user hit (e.g. a click that fired a
+  // pre-edit snapshot but no actual edit followed).
+  const top = state.undoStack.at(-1);
+  if (top && canvasStatesEqual(top, state)) return state.undoStack;
   const next = [...state.undoStack, cloneCanvasState(state)];
   return next.length > MAX_UNDO_STACK ? next.slice(-MAX_UNDO_STACK) : next;
 };

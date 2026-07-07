@@ -556,20 +556,21 @@ const InnerCanvas = () => {
       if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId) return;
 
       // ── Delete / Backspace ─────────────────────────────────────────────
-      // Office-standard: Del removes the current selection. A selected group
-      // takes priority (its members stay on canvas); otherwise remove the
-      // selected node(s). Backspace is always accepted as an alias, and the
-      // bound `delete_node` combo (default Delete) is honored too.
+      // Office-standard: Del removes the current selection. Selected NODES take
+      // priority — selecting a member of a group and hitting Delete removes THAT
+      // node (the group and its other members stay), not the whole group. Only a
+      // bare group selection (no node selected) removes the group. Backspace is
+      // an alias; the bound `delete_node` combo (default Delete) is honored too.
       if (eventMatchesShortcut(event, 'delete_node', shortcuts) || event.key === 'Delete' || event.key === 'Backspace') {
+        if (nodesRef.current.some((n) => n.selected)) {
+          event.preventDefault();
+          deleteSelectedNodes();
+          return;
+        }
         if (selectedGroupId) {
           event.preventDefault();
           removeGroup(selectedGroupId);
           setSelectedGroupId(null);
-          return;
-        }
-        if (nodesRef.current.some((n) => n.selected)) {
-          event.preventDefault();
-          deleteSelectedNodes();
           return;
         }
         // No nodes selected — delete any SELECTED EDGES (clicking a wire
@@ -1624,6 +1625,9 @@ const InnerCanvas = () => {
           if (useStore.getState().agentNodePickActive) useStore.getState().cancelAgentNodePick();
         }}
         onNodeClick={(_event, node) => {
+          // Selecting a node clears any group selection, so Delete targets the
+          // node (not the whole group) — see the delete handler above.
+          setSelectedGroupId(null);
           // Agent "pick from canvas" mode: capture this node as a reference.
           if (useStore.getState().agentNodePickActive) {
             useStore.getState().resolveAgentNodePick(node.id);
@@ -1710,6 +1714,9 @@ const InnerCanvas = () => {
         selectionMode={"partial" as never}
         multiSelectionKeyCode={["Meta", "Shift", "Control"]}
         deleteKeyCode={null}
+        /* 点击必须移动 ≥4px 才算拖拽:避免「点选节点」时的手抖被判成微拖拽,
+           从而多压一个几乎相同的撤销快照,导致 Ctrl+Z 看起来「失灵」。 */
+        nodeDragThreshold={4}
         snapToGrid={snapToGrid}
         snapGrid={[GRID_SIZE, GRID_SIZE]}
         /* 关闭 xyflow 内置的 pane 双击缩放,让外层 wrapper 的
