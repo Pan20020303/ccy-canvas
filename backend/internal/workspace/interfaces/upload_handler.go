@@ -145,20 +145,24 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		signed, _ := assetstore.PresignGet(r.Context(), target, 10*time.Minute)
 		ourObject := signed != ""
 
-		// ③ Thumbnail variant: for our own OSS image objects, ?w=<px> fetches a
-		// small WebP through the OSS image pipeline instead of the multi-MB
-		// original — a big win for gallery/canvas tiles.
+		// ③ Thumbnail variant: for image objects on a host with a server-side
+		// resize pipeline (Aliyun OSS x-oss-process OR Tencent COS imageMogr2),
+		// ?w=<px> fetches a small WebP instead of the multi-MB original — a big
+		// win for gallery/canvas tiles. Public bucket URLs are fetchable without
+		// a presign, so this does NOT require ourObject (matters while images are
+		// still on COS but the configured storage backend is OSS).
 		width := parseThumbWidth(r.URL.Query().Get("w"))
-		useResize := width > 0 && ourObject && isAliyunOSSURL(target) &&
+		useResize := width > 0 && supportsThumbnail(target) &&
 			strings.HasPrefix(sniffMediaType(target), "image/")
 
 		// Cache key is the STABLE public URL (+ thumb width), never the rotating
-		// presigned URL. Only our own assets are cached on disk.
+		// presigned URL. Cache our own assets AND our OSS/COS-hosted media (which
+		// are ours too, just on the not-currently-configured backend).
 		cacheKey := target
 		if useResize {
 			cacheKey = target + "|w=" + strconv.Itoa(width)
 		}
-		caching := cache != nil && ourObject
+		caching := cache != nil && (ourObject || supportsThumbnail(target))
 
 		// ① Cache hit — serve straight from local disk (Range via ServeContent).
 		if caching {
@@ -172,7 +176,7 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		fetchURL := target
 		switch {
 		case useResize:
-			fetchURL = ossResizeURL(target, width) // public object + x-oss-process
+			fetchURL = resizeURL(target, width) // public object + OSS/COS resize pipeline
 		case signed != "":
 			fetchURL = signed
 		}
@@ -321,7 +325,10 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		// re-upload calls to this proxy fail on the success path.
 		// ② Our content-addressed assets never change → immutable long cache;
 		// arbitrary passthrough URLs keep the conservative 1-day cache.
-		w.Header().Set("Cache-Control", cacheControlFor(ourObject))
+		// Our OSS/COS-hosted media is content-addressed (immutable) too, even when
+		// ourObject is false because the configured backend differs from where the
+		// image currently lives (COS during the in-flight OSS migration).
+		w.Header().Set("Cache-Control", cacheControlFor(ourObject || supportsThumbnail(target)))
 		if cl := resp.Header.Get("Content-Length"); cl != "" {
 			w.Header().Set("Content-Length", cl)
 		}

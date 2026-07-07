@@ -5227,6 +5227,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
             className="h-full w-full object-cover select-none"
             onLoad={handleImageLoad}
             zh={language === 'zh'}
+            thumbWidth={720}
           />
           {isPanorama ? (
             <PanoramaOpenButton
@@ -6139,7 +6140,7 @@ export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
       >
         {data.url ? (
           <>
-            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} />
+            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} thumbWidth={720} />
             <PanoramaOpenButton
               onClick={(event) => {
                 event.stopPropagation();
@@ -6192,16 +6193,22 @@ function ResilientImage({
   className,
   onLoad,
   zh = true,
+  thumbWidth,
 }: {
   src: string;
   alt?: string;
   className?: string;
   onLoad?: (event: React.SyntheticEvent<HTMLImageElement>) => void;
   zh?: boolean;
+  // When set, load a downsized WebP thumbnail through the media proxy FIRST
+  // (huge byte savings for canvas tiles on OSS/COS), falling back to the direct
+  // full-res original if the thumbnail fetch fails.
+  thumbWidth?: number;
 }) {
   const [failed, setFailed] = useState(false);
-  const [useProxy, setUseProxy] = useState(false);
+  const [useProxy, setUseProxy] = useState(Boolean(thumbWidth));
   const [bust, setBust] = useState(0);
+  const triedDirect = useRef(false);
   // 自动退避重试次数(across direct+proxy 之后的软重试)。刚生成成功的图常因
   // COS 最终一致性/代理瞬时抖动首次加载失败,退避几次多半就好了 —— 之前直接
   // 弹「点击重试」,用户手动点一下才成,体验割裂。
@@ -6217,22 +6224,30 @@ function ResilientImage({
   // so neither path can double-wrap.
   const directSrc = extractOriginalMediaUrl(src) || src;
   const isRemote = /^https?:\/\//.test(directSrc);
-  const proxiedSrc = toRenderableMediaUrl(src);
+  const proxiedSrc = toRenderableMediaUrl(src, thumbWidth ? { thumbWidth } : undefined);
   const baseSrc = useProxy ? proxiedSrc : directSrc;
   const finalSrc = bust > 0 ? `${baseSrc}${baseSrc.includes("?") ? "&" : "?"}_r=${bust}` : baseSrc;
 
   useEffect(() => {
     setFailed(false);
-    setUseProxy(false);
+    setUseProxy(Boolean(thumbWidth)); // proxy-first when a thumbnail is wanted
     setBust(0);
     autoRetries.current = 0;
+    triedDirect.current = false;
     return () => { if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; } };
-  }, [src]);
+  }, [src, thumbWidth]);
 
   const handleError = () => {
     // First failure on a remote URL → fall back to backend proxy silently.
     if (isRemote && !useProxy) {
       setUseProxy(true);
+      return;
+    }
+    // Thumbnail(proxy) failed → try the direct full-res original once before
+    // giving up to soft retries.
+    if (isRemote && useProxy && thumbWidth && !triedDirect.current) {
+      triedDirect.current = true;
+      setUseProxy(false);
       return;
     }
     // 直连 + 代理都失败:先做退避软重试(700/1400/2800/5600ms,带 cache-bust
@@ -6280,6 +6295,8 @@ function ResilientImage({
       // Decode off the main thread so a canvas full of large images doesn't
       // jank scrolling/zooming while the browser rasterizes them.
       decoding="async"
+      // Defer off-screen images (belt-and-suspenders with onlyRenderVisibleElements).
+      loading="lazy"
       // Many third-party image hosts (Chinese provider relays, Cloudflare-
       // protected R2 buckets, etc.) reject requests where the Referer
       // header points at a different origin. `no-referrer` strips the
@@ -7056,7 +7073,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       >
         {data.url ? (
           <>
-            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} />
+            <ResilientImage src={data.url} alt="" className="h-full w-full object-cover select-none" zh={language === 'zh'} thumbWidth={720} />
             <PanoramaOpenButton
               onClick={(event) => {
                 event.stopPropagation();

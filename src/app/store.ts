@@ -374,6 +374,16 @@ type AppState = {
   copySelectedNodes: () => void;
   pasteCopiedNodes: () => void;
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
+  /** 应用协作者广播过来的画布增量(实时同步)。合并式 upsert/remove，不压撤销、
+   *  保留本地选中/拖拽/尺寸等交互态。结构化入参以避免与 collab/canvas-sync 循环依赖。 */
+  applyRemoteCanvasDelta: (delta: {
+    nodesUpsert?: Node[];
+    nodesRemove?: string[];
+    edgesUpsert?: Edge[];
+    edgesRemove?: string[];
+    groupsUpsert?: Group[];
+    groupsRemove?: string[];
+  }) => void;
   /** 把指定版本调回成当前主图 —— 现在的 url 反过来进 versions[] 顶端,
    *  选中的 version.url 提升为当前 url. 节点其他 metadata (prompt 等)
    *  也一起切换,让面板里看到的提示词跟图对上. */
@@ -1412,7 +1422,7 @@ function stripHeavyFromGenerationParams(params: unknown): unknown {
   return out;
 }
 
-function stripHeavyFromNodeData(data: unknown): unknown {
+export function stripHeavyFromNodeData(data: unknown): unknown {
   if (!data || typeof data !== 'object') return data;
   const out: Record<string, unknown> = { ...(data as Record<string, unknown>) };
   for (const key of ['url', 'output', 'thumbnail', 'poster', 'referenceValue', 'maskImage'] as const) {
@@ -3243,6 +3253,53 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     return {
       nodes,
       undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  applyRemoteCanvasDelta: (delta) => set((state) => {
+    // Merge a collaborator's delta into the local canvas. NO pushUndoState —
+    // remote edits aren't part of THIS user's undo history. Local interaction
+    // state (selection/drag/measured size) is preserved so a peer's edit never
+    // steals our selection or fights our drag.
+    const nodesRm = delta.nodesRemove?.length ? new Set(delta.nodesRemove) : null;
+    let nodes = nodesRm ? state.nodes.filter((n) => !nodesRm.has(n.id)) : state.nodes;
+    if (delta.nodesUpsert?.length) {
+      const localById = new Map(state.nodes.map((n) => [n.id, n]));
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      for (const incoming of delta.nodesUpsert) {
+        const local = localById.get(incoming.id) as (Node & { measured?: unknown }) | undefined;
+        if (local?.dragging) {
+          // Don't fight an in-progress LOCAL drag: keep our node until we release.
+          // Our drag-end broadcasts the final position; we pick up their edit next diff.
+          byId.set(incoming.id, local);
+          continue;
+        }
+        byId.set(incoming.id, (local
+          ? { ...incoming, selected: local.selected, measured: local.measured, width: local.width, height: local.height }
+          : incoming) as Node);
+      }
+      nodes = [...byId.values()];
+    }
+    const edgesRm = delta.edgesRemove?.length ? new Set(delta.edgesRemove) : null;
+    let edges = edgesRm ? state.edges.filter((e) => !edgesRm.has(e.id)) : state.edges;
+    if (delta.edgesUpsert?.length) {
+      const byId = new Map(edges.map((e) => [e.id, e]));
+      for (const incoming of delta.edgesUpsert) byId.set(incoming.id, incoming as Edge);
+      edges = [...byId.values()];
+    }
+    const groupsRm = delta.groupsRemove?.length ? new Set(delta.groupsRemove) : null;
+    let groups = groupsRm ? state.groups.filter((g) => !groupsRm.has(g.id)) : state.groups;
+    if (delta.groupsUpsert?.length) {
+      const byId = new Map(groups.map((g) => [g.id, g]));
+      for (const incoming of delta.groupsUpsert) byId.set(incoming.id, incoming as Group);
+      groups = [...byId.values()];
+    }
+    const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
+    return {
+      nodes,
+      edges,
+      groups,
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };

@@ -73,6 +73,7 @@ import { CanvasIndexPanel } from './CanvasIndexPanel';
 import { RemotePresenceLayer } from './RemotePresenceLayer';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
 import { updatePresence } from '../collab/presence-store';
+import { useCanvasSync } from '../collab/canvas-sync';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
 // 打开导演台时按需加载,首屏 0 影响.
@@ -381,6 +382,9 @@ const InnerCanvas = () => {
   const viewport = useViewport();
   // Live-collaboration presence: broadcast our cursor/selection, watch others.
   usePresenceReporting();
+  // Real-time canvas sync: broadcast our node/edge/group edits + apply theirs so
+  // everyone sees changes live and states converge (no silent save-clobber).
+  useCanvasSync();
 
   // 资产库「定位」:store 里的 canvasFocusRequest nonce 变化时,平移到目标节点
   // 并选中(useReactFlow 只能在 Canvas 内用,故经 store 中转)。

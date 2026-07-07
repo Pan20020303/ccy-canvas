@@ -214,3 +214,38 @@ func ossResizeURL(raw string, width int) string {
 	}
 	return raw + "?" + proc
 }
+
+// isTencentCOSURL reports whether the URL points at Tencent Cloud COS, which
+// supports the imageMogr2 image pipeline (different syntax from OSS).
+func isTencentCOSURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(u.Host), "myqcloud.com")
+}
+
+// cosResizeURL appends a Tencent COS imageMogr2 thumbnail pipeline (WebP,
+// shrink-only via the `>` operator) so the proxy fetches a small variant.
+func cosResizeURL(raw string, width int) string {
+	proc := "imageMogr2/thumbnail/" + strconv.Itoa(width) + "x%3E/format/webp"
+	if strings.Contains(raw, "?") {
+		return raw + "&" + proc
+	}
+	return raw + "?" + proc
+}
+
+// supportsThumbnail reports whether a host has a server-side resize pipeline we
+// can drive via the proxy `w` param (OSS or COS).
+func supportsThumbnail(raw string) bool {
+	return isAliyunOSSURL(raw) || isTencentCOSURL(raw)
+}
+
+// resizeURL routes to the correct provider pipeline (OSS x-oss-process vs COS
+// imageMogr2). Assumes supportsThumbnail(raw) is true.
+func resizeURL(raw string, width int) string {
+	if isAliyunOSSURL(raw) {
+		return ossResizeURL(raw, width)
+	}
+	return cosResizeURL(raw, width)
+}

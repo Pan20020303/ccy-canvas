@@ -11,6 +11,7 @@ import (
 	"time"
 
 	announcementshttp "ccy-canvas/backend/internal/announcements/interfaces"
+	"ccy-canvas/backend/internal/canvassync"
 	creditapp "ccy-canvas/backend/internal/credits/application"
 	creditinfra "ccy-canvas/backend/internal/credits/infrastructure"
 	identityapp "ccy-canvas/backend/internal/identity/application"
@@ -112,6 +113,15 @@ func main() {
 		go presenceBus.StartBridge(context.Background())
 	}
 	go presenceBus.StartSweeper(context.Background())
+
+	// Real-time canvas sync bus — broadcasts opaque canvas-edit deltas so
+	// collaborators see each other's edits live and converge (no clobber). Same
+	// cross-replica Redis pattern; no roster/sweeper (pure fan-out).
+	canvasBus := canvassync.NewBus()
+	if cfg.RedisAddr != "" {
+		canvasBus = canvasBus.WithTransport(events.NewRedisTransport(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB))
+		go canvasBus.StartBridge(context.Background())
+	}
 	catalogService := application.NewService(catalogRepo, cfg.EncryptionKey).
 		WithEventBus(taskBus).
 		WithCredits(creditChargerAdapter{svc: creditService})
@@ -221,6 +231,7 @@ func main() {
 	workspaceHandler.RegisterRoutes(api)
 	// Live-collaboration presence (chi-direct: SSE stream + throttled report).
 	workspacehttp.RegisterPresenceRoutes(router, sessionManager, presenceBus, workspaceRepo)
+	workspacehttp.RegisterCanvasSyncRoutes(router, sessionManager, canvasBus, workspaceRepo)
 
 	// Skills + Agents routes (user CRUD + invoke + admin CRUD).
 	skillsExecutor := skillsapp.NewExecutor(catalogService)
