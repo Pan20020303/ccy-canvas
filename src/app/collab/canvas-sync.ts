@@ -21,6 +21,11 @@ import { useStore, useActiveProjectReadOnly, stripHeavyFromNodeData, type Group 
  * selection never lands on another's canvas.
  */
 
+// KILL-SWITCH: real-time canvas sync is temporarily OFF while a flicker/stuck-
+// load regression is diagnosed with 2-user testing. Flip to true to re-enable
+// (broadcast + apply). Presence (cursors) is unaffected — it's a separate layer.
+const CANVAS_SYNC_ENABLED = false;
+
 export type CanvasDelta = {
   nodesUpsert?: Node[];
   nodesRemove?: string[];
@@ -208,6 +213,7 @@ export function useCanvasSync(): void {
   // Open the room + apply remote deltas. Re-seed baseline on (re)subscribe from
   // the current state so the first local diff doesn't rebroadcast everything.
   useEffect(() => {
+    if (!CANVAS_SYNC_ENABLED) return;
     if (!activeId || !uid || !canvasHydrated) return;
     const base = emptyBaseline();
     const s0 = useStore.getState();
@@ -228,6 +234,7 @@ export function useCanvasSync(): void {
 
   // Publish local edits (debounced diff vs baseline). Visitors never broadcast.
   useEffect(() => {
+    if (!CANVAS_SYNC_ENABLED) return;
     if (!activeId || !uid || readOnly || !canvasHydrated) return;
     const t = setTimeout(() => {
       const base = baselineRef.current;

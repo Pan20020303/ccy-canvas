@@ -22,6 +22,9 @@ import { useStore } from "../store";
  * finish even on a large canvas.
  */
 const MAX_PRELOAD_MS = 6000;
+// Hard ceiling on step 1 (waiting for the canvas snapshot fetch) so a slow or
+// stalled getCanvas can never leave the user stuck on the loading gate forever.
+const MAX_SYNC_WAIT_MS = 8000;
 const MIN_VISIBLE_MS = 550;
 const FADE_MS = 500;
 
@@ -99,8 +102,12 @@ export function CanvasLoader() {
     const stale = () => cancelled || runId !== runRef.current;
 
     const run = async () => {
-      // 1) Wait for the snapshot fetch to finish (backendSyncing flips false).
-      while (!stale() && useStore.getState().backendSyncing) {
+      // 1) Wait for the snapshot fetch to finish (backendSyncing flips false) —
+      //    BOUNDED so a slow/stalled getCanvas can never hang the gate forever
+      //    on «加载画布…». After the deadline we reveal the canvas anyway; it
+      //    fills in when the fetch eventually resolves.
+      const syncDeadline = Date.now() + MAX_SYNC_WAIT_MS;
+      while (!stale() && useStore.getState().backendSyncing && Date.now() < syncDeadline) {
         await wait(60);
       }
       if (stale()) return;
