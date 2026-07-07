@@ -1688,6 +1688,10 @@ const InnerCanvas = () => {
         connectionLineComponent={FreeConnectionLine}
         defaultEdgeOptions={defaultEdgeOptions}
         fitView
+        /* 性能:只渲染视口内的节点/边。节点多时(每个媒体节点都挂着真实
+           img/video)不再全量渲染,屏幕外的不挂媒体;配合会话级尺寸缓存,
+           节点重新进入视口时尺寸已知、图片已缓存,不跳不闪。 */
+        onlyRenderVisibleElements
         className="touch-none"
         minZoom={0.1}
         maxZoom={4}
