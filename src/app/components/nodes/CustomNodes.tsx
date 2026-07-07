@@ -5449,6 +5449,47 @@ const VideoHoverControls = ({
   );
 };
 
+// Session-level poster cache: the FIRST time a video decodes, we grab frame 0 to
+// a JPEG data URL and remember it by src. onlyRenderVisibleElements unmounts a
+// culled node's <video>, so re-entering the viewport used to show a blank box
+// while the <video> re-buffered — now it paints this cached cover INSTANTLY and
+// the (browser-cached) video only re-mounts on hover. Memory-only, never
+// persisted/broadcast. Bounded so a video-heavy session can't grow unbounded.
+const videoPosterCache = new Map<string, string>();
+const MAX_VIDEO_POSTERS = 60;
+
+function rememberVideoPoster(src: string, dataUrl: string) {
+  if (videoPosterCache.has(src)) videoPosterCache.delete(src); // refresh LRU order
+  videoPosterCache.set(src, dataUrl);
+  while (videoPosterCache.size > MAX_VIDEO_POSTERS) {
+    const oldest = videoPosterCache.keys().next().value;
+    if (oldest === undefined) break;
+    videoPosterCache.delete(oldest);
+  }
+}
+
+/** Capture frame 0 of a same-origin (proxied) <video> to a small JPEG data URL
+ *  for the session poster cache. Scaled + JPEG (not the full-res PNG that
+ *  captureVideoFrame() above makes) so 60 cached covers stay light in memory.
+ *  Same-origin via the media proxy means the canvas isn't tainted. Best-effort. */
+function captureVideoPoster(video: HTMLVideoElement): string {
+  if (!video.videoWidth || !video.videoHeight) return '';
+  try {
+    const scale = Math.min(1, 480 / video.videoWidth);
+    const cw = Math.max(1, Math.round(video.videoWidth * scale));
+    const ch = Math.max(1, Math.round(video.videoHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.drawImage(video, 0, 0, cw, ch);
+    return canvas.toDataURL('image/jpeg', 0.72);
+  } catch {
+    return ''; // tainted canvas / not decodable — skip, fall back to grey box
+  }
+}
+
 // SmartVideo — gallery-style hover preview for canvas video nodes (NeoWow-like).
 //   • out of view  → the <video> is UNMOUNTED (no decode, no buffering); the
 //                    poster is shown dimmed + grayscale, or a neutral grey box
@@ -5483,7 +5524,12 @@ function SmartVideo({
   const selfManageHover = controlledHovered === undefined;
   const hovered = controlledHovered ?? internalHovered;
   const renderable = toRenderableMediaUrl(src);
-  const posterSrc = poster ? toRenderableMediaUrl(poster) : '';
+  // Fall back to the session-cached frame-0 cover when the node has no stored
+  // poster, so re-entering the viewport shows a cover instantly instead of a
+  // blank box while the <video> re-buffers.
+  const [capturedPoster, setCapturedPoster] = useState<string>(() => videoPosterCache.get(src) ?? '');
+  useEffect(() => { setCapturedPoster(videoPosterCache.get(src) ?? ''); }, [src]);
+  const posterSrc = poster ? toRenderableMediaUrl(poster) : capturedPoster;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -5553,6 +5599,14 @@ function SmartVideo({
             try { if (video.currentTime < 0.01) video.currentTime = 0.01; } catch { /* */ }
             if (playing) video.play().catch(() => {});
             onLoadedMetadata?.(event);
+          }}
+          onSeeked={(event) => {
+            // First decode of an un-postered video → cache frame 0 as an instant
+            // cover for the next time this node scrolls back into view.
+            if (!poster && !videoPosterCache.has(src)) {
+              const dataUrl = captureVideoPoster(event.currentTarget);
+              if (dataUrl) { rememberVideoPoster(src, dataUrl); setCapturedPoster(dataUrl); }
+            }
           }}
         />
       ) : null}
