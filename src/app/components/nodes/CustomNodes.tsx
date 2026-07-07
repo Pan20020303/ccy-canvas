@@ -6116,6 +6116,9 @@ function ResilientImage({
       alt={alt}
       draggable={false}
       className={className}
+      // Decode off the main thread so a canvas full of large images doesn't
+      // jank scrolling/zooming while the browser rasterizes them.
+      decoding="async"
       // Many third-party image hosts (Chinese provider relays, Cloudflare-
       // protected R2 buckets, etc.) reject requests where the Referer
       // header points at a different origin. `no-referrer` strips the
@@ -6429,13 +6432,21 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
   const addHistory = useStore((state) => state.addHistory);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const [preview, setPreview] = useState(false);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
-  const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
   const title = data.customTitle || (language === 'zh' ? '生成图像' : 'Generate Image');
-  const effectiveAspect = naturalRatio ?? paramAspect;
-  const genBox = mediaBoxFromAspect(parseAspectRatio(effectiveAspect));
+  // Box aspect is DETERMINISTIC: measured dims (persisted or session-cached)
+  // first, else the requested param aspect. It is NOT component state, so a
+  // remount (re-entry, or onlyRenderVisibleElements culling during zoom) never
+  // re-measures and the box never jumps.
+  const dims = resolveMediaDims(data);
+  const genBox = dims
+    ? mediaBoxFromAspect(dims.w / dims.h)
+    : mediaBoxFromAspect(parseAspectRatio(paramAspect));
+  // Aspect handed to derived (annotated) nodes so they open at the right size.
+  const effectiveAspect = dims ? `${dims.w}:${dims.h}` : paramAspect;
   const isPanorama = isLikelyPanoramaData(data);
 
   // 画笔标注 session: null = off. Ops/redo live here so the toolbar (in the
@@ -6559,18 +6570,13 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     const img = e.currentTarget;
     const w = img.naturalWidth;
     const h = img.naturalHeight;
-    if (w && h) {
-      const r = w / h;
-      if (r > 1.9) setNaturalRatio('2:1');
-      else if (r > 1.6) setNaturalRatio('16:9');
-      else if (r > 1.4) setNaturalRatio('3:2');
-      else if (r > 1.2) setNaturalRatio('4:3');
-      else if (r > 1.05) setNaturalRatio('5:4');
-      else if (r > 0.95) setNaturalRatio('1:1');
-      else if (r > 0.8) setNaturalRatio('4:5');
-      else if (r > 0.7) setNaturalRatio('3:4');
-      else if (r > 0.6) setNaturalRatio('2:3');
-      else setNaturalRatio('9:16');
+    if (w > 0 && h > 0) {
+      rememberMediaDims(data.url, w, h);
+      // Persist the real dims once so the box aspect is deterministic on every
+      // future render (owner → saved snapshot; anyone → no re-measure, no jump).
+      if (!(Number(data.mediaWidth) > 0 && Number(data.mediaHeight) > 0)) {
+        updateNodeData(id, { mediaWidth: w, mediaHeight: h });
+      }
     }
   };
 

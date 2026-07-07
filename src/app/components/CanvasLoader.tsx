@@ -7,32 +7,46 @@ import { useStore } from "../store";
 /**
  * Canvas entry gate. When entering a project, we show a brief fade-in overlay
  * that ACTUALLY does work: it waits for the canvas snapshot to load, then
- * preloads every node's media (warming the browser cache AND measuring each
- * image into the shared mediaDimCache). By the time it fades out, the canvas
- * reveals with correct node sizes and images that pop in instantly — no
- * measure-then-jump, no blank-then-load.
+ * preloads every node's image (warming the browser cache AND measuring each
+ * one). For any node that is MISSING its stored dimensions, it writes them back
+ * (updateNodeData) so the box is deterministic forever after — for the owner
+ * that persists into the snapshot, so even read-only visitors load correct
+ * sizes and nothing ever re-measures. It also fills the in-memory
+ * mediaDimCache, so with onlyRenderVisibleElements a node that scrolls back into
+ * view remounts at the right size instead of jumping.
  *
- * The gate is bounded (never blocks longer than MAX_PRELOAD_MS) and honors a
- * short minimum so the fade reads as intentional rather than a flash.
+ * By the time it fades out the canvas reveals with correct node sizes and
+ * images that pop in instantly — no measure-then-jump, no blank-then-load.
+ * The gate is bounded (never blocks longer than MAX_PRELOAD_MS) but the
+ * preloads keep running in the background afterwards, so the cache/persist
+ * finish even on a large canvas.
  */
 const MAX_PRELOAD_MS = 6000;
 const MIN_VISIBLE_MS = 550;
 const FADE_MS = 500;
 
-function collectMediaUrls(nodes: any[]): string[] {
-  const urls = new Set<string>();
+type MediaTarget = { nodeId: string; url: string; hasDims: boolean };
+
+function collectMediaTargets(nodes: any[]): MediaTarget[] {
+  const out: MediaTarget[] = [];
+  const seen = new Set<string>();
   for (const n of nodes) {
     const d = n?.data ?? {};
-    for (const candidate of [d.url, d.poster, d.thumbnail]) {
-      if (typeof candidate === "string" && /^(https?:|\/)/.test(candidate)) {
-        urls.add(candidate);
+    const hasDims = Number(d.mediaWidth) > 0 && Number(d.mediaHeight) > 0;
+    for (const url of [d.url, d.poster, d.thumbnail]) {
+      if (typeof url === "string" && /^(https?:|\/)/.test(url)) {
+        const key = `${n.id}:${url}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push({ nodeId: n.id, url, hasDims });
+        }
       }
     }
   }
-  return [...urls];
+  return out;
 }
 
-function preloadImage(rawUrl: string): Promise<void> {
+function preload(target: MediaTarget): Promise<void> {
   return new Promise((resolve) => {
     const img = new Image();
     let settled = false;
@@ -43,13 +57,25 @@ function preloadImage(rawUrl: string): Promise<void> {
       }
     };
     img.onload = () => {
-      if (img.naturalWidth && img.naturalHeight) {
-        rememberMediaDims(rawUrl, img.naturalWidth, img.naturalHeight);
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (w > 0 && h > 0) {
+        rememberMediaDims(target.url, w, h);
+        // Persist dims back onto the node when it had none, so the box is
+        // deterministic on every future load (owner → saved snapshot; anyone
+        // → no re-measure). Guard on hasDims to avoid needless writes.
+        if (!target.hasDims) {
+          const node = useStore.getState().nodes.find((n) => n.id === target.nodeId);
+          const nd = node?.data as Record<string, unknown> | undefined;
+          if (nd && nd.url === target.url && !(Number(nd.mediaWidth) > 0 && Number(nd.mediaHeight) > 0)) {
+            useStore.getState().updateNodeData(target.nodeId, { mediaWidth: w, mediaHeight: h });
+          }
+        }
       }
       done();
     };
-    img.onerror = done;
-    img.src = toRenderableMediaUrl(rawUrl); // same request the node will make
+    img.onerror = done; // videos / broken urls — skip
+    img.src = toRenderableMediaUrl(target.url); // same request the node will make
   });
 }
 
@@ -79,16 +105,18 @@ export function CanvasLoader() {
       }
       if (stale()) return;
 
-      // 2) Preload media — warm the browser cache and the dimension cache.
-      const urls = collectMediaUrls(useStore.getState().nodes as any[]);
-      if (urls.length > 0) {
+      // 2) Preload media — warm the browser + dimension caches, persist dims.
+      //    The promises keep resolving in the background even after the gate
+      //    lifts, so a large canvas still finishes prewarming.
+      const targets = collectMediaTargets(useStore.getState().nodes as any[]);
+      if (targets.length > 0) {
         let loaded = 0;
         await Promise.race([
           Promise.all(
-            urls.map((u) =>
-              preloadImage(u).then(() => {
+            targets.map((t) =>
+              preload(t).then(() => {
                 loaded += 1;
-                if (!stale()) setProgress(Math.round((loaded / urls.length) * 100));
+                if (!stale()) setProgress(Math.round((loaded / targets.length) * 100));
               }),
             ),
           ),
