@@ -7105,6 +7105,10 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
 const TEXT_NODE_DEFAULT_WIDTH = 320;
 const TEXT_NODE_MIN_WIDTH = 220;
 const TEXT_NODE_MIN_HEIGHT = 160;
+// Fixed default height so a text node doesn't grow unboundedly with its content
+// (a long script would otherwise dominate the canvas). Content beyond it scrolls;
+// drag the bottom-right grip to make the box bigger/smaller (persists as boxHeight).
+const TEXT_NODE_DEFAULT_HEIGHT = 260;
 const TEXT_NODE_BG_COLORS: string[] = [
   'rgba(244,63,94,0.28)', 'rgba(249,115,22,0.28)', 'rgba(245,158,11,0.28)',
   'rgba(234,179,8,0.28)', 'rgba(132,204,22,0.28)', 'rgba(34,197,94,0.28)',
@@ -7429,17 +7433,15 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         ) : null}
 
         {activeMode === 'editor' ? (
-          <div ref={contentBoxRef} className="relative" style={boxHeight ? { height: boxHeight } : undefined}>
+          // 固定默认高度(内容多了滚动，不随字数无限长高);拖右下角改高度(boxHeight)。
+          <div ref={contentBoxRef} className="relative" style={{ height: boxHeight ?? TEXT_NODE_DEFAULT_HEIGHT }}>
             {/* 只读展示：单击拖动整个节点，双击打开放大(全屏)编辑器改内容
                 (见外层 onDoubleClick)。仍挂 editorRef，让 data.content → DOM 的
                 同步 effect 继续填充；不再 contentEditable，也不 nodrag。 */}
             <div
               ref={editorRef}
               title={language === 'zh' ? '双击编辑' : 'Double-click to edit'}
-              className={clsx(
-                'rich-text-editor w-full cursor-grab select-none bg-transparent p-2 text-sm text-neutral-100 outline-none active:cursor-grabbing',
-                boxHeight ? 'prompt-editor-scroll h-full overflow-auto' : 'min-h-[220px]',
-              )}
+              className="prompt-editor-scroll rich-text-editor h-full w-full cursor-grab select-none overflow-auto bg-transparent p-2 text-sm text-neutral-100 outline-none active:cursor-grabbing"
             />
             {!data.content ? (
               <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
