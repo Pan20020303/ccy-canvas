@@ -1134,12 +1134,16 @@ const InnerCanvas = () => {
       const v = viewportRef.current;
       const flowX = (event.clientX - rect.left - v.x) / (v.zoom || 1);
       const flowY = (event.clientY - rect.top - v.y) / (v.zoom || 1);
+      // Include a ~28px band ABOVE the group top so double-clicking the visible
+      // "⋮⋮ name" title bar renames too (not just the group's empty interior —
+      // handy when nodes pack the group and leave no clickable pane inside).
+      const titleBand = 28 / (v.zoom || 1);
       const hitGroup = useStore.getState().groups.find((g) => {
         const gx = g.position?.x ?? 0;
         const gy = g.position?.y ?? 0;
         const gw = g.width ?? 0;
         const gh = g.height ?? 0;
-        return gw > 0 && gh > 0 && flowX >= gx && flowX <= gx + gw && flowY >= gy && flowY <= gy + gh;
+        return gw > 0 && gh > 0 && flowX >= gx && flowX <= gx + gw && flowY >= gy - titleBand && flowY <= gy + gh;
       });
       if (hitGroup) {
         setSelectedGroupId(hitGroup.id);
