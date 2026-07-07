@@ -21,10 +21,11 @@ import { useStore, useActiveProjectReadOnly, stripHeavyFromNodeData, type Group 
  * selection never lands on another's canvas.
  */
 
-// KILL-SWITCH: real-time canvas sync is temporarily OFF while a flicker/stuck-
-// load regression is diagnosed with 2-user testing. Flip to true to re-enable
-// (broadcast + apply). Presence (cursors) is unaffected — it's a separate layer.
-const CANVAS_SYNC_ENABLED = false;
+// Real-time canvas sync toggle. Re-enabled after fixing the flicker root cause
+// (the ping-pong: sanitizeNode now WHITELISTS user fields so ReactFlow's
+// computed fields can't churn the signature). Presence (cursors) is a separate
+// layer and is unaffected either way.
+const CANVAS_SYNC_ENABLED = true;
 
 export type CanvasDelta = {
   nodesUpsert?: Node[];
