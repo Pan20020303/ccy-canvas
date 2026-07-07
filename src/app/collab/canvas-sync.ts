@@ -30,25 +30,39 @@ export type CanvasDelta = {
   groupsRemove?: string[];
 };
 
-// Fields ReactFlow manages per-client (selection, drag, measured size). They
-// must never cross the wire, or selecting/dragging a node locally would flip it
-// on every peer's screen.
-const LOCAL_NODE_FIELDS = ["selected", "dragging", "resizing", "measured", "width", "height"] as const;
-
+// WHITELIST the fields that cross the wire / drive the change signature. A
+// blacklist is unsafe here: ReactFlow keeps writing back COMPUTED fields
+// (measured, positionAbsolute, width/height, selected, dragging, …) that aren't
+// in our broadcast, so after applying a peer's edit our local RF re-adds them,
+// the signature changes, and we re-broadcast — an infinite A↔B ping-pong that
+// makes both canvases flicker. Only user-meaningful fields belong here; heavy
+// media in data is stripped so a 5 MB base64 node can't blow the POST cap.
 function sanitizeNode(n: Node): Node {
-  // Strip heavy media (data: URLs, oversized version arrays, capture PNGs) BEFORE
-  // it crosses the wire — otherwise a 5 MB base64 node blows the 4 MB POST cap
-  // (silent drop → divergence) and makes the per-diff JSON.stringify crawl.
-  // Remote https URLs are LIGHT and kept, so peers still see storage-hosted
-  // media; a transient data:-URL image simply syncs once it's uploaded.
-  const copy = { ...n, data: stripHeavyFromNodeData(n.data) } as Record<string, unknown>;
-  for (const f of LOCAL_NODE_FIELDS) delete copy[f];
-  return copy as unknown as Node;
+  const out: Record<string, unknown> = {
+    id: n.id,
+    type: n.type,
+    position: n.position,
+    data: stripHeavyFromNodeData(n.data),
+  };
+  const extra = n as unknown as Record<string, unknown>;
+  if (extra.parentId != null) out.parentId = extra.parentId;
+  if (extra.zIndex != null) out.zIndex = extra.zIndex;
+  if (extra.style != null) out.style = extra.style;
+  return out as unknown as Node;
 }
 function sanitizeEdge(e: Edge): Edge {
-  const copy = { ...e } as Record<string, unknown>;
-  delete copy.selected;
-  return copy as unknown as Edge;
+  const out: Record<string, unknown> = {
+    id: e.id,
+    source: e.source,
+    target: e.target,
+  };
+  const extra = e as unknown as Record<string, unknown>;
+  if (extra.type != null) out.type = extra.type;
+  if (extra.sourceHandle != null) out.sourceHandle = extra.sourceHandle;
+  if (extra.targetHandle != null) out.targetHandle = extra.targetHandle;
+  if (extra.data != null) out.data = extra.data;
+  if (extra.style != null) out.style = extra.style;
+  return out as unknown as Edge;
 }
 
 // djb2 — a tiny content hash so two DIFFERENT long strings never collide (a
