@@ -469,6 +469,8 @@ const InnerCanvas = () => {
   }, []);
   const [isHistoryImagePickerOpen, setHistoryImagePickerOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  // Which group's name is being edited (double-click title OR shell background).
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [bulkRouting, setBulkRouting] = useState<{ startClient: { x: number; y: number }; currentClient: { x: number; y: number } } | null>(null);
 
   useEffect(() => {
@@ -1516,12 +1518,22 @@ const InnerCanvas = () => {
                 };
                 setGroupDragging(true);
               }}
+              onDoubleClick={(event) => {
+                // Double-click the group BACKGROUND (not a node/child) → rename,
+                // same as double-clicking the title bar. More discoverable.
+                if (event.target !== event.currentTarget) return;
+                event.stopPropagation();
+                setSelectedGroupId(group.id);
+                setRenamingGroupId(group.id);
+              }}
             >
               <GroupTitle
                 groupId={group.id}
                 name={group.name}
                 count={group.nodeIds.length}
                 zoom={viewport.zoom}
+                editing={renamingGroupId === group.id}
+                onEditingChange={(next) => setRenamingGroupId(next ? group.id : null)}
                 onSelect={() => setSelectedGroupId(group.id)}
                 onStartDrag={(event) => {
                   // Title bar doubles as a drag handle so the user can move
@@ -2443,6 +2455,8 @@ function GroupTitle({
   zoom,
   onSelect,
   onStartDrag,
+  editing,
+  onEditingChange,
 }: {
   groupId: string;
   name: string;
@@ -2450,18 +2464,23 @@ function GroupTitle({
   zoom: number;
   onSelect: () => void;
   onStartDrag: (event: React.PointerEvent) => void;
+  // Editing is CONTROLLED by Canvas (renamingGroupId) so double-clicking either
+  // the title bar OR the group background can open the rename input.
+  editing: boolean;
+  onEditingChange: (next: boolean) => void;
 }) {
   const language = useStore((state) => state.language);
   const renameGroup = useStore((state) => state.renameGroup);
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
 
   useEffect(() => { setDraft(name); }, [name]);
+  // Re-seed the draft from the live name each time we (re)enter edit mode.
+  useEffect(() => { if (editing) setDraft(name); }, [editing, name]);
 
   const commit = () => {
     const next = draft.trim();
     if (next && next !== name) renameGroup(groupId, next);
-    setEditing(false);
+    onEditingChange(false);
   };
 
   if (editing) {
@@ -2475,7 +2494,7 @@ function GroupTitle({
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === 'Enter') commit();
-          if (event.key === 'Escape') { setDraft(name); setEditing(false); }
+          if (event.key === 'Escape') { setDraft(name); onEditingChange(false); }
         }}
         className="pointer-events-auto absolute left-0 top-0 -translate-y-[110%] rounded bg-[#1a1d22] px-1 text-neutral-100 outline-none ring-1 ring-cyan-300/40"
         style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
@@ -2497,7 +2516,7 @@ function GroupTitle({
         event.stopPropagation();
         onStartDrag(event);
       }}
-      onDoubleClick={(event) => { event.stopPropagation(); setEditing(true); }}
+      onDoubleClick={(event) => { event.stopPropagation(); onEditingChange(true); }}
       className="pointer-events-auto absolute left-0 top-0 z-20 -translate-y-[110%] flex cursor-grab select-none items-center gap-1 whitespace-nowrap rounded font-medium text-white/60 transition hover:bg-white/5 hover:text-white/90 active:cursor-grabbing"
       style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
       title={language === 'zh' ? '拖动移动整组 · 双击重命名' : 'Drag to move group · double-click to rename'}
