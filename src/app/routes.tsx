@@ -14,6 +14,7 @@ import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
 import { AgentRunPanel } from "./components/AgentRunPanel";
 import { Canvas } from "./components/Canvas";
+import { CanvasLoader } from "./components/CanvasLoader";
 import { HomePage } from "./components/HomePage";
 import { LoginPage } from "./components/LoginPage";
 import { Modals } from "./components/Modals";
@@ -63,6 +64,7 @@ const Workspace = () => {
       <Modals />
       <SettingsModal />
       <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
+      <CanvasLoader />
     </div>
   );
 };

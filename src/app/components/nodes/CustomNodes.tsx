@@ -56,6 +56,7 @@ import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
 import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
+import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
@@ -1133,6 +1134,9 @@ const getMediaAspectRatioStyle = (data: Record<string, any>): React.CSSPropertie
   const height = Number(data.mediaHeight);
   return width > 0 && height > 0 ? { aspectRatio: `${width} / ${height}` } : undefined;
 };
+
+// Media dimension cache (rememberMediaDims / resolveMediaDims) lives in
+// ../../media-dims so the canvas loader can prewarm it too.
 
 // Flat dark shell — no gradients, no inner ring. Selected = single hairline ring.
 // Bg sits a touch above canvas (#0a0a0a); border kept very faint so the card
@@ -5535,8 +5539,9 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const [panoramaPreview, setPanoramaPreview] = useState(false);
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
-  const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
-  const mediaBox = data.mediaWidth && data.mediaHeight ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight) : null;
+  const mediaDims = resolveMediaDims(data);
+  const resolutionLabel = formatMediaResolution(mediaDims?.w, mediaDims?.h);
+  const mediaBox = mediaDims ? mediaBoxFromAspect(mediaDims.w / mediaDims.h) : null;
   const isPanorama = isLikelyPanoramaData(data);
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
@@ -5576,12 +5581,11 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
             className="h-full w-full object-cover select-none"
             onLoad={(event) => {
               const { naturalWidth, naturalHeight } = event.currentTarget;
-              if (
-                naturalWidth &&
-                naturalHeight &&
-                (data.mediaWidth !== naturalWidth || data.mediaHeight !== naturalHeight)
-              ) {
-                updateNodeData(id, { mediaWidth: naturalWidth, mediaHeight: naturalHeight });
+              if (naturalWidth && naturalHeight) {
+                rememberMediaDims(data.url, naturalWidth, naturalHeight);
+                if (data.mediaWidth !== naturalWidth || data.mediaHeight !== naturalHeight) {
+                  updateNodeData(id, { mediaWidth: naturalWidth, mediaHeight: naturalHeight });
+                }
               }
             }}
           />
@@ -5613,8 +5617,9 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
   const [preview, setPreview] = useState(false);
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
-  const resolutionLabel = formatMediaResolution(data.mediaWidth, data.mediaHeight);
-  const mediaBox = data.mediaWidth && data.mediaHeight ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight) : null;
+  const mediaDims = resolveMediaDims(data);
+  const resolutionLabel = formatMediaResolution(mediaDims?.w, mediaDims?.h);
+  const mediaBox = mediaDims ? mediaBoxFromAspect(mediaDims.w / mediaDims.h) : null;
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
     : data.sourceKind === 'derived'
@@ -5652,12 +5657,11 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
               const { videoWidth, videoHeight } = video;
-              if (
-                videoWidth &&
-                videoHeight &&
-                (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight)
-              ) {
-                updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
+              if (videoWidth && videoHeight) {
+                rememberMediaDims(data.url, videoWidth, videoHeight);
+                if (data.mediaWidth !== videoWidth || data.mediaHeight !== videoHeight) {
+                  updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
+                }
               }
             }}
           />
