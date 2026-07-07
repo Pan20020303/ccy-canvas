@@ -1124,6 +1124,29 @@ const InnerCanvas = () => {
       return;
     }
     if (!target.closest('.react-flow__pane')) return;
+    // Double-click landing inside a group → RENAME it. The group shell sits
+    // BELOW the ReactFlow pane (the pane eats its pointer events — see the group
+    // drag handler), so the shell's own onDoubleClick never fires; we hit-test
+    // here at the pane level, exactly like group select/drag does.
+    const wrapper = wrapperRef.current;
+    if (wrapper) {
+      const rect = wrapper.getBoundingClientRect();
+      const v = viewportRef.current;
+      const flowX = (event.clientX - rect.left - v.x) / (v.zoom || 1);
+      const flowY = (event.clientY - rect.top - v.y) / (v.zoom || 1);
+      const hitGroup = useStore.getState().groups.find((g) => {
+        const gx = g.position?.x ?? 0;
+        const gy = g.position?.y ?? 0;
+        const gw = g.width ?? 0;
+        const gh = g.height ?? 0;
+        return gw > 0 && gh > 0 && flowX >= gx && flowX <= gx + gw && flowY >= gy && flowY <= gy + gh;
+      });
+      if (hitGroup) {
+        setSelectedGroupId(hitGroup.id);
+        setRenamingGroupId(hitGroup.id);
+        return;
+      }
+    }
     connectingFrom.current = null;
     bulkConnectFrom.current = null;
     openContextMenu(event, 'add-node', false);
@@ -1532,27 +1555,9 @@ const InnerCanvas = () => {
               }}
             >
               <GroupTitle
-                groupId={group.id}
                 name={group.name}
-                count={group.nodeIds.length}
                 zoom={viewport.zoom}
                 editing={renamingGroupId === group.id}
-                onEditingChange={(next) => setRenamingGroupId(next ? group.id : null)}
-                onSelect={() => setSelectedGroupId(group.id)}
-                onStartDrag={(event) => {
-                  // Title bar doubles as a drag handle so the user can move
-                  // the group from a fixed area even when nodes fill the
-                  // interior. Wires through to the same groupDragRef the
-                  // shell uses.
-                  setSelectedGroupId(group.id);
-                  groupDragRef.current = {
-                    groupId: group.id,
-                    lastClientX: event.clientX,
-                    lastClientY: event.clientY,
-                    didCaptureUndo: false,
-                  };
-                  setGroupDragging(true);
-                }}
               />
               {/* Bottom-right corner grip — drag to resize the group frame.
                   Hover swaps the corner lines for a diagonal-arrows icon so
@@ -1777,6 +1782,25 @@ const InnerCanvas = () => {
         ) : null}
         {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
+
+      {/* Group rename input — rendered ABOVE the ReactFlow pane (the group shell
+          lives below it and can't take input). Positioned at the group's title. */}
+      {renamingGroupId ? (() => {
+        const g = liveGroups.find((x) => x.id === renamingGroupId);
+        if (!g) return null;
+        const b = g._liveBounds;
+        return (
+          <GroupRenameOverlay
+            key={g.id}
+            groupId={g.id}
+            name={g.name}
+            left={viewport.x + b.x * viewport.zoom}
+            top={viewport.y + b.y * viewport.zoom}
+            zoom={viewport.zoom}
+            onDone={() => setRenamingGroupId(null)}
+          />
+        );
+      })() : null}
 
       {/* Enlarge/collapse the minimap. Overlaid at the minimap's top-right
           corner (subtle by default, brightens on hover) — toggles its size. */}
@@ -2453,81 +2477,76 @@ const InnerCanvas = () => {
 };
 
 function GroupTitle({
-  groupId,
   name,
-  count,
   zoom,
-  onSelect,
-  onStartDrag,
   editing,
-  onEditingChange,
 }: {
-  groupId: string;
   name: string;
-  count: number;
   zoom: number;
-  onSelect: () => void;
-  onStartDrag: (event: React.PointerEvent) => void;
-  // Editing is CONTROLLED by Canvas (renamingGroupId) so double-clicking either
-  // the title bar OR the group background can open the rename input.
+  // renamingGroupId === this group. The shell/title sit BELOW the ReactFlow pane
+  // and can't take input, so while renaming we hide this visual title and render
+  // an editable input ABOVE the pane (GroupRenameOverlay in Canvas).
   editing: boolean;
-  onEditingChange: (next: boolean) => void;
 }) {
   const language = useStore((state) => state.language);
-  const renameGroup = useStore((state) => state.renameGroup);
-  const [draft, setDraft] = useState(name);
-
-  useEffect(() => { setDraft(name); }, [name]);
-  // Re-seed the draft from the live name each time we (re)enter edit mode.
-  useEffect(() => { if (editing) setDraft(name); }, [editing, name]);
-
-  const commit = () => {
-    const next = draft.trim();
-    if (next && next !== name) renameGroup(groupId, next);
-    onEditingChange(false);
-  };
-
-  if (editing) {
-    return (
-      <input
-        autoFocus
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onMouseDown={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') commit();
-          if (event.key === 'Escape') { setDraft(name); onEditingChange(false); }
-        }}
-        className="pointer-events-auto absolute left-0 top-0 -translate-y-[110%] rounded bg-[#1a1d22] px-1 text-neutral-100 outline-none ring-1 ring-cyan-300/40"
-        style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
-      />
-    );
-  }
-
+  if (editing) return null;
   return (
     <div
-      role="button"
-      // Title bar is the canonical drag handle for the group. Mirrors the
-      // shell's pointerdown wiring exactly so it behaves identically.
-      onPointerDown={(event) => {
-        // Only stopPropagation — NO preventDefault, otherwise the browser
-        // suppresses the synthetic dblclick that powers rename. The window
-        // pointermove handler only calls moveGroup when there's actual
-        // pixel movement, so a quick click without movement still registers
-        // cleanly as a click → dblclick path.
-        event.stopPropagation();
-        onStartDrag(event);
-      }}
-      onDoubleClick={(event) => { event.stopPropagation(); onEditingChange(true); }}
-      className="pointer-events-auto absolute left-0 top-0 z-20 -translate-y-[110%] flex cursor-grab select-none items-center gap-1 whitespace-nowrap rounded font-medium text-white/60 transition hover:bg-white/5 hover:text-white/90 active:cursor-grabbing"
+      className="pointer-events-none absolute left-0 top-0 z-20 -translate-y-[110%] flex select-none items-center gap-1 whitespace-nowrap rounded font-medium text-white/60"
       style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
-      title={language === 'zh' ? '拖动移动整组 · 双击重命名' : 'Drag to move group · double-click to rename'}
+      title={language === 'zh' ? '双击组内空白处重命名' : 'Double-click inside the group to rename'}
     >
       <span aria-hidden className="opacity-30">⋮⋮</span>
       <span>{name}</span>
     </div>
+  );
+}
+
+/** Editable group-name input rendered ABOVE the ReactFlow pane (the group shell
+ *  lives below the pane and can't take input). Positioned at the group's title. */
+function GroupRenameOverlay({
+  groupId,
+  name,
+  left,
+  top,
+  zoom,
+  onDone,
+}: {
+  groupId: string;
+  name: string;
+  left: number;
+  top: number;
+  zoom: number;
+  onDone: () => void;
+}) {
+  const renameGroup = useStore((state) => state.renameGroup);
+  const [draft, setDraft] = useState(name);
+  useEffect(() => { setDraft(name); }, [name]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== name) renameGroup(groupId, next);
+    onDone();
+  };
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') commit();
+        if (event.key === 'Escape') onDone();
+      }}
+      className="absolute z-[60] min-w-[120px] rounded bg-[#1a1d22] text-neutral-100 outline-none ring-1 ring-cyan-300/50 shadow-lg"
+      style={{
+        left,
+        top: Math.max(4, top - 24),
+        fontSize: `${Math.max(11, 12 * zoom)}px`,
+        padding: `2px 6px`,
+      }}
+    />
   );
 }
 
