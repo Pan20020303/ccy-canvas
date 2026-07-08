@@ -883,15 +883,15 @@ func TestLocalPathToDataURLFindsUploadsFromNestedWorkingDirectory(t *testing.T) 
 func TestArkTargetDims(t *testing.T) {
 	// {w, h, wantW, wantH} — wantW<0 means "expect an error".
 	cases := [][4]int{
-		{4000, 4000, 4000, 4000},   // already in range → unchanged
-		{6000, 6000, 6000, 6000},   // exactly at the max → unchanged
-		{300, 300, 300, 300},       // exactly at the min → unchanged
-		{7000, 3500, 6000, 3000},   // oversized → shrink, aspect kept
-		{12000, 6000, 6000, 3000},  // very wide → shrink to max
-		{200, 200, 300, 300},       // too small → enlarge
-		{150, 600, 300, 1200},      // small side scaled up to the min
-		{12000, 100, -1, -1},       // extreme ratio → cannot satisfy both bounds
-		{0, 500, -1, -1},           // invalid
+		{4000, 4000, 4000, 4000},  // already in range → unchanged
+		{6000, 6000, 6000, 6000},  // exactly at the max → unchanged
+		{300, 300, 300, 300},      // exactly at the min → unchanged
+		{7000, 3500, 6000, 3000},  // oversized → shrink, aspect kept
+		{12000, 6000, 6000, 3000}, // very wide → shrink to max
+		{200, 200, 300, 300},      // too small → enlarge
+		{150, 600, 300, 1200},     // small side scaled up to the min
+		{12000, 100, -1, -1},      // extreme ratio → cannot satisfy both bounds
+		{0, 500, -1, -1},          // invalid
 	}
 	for _, c := range cases {
 		gotW, gotH, err := arkTargetDims(c[0], c[1])
@@ -1405,6 +1405,7 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 }
 
 func TestGenerateImageFallsBackToTemporaryURLWhenGeneratedAssetCannotBeStaged(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
@@ -1459,6 +1460,7 @@ func TestGenerateImageFallsBackToTemporaryURLWhenGeneratedAssetCannotBeStaged(t 
 }
 
 func TestGenerateImageStagesProtectedProviderAssetWithBearerToken(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
@@ -1807,6 +1809,7 @@ func TestGenerateImageChatCompletionsParsesDataB64Response(t *testing.T) {
 }
 
 func TestGenerateImageChatCompletionsPollsTaskURL(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
@@ -1875,6 +1878,7 @@ func TestGenerateImageChatCompletionsPollsTaskURL(t *testing.T) {
 }
 
 func TestGenerateImageChatCompletionsStopsOnTopLevelTaskFailure(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
@@ -2135,6 +2139,7 @@ func TestGenerateImageEditUsesMultipartImageFields(t *testing.T) {
 }
 
 func TestGenerateImageUsesConfiguredSubmitAndQueryEndpoints(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {
@@ -2263,6 +2268,7 @@ func TestMapAspectRatioToVolcengineSizeDefaultsByModel(t *testing.T) {
 }
 
 func TestGenerateVideoCustomSoraProviderKeepsPromptShape(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
 	if err != nil {

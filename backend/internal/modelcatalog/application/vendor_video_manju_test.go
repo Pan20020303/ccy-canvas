@@ -157,6 +157,9 @@ func TestManjuTaskPollRoundtrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("poll delay 8s; skipped in -short")
 	}
+	// pollVideoTask now dials via safehttp, which blocks loopback by default;
+	// httptest serves from 127.0.0.1, so open the documented test escape hatch.
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
 	polled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

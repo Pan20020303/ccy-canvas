@@ -48,6 +48,9 @@ func TestExtensionFor(t *testing.T) {
 }
 
 func TestPersistRemoteAssetUsesBrowserLikeHeaders(t *testing.T) {
+	// stageRemoteAsset now dials via safehttp, which blocks loopback by default;
+	// httptest serves from 127.0.0.1, so open the documented test escape hatch.
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
 	const body = "stable image bytes"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("User-Agent"), "Mozilla/5.0") {

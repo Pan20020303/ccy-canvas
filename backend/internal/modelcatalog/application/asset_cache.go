@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ccy-canvas/backend/internal/platform/assetstore"
+	"ccy-canvas/backend/internal/shared/safehttp"
 
 	"github.com/google/uuid"
 )
@@ -75,6 +76,11 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 		strings.HasPrefix(trimmed, "/uploads/") ||
 		(!strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://")) {
 		return StagedAsset{StagingURL: remoteURL}, nil
+	}
+	// SSRF early-reject for obviously-internal targets (the safehttp dialer is
+	// the authoritative check, but this fails fast and covers literal-IP urls).
+	if err := safehttp.ValidatePublicURL(trimmed); err != nil {
+		return StagedAsset{StagingURL: remoteURL}, err
 	}
 
 	// Download with retry (P0-3). This GET is idempotent, so retrying is safe —
@@ -374,15 +380,11 @@ func extensionFor(urlStr, contentType string) string {
 	return ".bin"
 }
 
-// assetCacheHTTPClient mirrors the provider-client hardening (P0-3): the COS /
-// provider result hosts intermittently kill kept-alive connections mid-read
-// (the #16/#17/#18 EOF class), so keep-alives are disabled — every staging
-// download gets a fresh connection.
-var assetCacheHTTPClient = &http.Client{
-	Timeout: 70 * time.Second,
-	Transport: func() http.RoundTripper {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.DisableKeepAlives = true
-		return t
-	}(),
-}
+// assetCacheHTTPClient re-hosts provider RESULT urls, which arrive verbatim in
+// third-party relay responses and are therefore attacker-influenceable. It uses
+// safehttp so the dialer rejects loopback/private/link-local/CGNAT IPs and
+// re-validates every redirect hop — closing an SSRF-to-internal-metadata hole
+// (a relay returning result_url=http://169.254.169.254/... would otherwise be
+// fetched and staged under /uploads for readback). safehttp.Client already
+// disables keep-alives, matching the prior EOF-avoidance intent.
+var assetCacheHTTPClient = safehttp.Client(70 * time.Second)

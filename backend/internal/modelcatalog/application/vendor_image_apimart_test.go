@@ -38,6 +38,9 @@ func TestIsApimartBaseURL(t *testing.T) {
 
 func TestApimartSubmitPollRoundtrip(t *testing.T) {
 	fastImagePoll(t)
+	// pollImageTask now dials via safehttp, which blocks loopback by default;
+	// httptest serves from 127.0.0.1, so open the documented test escape hatch.
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
 	var submitted map[string]interface{}
 	polls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

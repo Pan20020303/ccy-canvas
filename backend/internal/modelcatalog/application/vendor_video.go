@@ -5,6 +5,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/shared/apperror"
+	"ccy-canvas/backend/internal/shared/safehttp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -111,7 +112,7 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -301,7 +302,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -334,7 +335,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 // or "failed". The status vocabulary is queued / running / succeeded / failed
 // (note: succeeded, not completed). The completed URL lives at content.video_url.
 func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiKey, taskID string) (*GenerateResult, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	pollURL := baseURL + strings.ReplaceAll(queryPath, "{taskId}", taskID)
 
 	select {
@@ -455,7 +456,7 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-DashScope-Async", "enable")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
@@ -911,7 +912,7 @@ func dashScopeReferenceImageMediaType(req GenerateRequest) string {
 // output.task_status=="SUCCEEDED" or "FAILED". The status vocabulary is
 // PENDING / RUNNING / SUCCEEDED / FAILED / CANCELED / UNKNOWN.
 func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath, apiKey, taskID string) (*GenerateResult, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	pollURL := baseURL + strings.ReplaceAll(queryPath, "{taskId}", taskID)
 
 	select {
@@ -1135,7 +1136,7 @@ func abs(v int) int {
 }
 
 func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath, taskID string) (*GenerateResult, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	if strings.TrimSpace(queryPath) == "" {
 		queryPath = "/videos/{taskId}"
 	}

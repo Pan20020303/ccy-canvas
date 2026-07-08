@@ -2,6 +2,7 @@ package application
 
 import (
 	"ccy-canvas/backend/internal/shared/apperror"
+	"ccy-canvas/backend/internal/shared/safehttp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,7 +147,7 @@ func extractImageTaskPollURL(respBody []byte) string {
 
 // pollImageTask polls an async image generation task until it completes or times out.
 func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath, taskID, pollURL string) (*GenerateResult, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll_url comes from relay responses
 
 	// Try multiple URL patterns used by various providers.
 	// apimart.ai uses GET /v1/tasks/{task_id}
