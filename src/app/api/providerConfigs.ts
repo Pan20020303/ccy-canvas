@@ -625,6 +625,22 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       models: ["gpt-image-1", "gpt-image-2"],
       parameterSchema: GPT_IMAGE_SCHEMA,
     },
+    {
+      // apimart 中转站：GPT-Image-2 / Gemini-3.x 全走 /v1/images/generations
+      // (size=比例 + resolution 档位 + image_urls 图生图 + task 轮询)。后端按
+      // base_url 含 "apimart" 嗅探到 generateImageApimart，提交/查询端点固定，
+      // 无需在此填 submit/query。参数面板走 model-templates.ts 的模型模板。
+      vendor: "apimart",
+      label: "apimart · GPT-Image-2 / Gemini",
+      baseURL: "https://api.apimart.ai/v1",
+      apiSpec: "openai",
+      models: [
+        "gpt-image-2",
+        "gemini-3.1-flash-image-preview",
+        "gemini-3.0-pro-image",
+        "gemini-2.5-flash-image",
+      ],
+    },
     // 中转 / Relay
     {
       vendor: "RelayBases",
