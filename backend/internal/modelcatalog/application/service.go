@@ -201,6 +201,67 @@ func (s *Service) WithCredits(c creditcharger) *Service {
 // per-model or config-level credit_cost in its parameter_schema.
 const defaultCreditCost int32 = 1
 
+// maxOutputCount is the hard ceiling on requested image outputs. Ordinary
+// image relays top out around 10; wan2.7 组图 allows up to 12. Clamping here
+// closes a cost-amplification hole: without it a request with output_count:100
+// charged the flat per-model cost but made the relay generate/bill 100 images.
+const maxOutputCount = 12
+
+// maxVideoDuration caps requested video length (seconds). Relays bill per
+// second, so an unbounded duration is the video analogue of the n-amplification
+// abuse; 60s comfortably covers every configured model's real ceiling.
+const maxVideoDuration = 60
+
+// ClampOutputCount bounds a requested output count to [1, maxOutputCount].
+// Exported so the HTTP handler can clamp at request binding, before the value
+// reaches any relay "n"/cost path.
+func ClampOutputCount(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > maxOutputCount {
+		return maxOutputCount
+	}
+	return n
+}
+
+// CapOutputCount caps a requested count at maxOutputCount but PRESERVES 0
+// (and negatives → 0) so "unspecified" still lets a vendor apply its own
+// default (e.g. wan2.7 组图). Use at the request boundary; the cost/relay-n
+// paths use ClampOutputCount ([1,max]) so a real generation always charges ≥1.
+func CapOutputCount(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > maxOutputCount {
+		return maxOutputCount
+	}
+	return n
+}
+
+// ClampVideoDuration caps a requested video duration at maxVideoDuration.
+// A non-positive value is left as 0 so each vendor's own default still applies.
+func ClampVideoDuration(d int) int {
+	if d < 0 {
+		return 0
+	}
+	if d > maxVideoDuration {
+		return maxVideoDuration
+	}
+	return d
+}
+
+// billableUnits returns how many charge units a request costs. Image relays
+// bill PER IMAGE, so the reserved credits must scale with the (clamped) output
+// count; everything else is per-call. This ties reserved credits to what the
+// upstream actually bills and removes the output_count amplification.
+func billableUnits(req GenerateRequest) int32 {
+	if req.ServiceType == "image" {
+		return int32(ClampOutputCount(req.OutputCount))
+	}
+	return 1
+}
+
 func clampCreditCost(v int32) int32 {
 	if v < 0 {
 		return 0
@@ -245,7 +306,9 @@ func (s *Service) ResolveGenerationCost(req GenerateRequest) int32 {
 	if err != nil || len(candidates) == 0 {
 		return 0
 	}
-	return resolveCreditCost(candidates[0].cfg.ParameterSchema, req.Model)
+	// Scale the flat per-model price by the billable unit count (image → clamped
+	// output count) so a multi-output request reserves proportionally, not flat.
+	return resolveCreditCost(candidates[0].cfg.ParameterSchema, req.Model) * billableUnits(req)
 }
 
 // ReserveCredits deducts amount at submit. Returns ErrInsufficientCredits
@@ -1895,10 +1958,10 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 }
 
 func requestedImageCount(req GenerateRequest) int {
-	if req.OutputCount > 0 {
-		return req.OutputCount
-	}
-	return 1
+	// Clamp defense-in-depth: the relay "n" can never exceed what we charged
+	// for (billableUnits uses the same ClampOutputCount), so no amplification
+	// even if a request reaches here without the handler-level clamp.
+	return ClampOutputCount(req.OutputCount)
 }
 
 // generateImageVolcengine talks to Volcengine ark's /images/generations.

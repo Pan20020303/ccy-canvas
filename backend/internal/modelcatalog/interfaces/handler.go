@@ -1571,14 +1571,17 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		Size:             input.Body.Size,
 		Resolution:       input.Body.Resolution,
 		Quality:          input.Body.Quality,
-		Duration:         input.Body.Duration,
+		// Clamp count/duration at the trust boundary so a crafted body can't make
+		// the relay generate/bill far more than the reserved credits cover
+		// (output_count/duration cost-amplification). See ClampOutputCount.
+		Duration:         application.ClampVideoDuration(input.Body.Duration),
 		AspectRatio:      input.Body.AspectRatio,
 		ReferenceImages:  input.Body.ReferenceImages,
 		ReferenceVideo:   input.Body.ReferenceVideo,
 		ReferenceVideos:  input.Body.ReferenceVideos,
 		EditOperation:    input.Body.EditOperation,
 		MaskImage:        input.Body.MaskImage,
-		OutputCount:      input.Body.OutputCount,
+		OutputCount:      application.CapOutputCount(input.Body.OutputCount),
 		ExpandDirection:  input.Body.ExpandDirection,
 		DeriveFromNodeID: input.Body.DeriveFromNodeID,
 		TrimRange:        input.Body.TrimRange,
