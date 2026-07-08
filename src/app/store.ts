@@ -1778,6 +1778,13 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
   return { imageUrls, videoUrls };
 }
 
+// 文本节点的内容基准格式现在是 Markdown（LLM 产出就是 Markdown）。只有旧节点
+// 里残留的是 execCommand 富文本 HTML（成块的 <div>/<p>/<br>/<ul>/<hr>/<font> 等）。
+// 用「是否出现块级 HTML 标签」区分：命中→按 HTML 展平；否则原样当 Markdown 文本。
+// 关键：不能对 Markdown 走 htmlToPlainText —— 那会把 List<String>、<threshold>
+// 之类的尖括号片段当成 HTML 标签静默吞掉，破坏下游提示词。
+const LEGACY_HTML_RE = /<(div|p|br|hr|ul|ol|li|h[1-6]|blockquote|pre|table|font)[\s>/]/i;
+
 /** Flatten rich-text-editor HTML (or already-plain text) to plain text, keeping
  *  paragraph/line breaks. Used to reference an upstream 文本节点's content. */
 function htmlToPlainText(html: string): string {
@@ -1819,7 +1826,8 @@ function collectUpstreamText(nodes: Node[], edges: Edge[], targetNodeId: string,
     if (node.type !== 'textNode' || !upstreamIds.has(node.id) || isMentioned(node.id)) continue;
     const data = (node.data ?? {}) as Record<string, unknown>;
     const raw = typeof data.content === 'string' ? data.content : '';
-    const text = htmlToPlainText(raw);
+    // Markdown 节点用原文（保留 <String>/# / | 等）；遗留 HTML 节点才展平。
+    const text = LEGACY_HTML_RE.test(raw) ? htmlToPlainText(raw) : raw.trim();
     if (text) parts.push(text);
   }
   return parts.join('\n\n');

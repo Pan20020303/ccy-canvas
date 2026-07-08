@@ -50,6 +50,9 @@ import {
   ArrowRightLeft,
   Mic,
   ShieldCheck,
+  Quote,
+  Code,
+  Link as LinkIcon,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
@@ -57,6 +60,7 @@ import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
 import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
+import { renderMarkdown } from '../../markdown';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
@@ -7172,6 +7176,20 @@ const TEXT_NODE_BG_COLORS: string[] = [
   'rgba(236,72,153,0.28)', 'rgba(100,116,139,0.32)',
 ];
 
+// 文字背景色（高亮）色板。key 落到 <mark data-hl="key"> 上，由 globals.css 的
+// `.rich-text-editor mark[data-hl="key"]` 上色 —— 用 data 属性而非 inline style，
+// 既能出调色盘、又不触碰之前修掉的 style-url() 外泄面。swatch 仅用于色板按钮显示。
+const TEXT_HIGHLIGHT_COLORS: { key: string; swatch: string }[] = [
+  { key: 'yellow', swatch: '#fde68a' },
+  { key: 'green', swatch: '#bbf7d0' },
+  { key: 'teal', swatch: '#99f6e4' },
+  { key: 'blue', swatch: '#bae6fd' },
+  { key: 'purple', swatch: '#ddd6fe' },
+  { key: 'pink', swatch: '#fbcfe8' },
+  { key: 'orange', swatch: '#fed7aa' },
+  { key: 'red', swatch: '#fecaca' },
+];
+
 /** Toolbar glyph for the text-highlight tool: an "A" on a yellow chip.
  *  Deliberately NOT the pen/Highlighter icon — that glyph already means the
  *  image BRUSH elsewhere in the app and reads as 画笔, not 高亮. */
@@ -7186,6 +7204,177 @@ const HighlightChipIcon = ({ className }: { className?: string }) => (
   </span>
 );
 
+// ── 剧本资产提取结果 → 分组表格 ─────────────────────────────────────────────
+// scriptAssetExtraction.md 那个 skill 本该通过 resultTool 结构化返回，但在普通
+// 文本节点里没有工具，模型就把 {"assetsList":[...]} 的 JSON 原样吐进了
+// data.content。与其展示一坨裸 JSON，不如识别出来渲染成按 角色/场景/道具 分组
+// 的只读表格；普通文本节点的正文解析为 null，渲染保持原样、完全不受影响。
+type ExtractedAsset = { name: string; desc: string; prompt: string; type: 'role' | 'scene' | 'tool' };
+
+const ASSET_TYPE_ORDER: ExtractedAsset['type'][] = ['role', 'scene', 'tool'];
+const ASSET_TYPE_META: Record<ExtractedAsset['type'], { zh: string; en: string; dot: string }> = {
+  role: { zh: '角色', en: 'Roles', dot: '#f59e0b' },
+  scene: { zh: '场景', en: 'Scenes', dot: '#38bdf8' },
+  tool: { zh: '道具', en: 'Props', dot: '#a78bfa' },
+};
+
+function isAssetType(v: unknown): v is ExtractedAsset['type'] {
+  return v === 'role' || v === 'scene' || v === 'tool';
+}
+
+// 从 start 处的 '{' 出发，串感知地找到配对的 '}'，返回其下标；找不到返回 -1。
+// 字符串字面量内的花括号（以及转义引号）被忽略，所以 desc 里的 "{...}"、结尾的
+// 颜文字 ":-}"、散文里的 "{占位符}" 都不会破坏区间。
+function matchBalancedBrace(text: string, start: number): number {
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i += 1) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === '{') depth += 1;
+    else if (c === '}') { depth -= 1; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
+// 找出第一个「串感知平衡」且内部含 assetsList 键的 {…} 对象片段（跳过前导的
+// {mode:x} 之类无关花括号），用来从散文/代码围栏里精确抠出 JSON。
+function extractAssetsObject(text: string): string | null {
+  for (let i = text.indexOf('{'); i >= 0; i = text.indexOf('{', i + 1)) {
+    const end = matchBalancedBrace(text, i);
+    if (end < 0) break;
+    const span = text.slice(i, end + 1);
+    if (span.includes('assetsList')) return span;
+  }
+  return null;
+}
+
+/** Best-effort：从文本节点正文里抠出 {"assetsList":[...]} 并严格校验。任何不是
+ *  「干净的资产提取产物」的内容都返回 null，普通文本节点因此毫不受影响。 */
+function parseAssetsList(raw: string): ExtractedAsset[] | null {
+  let text = raw.trim();
+  // 便宜的前置门槛：没有这个标记就绝不可能是资产列表，直接跳过后面的解析。
+  if (!text || !text.includes('assetsList')) return null;
+
+  // 若整体被单个 ```json … ``` / ``` … ``` 代码围栏包裹，先剥掉围栏。
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) text = fenced[1].trim();
+
+  const tryParse = (s: string): unknown => {
+    try { return JSON.parse(s); } catch { return undefined; }
+  };
+
+  // 先整体解析；失败再串感知地抠出含 assetsList 的平衡 {…} 片段（容忍前后散文、
+  // 杂散花括号），而不是用脆弱的「第一个 { 到最后一个 }」切片。
+  let parsed = tryParse(text);
+  if (parsed === undefined) {
+    const span = extractAssetsObject(text);
+    if (span) parsed = tryParse(span);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+  // 严格门槛：根对象必须「只有」assetsList 一个键 —— 真实产物就是
+  // {"assetsList":[...]}。这样普通笔记里顺带嵌了个 assetsList 数组、或
+  // {"version":1,"assetsList":[...]} 这类配置就不会被误判成提取结果、被换成只读表格。
+  const keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== 'assetsList') return null;
+
+  const list = (parsed as { assetsList?: unknown }).assetsList;
+  if (!Array.isArray(list) || list.length === 0) return null;
+
+  const assets: ExtractedAsset[] = [];
+  for (const item of list) {
+    // 任一项不是「带合法 type 的对象」就不是干净的提取产物 → 整体放弃（回退裸文本）。
+    if (!item || typeof item !== 'object') return null;
+    const o = item as Record<string, unknown>;
+    if (!isAssetType(o.type)) return null;
+    const name = typeof o.name === 'string' ? o.name : '';
+    const desc = typeof o.desc === 'string' ? o.desc : '';
+    const prompt = typeof o.prompt === 'string' ? o.prompt : '';
+    // type 合法但三字段全空的项跳过（不计入），但不因此否定整份列表。
+    if (!name && !desc && !prompt) continue;
+    assets.push({ name, desc, prompt, type: o.type });
+  }
+  return assets.length ? assets : null;
+}
+
+/** 提示词单元格：英文等宽小字 + hover 出现的复制按钮。 */
+function AssetPromptCell({ prompt }: { prompt: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!prompt) return <span className="text-neutral-600">—</span>;
+  return (
+    <div className="group/prompt relative pr-6">
+      <span className="block whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-neutral-400">{prompt}</span>
+      <button
+        type="button"
+        title="复制提示词"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          try { navigator.clipboard?.writeText(prompt); } catch { /* ignore */ }
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }}
+        className="nodrag nopan absolute right-0 top-0 flex h-5 items-center gap-1 rounded-md border border-white/10 bg-[#1a1d22] px-1 text-[10px] text-neutral-300 opacity-0 transition group-hover/prompt:opacity-100 hover:bg-white/10"
+      >
+        <CopyIcon className="h-3 w-3" />
+        {copied ? <span>已复制</span> : null}
+      </button>
+    </div>
+  );
+}
+
+/** 资产提取结果视图：按 角色/场景/道具 分区，每区一张 名称/描述/提示词 表。 */
+function AssetsListView({ assets, language, dense }: { assets: ExtractedAsset[]; language: string; dense?: boolean }) {
+  const grouped = useMemo(() => {
+    const g: Record<ExtractedAsset['type'], ExtractedAsset[]> = { role: [], scene: [], tool: [] };
+    for (const a of assets) g[a.type].push(a);
+    return g;
+  }, [assets]);
+
+  return (
+    <div className={clsx('flex flex-col', dense ? 'gap-3' : 'gap-4')}>
+      {ASSET_TYPE_ORDER.map((type) => {
+        const rows = grouped[type];
+        if (!rows.length) return null;
+        const meta = ASSET_TYPE_META[type];
+        return (
+          <div key={type} className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.02]">
+            <div className="flex items-center gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-1.5">
+              <span className="h-2 w-2 rounded-full" style={{ background: meta.dot }} />
+              <span className="text-[12px] font-medium text-neutral-200">{language === 'zh' ? meta.zh : meta.en}</span>
+              <span className="rounded-full bg-white/8 px-1.5 text-[10px] leading-4 text-neutral-400">{rows.length}</span>
+            </div>
+            <table className="w-full table-fixed border-collapse">
+              <thead>
+                <tr className="text-left text-[11px] text-neutral-500">
+                  <th className="w-[24%] px-3 py-1.5 font-normal">{language === 'zh' ? '名称' : 'Name'}</th>
+                  <th className="w-[36%] px-3 py-1.5 font-normal">{language === 'zh' ? '描述' : 'Description'}</th>
+                  <th className="px-3 py-1.5 font-normal">{language === 'zh' ? '提示词' : 'Prompt'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((a, i) => (
+                  <tr key={`${a.name}-${i}`} className="border-t border-white/5 align-top">
+                    <td className="break-words px-3 py-2 text-[12px] font-medium text-neutral-100">{a.name || '—'}</td>
+                    <td className="break-words px-3 py-2 text-[12px] leading-relaxed text-neutral-300">{a.desc || '—'}</td>
+                    <td className="px-3 py-2"><AssetPromptCell prompt={a.prompt} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
@@ -7199,8 +7388,12 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const activeMode = getTextNodeMode(data.textMode);
   const [isSubmittingReverse, setSubmittingReverse] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const editorRef = useRef<HTMLDivElement>(null);
-  const fullscreenEditorRef = useRef<HTMLDivElement>(null);
+  // 全屏里资产表格 vs 原文 JSON 的切换（仅当正文是资产提取结果时才用得到）。
+  const [fsRawView, setFsRawView] = useState(false);
+  // 全屏里 预览(渲染 Markdown) vs 编辑(改 Markdown 源) 的切换。默认预览，
+  // 空节点打开时切到编辑（见打开全屏的处理）。
+  const [fsEditMode, setFsEditMode] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Background color + corner-resize. Live size is tracked locally during a
   // drag and committed to node data ONCE on pointer-up (updateNodeData pushes an
@@ -7209,6 +7402,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   // subscribing every text node to pan/zoom made panning re-render them all.
   const { getViewport } = useReactFlow();
   const [showBgPalette, setShowBgPalette] = useState(false);
+  const [showHlPalette, setShowHlPalette] = useState(false);
   const [liveSize, setLiveSize] = useState<{ width: number; height: number } | null>(null);
   const liveSizeRef = useRef(liveSize);
   const contentBoxRef = useRef<HTMLDivElement>(null);
@@ -7256,56 +7450,124 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
     setLiveSize(null);
   }, [id, updateNodeData]);
 
-  /** One-way sync data.content → DOM ONLY when the editor isn't focused.
-   *  Prevents React re-renders from overwriting the DOM while typing
-   *  (which was resetting the caret to the start). */
+  // 文本节点的内容基准格式是 Markdown（LLM 产出基本就是 Markdown）。
   const dataContent = String(data.content || '');
-  useEffect(() => {
-    const node = editorRef.current;
-    if (node && document.activeElement !== node && node.innerHTML !== dataContent) {
-      node.innerHTML = dataContent;
-    }
-    const fs = fullscreenEditorRef.current;
-    if (fs && document.activeElement !== fs && fs.innerHTML !== dataContent) {
-      fs.innerHTML = dataContent;
-    }
-  }, [dataContent, isFullscreen]);
+  // 若正文正好是「剧本资产提取」吐出的 assetsList JSON，就转成分组表格展示。
+  const extractedAssets = useMemo(() => parseAssetsList(dataContent), [dataContent]);
+  // 只读展示 / 预览用的渲染 HTML（marked + DOMPurify）。按内容 memo，
+  // 流式生成时每 ~40ms 才更新一次，渲染开销可忽略。
+  const renderedHtml = useMemo(() => renderMarkdown(dataContent), [dataContent]);
+  // 生成中：streamWrite 每 ~40ms 直写 data.content，会和受控编辑 textarea 打架
+  // （清空/跳光标）。此时强制走「预览」看实时流，并禁用「编辑」入口。
+  const isGenerating = data.status === 'running' || data.status === 'generating';
 
-  /** 双击放大后自动聚焦全屏编辑器并把光标移到末尾，双击即可开始编辑。
-   *  声明在同步 effect 之后 → 内容已填充再聚焦(effect 按声明顺序执行)。 */
+  // 每次关闭全屏都把「表格/原文」「预览/编辑」切回默认，下次打开不残留上次状态。
   useEffect(() => {
-    if (!isFullscreen) return;
-    const fs = fullscreenEditorRef.current;
-    if (!fs) return;
-    fs.focus();
-    const range = document.createRange();
-    range.selectNodeContents(fs);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
+    if (!isFullscreen) { setFsRawView(false); setFsEditMode(false); }
   }, [isFullscreen]);
 
-  /** Apply a document.execCommand and persist the resulting HTML. */
-  const exec = useCallback((cmd: string, value?: string) => {
-    // Choose whichever editor currently holds focus (inline or fullscreen).
-    const target = (document.activeElement === fullscreenEditorRef.current ? fullscreenEditorRef.current : editorRef.current) ?? editorRef.current;
-    if (!target) return;
-    target.focus();
-    document.execCommand(cmd, false, value);
-    updateNodeData(id, { content: target.innerHTML });
-  }, [id, updateNodeData]);
+  // 进入「编辑」模式时聚焦 textarea 并把光标移到末尾，直接开写。
+  useEffect(() => {
+    if (!isFullscreen || !fsEditMode) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.focus();
+    const end = ta.value.length;
+    try { ta.setSelectionRange(end, end); } catch { /* no-op */ }
+  }, [isFullscreen, fsEditMode]);
 
-  /** Toggle the yellow text highlight: clicking with the caret/selection
-   *  inside already-highlighted text CLEARS it instead of stacking more. */
-  const toggleHighlight = useCallback(() => {
-    let isOn = false;
-    try {
-      const current = String(document.queryCommandValue('hiliteColor') || document.queryCommandValue('backColor') || '');
-      isOn = current !== '' && current !== 'false' && current !== 'transparent' && current !== 'rgba(0, 0, 0, 0)';
-    } catch { /* unsupported query — fall through to applying */ }
-    exec('hiliteColor', isOn ? 'transparent' : '#fde68a');
-  }, [exec]);
+  /** 在 textarea 光标处插入 Markdown 语法（工具栏各按钮）。写回 content 后用
+   *  rAF 恢复选区，让插入的占位文字保持选中、可直接改写。 */
+  const applyMarkdown = useCallback((kind: string) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const v = ta.value;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const sel = v.slice(s, e);
+    const commit = (nv: string, a: number, b: number) => {
+      updateNodeData(id, { content: nv });
+      requestAnimationFrame(() => {
+        const t = textareaRef.current;
+        if (t) { t.focus(); try { t.setSelectionRange(a, b); } catch { /* no-op */ } }
+      });
+    };
+    const wrap = (mark: string, placeholder: string) => {
+      const body = sel || placeholder;
+      const nv = v.slice(0, s) + mark + body + mark + v.slice(e);
+      commit(nv, s + mark.length, s + mark.length + body.length);
+    };
+    // 行首前缀类（标题 / 引用 / 列表）：对选区覆盖到的每一行加前缀。
+    const lineStart = v.lastIndexOf('\n', s - 1) + 1;
+    const prefixLines = (prefix: string) => {
+      const region = v.slice(lineStart, e);
+      const out = region.split('\n').map((l) => (l.startsWith(prefix) ? l : prefix + l)).join('\n');
+      const nv = v.slice(0, lineStart) + out + v.slice(e);
+      commit(nv, lineStart, lineStart + out.length);
+    };
+    switch (kind) {
+      case 'h1': prefixLines('# '); break;
+      case 'h2': prefixLines('## '); break;
+      case 'h3': prefixLines('### '); break;
+      case 'quote': prefixLines('> '); break;
+      case 'ul': prefixLines('- '); break;
+      case 'ol': prefixLines('1. '); break;
+      case 'bold': wrap('**', language === 'zh' ? '加粗文字' : 'bold text'); break;
+      case 'italic': wrap('*', language === 'zh' ? '斜体文字' : 'italic text'); break;
+      case 'code': wrap('`', 'code'); break;
+      case 'codeblock': {
+        const body = sel || (language === 'zh' ? '代码' : 'code');
+        const nv = v.slice(0, s) + '```\n' + body + '\n```' + v.slice(e);
+        commit(nv, s + 4, s + 4 + body.length);
+        break;
+      }
+      case 'hr': {
+        const lead = s > 0 && v[s - 1] !== '\n' ? '\n' : '';
+        const nv = v.slice(0, s) + lead + '\n---\n' + v.slice(e);
+        const pos = s + lead.length + 5;
+        commit(nv, pos, pos);
+        break;
+      }
+      case 'link': {
+        const text = sel || (language === 'zh' ? '链接文字' : 'text');
+        const nv = v.slice(0, s) + '[' + text + '](url)' + v.slice(e);
+        const urlFrom = s + 1 + text.length + 2;
+        commit(nv, urlFrom, urlFrom + 3);
+        break;
+      }
+      default: break;
+    }
+  }, [id, updateNodeData, language]);
+
+  /** 文字背景色（高亮）：把选区包成 <mark data-hl="color">…</mark>；color=null 则
+   *  去掉选区内的高亮标记。仍用 rAF 恢复选区。 */
+  const applyHighlight = useCallback((color: string | null) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const v = ta.value;
+    const s = ta.selectionStart;
+    const e = ta.selectionEnd;
+    const sel = v.slice(s, e);
+    const commit = (nv: string, a: number, b: number) => {
+      updateNodeData(id, { content: nv });
+      requestAnimationFrame(() => {
+        const t = textareaRef.current;
+        if (t) { t.focus(); try { t.setSelectionRange(a, b); } catch { /* no-op */ } }
+      });
+    };
+    if (color === null) {
+      // 清除：去掉选区里的 <mark …> / </mark> 标签。
+      const stripped = sel.replace(/<mark\b[^>]*>/gi, '').replace(/<\/mark>/gi, '');
+      const nv = v.slice(0, s) + stripped + v.slice(e);
+      commit(nv, s, s + stripped.length);
+      return;
+    }
+    const body = sel || (language === 'zh' ? '高亮文字' : 'highlight');
+    const open = `<mark data-hl="${color}">`;
+    const close = '</mark>';
+    const nv = v.slice(0, s) + open + body + close + v.slice(e);
+    commit(nv, s + open.length, s + open.length + body.length);
+  }, [id, updateNodeData, language]);
 
   const upstreamIds = useMemo(
     () => edges.filter((edge) => edge.target === id).map((edge) => edge.source),
@@ -7331,70 +7593,123 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       ? '当前没有可用的视觉模型'
       : undefined;
 
-  /** Formatting toolbar markup — reused both as the floating bar above
-   *  the selected node and inside the fullscreen editor modal. */
-  const renderEditorToolbar = () => (
-    <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
-      {/* Whole-box background color — a swatch palette that recolors the node
-          shell (data.bgColor). Distinct from the text-highlight tool below. */}
-      <div className="relative" onMouseDown={(event) => event.stopPropagation()}>
-        <button
-          type="button"
-          title={language === 'zh' ? '背景颜色' : 'Background color'}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => setShowBgPalette((v) => !v)}
-          className={clsx(
-            'flex h-7 w-7 items-center justify-center rounded-md text-neutral-300 transition hover:bg-white/10 hover:text-white',
-            showBgPalette && 'bg-white/10 text-white',
-          )}
+  /** 背景色调色盘：控制节点底色 data.bgColor。放到全屏头部常驻，预览/编辑都能点。 */
+  const renderBgPalette = () => (
+    <div className="relative" onMouseDown={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        title={language === 'zh' ? '背景颜色' : 'Background color'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setShowBgPalette((v) => !v)}
+        className={clsx(
+          'flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-neutral-300 transition hover:bg-white/10 hover:text-white',
+          showBgPalette && 'bg-white/10 text-white',
+        )}
+      >
+        <Palette className="h-3.5 w-3.5" />
+      </button>
+      {showBgPalette ? (
+        <div
+          className="absolute left-0 top-9 z-30 w-[168px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
+          onMouseDown={(event) => event.stopPropagation()}
         >
-          <Palette className="h-3.5 w-3.5" />
-        </button>
-        {showBgPalette ? (
-          <div
-            className="absolute left-0 top-9 z-30 w-[168px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="grid grid-cols-6 gap-1.5">
+          <div className="grid grid-cols-6 gap-1.5">
+            <button
+              type="button"
+              title={language === 'zh' ? '默认' : 'Default'}
+              onClick={() => { updateNodeData(id, { bgColor: undefined }); setShowBgPalette(false); }}
+              className={clsx(
+                'relative flex h-5 w-5 items-center justify-center rounded-md border border-white/15 bg-[#111]',
+                !bgColor && 'ring-2 ring-white/70',
+              )}
+            >
+              <span className="pointer-events-none text-[11px] leading-none text-white/45">/</span>
+            </button>
+            {TEXT_NODE_BG_COLORS.map((c) => (
               <button
+                key={c}
                 type="button"
-                title={language === 'zh' ? '默认' : 'Default'}
-                onClick={() => { updateNodeData(id, { bgColor: undefined }); setShowBgPalette(false); }}
-                className={clsx(
-                  'relative flex h-5 w-5 items-center justify-center rounded-md border border-white/15 bg-[#111]',
-                  !bgColor && 'ring-2 ring-white/70',
-                )}
-              >
-                <span className="pointer-events-none text-[11px] leading-none text-white/45">/</span>
-              </button>
-              {TEXT_NODE_BG_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => { updateNodeData(id, { bgColor: c }); setShowBgPalette(false); }}
-                  className={clsx('h-5 w-5 rounded-md border border-white/10 transition hover:scale-110', bgColor === c && 'ring-2 ring-white')}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
+                onClick={() => { updateNodeData(id, { bgColor: c }); setShowBgPalette(false); }}
+                className={clsx('h-5 w-5 rounded-md border border-white/10 transition hover:scale-110', bgColor === c && 'ring-2 ring-white')}
+                style={{ backgroundColor: c }}
+              />
+            ))}
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  /** 文字背景色（高亮）调色盘：选中文字后点色块 → 包成 <mark data-hl="…">。
+   *  在编辑工具栏里（高亮需要先选中 textarea 里的文字）。 */
+  const renderHighlightPalette = () => (
+    <div className="relative" onMouseDown={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        title={language === 'zh' ? '文字背景色（高亮）' : 'Text highlight'}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setShowHlPalette((v) => !v)}
+        className={clsx(
+          'flex h-7 w-7 items-center justify-center rounded-md text-neutral-300 transition hover:bg-white/10 hover:text-white',
+          showHlPalette && 'bg-white/10 text-white',
+        )}
+      >
+        <HighlightChipIcon className="h-4 w-4" />
+      </button>
+      {showHlPalette ? (
+        <div
+          className="absolute left-0 top-9 z-30 w-[176px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div className="grid grid-cols-6 gap-1.5">
+            <button
+              type="button"
+              title={language === 'zh' ? '清除高亮' : 'Clear'}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => { applyHighlight(null); setShowHlPalette(false); }}
+              className="relative flex h-5 w-5 items-center justify-center rounded-md border border-white/15 bg-[#111]"
+            >
+              <span className="pointer-events-none text-[11px] leading-none text-white/45">/</span>
+            </button>
+            {TEXT_HIGHLIGHT_COLORS.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                title={c.key}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => { applyHighlight(c.key); setShowHlPalette(false); }}
+                className="h-5 w-5 rounded-md border border-black/10 transition hover:scale-110"
+                style={{ backgroundColor: c.swatch }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  /** Markdown 工具栏：在全屏「编辑」模式的 textarea 上方，点按往光标处插入
+   *  Markdown 语法（不再是 execCommand 写 HTML）。内容统一为 Markdown 源。 */
+  const renderMarkdownToolbar = () => (
+    <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+      {renderHighlightPalette()}
       <div className="mx-0.5 h-4 w-px bg-white/10" />
       {([
-        { Icon: HighlightChipIcon, key: 'bg', title: language === 'zh' ? '高亮背景色（再点取消）' : 'Highlight (click again to clear)', onClick: toggleHighlight },
-        { Icon: Heading1, key: 'h1', title: 'H1', onClick: () => exec('formatBlock', 'H1') },
-        { Icon: Heading2, key: 'h2', title: 'H2', onClick: () => exec('formatBlock', 'H2') },
-        { Icon: Heading3, key: 'h3', title: 'H3', onClick: () => exec('formatBlock', 'H3') },
-        { Icon: Pilcrow, key: 'p', title: language === 'zh' ? '正文' : 'Paragraph', onClick: () => exec('formatBlock', 'P') },
-        { Icon: Bold, key: 'b', title: language === 'zh' ? '加粗' : 'Bold', onClick: () => exec('bold') },
-        { Icon: Italic, key: 'i', title: language === 'zh' ? '斜体' : 'Italic', onClick: () => exec('italic') },
+        { Icon: Heading1, key: 'h1', title: 'H1', onClick: () => applyMarkdown('h1') },
+        { Icon: Heading2, key: 'h2', title: 'H2', onClick: () => applyMarkdown('h2') },
+        { Icon: Heading3, key: 'h3', title: 'H3', onClick: () => applyMarkdown('h3') },
         { divider: true, key: 'd1' },
-        { Icon: List, key: 'ul', title: language === 'zh' ? '无序列表' : 'Bullet list', onClick: () => exec('insertUnorderedList') },
-        { Icon: ListOrdered, key: 'ol', title: language === 'zh' ? '有序列表' : 'Numbered list', onClick: () => exec('insertOrderedList') },
-        { Icon: Minus, key: 'hr', title: language === 'zh' ? '分割线' : 'Horizontal rule', onClick: () => exec('insertHorizontalRule') },
-        { Icon: CopyIcon, key: 'copy', title: language === 'zh' ? '复制纯文本' : 'Copy text', onClick: () => navigator.clipboard?.writeText(editorRef.current?.innerText ?? '') },
-        { Icon: Expand, key: 'exp', title: language === 'zh' ? '放大' : 'Expand', onClick: () => setIsFullscreen(true) },
+        { Icon: Bold, key: 'b', title: language === 'zh' ? '加粗' : 'Bold', onClick: () => applyMarkdown('bold') },
+        { Icon: Italic, key: 'i', title: language === 'zh' ? '斜体' : 'Italic', onClick: () => applyMarkdown('italic') },
+        { divider: true, key: 'd2' },
+        { Icon: List, key: 'ul', title: language === 'zh' ? '无序列表' : 'Bullet list', onClick: () => applyMarkdown('ul') },
+        { Icon: ListOrdered, key: 'ol', title: language === 'zh' ? '有序列表' : 'Numbered list', onClick: () => applyMarkdown('ol') },
+        { Icon: Quote, key: 'quote', title: language === 'zh' ? '引用' : 'Quote', onClick: () => applyMarkdown('quote') },
+        { divider: true, key: 'd3' },
+        { Icon: Code, key: 'code', title: language === 'zh' ? '行内代码' : 'Inline code', onClick: () => applyMarkdown('code') },
+        { Icon: LinkIcon, key: 'link', title: language === 'zh' ? '链接' : 'Link', onClick: () => applyMarkdown('link') },
+        { Icon: Minus, key: 'hr', title: language === 'zh' ? '分割线' : 'Divider', onClick: () => applyMarkdown('hr') },
+        { Icon: CopyIcon, key: 'copy', title: language === 'zh' ? '复制 Markdown' : 'Copy Markdown', onClick: () => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } } },
       ] as Array<{ Icon?: React.ComponentType<{ className?: string }>; divider?: boolean; key: string; title?: string; onClick?: () => void }>).map((item) => (
         item.divider
           ? <div key={item.key} className="mx-0.5 h-4 w-px bg-white/10" />
@@ -7441,14 +7756,13 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         onPointerDown={activeMode === 'editor' ? undefined : stopNodeGesture}
         onClick={activeMode === 'editor' ? undefined : (event) => event.stopPropagation()}
         onDoubleClick={() => {
-          // 双击节点任意处 → 打开放大(全屏)编辑器改内容。正文平时只读、单击拖动，
-          // 编辑一律在全屏进行。不按 activeMode 拦截：chooser 态双击也直接进编辑。
+          // 双击节点任意处 → 打开放大(全屏)。有内容默认「预览」(渲染 Markdown)，
+          // 空节点默认「编辑」直接开写。正文平时只读、单击拖动。
           if (!isFullscreen) {
-            // Auto-flip to editor mode if user double-clicks from chooser,
-            // so the fullscreen editor has something coherent to render.
             if (activeMode !== 'editor') {
               updateNodeData(id, { textMode: 'editor' });
             }
+            setFsEditMode(!dataContent);
             setIsFullscreen(true);
           }
         }}
@@ -7489,21 +7803,34 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         {activeMode === 'editor' ? (
           // 固定默认高度(内容多了滚动，不随字数无限长高);拖右下角改高度(boxHeight)。
           <div ref={contentBoxRef} className="relative" style={{ height: boxHeight ?? TEXT_NODE_DEFAULT_HEIGHT }}>
-            {/* 只读展示：单击拖动整个节点，双击打开放大(全屏)编辑器改内容
-                (见外层 onDoubleClick)。仍挂 editorRef，让 data.content → DOM 的
-                同步 effect 继续填充；不再 contentEditable，也不 nodrag。 */}
-            <div
-              ref={editorRef}
-              title={language === 'zh' ? '双击编辑' : 'Double-click to edit'}
-              className="prompt-editor-scroll rich-text-editor h-full w-full cursor-grab select-none overflow-auto bg-transparent p-2 text-sm text-neutral-100 outline-none active:cursor-grabbing"
-            />
-            {!data.content ? (
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
-                <FileText className="h-6 w-6 text-neutral-600" />
-                <div className="text-sm text-neutral-400">{language === 'zh' ? '输入提示词生成文本' : 'Enter a prompt to generate text'}</div>
-                <div className="text-xs text-neutral-600">{language === 'zh' ? '双击编辑文本' : 'Double-click to edit'}</div>
+            {extractedAssets ? (
+              // 资产提取结果：只读分组表格。单击拖动、双击放大看大表(见外层 onDoubleClick)。
+              <div
+                title={language === 'zh' ? '双击放大' : 'Double-click to expand'}
+                className="prompt-editor-scroll h-full w-full cursor-grab select-none overflow-auto p-2 active:cursor-grabbing"
+              >
+                <AssetsListView assets={extractedAssets} language={language} dense />
               </div>
-            ) : null}
+            ) : (
+              <>
+                {/* 只读展示：把 Markdown 渲染成排版好的 HTML（标题/列表/表格/代码/
+                    加粗）。单击拖动整个节点，双击打开放大(全屏)预览/编辑。
+                    [&_a]:pointer-events-none：小节点面上让链接失活，整块都是拖拽面，
+                    单击不会误触链接跳转 —— 链接改到全屏「预览」里点。 */}
+                <div
+                  title={language === 'zh' ? '双击放大 / 编辑' : 'Double-click to expand / edit'}
+                  className="prompt-editor-scroll rich-text-editor h-full w-full cursor-grab select-none overflow-auto bg-transparent p-2 text-sm text-neutral-100 outline-none active:cursor-grabbing [&_a]:pointer-events-none [&_a]:cursor-grab"
+                  dangerouslySetInnerHTML={{ __html: renderedHtml }}
+                />
+                {!data.content ? (
+                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
+                    <FileText className="h-6 w-6 text-neutral-600" />
+                    <div className="text-sm text-neutral-400">{language === 'zh' ? '输入提示词生成文本' : 'Enter a prompt to generate text'}</div>
+                    <div className="text-xs text-neutral-600">{language === 'zh' ? '双击编辑文本' : 'Double-click to edit'}</div>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
         ) : null}
 
@@ -7604,20 +7931,110 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
             >
               <X className="h-4 w-4" />
             </button>
-            {/* Title on the left, formatting toolbar centered — matches the
-                NeoWOW fullscreen layout where H1/H2/B/I/list sit at the top
-                of the editor. */}
+            {/* 头部：标题 + 右侧切换。资产结果→表格/原文；普通内容→预览/编辑。 */}
             <div className="mb-3 flex items-center justify-between gap-4 pr-12">
-              <div className="text-sm text-neutral-300">{title}</div>
-              {renderEditorToolbar()}
+              <div className="flex items-center gap-2">
+                {renderBgPalette()}
+                <div className="text-sm text-neutral-300">{title}</div>
+              </div>
+              {extractedAssets && !fsEditMode ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.03] p-0.5 text-[12px]">
+                    <button
+                      type="button"
+                      onClick={() => setFsRawView(false)}
+                      className={clsx('rounded-md px-2.5 py-1 transition', !fsRawView ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                    >
+                      {language === 'zh' ? '表格' : 'Table'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFsRawView(true)}
+                      className={clsx('rounded-md px-2.5 py-1 transition', fsRawView ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                    >
+                      {language === 'zh' ? '原文' : 'Raw'}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFsEditMode(true)}
+                    className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[12px] text-neutral-300 transition hover:bg-white/[0.06]"
+                  >
+                    {language === 'zh' ? '编辑' : 'Edit'}
+                  </button>
+                  <button
+                    type="button"
+                    title={language === 'zh' ? '复制 JSON 原文' : 'Copy raw JSON'}
+                    onClick={() => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } }}
+                    className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[12px] text-neutral-300 transition hover:bg-white/[0.06]"
+                  >
+                    <CopyIcon className="h-3.5 w-3.5" />
+                    {language === 'zh' ? '复制 JSON' : 'Copy JSON'}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.03] p-0.5 text-[12px]">
+                    <button
+                      type="button"
+                      onClick={() => setFsEditMode(false)}
+                      className={clsx('rounded-md px-2.5 py-1 transition', !fsEditMode ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                    >
+                      {language === 'zh' ? '预览' : 'Preview'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFsEditMode(true)}
+                      disabled={isGenerating}
+                      title={isGenerating ? (language === 'zh' ? '生成中不可编辑' : 'Generating…') : undefined}
+                      className={clsx('rounded-md px-2.5 py-1 transition disabled:cursor-not-allowed disabled:opacity-40', fsEditMode ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                    >
+                      {language === 'zh' ? '编辑' : 'Edit'}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    title={language === 'zh' ? '复制 Markdown' : 'Copy Markdown'}
+                    onClick={() => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } }}
+                    className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[12px] text-neutral-300 transition hover:bg-white/[0.06]"
+                  >
+                    <CopyIcon className="h-3.5 w-3.5" />
+                    {language === 'zh' ? '复制' : 'Copy'}
+                  </button>
+                </div>
+              )}
             </div>
-            <div
-              ref={fullscreenEditorRef}
-              contentEditable
-              suppressContentEditableWarning
-              onInput={(event) => updateNodeData(id, { content: (event.target as HTMLDivElement).innerHTML })}
-              className="prompt-editor-scroll rich-text-editor flex-1 w-full overflow-auto rounded-xl bg-transparent p-4 text-sm text-neutral-100 outline-none"
-            />
+            {extractedAssets && !fsEditMode ? (
+              fsRawView ? (
+                <pre className="prompt-editor-scroll flex-1 w-full overflow-auto rounded-xl border border-white/10 bg-black/30 p-4 font-mono text-[12px] leading-relaxed text-neutral-300 whitespace-pre-wrap break-words">{dataContent}</pre>
+              ) : (
+                <div className="prompt-editor-scroll flex-1 w-full overflow-auto rounded-xl p-1">
+                  <AssetsListView assets={extractedAssets} language={language} />
+                </div>
+              )
+            ) : fsEditMode && !isGenerating ? (
+              // 编辑：Markdown 工具栏 + 改 Markdown 源的 textarea（内容统一为 Markdown）。
+              <div className="flex min-h-0 flex-1 flex-col gap-2">
+                <div className="flex justify-center">{renderMarkdownToolbar()}</div>
+                <textarea
+                  ref={textareaRef}
+                  value={dataContent}
+                  onChange={(event) => updateNodeData(id, { content: event.target.value })}
+                  placeholder={language === 'zh' ? '用 Markdown 书写…（# 标题、- 列表、**加粗**、| 表格 |）' : 'Write in Markdown…'}
+                  className="prompt-editor-scroll min-h-0 flex-1 w-full resize-none overflow-auto rounded-xl border border-white/10 bg-black/20 p-4 font-mono text-[13px] leading-relaxed text-neutral-100 outline-none"
+                />
+              </div>
+            ) : dataContent ? (
+              // 预览：渲染 Markdown。
+              <div
+                className="prompt-editor-scroll rich-text-editor flex-1 w-full overflow-auto rounded-xl bg-transparent p-4 text-sm text-neutral-100 outline-none"
+                dangerouslySetInnerHTML={{ __html: renderedHtml }}
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center rounded-xl text-sm text-neutral-500">
+                {language === 'zh' ? '暂无内容，切到「编辑」开始书写' : 'No content — switch to Edit to write'}
+              </div>
+            )}
           </div>
         </div>,
         document.body,
