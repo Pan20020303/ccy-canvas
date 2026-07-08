@@ -208,6 +208,19 @@ const SEEDREAM_TEMPLATE = {
   defaults: { quality: "Auto", aspectRatio: "1:1" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
+// apimart 中转站的 Gemini-3.1-Flash-Image (Nano banana2) — 与 GPT-Image-2 同端点
+// (/v1/images/generations)：size=比例 + resolution 0.5k/1k/2k/4k + image_urls 图生图，
+// 由 generateImageApimart(按 base_url 嗅探)处理。
+const APIMART_NANO_BANANA_2_TEMPLATE = {
+  serviceType: "image" as const,
+  supportsResolution: true,
+  supportsAspectRatio: true,
+  supportsAutoAspect: true,
+  resolutionOptions: ["0.5k", "1k", "2k", "4k"],
+  aspectRatioOptions: [...GPT_IMAGE_2_ASPECT_OPTIONS],
+  defaults: { resolution: "2k", aspectRatio: "auto" },
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
 export const modelTemplates: Record<string, ModelTemplate> = {
   "gpt-4.1-mini": {
     vendor: "OpenAI",
@@ -219,15 +232,20 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     serviceType: "image",
     modelName: "gpt-image-2",
     supportsQuality: true,
+    supportsResolution: true,
     supportsAspectRatio: true,
     supportsAutoAspect: true,
     supportsOutputFormat: true,
     qualityOptions: ["Auto", "High", "Medium", "Low"],
+    // apimart/Manju 中转站的 GPT-Image-2 走 size=比例 + resolution 档位；后端
+    // generateImageApimart 透传 resolution(1k/2k/4k)。OpenAI 官方渠道忽略它。
+    resolutionOptions: ["1k", "2k", "4k"],
     // 文档只列比例档（不再暴露 1024x… 像素尺寸；自适应由 supportsAutoAspect 提供）。
     aspectRatioOptions: [...GPT_IMAGE_2_ASPECT_OPTIONS],
     outputFormatOptions: ["png", "jpeg", "webp"],
     defaults: {
       quality: "Auto",
+      resolution: "2k",
       aspectRatio: "auto",
       outputFormat: "png",
     },
@@ -458,6 +476,23 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     supportsAutoAspect: true,
     aspectRatioOptions: [...GEMINI_IMAGE_ASPECT_OPTIONS],
     defaults: { aspectRatio: "auto" },
+  },
+  // apimart 中转站的 Gemini-3.1-Flash-Image (Nano banana2)。apimart 用 preview 名，
+  // 兼容别名 nano-banana-2；均走 /v1/images/generations(generateImageApimart)。
+  "gemini-3.1-flash-image-preview": {
+    vendor: "Google",
+    modelName: "gemini-3.1-flash-image-preview",
+    ...APIMART_NANO_BANANA_2_TEMPLATE,
+  },
+  "gemini-3.1-flash-image": {
+    vendor: "Google",
+    modelName: "gemini-3.1-flash-image",
+    ...APIMART_NANO_BANANA_2_TEMPLATE,
+  },
+  "nano-banana-2": {
+    vendor: "Google",
+    modelName: "nano-banana-2",
+    ...APIMART_NANO_BANANA_2_TEMPLATE,
   },
   // ── 阿里云百炼 HappyHorse 快乐马（图/参/编/文 4 个 mode × 1.0 / 1.1 两个版本）
   // 文档：图生(i2v)、参考生(r2v)、视频编辑(video-edit)、文生(t2v)

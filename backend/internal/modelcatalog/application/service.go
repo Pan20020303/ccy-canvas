@@ -2452,8 +2452,8 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 	if size := strings.TrimSpace(req.Size); size != "" {
 		body["size"] = size // 比例("16:9")或像素("1881x836")原样透传；空则网关默认 1:1
 	}
-	if res := strings.ToLower(strings.TrimSpace(req.Resolution)); res == "1k" || res == "2k" || res == "4k" {
-		body["resolution"] = res
+	if res := strings.ToLower(strings.TrimSpace(req.Resolution)); res == "0.5k" || res == "1k" || res == "2k" || res == "4k" {
+		body["resolution"] = res // apimart 档位：0.5k/1k/2k/4k(gemini-3.1 支持 0.5k)
 	}
 	if len(req.ReferenceImages) > 0 {
 		urls := make([]string, 0, len(req.ReferenceImages))
