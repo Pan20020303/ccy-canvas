@@ -1008,6 +1008,12 @@ type GenerateResult struct {
 	// multiple assets (e.g. wan2.7 组图 / n>1). Content == ContentList[0]. Empty
 	// for single-asset results; consumers should fall back to Content.
 	ContentList []string `json:"content_list,omitempty"`
+	// AssetTemporary marks a result whose media is STILL on the provider's
+	// expiring upstream URL (staging failed → never re-hosted). Signals the
+	// frontend to run its client-side second-chance re-host unconditionally —
+	// its URL heuristic misses unsigned/auth-gated provider URLs, which then
+	// die as "生成成功但没有返图".
+	AssetTemporary bool `json:"asset_temporary,omitempty"`
 }
 
 // candidateChannel is a provider that matched the request's (service_type,
@@ -1225,6 +1231,7 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 			staged, err := StageRemoteAssetWithProviderAuth(ctx, u, c.baseURL, c.apiKey)
 			if err != nil {
 				out.cacheHit = false
+				result.AssetTemporary = true // entry stays on the expiring upstream URL
 				log.Printf("[modelcatalog] WARNING asset staging failed for log %s entry %d/%d; keeping temporary upstream URL: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
 				continue
 			}
@@ -1257,6 +1264,7 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	staged, err := StageRemoteAssetWithProviderAuth(ctx, originalURL, c.baseURL, c.apiKey)
 	if err != nil {
 		out.cacheHit = false
+		result.AssetTemporary = true // stays on the expiring upstream URL
 		log.Printf("[modelcatalog] WARNING asset staging failed for log %s; keeping temporary upstream URL: %v", req.GenerationLogID, err)
 		// P0-6: don't fail the generation, but make the degradation OBSERVABLE —
 		// asset_status='temporary_url' marks rows whose media will expire so
@@ -1268,6 +1276,7 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	if staged.LocalPath == "" {
 		if staged.StagingURL == originalURL && isTemporaryGeneratedAssetURL(originalURL) {
 			out.cacheHit = false
+			result.AssetTemporary = true // stays on the expiring upstream URL
 			log.Printf("[modelcatalog] WARNING generated media for log %s stayed on a temporary upstream URL", req.GenerationLogID)
 			s.markGenerationAssetTemporary(req.GenerationLogID, nil)
 			return out, nil
@@ -1710,12 +1719,14 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 	status := "success"
 	errMsg := ""
 	resultURL := ""
+	assetTemporary := false
 	var resultURLs []string
 	if err != nil {
 		status = "error"
 		errMsg = err.Error()
 	} else if result != nil {
 		resultURL = result.Content
+		assetTemporary = result.AssetTemporary
 		if len(result.ContentList) > 1 {
 			resultURLs = result.ContentList
 		}
@@ -1724,14 +1735,15 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 		status = forcedStatus
 	}
 	s.eventBus.Publish(req.UserID, TaskEvent{
-		TaskID:      req.GenerationLogID,
-		NodeID:      req.NodeID,
-		ServiceType: req.ServiceType,
-		Status:      status,
-		ResultURL:   resultURL,
-		ResultURLs:  resultURLs,
-		ErrorMsg:    errMsg,
-		DurationMs:  int(duration.Milliseconds()),
+		TaskID:         req.GenerationLogID,
+		NodeID:         req.NodeID,
+		ServiceType:    req.ServiceType,
+		Status:         status,
+		ResultURL:      resultURL,
+		ResultURLs:     resultURLs,
+		ErrorMsg:       errMsg,
+		DurationMs:     int(duration.Milliseconds()),
+		AssetTemporary: assetTemporary,
 	})
 }
 

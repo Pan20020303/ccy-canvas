@@ -13,6 +13,9 @@ export type TaskItem = {
   error_msg: string;
   duration_ms: number;
   created_at: string;
+  /** SSE 事件专有：后端转存失败，result_url 仍是会过期/需鉴权的上游临时 URL，
+   *  前端必须无条件二次转存，否则「生成成功但没有返图」。 */
+  asset_temporary?: boolean;
 };
 
 /** Fetch a single task by its generation_log id (user-scoped server-side). */

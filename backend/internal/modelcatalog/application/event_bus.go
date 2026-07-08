@@ -22,6 +22,10 @@ type TaskEvent struct {
 	ResultURLs []string `json:"result_urls,omitempty"`
 	ErrorMsg   string   `json:"error_msg"` // empty on success
 	DurationMs int      `json:"duration_ms"`
+	// AssetTemporary mirrors GenerateResult.AssetTemporary: the delivered media
+	// is still on an expiring/auth-gated upstream URL (staging failed), so the
+	// frontend must re-host it client-side or the image dies ("成功但没有返图").
+	AssetTemporary bool `json:"asset_temporary,omitempty"`
 }
 
 // TaskEventBus is an in-process pub/sub for task completion events,
