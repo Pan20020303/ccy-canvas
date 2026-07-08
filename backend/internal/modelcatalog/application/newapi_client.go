@@ -150,7 +150,7 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 	reqBody, err := json.Marshal(map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens": 2048,
+		"max_tokens": textGenMaxTokens(),
 		"stream":     true,
 	})
 	if err != nil {

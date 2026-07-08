@@ -1147,7 +1147,7 @@ func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest
 		Messages: []ChatMessage{
 			{Role: "user", Content: req.Prompt},
 		},
-		MaxTokens: 2048,
+		MaxTokens: textGenMaxTokens(),
 	})
 	if err != nil {
 		return nil, err
@@ -2539,13 +2539,25 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	return parseImageGenerationResponse(respBody)
 }
 
+// textGenMaxTokens 返回文本生成的输出 token 上限。旧的硬编码 2048 会把较长的
+// 结构化输出（如「剧本资产提取」那串资产 JSON）中途截断，导致前端拿到半截 JSON、
+// 解析不出表格。默认放宽到 8192，可用环境变量 TEXT_MAX_TOKENS 覆盖。
+func textGenMaxTokens() int {
+	if v := strings.TrimSpace(os.Getenv("TEXT_MAX_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 8192
+}
+
 func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	body := map[string]interface{}{
 		"model": req.Model,
 		"messages": []map[string]string{
 			{"role": "user", "content": req.Prompt},
 		},
-		"max_tokens": 2048,
+		"max_tokens": textGenMaxTokens(),
 	}
 	bodyJSON, _ := json.Marshal(body)
 

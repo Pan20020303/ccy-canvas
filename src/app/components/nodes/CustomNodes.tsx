@@ -5799,6 +5799,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
             src={data.url}
             alt={displayName}
             className="h-full w-full object-cover select-none"
+            thumbWidth={720}
             onLoad={(event) => {
               const { naturalWidth, naturalHeight } = event.currentTarget;
               if (naturalWidth && naturalHeight) {
@@ -6879,6 +6880,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             className="h-full w-full object-cover select-none"
             onLoad={handleImageLoad}
             zh={language === 'zh'}
+            thumbWidth={720}
           />
           <NodeVersionsBadge
             nodeId={id}
