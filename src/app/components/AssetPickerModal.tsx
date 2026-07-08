@@ -323,7 +323,7 @@ export function AssetPickerModal({
                       ) : item.kind === 'audio' ? (
                         <div className="flex h-full items-center justify-center text-2xl text-neutral-500">♪</div>
                       ) : (
-                        <img src={toRenderableMediaUrl(item.url)} alt={item.title || ''} className="h-full w-full object-cover" />
+                        <img src={toRenderableMediaUrl(item.url, { thumbWidth: 720 })} alt={item.title || ''} className="h-full w-full object-cover" loading="lazy" />
                       )}
                       <div
                         className={clsx(

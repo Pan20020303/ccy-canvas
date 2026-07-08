@@ -78,7 +78,9 @@ function preload(target: MediaTarget): Promise<void> {
       done();
     };
     img.onerror = done; // videos / broken urls — skip
-    img.src = toRenderableMediaUrl(target.url); // same request the node will make
+    // thumbWidth 与画布节点(ResilientImage thumbWidth=720)一致 —— 预热的必须
+    // 是节点真正要请求的那个 URL,否则预热全图、节点拉缩略图,缓存互不命中。
+    img.src = toRenderableMediaUrl(target.url, { thumbWidth: 720 }); // same request the node will make
   });
 }
 

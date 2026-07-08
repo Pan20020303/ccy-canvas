@@ -813,9 +813,12 @@ function isLikelyExpiringMediaUrl(url: string): boolean {
 /** Second-chance durability for queued/SSE results: the backend normally
  *  re-hosts to COS before publishing, but when its staging failed the event
  *  carries a short-lived provider URL. Re-host it client-side and swap the
- *  node's url in place — guarded so a stale swap can't clobber a newer run. */
-function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
-  if (!isLikelyExpiringMediaUrl(appliedUrl)) return;
+ *  node's url in place — guarded so a stale swap can't clobber a newer run.
+ *  `force`（事件带 asset_temporary=true）时跳过 URL 启发式：无签名参数/需鉴权
+ *  的上游临时 URL 启发式认不出来，正是「生成成功但没有返图」的来源。 */
+function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: (updater: (state: AppState) => Partial<AppState>) => void, force = false) {
+  if (!/^https?:\/\//i.test(appliedUrl)) return; // 相对 /uploads 等本地 URL 已经持久
+  if (!force && !isLikelyExpiringMediaUrl(appliedUrl)) return;
   void rehostToStableUrl(appliedUrl).then((stable) => {
     if (!stable || stable === appliedUrl) return;
     setStore((state) => {
@@ -837,6 +840,12 @@ function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: 
  *  duplicates. Returns only the nodes that don't already exist. */
 function buildExtraImageNodes(sourceNode: Node | undefined, existing: Node[], urls: string[], taskId: string): Node[] {
   if (!urls || urls.length <= 1) return [];
+  // 显式只要 1 张的请求(多角度/打光/高清等派生编辑都设 outputCount=1)：即使
+  // 上游网关无视 n 回了组图，也只保留第一张，不把多余的扇出成兄弟节点 ——
+  // 否则「打光」这类单图动作会莫名一下冒出三张。组图模型的正常用法
+  // (outputCount 未设或 >1)不受影响。
+  const requested = (sourceNode?.data as Record<string, unknown> | undefined)?.generationParams as { outputCount?: number } | undefined;
+  if (requested?.outputCount === 1) return [];
   const baseX = (sourceNode?.position.x ?? 200) + 380;
   const baseY = sourceNode?.position.y ?? 200;
   const cols = Math.max(1, Math.ceil(Math.sqrt(urls.length - 1)));
@@ -1059,9 +1068,11 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   });
   // P0-8 second chance: if the delivered URL looks signed/expiring (backend
   // re-host failed and published the provider URL), re-host client-side.
+  // asset_temporary（后端明示转存失败）时无条件转存 —— 无签名参数/需鉴权的
+  // 临时 URL 启发式认不出，会以「生成成功但没有返图」的裂图收场。
   if (normalizedStatus === 'success' && task.result_url
     && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
-    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore);
+    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore, task.asset_temporary === true);
   }
   // 历史资产: the QUEUED delivery path never recorded history — addHistory only
   // ran in runNode's synchronous success block, so with the task queue enabled
@@ -1204,6 +1215,8 @@ type TaskEventPayload = {
   result_urls?: string[];
   error_msg: string;
   duration_ms: number;
+  // 后端转存失败，result_url 仍是会过期/需鉴权的上游临时 URL → 前端必须二次转存。
+  asset_temporary?: boolean;
 };
 
 let taskEventSource: EventSource | null = null;
@@ -1223,6 +1236,7 @@ function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState,
       error_msg: event.error_msg,
       duration_ms: event.duration_ms,
       created_at: '',
+      asset_temporary: event.asset_temporary,
     },
     getStore,
     setStore,
@@ -3494,6 +3508,20 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           const upstreamNode = state.nodes.find((node) => node.id.startsWith(ref));
           if (!upstreamNode) return `@${ref}`;
           const data = (upstreamNode.data ?? {}) as Record<string, string>;
+          // 文本节点取 content(正文的唯一权威字段——流式生成/手动编辑都只写
+          // content,output 可能残留旧一轮的文本),遗留 HTML 展平成纯文本。
+          if (upstreamNode.type === 'textNode') {
+            const raw = data.content || data.output || '';
+            if (!raw) return `@${ref}`;
+            return LEGACY_HTML_RE.test(raw) ? htmlToPlainText(raw) : raw;
+          }
+          // 文本生成里 @ 图片/视频节点：裸 URL 对纯文本模型毫无意义(模型只会
+          // 回「无法访问外部链接/查看图片」)。展开成带名字的占位，让模型知道
+          // 这里有一张图但内容不可见;真正要用图请连到图片/视频生成节点。
+          if (serviceType === 'text' && (data.url || data.output)) {
+            const name = data.sourceName || data.customTitle || '';
+            return name ? `[图片:${name}]` : '[图片]';
+          }
           return data.output ?? data.url ?? data.content ?? `@${ref}`;
         });
 

@@ -91,7 +91,7 @@ export function SaveAssetDialog() {
             <div className="mb-2 text-sm text-neutral-300">{language === 'zh' ? '封面' : 'Cover'}</div>
             <div className="aspect-video overflow-hidden rounded-xl border border-white/8 bg-black/40">
               {kind === 'image' && url ? (
-                <img src={toRenderableMediaUrl(url)} alt="" className="h-full w-full object-cover" />
+                <img src={toRenderableMediaUrl(url, { thumbWidth: 720 })} alt="" className="h-full w-full object-cover" />
               ) : kind === 'video' && url ? (
                 <video src={toRenderableMediaUrl(url)} className="h-full w-full object-cover" muted />
               ) : kind === 'text' ? (

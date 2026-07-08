@@ -61,6 +61,7 @@ import { resolveApiUrl } from '../../api/client';
 import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
+import { copyTextToClipboard, copyWithToast } from '../../clipboard';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
@@ -992,7 +993,7 @@ function MentionThumb({ thumb, kind }: { thumb: string; kind?: string }) {
   if (thumb) {
     return (
       <img
-        src={toRenderableMediaUrl(thumb)}
+        src={toRenderableMediaUrl(thumb, { thumbWidth: 720 })}
         alt=""
         aria-hidden
         style={{ ...base, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.20)' }}
@@ -1083,10 +1084,10 @@ function RefHoverPreview({ up, left, top, onEnter, onLeave }: {
     body = up.mediaUrl ? (
       <video src={toRenderableMediaUrl(up.mediaUrl)} muted autoPlay loop playsInline className="max-h-[180px] w-[252px] rounded-md bg-black object-contain" />
     ) : (
-      <img src={toRenderableMediaUrl(up.thumb)} alt="" className="max-h-[180px] w-[252px] rounded-md object-contain" />
+      <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="max-h-[180px] w-[252px] rounded-md object-contain" />
     );
   } else if (up.thumb) {
-    body = <img src={toRenderableMediaUrl(up.thumb)} alt="" className="max-h-[200px] max-w-[252px] rounded-md object-contain" />;
+    body = <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="max-h-[200px] max-w-[252px] rounded-md object-contain" />;
   }
   if (!body) return null;
   return createPortal(
@@ -2348,13 +2349,17 @@ const PromptPanel = ({
           >
             <div className="relative">
               {up.thumb ? (
+                /* 720 缩略图 + 代理缓存：与画布节点同一 URL，浏览器缓存直接命中，
+                   不再裸拉全分辨率原图(此前是 chips 慢的根因)。生成引用走
+                   resolveReferenceTransportUrl 的原图，与显示无关。 */
                 <img
-                  src={up.thumb}
+                  src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })}
                   alt=""
                   className={clsx(
                     'h-12 w-12 rounded-lg object-cover transition',
                     isUsed ? 'ring-2 ring-cyan-400/50' : 'opacity-80',
                   )}
+                  loading="lazy"
                   draggable={false}
                 />
               ) : up.kind === 'audio' ? (
@@ -2686,7 +2691,7 @@ const PromptPanel = ({
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
                 >
                   {up.thumb ? (
-                    <img src={toRenderableMediaUrl(up.thumb)} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
+                    <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
                   ) : up.kind === 'audio' ? (
                     <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] flex-shrink-0">
                       <Music className="h-3.5 w-3.5 text-emerald-400" />
@@ -3095,7 +3100,7 @@ function NodeErrorBanner({ error }: { error: string }) {
     return language === 'zh' ? '生成失败，请稍后重试。' : 'Generation failed — please retry.';
   })();
 
-  const copyDetail = () => { try { navigator.clipboard?.writeText(error); } catch { /* ignore */ } };
+  const copyDetail = () => { void copyWithToast(error, language === 'zh'); };
 
   return (
     // Full-coverage overlay over the node shell — replaces the empty
@@ -4225,7 +4230,9 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
         prompt: basePrompt,
         // 精修编辑器(全景/多角度/打光)都可以在底部选模型,统一给默认值。
         model: defaultImageModel,
-        outputCount: action === 'angles' ? 3 : 1,
+        // 一次生成一张(此前 angles 默认 3：同参数连发 3 次,一下冒三张、扣三倍
+        // 积分,底栏费用显示 ⚡1 也对不上)。要多张可以再点一次生成。
+        outputCount: 1,
         expandDirection: action === 'panorama' ? 'horizontal' : 'both',
         anglePreset: action === 'angles' ? 'custom' : undefined,
         angleYaw: 0,
@@ -5533,7 +5540,7 @@ function SmartVideo({
   // blank box while the <video> re-buffers.
   const [capturedPoster, setCapturedPoster] = useState<string>(() => videoPosterCache.get(src) ?? '');
   useEffect(() => { setCapturedPoster(videoPosterCache.get(src) ?? ''); }, [src]);
-  const posterSrc = poster ? toRenderableMediaUrl(poster) : capturedPoster;
+  const posterSrc = poster ? toRenderableMediaUrl(poster, { thumbWidth: 720 }) : capturedPoster;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -5736,7 +5743,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
               }}
             />
           ) : data.poster ? (
-            <img src={toRenderableMediaUrl(data.poster)} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
+            <img src={toRenderableMediaUrl(data.poster, { thumbWidth: 720 })} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
           {!data.url ? (
             <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">
@@ -7043,7 +7050,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
               }}
             />
           ) : data.poster ? (
-            <img src={toRenderableMediaUrl(data.poster)} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
+            <img src={toRenderableMediaUrl(data.poster, { thumbWidth: 720 })} alt="" draggable={false} className="absolute inset-0 h-full w-full object-cover opacity-60 select-none" />
           ) : null}
           {!data.url ? (
             <div className="relative z-10 flex flex-col items-center gap-2 text-neutral-500">
@@ -7318,9 +7325,11 @@ function AssetPromptCell({ prompt }: { prompt: string }) {
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
-          try { navigator.clipboard?.writeText(prompt); } catch { /* ignore */ }
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1200);
+          void copyTextToClipboard(prompt).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          });
         }}
         className="nodrag nopan absolute right-0 top-0 flex h-5 items-center gap-1 rounded-md border border-white/10 bg-[#1a1d22] px-1 text-[10px] text-neutral-300 opacity-0 transition group-hover/prompt:opacity-100 hover:bg-white/10"
       >
@@ -7711,7 +7720,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         { Icon: Code, key: 'code', title: language === 'zh' ? '行内代码' : 'Inline code', onClick: () => applyMarkdown('code') },
         { Icon: LinkIcon, key: 'link', title: language === 'zh' ? '链接' : 'Link', onClick: () => applyMarkdown('link') },
         { Icon: Minus, key: 'hr', title: language === 'zh' ? '分割线' : 'Divider', onClick: () => applyMarkdown('hr') },
-        { Icon: CopyIcon, key: 'copy', title: language === 'zh' ? '复制 Markdown' : 'Copy Markdown', onClick: () => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } } },
+        { Icon: CopyIcon, key: 'copy', title: language === 'zh' ? '复制 Markdown' : 'Copy Markdown', onClick: () => { void copyWithToast(dataContent, language === 'zh'); } },
       ] as Array<{ Icon?: React.ComponentType<{ className?: string }>; divider?: boolean; key: string; title?: string; onClick?: () => void }>).map((item) => (
         item.divider
           ? <div key={item.key} className="mx-0.5 h-4 w-px bg-white/10" />
@@ -7967,7 +7976,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
                   <button
                     type="button"
                     title={language === 'zh' ? '复制 JSON 原文' : 'Copy raw JSON'}
-                    onClick={() => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } }}
+                    onClick={() => { void copyWithToast(dataContent, language === 'zh'); }}
                     className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[12px] text-neutral-300 transition hover:bg-white/[0.06]"
                   >
                     <CopyIcon className="h-3.5 w-3.5" />
@@ -7997,7 +8006,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
                   <button
                     type="button"
                     title={language === 'zh' ? '复制 Markdown' : 'Copy Markdown'}
-                    onClick={() => { try { navigator.clipboard?.writeText(dataContent); } catch { /* ignore */ } }}
+                    onClick={() => { void copyWithToast(dataContent, language === 'zh'); }}
                     className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2 text-[12px] text-neutral-300 transition hover:bg-white/[0.06]"
                   >
                     <CopyIcon className="h-3.5 w-3.5" />

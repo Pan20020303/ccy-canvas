@@ -913,7 +913,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             {referencedNodes.map((n) => (
               <span key={n.id} className="inline-flex items-center gap-1 rounded-md border border-[var(--agent-border)] bg-white/[0.05] py-0.5 pl-0.5 pr-1.5 text-[10px] text-neutral-200">
                 {n.thumb ? (
-                  <img src={toRenderableMediaUrl(n.thumb)} alt="" className="h-4 w-4 rounded object-cover" />
+                  <img src={toRenderableMediaUrl(n.thumb, { thumbWidth: 720 })} alt="" className="h-4 w-4 rounded object-cover" />
                 ) : (
                   <ImageIcon className="h-3.5 w-3.5 text-neutral-500" />
                 )}

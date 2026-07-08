@@ -718,7 +718,7 @@ export function AssetLibraryModal() {
         {livePreview && hoverItem ? (
           <div className="pointer-events-none absolute bottom-4 left-4 z-30 max-h-[62vh] w-[300px] overflow-hidden rounded-2xl border border-white/12 bg-[#0d0f13]/95 p-2 shadow-[0_24px_70px_rgba(0,0,0,0.6)] backdrop-blur-md">
             {hoverItem.kind === 'image' || hoverItem.kind === 'world' ? (
-              <img src={toRenderableMediaUrl(hoverItem.thumb || hoverItem.url)} alt="" className="max-h-[54vh] w-full rounded-lg object-contain" />
+              <img src={toRenderableMediaUrl(hoverItem.thumb || hoverItem.url, { thumbWidth: 720 })} alt="" className="max-h-[54vh] w-full rounded-lg object-contain" />
             ) : hoverItem.kind === 'video' ? (
               <video src={toRenderableMediaUrl(hoverItem.url)} className="max-h-[54vh] w-full rounded-lg object-contain" muted autoPlay loop />
             ) : hoverItem.kind === 'audio' ? (
@@ -945,7 +945,7 @@ function FolderCard({
   onDropAsset: (assetId: string) => void;
 }) {
   const papers = thumbs.map((t, i) => (
-    <img key={i} src={toRenderableMediaUrl(t)} alt="" className="h-full w-full object-cover" />
+    <img key={i} src={toRenderableMediaUrl(t, { thumbWidth: 720 })} alt="" className="h-full w-full object-cover" loading="lazy" />
   ));
   return (
     <div

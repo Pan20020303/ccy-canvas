@@ -70,7 +70,7 @@ function RowThumb({ src, kind, type }: { src: string; kind: Exclude<NodeKindKey,
   if (!src || failed) return <KindIcon kind={kind} type={type} />;
   return (
     <img
-      src={toRenderableMediaUrl(src)}
+      src={toRenderableMediaUrl(src, { thumbWidth: 720 })}
       alt=""
       className="h-full w-full object-cover"
       loading="lazy"

@@ -182,9 +182,10 @@ function VersionCard({
             />
           ) : (
             <img
-              src={toRenderableMediaUrl(card.url)}
+              src={toRenderableMediaUrl(card.url, { thumbWidth: 720 })}
               alt={indexLabel}
               className="absolute inset-0 h-full w-full object-cover"
+              loading="lazy"
             />
           )
         ) : (
