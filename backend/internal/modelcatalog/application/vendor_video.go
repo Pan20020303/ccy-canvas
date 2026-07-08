@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,13 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	}
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
+	}
+	// Manju 中转站(manjuapi.com)的视频模型走「POST /chat/completions 提交 →
+	// GET /videos/{id} 轮询」的私有约定，而不是 sora-style /videos。按模型名
+	// 嗅探路由(sora2 / "Veo 3.1 Fast 1080p" / grok-imagine-video 是中转站
+	// 专有的命名，与标准 /videos 家族的 sora-2/sora-v3 不冲突)。
+	if isManjuChatVideoModel(req.Model) {
+		return s.generateVideoChatCompletions(ctx, pc, baseURL, apiKey, req)
 	}
 	aspectRatio := req.AspectRatio
 	if aspectRatio == "" {
@@ -980,6 +988,152 @@ func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath
 }
 
 // pollVideoTask polls the provider's task endpoint until completed or failed.
+// ── Manju 中转站 chat/completions 视频 ────────────────────────────────────────
+// manjuapi.com 的视频生成不是 sora-style POST /videos，而是 POST /chat/completions
+// 提交、响应带任务对象(id/poll_url)、GET /v1/videos/{id} 轮询。三个模型家族的
+// 请求字段形态各不相同(接口文档 ssnsuyettr.apifox.cn)：
+//   sora2:               messages[] 装提示词 + sora2_duration/sora2_ratio + input_reference
+//   Veo 3.1 Fast 1080p:  根级 prompt + duration/aspect_ratio + input_reference
+//   grok-imagine-video:  根级 prompt + duration/aspect_ratio/resolution + image_url
+
+// isManjuChatVideoModel matches the relay's EXACT model names. Deliberately
+// narrow so the standard /videos families (sora-2 / sora-v3-*) keep routing to
+// the generic sora-style path: "sora2" has no hyphen, the relay's Veo name
+// contains spaces, and grok-imagine-video is the relay's own slug.
+func isManjuChatVideoModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "sora2" {
+		return true
+	}
+	if strings.HasPrefix(m, "veo ") { // "veo 3.1 fast 1080p" — 带空格是中转站命名
+		return true
+	}
+	return strings.HasPrefix(m, "grok-imagine")
+}
+
+func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	ratio := strings.TrimSpace(req.AspectRatio)
+	if ratio == "" {
+		ratio = strings.TrimSpace(req.Size)
+	}
+	if ratio == "" || !strings.Contains(ratio, ":") {
+		ratio = "16:9"
+	}
+	duration := req.Duration
+	if duration <= 0 {
+		duration = 8
+	}
+
+	// 参考图(图生视频)：中转站要求公网 http(s) URL(生成资产本就转存在 COS
+	// 公共桶，前端传的是原图公网 URL)。只取第一张 —— 三个模型都是单参考。
+	referenceURL := ""
+	for i, raw := range req.ReferenceImages {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			continue
+		}
+		if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("ManjuAPI video reference #%d must be a public http(s) URL", i+1))
+		}
+		referenceURL = ref
+		break
+	}
+
+	body := map[string]interface{}{
+		"model":  req.Model,
+		"stream": false,
+	}
+	switch {
+	case model == "sora2":
+		body["messages"] = []map[string]interface{}{{"role": "user", "content": req.Prompt}}
+		body["sora2_duration"] = strconv.Itoa(duration)
+		body["sora2_ratio"] = ratio
+		if referenceURL != "" {
+			body["input_reference"] = referenceURL
+		}
+	case strings.HasPrefix(model, "grok-imagine"):
+		// grok 只接受 6/10/15 秒与 720p；时长取最接近的合法值。
+		grokDur := 6
+		for _, d := range []int{6, 10, 15} {
+			if abs(duration-d) < abs(duration-grokDur) {
+				grokDur = d
+			}
+		}
+		if ratio != "16:9" && ratio != "9:16" {
+			ratio = "16:9"
+		}
+		body["prompt"] = req.Prompt
+		body["duration"] = strconv.Itoa(grokDur)
+		body["aspect_ratio"] = ratio
+		body["resolution"] = "720p"
+		if referenceURL != "" {
+			body["image_url"] = referenceURL
+		}
+	default: // Veo 3.1 家族
+		body["prompt"] = req.Prompt
+		body["duration"] = strconv.Itoa(duration)
+		body["aspect_ratio"] = ratio
+		if referenceURL != "" {
+			body["input_reference"] = referenceURL
+		}
+	}
+
+	bodyJSON, _ := json.Marshal(body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/chat/completions"), bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(60 * time.Second)
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+
+	var submitResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &submitResp); err != nil {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized submit response: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	// 同步兜底：万一网关直接返回了成片 URL。
+	if url := findStringField(submitResp, "video_url", 5); url != "" && strings.HasPrefix(url, "http") {
+		return &GenerateResult{Type: "url", Content: url}, nil
+	}
+	// 任务对象：taskID 在 task_id 或 id("sora2-xxx"/"grok-xxx");poll_url 可选。
+	taskID := ""
+	if id, ok := submitResp["task_id"].(string); ok && strings.TrimSpace(id) != "" {
+		taskID = strings.TrimSpace(id)
+	} else if id, ok := submitResp["id"].(string); ok && strings.TrimSpace(id) != "" {
+		taskID = strings.TrimSpace(id)
+	}
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	queryPath := resolveVideoQueryPath(pc)
+	if pollURL, ok := submitResp["poll_url"].(string); ok && strings.TrimSpace(pollURL) != "" {
+		// poll_url 是绝对地址；pollVideoTask 的 resolveProviderURL 会原样保留。
+		return s.pollVideoTask(ctx, baseURL, apiKey, strings.TrimSpace(pollURL), taskID)
+	}
+	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath, taskID string) (*GenerateResult, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	if strings.TrimSpace(queryPath) == "" {
@@ -1023,11 +1177,13 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 
 		status := strings.ToLower(fmt.Sprintf("%v", taskResp["status"]))
 
-		if status == "failed" {
+		// 各网关的失败/完成词汇不一(sora-style: failed/completed;Manju 中转站:
+		// error/succeeded 等)——统一按词表归类。
+		if status == "failed" || status == "error" || status == "failure" || status == "cancelled" || status == "canceled" {
 			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation failed. Raw: %s", string(body[:min(len(body), 500)])))
 		}
 
-		if status == "completed" {
+		if status == "completed" || status == "succeeded" || status == "success" {
 			// video_url at top level
 			if videoURL, ok := taskResp["video_url"].(string); ok && videoURL != "" {
 				return &GenerateResult{Type: "url", Content: videoURL}, nil
