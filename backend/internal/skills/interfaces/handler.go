@@ -883,6 +883,17 @@ func defaultFloat(value, fallback float64) float64 {
 	return value
 }
 
+// agentAccessibleBy reports whether userID may read/run the agent. Personal-scope
+// agents are owner-only; other scopes are open to any authenticated user. Shared
+// by BOTH the huma CRUD path (loadReadableAgent) and the chi-direct SSE run path
+// (runAgent) so the two can never drift on this authorization rule.
+func agentAccessibleBy(agent sqlc.Agent, userID pgtype.UUID) bool {
+	if agent.Scope != "personal" {
+		return true
+	}
+	return agent.OwnerID.Valid && formatUUID(agent.OwnerID) == formatUUID(userID)
+}
+
 func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.Agent, pgtype.UUID, error) {
 	pgID, err := parseUUID(agentID)
 	if err != nil {
@@ -893,10 +904,8 @@ func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.A
 		return sqlc.Agent{}, pgtype.UUID{}, huma.Error404NotFound("Agent not found")
 	}
 	uid := mustUserID(ctx)
-	if agent.Scope == "personal" {
-		if !agent.OwnerID.Valid || formatUUID(agent.OwnerID) != formatUUID(uid) {
-			return sqlc.Agent{}, pgtype.UUID{}, huma.Error403Forbidden("Not allowed to access this agent")
-		}
+	if !agentAccessibleBy(agent, uid) {
+		return sqlc.Agent{}, pgtype.UUID{}, huma.Error403Forbidden("Not allowed to access this agent")
 	}
 	return agent, uid, nil
 }

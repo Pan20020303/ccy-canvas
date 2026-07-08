@@ -106,6 +106,14 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusNotFound, map[string]string{"error": "Agent not found"})
 		return
 	}
+	// 越权修复(安全审计 HIGH-4):个人域 agent 仅 owner 可运行。此路由直挂 chi、
+	// 绕过 huma 授权层，必须自己校验——否则任何登录用户凭 agent UUID 就能运行
+	// 他人私有 agent，通过模型输出窃取其 system prompt(专有 IP)并调用其私有
+	// bound skills。与 huma 路径 loadReadableAgent 共用同一 agentAccessibleBy 规则。
+	if !agentAccessibleBy(agent, userID) {
+		httpx.WriteJSON(w, r, http.StatusForbidden, map[string]string{"error": "Not allowed to run this agent"})
+		return
+	}
 
 	var req agentRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
