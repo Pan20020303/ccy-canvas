@@ -60,11 +60,12 @@ const (
 var (
 	imageTaskPollInitialDelay = 10 * time.Second
 	imageTaskPollInterval     = 5 * time.Second
-	// Manju/NewAPI image tasks (gpt-image-2 etc.) finish in ~2-5 min. Poll
-	// long enough to cover that: 10s + 120*5s ≈ 610s, aligned with the
-	// image generation budget. Too few attempts would time out before the
-	// gateway finishes and make the user re-submit.
-	imageTaskPollMaxAttempts = 120
+	// Manju/NewAPI image tasks (gpt-image-2 etc.) usually finish in ~2-5 min
+	// but stretch past 10 min at gateway peak. Poll to ~13.5 min
+	// (10s + 160*5s ≈ 810s), a beat under the image task's 15-min asynq
+	// ceiling — timing out early misreports a still-running (already paid)
+	// task as failed; it can't be retried (that would double-submit).
+	imageTaskPollMaxAttempts = 160
 )
 
 // Repository is the persistence port for the model catalog.
@@ -1864,6 +1865,13 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 	if isWan27Image(req.Model) {
 		return s.generateImageDashScope(ctx, pc, baseURL, apiKey, req)
 	}
+	// apimart.ai 中转站：文生图/图生图共用 POST /images/generations(参考图走
+	// image_urls 字段，size=比例、resolution=1k/2k/4k)，响应把 task_id 埋在
+	// data[0] 里，GET /tasks/{id} 轮询。按 base_url 嗅探路由，避免误入
+	// chat-completions 或 multipart /images/edits 形态。
+	if isApimartBaseURL(baseURL) {
+		return s.generateImageApimart(ctx, pc, baseURL, apiKey, req)
+	}
 	schema := providerImageParameterSchema(pc, req.Model)
 	if len(req.ReferenceImages) > 0 && ResolveProfile(pc).ID == "custom" && !isChatCompletionsReferenceImageSchema(schema) {
 		editPath := strings.ToLower(strings.TrimSpace(resolveImageEditPath(pc)))
@@ -2353,6 +2361,88 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	}
 	// Neither a usable image nor a task id — surface the raw response.
 	return parseChatImageGenerationResponse(respBody)
+}
+
+// isApimartBaseURL sniffs the apimart.ai relay by host — its image contract
+// (ratio-based size + resolution tier + image_urls on /images/generations,
+// task id nested in data[0], GET /tasks/{id} polling) differs from every
+// other OpenAI-compatible provider, so it gets its own request builder.
+func isApimartBaseURL(baseURL string) bool {
+	return strings.Contains(strings.ToLower(baseURL), "apimart")
+}
+
+// generateImageApimart implements apimart.ai's GPT-Image-2 contract
+// (docs.apimart.ai): POST /images/generations with
+//
+//	{model, prompt, n, size:"16:9"|"auto", resolution:"1k"|"2k"|"4k",
+//	 image_urls:[url|dataURI, …]}    // 图生图与文生图同一端点
+//
+// → {code, data:[{status:"submitted", task_id}]} → GET /tasks/{task_id}
+// until status=completed, image at data.result.images[0].url[0].
+func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
+	body := map[string]interface{}{
+		"model":  req.Model,
+		"prompt": req.Prompt,
+		"n":      requestedImageCount(req),
+	}
+	if size := strings.TrimSpace(req.Size); size != "" {
+		body["size"] = size // 比例("16:9")或像素("1881x836")原样透传；空则网关默认 1:1
+	}
+	if res := strings.ToLower(strings.TrimSpace(req.Resolution)); res == "1k" || res == "2k" || res == "4k" {
+		body["resolution"] = res
+	}
+	if len(req.ReferenceImages) > 0 {
+		urls := make([]string, 0, len(req.ReferenceImages))
+		for i, raw := range req.ReferenceImages {
+			ref := strings.TrimSpace(raw)
+			if ref == "" {
+				continue
+			}
+			// 网关侧下载参考图：必须公网 URL 或 base64 data URI。
+			if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "data:") {
+				return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("apimart image reference #%d must be a public http(s) URL or data URI", i+1))
+			}
+			urls = append(urls, ref)
+		}
+		if len(urls) > 16 {
+			urls = urls[:16] // 文档上限 16 张，超出网关直接报错 — 静默截断更友好
+		}
+		if len(urls) > 0 {
+			body["image_urls"] = urls
+		}
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/images/generations"), strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(imageGenerationTimeout())
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+	// 同步兜底：万一网关直接返回了成图(未见于文档，但解析器通吃)。
+	if result := s.tryExtractImageFromPollResponse(respBody); result != nil {
+		return result, nil
+	}
+	taskID := extractImageTaskID(respBody)
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
 }
 
 func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {

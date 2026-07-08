@@ -44,9 +44,13 @@ func TestIsGenerationTimeout(t *testing.T) {
 		"Image generation timed out after polling": true,
 		"generation timed out":                     true,
 		`Post "x": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`: true,
-		"Provider returned empty image content":                                                false,
-		"Provider HTTP 502: server overloaded":                                                 false,
-		"":                                                                                     false,
+		// pollImageTask 的「最后一轮带响应体」出口 —— 曾用 "Timed out. Last
+		// response: ..." 文案漏过本判定,被当 transient 重试 → 向网关重复提交
+		// 付费任务(Manju 图生图重复扣费的根因)。锁住修正后的哨兵文案。
+		`Image generation timed out after polling. Last response: {"status":"running","progress":0}`: true,
+		"Provider returned empty image content": false,
+		"Provider HTTP 502: server overloaded":  false,
+		"":                                      false,
 	}
 	for msg, want := range cases {
 		var err error

@@ -124,6 +124,12 @@ func extractImageTaskID(respBody []byte) string {
 			return bare
 		}
 	}
+	// apimart.ai buries the id one level down: {code, data:[{task_id:"task_…"}]}.
+	// Recursive fallback only runs when the top-level fields miss, so the
+	// Manju/NewAPI fast paths above keep their exact semantics.
+	if id := findStringField(taskCheck, "task_id", 3); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
 	return ""
 }
 
@@ -223,9 +229,14 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 			break // got a valid response from this URL pattern, wait and retry
 		}
 
-		// On last attempt, return the raw response for debugging.
+		// On last attempt, return the raw response for debugging. The message
+		// MUST contain "timed out after polling": the tasks worker matches that
+		// sentinel (isGenerationTimeout) to mark media timeouts SkipRetry —
+		// otherwise Asynq classifies this as transient and RESUBMITS the paid
+		// generation while the upstream task is still running (duplicate
+		// gateway tasks + double charge; the exact bug seen on Manju 图生图).
 		if i == imageTaskPollMaxAttempts-1 && len(lastBody) > 0 {
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Timed out. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
+			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Image generation timed out after polling. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
 		}
 	}
 
