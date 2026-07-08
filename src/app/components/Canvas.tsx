@@ -361,6 +361,7 @@ const InnerCanvas = () => {
   const removeGroup = useStore((state) => state.removeGroup);
   const ungroupNodes = useStore((state) => state.ungroupNodes);
   const setGroupMembers = useStore((state) => state.setGroupMembers);
+  const translateGroupBoxes = useStore((state) => state.translateGroupBoxes);
   const moveGroup = useStore((state) => state.moveGroup);
   const resizeGroup = useStore((state) => state.resizeGroup);
   const setGroupColor = useStore((state) => state.setGroupColor);
@@ -432,6 +433,10 @@ const InnerCanvas = () => {
     startH: number;
     didCaptureUndo: boolean;
   } | null>(null);
+  // Pre-drag node positions (captured on onNodeDragStart) so onNodeDragStop can
+  // compute the uniform drag delta — used to translate a whole-dragged group's
+  // box by that delta (size-preserving), instead of re-tightening it.
+  const dragStartPosRef = useRef<Record<string, { x: number; y: number }>>({});
 
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [nodeDragging, setNodeDragging] = useState(false);
@@ -1662,6 +1667,11 @@ const InnerCanvas = () => {
           // Snapshot the pre-drag state ONCE so the whole drag is a single
           // undo step (position changes during the drag are not auto-captured).
           pushUndoSnapshot();
+          // Remember where each dragged node started so drag-stop can derive the
+          // uniform delta (marquee drags move every selected node by the same
+          // amount) and translate whole-dragged group boxes by it.
+          const startList = draggedNodes && draggedNodes.length ? draggedNodes : [node];
+          dragStartPosRef.current = Object.fromEntries(startList.map((n) => [n.id, { x: n.position.x, y: n.position.y }]));
           setNodeDragging(true);
           // Drag-smoothness P0: freeze the persist partialize while the
           // gesture runs (debounced storage discards intermediates anyway).
@@ -1687,6 +1697,28 @@ const InnerCanvas = () => {
           // The group rectangle itself does NOT resize. To make the box
           // bigger or smaller, the user reframes it (move group / recreate).
           const movedIds = new Set(draggedNodes.map((n) => n.id));
+          // 整组一起被拖：该组「所有成员」都在被拖集合里 → 组框按拖拽位移平移随行
+          // (保尺寸，不缩回紧贴成员)，且跳过下面的「拖出即离组」判定，否则整组被
+          // 拖走时组框会留在原地、成员被判离组、空组被删。
+          //   · length > 1：单成员组不算「随行」，让它落到下面的离组逻辑 —— 保留
+          //     「把最后一个成员拖出去解散组」的手势。
+          const traveledGroupIds = groups
+            .filter((g) => g.nodeIds.length > 1 && g.nodeIds.every((id) => movedIds.has(id)))
+            .map((g) => g.id);
+          const traveledSet = new Set(traveledGroupIds);
+          if (traveledGroupIds.length) {
+            // 本次(marquee)拖拽所有节点位移相同，取任一被拖节点算 delta。
+            const sample = draggedNodes[0];
+            const start = sample ? dragStartPosRef.current[sample.id] : undefined;
+            const delta = sample && start
+              ? { x: sample.position.x - start.x, y: sample.position.y - start.y }
+              : { x: 0, y: 0 };
+            if (delta.x || delta.y) translateGroupBoxes(traveledGroupIds, delta);
+          }
+          // 随行组的成员不参与其它组的「入组」判定，避免整组拖进另一个组后同属两组。
+          const traveledMemberIds = new Set(
+            groups.filter((g) => traveledSet.has(g.id)).flatMap((g) => g.nodeIds),
+          );
           const isInsideGroup = (
             node: { position: { x: number; y: number }; width?: number; height?: number; measured?: { width?: number; height?: number } },
             group: { position?: { x: number; y: number }; width?: number; height?: number },
@@ -1703,6 +1735,7 @@ const InnerCanvas = () => {
             return cx >= gx && cx <= gx + gw && cy >= gy && cy <= gy + gh;
           };
           groups.forEach((group) => {
+            if (traveledSet.has(group.id)) return; // 整组已随行，别再判离组
             const memberSet = new Set(group.nodeIds);
             let changed = false;
             const nextMembers = new Set(memberSet);
@@ -1716,6 +1749,7 @@ const InnerCanvas = () => {
             // INFLOW
             for (const moved of draggedNodes) {
               if (memberSet.has(moved.id)) continue;
+              if (traveledMemberIds.has(moved.id)) continue; // 已随自己的组整体移动，不被别组收编
               const node = nodes.find((n) => n.id === moved.id) ?? moved;
               if (isInsideGroup(node as never, group)) { nextMembers.add(moved.id); changed = true; }
             }

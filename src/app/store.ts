@@ -305,6 +305,7 @@ type AppState = {
   removeGroup: (groupId: string) => void;
   ungroupNodes: (groupId: string) => void;
   setGroupMembers: (groupId: string, nodeIds: string[]) => void;
+  translateGroupBoxes: (groupIds: string[], delta: { x: number; y: number }) => void;
   renameGroup: (groupId: string, name: string) => void;
   moveGroup: (groupId: string, delta: { x: number; y: number }, options?: { captureUndo?: boolean }) => void;
   resizeGroup: (groupId: string, size: { width: number; height: number }, options?: { captureUndo?: boolean }) => void;
@@ -2963,6 +2964,30 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   }),
   renameGroup: (groupId, name) => set((state) => {
     const groups = state.groups.map((group) => (group.id === groupId ? { ...group, name } : group));
+    const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
+    return {
+      groups,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  // 把指定组的矩形按 delta 平移（保持宽高不变，成员在拖拽里已同量移动）。用于
+  // 「整组一起被拖」时让组框随成员一起走，而不是固定不动、成员被判离组后删掉。
+  // 只平移不重算尺寸，所以手动拉大过的「区域框」不会被缩回紧贴成员。无 undo：
+  // 它是拖拽手势的一部分，手势开始已压过一次快照。
+  translateGroupBoxes: (groupIds, delta) => set((state) => {
+    if (!groupIds.length || (!delta.x && !delta.y)) return {};
+    const idSet = new Set(groupIds);
+    let touched = false;
+    const groups = state.groups.map((group) => {
+      if (!idSet.has(group.id) || group.nodeIds.length === 0) return group;
+      touched = true;
+      return {
+        ...group,
+        position: { x: (group.position?.x ?? 0) + delta.x, y: (group.position?.y ?? 0) + delta.y },
+      };
+    });
+    if (!touched) return {};
     const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
     return {
       groups,
