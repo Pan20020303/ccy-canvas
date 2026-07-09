@@ -2205,6 +2205,9 @@ func TestGenerateImageVolcengineMapsAspectRatioToSupportedSize(t *testing.T) {
 		if body["size"] != "4096x2304" {
 			t.Fatalf("size = %v, want 4096x2304", body["size"])
 		}
+		if body["watermark"] != false {
+			t.Fatalf("watermark = %v, want false (站内统一不带水印)", body["watermark"])
+		}
 		if _, ok := body["quality"]; ok {
 			t.Fatalf("quality should not be sent to Volcengine image endpoint")
 		}

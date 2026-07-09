@@ -1998,6 +1998,9 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 		"model":  req.Model,
 		"prompt": req.Prompt,
 		"size":   size,
+		// Ark 的 Seedream 图像端点默认 watermark=true(右下角「AI 生成」水印)。
+		// 与 wan/apimart/视频各通道一致,显式关闭 —— 全站统一不带水印的产品选择。
+		"watermark": false,
 	}
 
 	// Resolve reference images to URLs (preferred by ark) or base64 data URIs.
