@@ -369,13 +369,26 @@ export function PositionStudio({
     const onKey = (e: KeyboardEvent) => {
       const el = document.activeElement as HTMLElement | null;
       const typing = !!el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
-      if (e.key === 'Escape' && !typing && !textDraft) { e.preventDefault(); onClose(); return; }
-      if (typing) return;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && tabRef.current === 'position' && selectedRef.current) {
-        e.preventDefault(); deleteMark(selectedRef.current); return;
+      if (e.key === 'Escape') {
+        if (typing) return; // 让输入框自己处理 Esc
+        e.preventDefault(); e.stopPropagation();
+        onClose();
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
-      if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')) { e.preventDefault(); redo(); }
+      if (typing) return; // 输入框里正常打字/删字，别拦
+      // 编辑器打开期间，这些键一律吞掉、绝不冒泡到画布(capture 阶段先于画布的冒泡
+      // 监听)——否则 Delete 会删画布节点、Ctrl+Z 会触发画布撤销。
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault(); e.stopPropagation();
+        if (tabRef.current === 'position' && selectedRef.current) deleteMark(selectedRef.current);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault(); e.stopPropagation(); undo(); return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) {
+        e.preventDefault(); e.stopPropagation(); redo(); return;
+      }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -419,6 +432,7 @@ export function PositionStudio({
   // ── 指针交互 ────────────────────────────────────────────────────────────
   const onPointerDown = (e: React.PointerEvent) => {
     if (!ready || e.button !== 0) return;
+    e.preventDefault(); // 阻止浏览器对 canvas 的默认拖拽/选区，保证拖拽手感
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     const p = pointerPos(e);
     if (tabRef.current === 'draw') {
@@ -435,17 +449,30 @@ export function PositionStudio({
       marksRef.current.push(mark); selectedRef.current = mark; placingRef.current = null;
       syncSlidersToSelected(); redraw(); rerender(); return;
     }
-    const labelTarget = !e.shiftKey && findLabelTarget(p);
+    // Shift 拖 = 画移动虚线:命中角色圆点 或 当前已选中角色，即从该角色开始拉轨迹
+    // (比「必须精确从圆点起拖」更宽容)。
+    if (e.shiftKey) {
+      const hit = findTarget(p, true);
+      const m = hit?.m ?? selectedRef.current;
+      if (m && !m.isLabel) {
+        snapMarks();
+        selectedRef.current = m; dragRef.current = m; modeRef.current = 'shift';
+        shiftPtsRef.current = [{ x: m.x, y: m.y }];
+        dragStartRef.current = { pointer: p, x: m.x, y: m.y, path: (m.path || []).map((q) => ({ ...q })) };
+        syncSlidersToSelected(); rerender();
+        return;
+      }
+    }
+    const labelTarget = findLabelTarget(p);
     if (labelTarget) {
       snapMarks(); selectedRef.current = labelTarget.m; dragRef.current = labelTarget.m; modeRef.current = 'label';
       dragStartRef.current = { pointer: p, labelOffset: { x: labelTarget.cx - labelTarget.m.x, y: labelTarget.cy - labelTarget.m.y } };
       syncSlidersToSelected(); rerender(); return;
     }
-    const target = findTarget(p, e.shiftKey);
+    const target = findTarget(p, false);
     if (target) {
       snapMarks(); selectedRef.current = target.m; dragRef.current = target.m;
-      modeRef.current = e.shiftKey ? 'shift' : (target.part === 'arrow' ? (activePath(target.m) ? 'pathEnd' : 'angle') : 'move');
-      shiftPtsRef.current = [{ x: target.m.x, y: target.m.y }];
+      modeRef.current = target.part === 'arrow' ? (activePath(target.m) ? 'pathEnd' : 'angle') : 'move';
       dragStartRef.current = { pointer: p, x: target.m.x, y: target.m.y, path: (target.m.path || []).map((q) => ({ ...q })) };
       syncSlidersToSelected(); rerender();
     } else {
@@ -542,7 +569,7 @@ export function PositionStudio({
   );
 
   const shell = (
-    <div className="fixed inset-0 z-[120] flex flex-col bg-[#0e0f13]/95 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[120] flex flex-col bg-[#0e0f13]/95 text-neutral-100 backdrop-blur-sm">
       {/* 顶栏:tab + 关闭 */}
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
         <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] p-0.5">
@@ -570,8 +597,8 @@ export function PositionStudio({
         {tab === 'position' ? (
           <>
             <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addRole(); }}
-              placeholder={t('角色名（如：摊主）', 'Role name')} className="w-36 rounded-md border border-white/15 bg-white/[0.05] px-2.5 py-1.5 text-sm outline-none focus:border-sky-400" />
-            <select value={color} onChange={(e) => setColor(e.target.value)} className="rounded-md border border-white/15 bg-[#1b1c22] px-2 py-1.5 text-sm">
+              placeholder={t('角色名（如：摊主）', 'Role name')} className="w-36 rounded-md border border-white/15 bg-white/[0.08] px-2.5 py-1.5 text-sm text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-sky-400" />
+            <select value={color} onChange={(e) => setColor(e.target.value)} className="rounded-md border border-white/15 bg-[#1b1c22] px-2 py-1.5 text-sm text-neutral-100">
               {COLORS.map((c) => <option key={c.v} value={c.v}>{c.zh}</option>)}
             </select>
             <label className="flex items-center gap-1.5 text-xs text-neutral-400"><input type="checkbox" checked={labelMode} onChange={(e) => setLabelMode(e.target.checked)} /> {t('纯文字标签', 'Text label')}</label>
@@ -588,7 +615,7 @@ export function PositionStudio({
                 if (s) { s.labelPos = v; if (v !== 'custom') delete s.labelOffset; }
                 else if (v !== 'custom') defaultLabelPosRef.current = v;
                 redraw();
-              }} className="rounded-md border border-white/15 bg-[#1b1c22] px-2 py-1.5 text-sm">
+              }} className="rounded-md border border-white/15 bg-[#1b1c22] px-2 py-1.5 text-sm text-neutral-100">
                 {LABEL_DIRS.map((d) => <option key={d.v} value={d.v}>{zh ? d.zh : d.en}</option>)}
                 {labelPos === 'custom' ? <option value="custom">{t('自定义', 'Custom')}</option> : null}
               </select>
