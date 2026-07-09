@@ -116,6 +116,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import { PositionStudio } from './PositionStudio';
 
 // downloadAsset fetches media through the backend proxy (which can read our
 // own — possibly private — COS bucket) into a Blob, then saves it with a real
@@ -6708,6 +6709,9 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   }>(null);
   const [annotateSaving, setAnnotateSaving] = useState(false);
   const annotating = annotate !== null;
+  // 人物站位/自由涂画 放大编辑器(画笔按钮打开;比节点内联涂画更全)。
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [studioSaving, setStudioSaving] = useState(false);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
 
   // 标注期间接管全局快捷键（capture 期，压过画布的删除/撤销处理器）：
@@ -6813,6 +6817,54 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     }
   };
 
+  // 放大编辑器(人物站位 / 自由涂画)保存:合成后的 PNG 落成一个派生图节点并连线。
+  const handleStudioSave = async (blob: Blob) => {
+    if (studioSaving) return;
+    setStudioSaving(true);
+    try {
+      const objectUrl = URL.createObjectURL(blob);
+      let stableUrl: string;
+      try {
+        stableUrl = await uploadImageSource(objectUrl, `staged-${id}-${Date.now()}.png`);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      const stagedId = `img-staged-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const basePosition = useStore.getState().nodes.find((node) => node.id === id)?.position ?? { x: 0, y: 0 };
+      addNode({
+        id: stagedId,
+        type: 'imageNode',
+        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
+        data: {
+          customTitle: language === 'zh' ? '站位标注图' : 'Staged image',
+          url: stableUrl,
+          output: stableUrl,
+          status: 'done',
+          sourceKind: 'derived',
+          derivedFromNodeId: id,
+          derivationAction: 'annotate',
+          generationParams: { aspectRatio: effectiveAspect },
+        },
+      } as never);
+      onConnect({ source: id, target: stagedId, sourceHandle: null, targetHandle: null } as never);
+      addHistory({
+        id: `staged-${id}-${Date.now()}`,
+        title: `${data.customTitle || (language === 'zh' ? '站位标注图' : 'Staged image')}`,
+        type: 'image',
+        mediaType: 'image',
+        timestamp: Date.now(),
+        thumbnail: stableUrl,
+        sourceNodeId: id,
+        derivationAction: 'annotate',
+      });
+      setStudioOpen(false);
+    } catch (err) {
+      toast.error(language === 'zh' ? `保存失败：${err instanceof Error ? err.message : String(err)}` : `Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setStudioSaving(false);
+    }
+  };
+
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
     const w = img.naturalWidth;
@@ -6859,7 +6911,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             ? (
               <ImageActionToolbar
                 sourceNodeId={id}
-                onAnnotate={() => setAnnotate({ tool: 'pen', color: ANNOTATE_COLORS[0], width: 6, ops: [], redo: [] })}
+                onAnnotate={() => setStudioOpen(true)}
               />
             )
             : undefined
@@ -6934,6 +6986,15 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
+      {studioOpen && data.url ? (
+        <PositionStudio
+          imageUrl={toRenderableMediaUrl(String(data.url))}
+          zh={language === 'zh'}
+          saving={studioSaving}
+          onClose={() => setStudioOpen(false)}
+          onSave={handleStudioSave}
+        />
+      ) : null}
     </BaseNode>
   );
 };
