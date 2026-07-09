@@ -6512,10 +6512,26 @@ function ResilientImage({
 // way to view a 2:1 360 panorama as a true sphere — instead of a flat
 // horizontally-scrolling strip, the viewer sees the world projected onto
 // the inside of the sphere and can look around in 360°.
-function PanoramaSphere({ texture }: { texture: THREE.Texture }) {
+function PanoramaSphere({ texture, aspect }: { texture: THREE.Texture; aspect: number }) {
+  const gl = useThree((state) => state.gl);
+  // 各向异性过滤:球面掠射角(地板/天花板/侧向扫视)下没有它,mipmap 会把纹理
+  // 糊成一片 —— 这是"预览不清楚"的主因之一。
+  useEffect(() => {
+    texture.anisotropy = gl.capabilities.getMaxAnisotropy();
+    texture.needsUpdate = true;
+  }, [gl, texture]);
+  // 等距柱状投影里水平 360° 铺满图宽,竖向角度跨度 = 2π·h/w:只有严格 2:1 的图
+  // 才覆盖满 ±90°。之前无脑铺满整球,16:9/21:9 的产出被竖向硬拉到两极,看起来
+  // "整个世界是个圆的"。这里按图片宽高比只贴对应的纬度带(不足 2:1 的图退化为
+  // 整球,因为信息本来就不够)。
+  const thetaLength = Math.min(Math.PI, (2 * Math.PI) / Math.max(aspect, 0.01));
+  const thetaStart = (Math.PI - thetaLength) / 2;
   return (
+    // scale(-1,1,1) + BackSide 是配套的:three.js 对负行列式矩阵会自动翻转
+    // frontFace,两者叠加 = 从球内看、纹理不镜像。单用任意一个都不对
+    // (只 BackSide 会左右镜像;只 scale -1 会整面被剔除 → 全黑)。
     <mesh scale={[-1, 1, 1]}>
-      <sphereGeometry args={[50, 64, 40]} />
+      <sphereGeometry args={[50, 96, 64, 0, Math.PI * 2, thetaStart, thetaLength]} />
       <meshBasicMaterial map={texture} side={THREE.BackSide} toneMapped={false} />
     </mesh>
   );
@@ -6562,6 +6578,8 @@ function PanoramaPreviewModal({
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  // 源图宽高比(w/h):决定球面上贴图的纬度带跨度(严格 2:1 才覆盖满 ±90°)。
+  const [aspect, setAspect] = useState(2);
   const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number; width: number; height: number } | null>(null);
   const glRef = useRef<THREE.WebGLRenderer | null>(null);
   const sourceNode = nodes.find((node) => node.id === nodeId);
@@ -6584,6 +6602,9 @@ function PanoramaPreviewModal({
         tex.generateMipmaps = true;
         tex.needsUpdate = true;
         createdTexture = tex;
+        if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+          setAspect(img.naturalWidth / img.naturalHeight);
+        }
         setTexture(tex);
       } catch (err) {
         if (cancelled) return;
@@ -6747,6 +6768,8 @@ function PanoramaPreviewModal({
             {texture ? (
               <Canvas
                 gl={{ preserveDrawingBuffer: true, antialias: true }}
+                // 高分屏按 devicePixelRatio 渲染(上限 2),否则按 CSS 像素出图必然发虚。
+                dpr={[1, 2]}
                 camera={{ fov, near: 0.1, far: 1100, position: [0, 0, 0] }}
                 onCreated={(state) => {
                   glRef.current = state.gl;
@@ -6757,7 +6780,7 @@ function PanoramaPreviewModal({
                 }}
                 className="absolute inset-0"
               >
-                <PanoramaSphere texture={texture} />
+                <PanoramaSphere texture={texture} aspect={aspect} />
                 <PanoramaCameraRig yaw={yaw} pitch={pitch} fov={fov} />
               </Canvas>
             ) : (
