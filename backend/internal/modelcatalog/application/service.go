@@ -1177,7 +1177,14 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 		return s.runTSProvider(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	}
 
-	switch c.cfg.ServiceType {
+	// 多类型中转站(capabilities 混挂图像/视频):必须按「请求」的服务类型分发,
+	// 而不是配置的主 service_type —— 否则 image 主类型的配置收到视频请求会被
+	// 错派到 generateImage。请求未带类型时退回配置主类型(旧行为)。
+	serviceType := strings.TrimSpace(req.ServiceType)
+	if serviceType == "" {
+		serviceType = c.cfg.ServiceType
+	}
+	switch serviceType {
 	case "image":
 		return s.generateImage(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	case "text":
@@ -1185,7 +1192,7 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 	case "video":
 		return s.generateVideo(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	default:
-		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", c.cfg.ServiceType))
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", serviceType))
 	}
 }
 
