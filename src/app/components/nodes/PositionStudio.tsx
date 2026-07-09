@@ -125,6 +125,11 @@ export function PositionStudio({
   const [arrow, setArrow] = useState(100);
   const [line, setLine] = useState(100);
   const [nameSize, setNameSize] = useState(100);
+  // 锁定统一大小(默认锁):锁=滑块改所有角色;不锁=只改选中角色(该角色用自己的 scale)。
+  const [circleLock, setCircleLock] = useState(true);
+  const [arrowLock, setArrowLock] = useState(true);
+  const [lineLock, setLineLock] = useState(true);
+  const [nameLock, setNameLock] = useState(true);
   const [labelPos, setLabelPos] = useState('auto');
   // 「画移动轨迹」一次性模式:开启后从选中角色拖一条移动虚线(不必按 Shift)。
   const [pathDraw, setPathDraw] = useState(false);
@@ -139,10 +144,10 @@ export function PositionStudio({
 
   // ── 几何/尺寸(自然像素)──────────────────────────────────────────────────
   const baseUnit = () => (cvRef.current?.width ?? 1000) * 0.022;
-  const circleRadius = (m?: Mark | null) => baseUnit() * ((m?.circleScale ?? circle / 100));
-  const arrowUnit = (m?: Mark | null) => baseUnit() * ((m?.arrowScale ?? arrow / 100));
-  const lineUnit = (m?: Mark | null) => baseUnit() * ((m?.lineScale ?? line / 100));
-  const nameFont = (m?: Mark | null) => Math.round((cvRef.current?.width ?? 1000) * 0.024 * ((m?.nameScale ?? nameSize / 100)));
+  const circleRadius = (m?: Mark | null) => baseUnit() * (circleLock || !m ? circle / 100 : (m.circleScale ?? circle / 100));
+  const arrowUnit = (m?: Mark | null) => baseUnit() * (arrowLock || !m ? arrow / 100 : (m.arrowScale ?? arrow / 100));
+  const lineUnit = (m?: Mark | null) => baseUnit() * (lineLock || !m ? line / 100 : (m.lineScale ?? line / 100));
+  const nameFont = (m?: Mark | null) => Math.round((cvRef.current?.width ?? 1000) * 0.024 * (nameLock || !m ? nameSize / 100 : (m.nameScale ?? nameSize / 100)));
   const arrowLength = (m: Mark) => Math.max(arrowUnit(m) * 2.4, circleRadius(m) + arrowUnit(m) * 1.4);
 
   const pointerPos = (e: React.PointerEvent): Pt => {
@@ -329,7 +334,7 @@ export function PositionStudio({
       ctx.lineWidth = Math.round(cv.width * 0.024) * 0.2; ctx.strokeStyle = 'rgba(0,0,0,.85)';
       ctx.strokeText(legend, lx, ly); ctx.fillStyle = '#fff'; ctx.fillText(legend, lx, ly);
     }
-  }, [circle, arrow, line, nameSize]);
+  }, [circle, arrow, line, nameSize, circleLock, arrowLock, lineLock, nameLock]);
 
   // 载入图片
   useEffect(() => {
@@ -352,10 +357,11 @@ export function PositionStudio({
   const syncSlidersToSelected = () => {
     const s = selectedRef.current;
     if (!s) return;
-    if (s.circleScale) setCircle(Math.round(s.circleScale * 100));
-    if (s.arrowScale) setArrow(Math.round(s.arrowScale * 100));
-    if (s.lineScale) setLine(Math.round(s.lineScale * 100));
-    if (s.nameScale) setNameSize(Math.round(s.nameScale * 100));
+    // 仅在「未锁定」时把滑块同步成该角色自己的尺寸;锁定项保持全局值。
+    if (!circleLock && s.circleScale) setCircle(Math.round(s.circleScale * 100));
+    if (!arrowLock && s.arrowScale) setArrow(Math.round(s.arrowScale * 100));
+    if (!lineLock && s.lineScale) setLine(Math.round(s.lineScale * 100));
+    if (!nameLock && s.nameScale) setNameSize(Math.round(s.nameScale * 100));
     setLabelPos(s.labelOffset ? 'custom' : (s.labelPos || defaultLabelPosRef.current));
   };
 
@@ -365,6 +371,15 @@ export function PositionStudio({
     snapMarks();
     marksRef.current.splice(idx, 1);
     selectedRef.current = null; dragRef.current = null; modeRef.current = null;
+    redraw(); rerender();
+  };
+  // 有选中就删选中，否则删最后一个(对齐 HTML 的「删除最后一个角色」)。
+  const deleteLast = () => {
+    if (selectedRef.current) { deleteMark(selectedRef.current); return; }
+    if (!marksRef.current.length) return;
+    snapMarks();
+    marksRef.current.pop();
+    selectedRef.current = null;
     redraw(); rerender();
   };
 
@@ -425,11 +440,10 @@ export function PositionStudio({
     redraw(); rerender();
   };
 
-  const applyScale = (val: number, kind: 'circleScale' | 'arrowScale' | 'lineScale' | 'nameScale') => {
+  const applyScale = (val: number, kind: 'circleScale' | 'arrowScale' | 'lineScale' | 'nameScale', locked: boolean) => {
     const scale = val / 100;
-    const sel = selectedRef.current;
-    if (sel) sel[kind] = scale;
-    else marksRef.current.forEach((m) => { m[kind] = scale; });
+    if (locked) marksRef.current.forEach((m) => { m[kind] = scale; });
+    else if (selectedRef.current) selectedRef.current[kind] = scale;
     redraw();
   };
 
@@ -565,14 +579,26 @@ export function PositionStudio({
   const canRedo = tab === 'draw' ? opsRedoRef.current.length > 0 : mRedoRef.current.length > 0;
   const selected = selectedRef.current;
 
-  const slider = (label: string, val: number, set: (n: number) => void, kind: 'circleScale' | 'arrowScale' | 'lineScale' | 'nameScale') => (
-    <label className="flex items-center gap-1.5 text-xs text-neutral-300">
-      {label}
+  const slider = (
+    label: string,
+    val: number,
+    set: (n: number) => void,
+    kind: 'circleScale' | 'arrowScale' | 'lineScale' | 'nameScale',
+    locked: boolean,
+    setLocked: (v: boolean) => void,
+  ) => (
+    <div className="flex items-center gap-1.5 text-xs text-neutral-300">
+      <span>{label}</span>
       <input type="range" min={50} max={200} step={5} value={val}
-        onChange={(e) => { const v = Number(e.target.value); set(v); applyScale(v, kind); }}
-        className="w-24 accent-sky-400" />
+        onChange={(e) => { const v = Number(e.target.value); set(v); applyScale(v, kind, locked); }}
+        className="w-20 accent-sky-400" />
       <span className="w-9 text-right text-sky-300">{val}%</span>
-    </label>
+      <label className="flex items-center gap-0.5 text-neutral-400" title={t('锁定统一大小(勾=所有角色一起改;不勾=只改选中角色)', 'Lock uniform size (on = all roles; off = selected only)')}>
+        <input type="checkbox" checked={locked}
+          onChange={(e) => { const c = e.target.checked; setLocked(c); if (c) applyScale(val, kind, true); else syncSlidersToSelected(); }} />
+        {t('锁', 'Lock')}
+      </label>
+    </div>
   );
 
   const shell = (
@@ -611,10 +637,10 @@ export function PositionStudio({
             <label className="flex items-center gap-1.5 text-xs text-neutral-400"><input type="checkbox" checked={labelMode} onChange={(e) => setLabelMode(e.target.checked)} /> {t('纯文字标签', 'Text label')}</label>
             <Button size="sm" variant="secondary" onClick={addRole} disabled={!name.trim() || !ready}>{t('添加角色（然后点图放置）', 'Add role, then click')}</Button>
             <div className="mx-1 h-5 w-px bg-white/10" />
-            {slider(t('圆圈', 'Dot'), circle, setCircle, 'circleScale')}
-            {slider(t('箭头', 'Arrow'), arrow, setArrow, 'arrowScale')}
-            {slider(t('线条', 'Line'), line, setLine, 'lineScale')}
-            {slider(t('名字', 'Name'), nameSize, setNameSize, 'nameScale')}
+            {slider(t('圆圈', 'Dot'), circle, setCircle, 'circleScale', circleLock, setCircleLock)}
+            {slider(t('箭头', 'Arrow'), arrow, setArrow, 'arrowScale', arrowLock, setArrowLock)}
+            {slider(t('线条', 'Line'), line, setLine, 'lineScale', lineLock, setLineLock)}
+            {slider(t('名字', 'Name'), nameSize, setNameSize, 'nameScale', nameLock, setNameLock)}
             <label className="flex items-center gap-1 text-xs text-neutral-300">{t('名字方向', 'Label dir')}
               <select value={labelPos} onChange={(e) => {
                 const v = e.target.value; setLabelPos(v);
@@ -656,8 +682,10 @@ export function PositionStudio({
         <div className="mx-1 h-5 w-px bg-white/10" />
         <Button size="sm" variant="secondary" onClick={undo} disabled={!canUndo}><Undo2 className="h-4 w-4" /></Button>
         <Button size="sm" variant="secondary" onClick={redo} disabled={!canRedo}><Redo2 className="h-4 w-4" /></Button>
-        {tab === 'position' && selected ? (
-          <Button size="sm" variant="secondary" onClick={() => deleteMark(selected)} className="text-red-400"><Trash2 className="mr-1 h-4 w-4" />{t('删除选中', 'Delete')}</Button>
+        {tab === 'position' ? (
+          <Button size="sm" variant="secondary" onClick={deleteLast} className="text-red-400">
+            <Trash2 className="mr-1 h-4 w-4" />{selected ? t('删除选中', 'Delete selected') : t('删除最后一个角色', 'Delete last')}
+          </Button>
         ) : null}
       </div>
 
