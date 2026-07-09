@@ -2814,10 +2814,13 @@ const BaseNode = ({
   width,
   shellBackground,
   smoothResize,
+  bare,
 }: {
   icon: any;
   title: React.ReactNode;
   headerRight?: React.ReactNode;
+  /** 无 chrome 模式:隐藏顶部标题行、媒体用直角 —— 供宫格切片边贴边无缝拼接。 */
+  bare?: boolean;
   children: React.ReactNode;
   floatingPanel?: React.ReactNode;
   topFloatingPanel?: React.ReactNode;
@@ -2924,24 +2927,28 @@ const BaseNode = ({
         <TopFloatingPanelScaler>{topFloatingPanel}</TopFloatingPanelScaler>
       ) : null}
       {/* Name label ABOVE the media (top-left, outside the frame) — the media
-          below is a borderless full-bleed card ("全面屏"). */}
-      <div className={clsx(
-        'mb-1.5 flex items-center justify-between gap-3 text-[11.5px]',
-        selected ? 'text-white' : 'text-neutral-100',
-      )}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Icon className={clsx('h-3.5 w-3.5 shrink-0', selected ? 'text-neutral-100' : 'text-neutral-300')} />
-          <div className="min-w-0 truncate font-medium tracking-wide">{title}</div>
+          below is a borderless full-bleed card ("全面屏"). bare 模式(宫格切片)
+          不渲染这一行，让切片竖直方向也能边贴边无缝拼接。 */}
+      {bare ? null : (
+        <div className={clsx(
+          'mb-1.5 flex items-center justify-between gap-3 text-[11.5px]',
+          selected ? 'text-white' : 'text-neutral-100',
+        )}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Icon className={clsx('h-3.5 w-3.5 shrink-0', selected ? 'text-neutral-100' : 'text-neutral-300')} />
+            <div className="min-w-0 truncate font-medium tracking-wide">{title}</div>
+          </div>
+          {headerRight ? <div className="shrink-0 text-[10px] text-neutral-400">{headerRight}</div> : null}
         </div>
-        {headerRight ? <div className="shrink-0 text-[10px] text-neutral-400">{headerRight}</div> : null}
-      </div>
+      )}
 
       <div className="relative">
         <div
           ref={shellRef}
           className={clsx(
             // Borderless full-bleed media: the node IS the media, no outer frame.
-            'relative overflow-hidden rounded-[14px] text-neutral-100 transition-shadow duration-150',
+            'relative overflow-hidden text-neutral-100 transition-shadow duration-150',
+            bare ? 'rounded-none' : 'rounded-[14px]',
             toneStyles.shell,
             selected && toneStyles.selected,
             connectTarget && 'node-connect-target',
@@ -3772,34 +3779,28 @@ async function splitImageIntoTiles(sourceUrl: string, rows: number, cols: number
   const img = await loadImageElement(sourceUrl);
   const srcW = img.naturalWidth || img.width;
   const srcH = img.naturalHeight || img.height;
-  const tileW = srcW / cols;
-  const tileH = srcH / rows;
+  // 累积整数边界:相邻切片共享同一条边(xs[c+1] 既是本块右界、又是下块左界)，
+  // 且全部切片正好铺满整图 —— 无缝、无重叠、无 1px 误差(每块独立 round 会有缝)。
+  const xs = Array.from({ length: cols + 1 }, (_, c) => Math.round((c * srcW) / cols));
+  const ys = Array.from({ length: rows + 1 }, (_, r) => Math.round((r * srcH) / rows));
   const tiles: string[] = [];
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
+      const sx = xs[col];
+      const sy = ys[row];
+      const sw = Math.max(1, xs[col + 1] - xs[col]);
+      const sh = Math.max(1, ys[row + 1] - ys[row]);
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(tileW));
-      canvas.height = Math.max(1, Math.round(tileH));
+      canvas.width = sw;
+      canvas.height = sh;
       const ctx = canvas.getContext('2d');
       if (!ctx) continue;
-      ctx.drawImage(
-        img,
-        Math.round(col * tileW),
-        Math.round(row * tileH),
-        Math.round(tileW),
-        Math.round(tileH),
-        0,
-        0,
-        canvas.width,
-        canvas.height,
-      );
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
       tiles.push(await canvasToDataUrl(canvas));
     }
   }
-  // Also return the per-tile pixel dimensions so the caller can lay the
-  // slice nodes out on a non-overlapping grid (node width is fixed at
-  // 300px; height follows the tile aspect ratio).
-  return { tiles, tileW: Math.round(tileW), tileH: Math.round(tileH) };
+  // 标称块尺寸(用于统一的展示网格宽高比;各块像素差 ≤1px 由 object-cover 吸收)。
+  return { tiles, tileW: Math.round(srcW / cols), tileH: Math.round(srcH / rows) };
 }
 
 function PanoramaActionEditor({
@@ -4391,25 +4392,19 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     const { tiles, tileW, tileH } = await splitImageIntoTiles(sourceUrl, rows, cols);
     const base = sourceNode.position ?? { x: 0, y: 0 };
 
-    // Lay the slices out on a non-overlapping grid. Reference image nodes
-    // render at a fixed 300px content width (BaseNode's w-[300px]); the
-    // displayed image height follows the tile aspect ratio, plus a chrome
-    // allowance for the title row + borders. Grid step = node size + gap
-    // so adjacent slices never stack on top of each other (the old code
-    // used a flat 110px step, far smaller than the 300px node width).
-    const NODE_W = 300;
-    const CHROME_H = 56;               // title row + paddings around the image
-    const GAP = 32;
-    const tileAspect = tileH > 0 && tileW > 0 ? tileH / tileW : 1;
-    const imageDisplayH = NODE_W * tileAspect;
-    const nodeDisplayH = imageDisplayH + CHROME_H;
-    const xStep = NODE_W + GAP;
-    const yStep = nodeDisplayH + GAP;
-
-    // Start the grid to the right of the source node, vertically centered
-    // on it so the slice cluster reads as one block next to the original.
-    const startX = base.x + NODE_W + 80;
-    const startY = base.y - ((rows - 1) * yStep) / 2;
+    // 切片节点是 bare 的(无标题、直角、无边框),渲染尺寸就是 mediaBoxFromAspect
+    // (块宽/块高)。所有切片同一宽高比 → 同尺寸 → 边贴边(步长=节点宽/高、GAP=0)
+    // 即可无缝拼回原图。
+    const box = mediaBoxFromAspect((tileW || 1) / (tileH || 1));
+    const W = box.width;
+    const H = box.height;
+    const srcData = (sourceNode.data ?? {}) as Record<string, unknown>;
+    const srcNodeW = Number(srcData.mediaWidth) > 0 && Number(srcData.mediaHeight) > 0
+      ? mediaBoxFromAspect(Number(srcData.mediaWidth) / Number(srcData.mediaHeight)).width
+      : 300;
+    // 从原图右侧起,顶部对齐;切片之间零间隙。
+    const startX = base.x + srcNodeW + 80;
+    const startY = base.y;
 
     const createdIds: string[] = [];
     tiles.forEach((tile, index) => {
@@ -4420,7 +4415,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       addNode({
         id,
         type: 'referenceImageNode',
-        position: { x: startX + col * xStep, y: startY + row * yStep },
+        position: { x: startX + col * W, y: startY + row * H },
         data: {
           url: tile,
           status: 'done',
@@ -5850,6 +5845,8 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const resolutionLabel = formatMediaResolution(mediaDims?.w, mediaDims?.h);
   const mediaBox = mediaDims ? mediaBoxFromAspect(mediaDims.w / mediaDims.h) : null;
   const isPanorama = isLikelyPanoramaData(data);
+  // 宫格切片:去 chrome(无标题、直角),让同组切片能边贴边无缝拼回原图。
+  const isSlice = Boolean(data.sliceGrid);
   const sourceKindLabel = data.sourceKind === 'upload'
     ? (language === 'zh' ? '上传' : 'Upload')
     : data.sourceKind === 'derived'
@@ -5862,6 +5859,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
     <BaseNode
       icon={ImageIcon}
       tone="neutral"
+      bare={isSlice}
       title={<EditableNodeTitle nodeId={id} value={displayName || "Untitled"} field="sourceName" preserveExtension />}
       headerRight={[resolutionLabel, sourceKindLabel].filter(Boolean).join(' · ')}
       selected={selected}
@@ -5874,7 +5872,8 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
           // Node width follows the image aspect (wide 16:9 / narrow 9:16) at a
           // similar footprint; the box matches the aspect exactly so the image
           // fills it with no crop, no letterbox padding, no border.
-          "relative w-full overflow-hidden rounded-[12px] cursor-zoom-in",
+          "relative w-full overflow-hidden cursor-zoom-in",
+          isSlice ? "rounded-none" : "rounded-[12px]",
           NODE_TONE_STYLES.neutral.surface,
           mediaBox ? undefined : "aspect-video",
         )}
