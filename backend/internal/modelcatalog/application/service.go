@@ -2314,12 +2314,19 @@ func videoGenerationTimeout() time.Duration {
 	return budget
 }
 
+// Poll pacing lives in package vars (not literals) so tests can shrink the
+// submit→poll roundtrip to milliseconds — mirrors imageTaskPollInitialDelay.
+var (
+	videoPollInitialDelayDuration = 8 * time.Second
+	videoPollIntervalDuration     = 6 * time.Second
+)
+
 func videoPollInitialDelay() time.Duration {
-	return 8 * time.Second
+	return videoPollInitialDelayDuration
 }
 
 func videoPollInterval() time.Duration {
-	return 6 * time.Second
+	return videoPollIntervalDuration
 }
 
 func videoPollMaxAttempts() int {

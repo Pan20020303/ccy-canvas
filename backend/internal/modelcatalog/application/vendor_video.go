@@ -31,6 +31,13 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
 	}
+	// apimart.ai 中转站:视频与图像同构 —— 「POST /videos/generations 提交 →
+	// data[0].task_id → GET /tasks/{id} 轮询,结果在 data.result.videos[].url」。
+	// 按 base_url 嗅探,必须放在 isManjuChatVideoModel 之前:apimart 也有
+	// grok-imagine 视频,其模型名前缀会被 isManjuChatVideoModel 误判为 Manju。
+	if isApimartBaseURL(baseURL) {
+		return s.generateVideoApimart(ctx, pc, baseURL, apiKey, req)
+	}
 	// Manju 中转站(manjuapi.com)的视频模型走「POST /chat/completions 提交 →
 	// GET /videos/{id} 轮询」的私有约定，而不是 sora-style /videos。按模型名
 	// 嗅探路由(sora2 / "Veo 3.1 Fast 1080p" / grok-imagine-video 是中转站
@@ -1205,4 +1212,230 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 	}
 
 	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+}
+
+// generateVideoApimart implements apimart.ai's video contract (docs.apimart.ai),
+// mirroring generateImageApimart: POST /videos/generations with
+//
+//	{model, prompt, duration, aspect_ratio, resolution:"720p"|"1080p"|"4k",
+//	 image_urls:[url|dataURI, …]}   // 首帧/参考图与文生视频同一端点
+//
+// → {code, data:[{status:"submitted", task_id}]} → GET /tasks/{task_id}
+// until data.status=completed, video at data.result.videos[0].url.
+func (s *Service) generateVideoApimart(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
+
+	aspectRatio := req.AspectRatio
+	if aspectRatio == "" {
+		aspectRatio = req.Size
+	}
+
+	body := map[string]interface{}{
+		"model":  req.Model,
+		"prompt": req.Prompt,
+	}
+	if v := strings.TrimSpace(aspectRatio); v != "" {
+		body["aspect_ratio"] = v // 比例("16:9"/"9:16")；空则网关默认
+	}
+	if v := strings.TrimSpace(req.Resolution); v != "" {
+		body["resolution"] = v // apimart 视频档位：720p/1080p/4k
+	}
+	if req.Duration > 0 {
+		body["duration"] = req.Duration
+	}
+
+	// 首帧/参考图：apimart 网关侧下载，必须公网 http(s) URL 或 base64 data URI；
+	// 本地路径转成 data URI 再传(与 generateImageApimart 的参考图约束一致)。
+	if len(req.ReferenceImages) > 0 {
+		urls := make([]string, 0, len(req.ReferenceImages))
+		for _, raw := range req.ReferenceImages {
+			ref := strings.TrimSpace(raw)
+			if ref == "" {
+				continue
+			}
+			if !strings.HasPrefix(ref, "http://") && !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "data:") {
+				du, err := localPathToDataURL(ref)
+				if err != nil {
+					return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Failed to process reference image: %v", err), err)
+				}
+				ref = du
+			}
+			urls = append(urls, ref)
+		}
+		if len(urls) > 16 {
+			urls = urls[:16]
+		}
+		if len(urls) > 0 {
+			body["image_urls"] = urls
+		}
+	}
+
+	bodyJSON, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/videos/generations"), strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, parseProviderErrorBytes(resp.StatusCode, respBody)
+	}
+
+	// 同步兜底：万一网关直接返回成片(未见于文档，但通吃)。
+	if url := extractApimartVideoURL(respBody); url != "" {
+		return &GenerateResult{Type: "url", Content: url}, nil
+	}
+	taskID := extractImageTaskID(respBody) // {code, data:[{task_id}]} 通用任务 id 提取
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	return s.pollApimartVideoTask(ctx, baseURL, apiKey, taskID)
+}
+
+// pollApimartVideoTask polls GET /tasks/{id} until the video URL appears.
+// Mirrors pollImageTask's robustness: completion is signalled by the presence
+// of a video URL (gateways disagree on the exact status word), and failure is
+// read from status at the top level OR nested under data (apimart uses
+// data.status). The "timed out after polling" sentinel is required — the tasks
+// worker matches it (isGenerationTimeout) to mark media timeouts SkipRetry and
+// avoid re-charging a still-running task.
+func (s *Service) pollApimartVideoTask(ctx context.Context, baseURL, apiKey, taskID string) (*GenerateResult, error) {
+	client := safehttp.Client(30 * time.Second) // SSRF guard: result urls come from relay responses
+	pollURL := resolveProviderURL(baseURL, "/tasks/"+taskID)
+
+	select {
+	case <-ctx.Done():
+		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+	case <-time.After(videoPollInitialDelay()):
+	}
+
+	var lastBody []byte
+	for i := 0; i < videoPollMaxAttempts(); i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+			case <-time.After(videoPollInterval()):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			continue
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastBody = body
+
+		if url := extractApimartVideoURL(body); url != "" {
+			return &GenerateResult{Type: "url", Content: url}, nil
+		}
+		if apimartTaskFailed(body) {
+			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation failed. Raw: %s", string(body[:min(len(body), 500)])))
+		}
+	}
+
+	if len(lastBody) > 0 {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation timed out after polling. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
+	}
+	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+}
+
+// extractApimartVideoURL pulls the final video URL out of an apimart task
+// response. apimart nests it at data.result.videos[].url (url may be a string
+// or a [string]); we target that exact path first, then fall back to a generic
+// video_url search so sibling relays with flatter shapes still work. Returns ""
+// while the task is still running (submit response has data as an array, no
+// result yet — so no false positive).
+func extractApimartVideoURL(body []byte) string {
+	var generic map[string]interface{}
+	if json.Unmarshal(body, &generic) != nil {
+		return ""
+	}
+	if url := apimartVideoURLFromResult(generic); url != "" {
+		return url
+	}
+	if url := findStringField(generic, "video_url", 6); url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
+		return url
+	}
+	return ""
+}
+
+// apimartVideoURLFromResult navigates the exact data.result.videos[].url path
+// (data may be absent), avoiding a blind "url" search that could grab a
+// thumbnail/cover URL.
+func apimartVideoURLFromResult(generic map[string]interface{}) string {
+	scope := generic
+	if data, ok := generic["data"].(map[string]interface{}); ok {
+		scope = data
+	}
+	result, ok := scope["result"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	vids, ok := result["videos"].([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, v := range vids {
+		vm, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch u := vm["url"].(type) {
+		case string:
+			if strings.HasPrefix(u, "http") {
+				return u
+			}
+		case []interface{}:
+			for _, item := range u {
+				if s, ok := item.(string); ok && strings.HasPrefix(s, "http") {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// apimartTaskFailed reports an explicit failure status at the top level or
+// nested under data (apimart puts it at data.status).
+func apimartTaskFailed(body []byte) bool {
+	var generic map[string]interface{}
+	if json.Unmarshal(body, &generic) != nil {
+		return false
+	}
+	isFail := func(v interface{}) bool {
+		s, _ := v.(string)
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "failed", "error", "failure", "cancelled", "canceled":
+			return true
+		}
+		return false
+	}
+	if isFail(generic["status"]) {
+		return true
+	}
+	if data, ok := generic["data"].(map[string]interface{}); ok {
+		if isFail(data["status"]) {
+			return true
+		}
+	}
+	return false
 }
