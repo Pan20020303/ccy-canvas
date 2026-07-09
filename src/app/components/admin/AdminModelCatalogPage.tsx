@@ -1355,6 +1355,9 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
   const [modelEditorError, setModelEditorError] = useState("");
   const [testingModelKey, setTestingModelKey] = useState<string | null>(null);
   const [modelTestResult, setModelTestResult] = useState<ModelTestResult | null>(null);
+  const [templateImport, setTemplateImport] = useState<{ config: ProviderConfig } | null>(null);
+  const [templateImportBusy, setTemplateImportBusy] = useState(false);
+  const [templateImportMsg, setTemplateImportMsg] = useState("");
   const activePanel = panel;
   const pageMeta = SETTINGS_PAGE_META[activePanel];
 
@@ -1584,6 +1587,34 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
     });
   };
 
+  // 从中转站模板批量并入模型:模板里的每个模型按其模板服务类型(type)加进当前配置，
+  // 已存在的按模型 id 自动跳过。saveModelsForConfig 会顺带把 capabilities 聚合出来，
+  // 于是一条配置即可混挂图像/视频等多类型模型。
+  const importTemplateModels = async (config: ProviderConfig, tpl: VendorTemplate, type: ServiceType) => {
+    const existing = getVendorModels(config);
+    const existingNames = new Set(existing.map((item) => item.modelName));
+    const additions = tpl.models
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .filter((name) => !existingNames.has(name))
+      .map((name) => ({ name, modelName: name, type }) as VendorModelDefinition);
+    if (additions.length === 0) {
+      setTemplateImportMsg(`「${tpl.label}」的模型都已存在，未新增`);
+      return;
+    }
+    setTemplateImportBusy(true);
+    setTemplateImportMsg("");
+    try {
+      const updated = await saveModelsForConfig(config, [...existing, ...additions]);
+      setTemplateImport({ config: updated });
+      setTemplateImportMsg(`已从「${tpl.label}」导入 ${additions.length} 个 ${SERVICE_LABELS[type]} 模型，跳过 ${tpl.models.length - additions.length} 个已存在`);
+    } catch (err) {
+      setTemplateImportMsg(err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setTemplateImportBusy(false);
+    }
+  };
+
   const handleSaveModel = async () => {
     if (!modelEditor) return;
     const model = buildModelFromDraft(modelEditor.draft);
@@ -1729,10 +1760,16 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
                   <div className="min-h-0 flex-1 overflow-y-auto py-4">
                     <div className="mb-4 flex items-center justify-between gap-3">
                       <h4 className="text-sm font-semibold text-neutral-100">模型设置</h4>
-                      <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => openAddModel(selectedConfig)}>
-                        <Plus className="mr-1 h-4 w-4" />
-                        手动添加
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => { setTemplateImportMsg(""); setTemplateImport({ config: selectedConfig }); }}>
+                          <FolderOpen className="mr-1 h-4 w-4" />
+                          从模板导入
+                        </Button>
+                        <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => openAddModel(selectedConfig)}>
+                          <Plus className="mr-1 h-4 w-4" />
+                          手动添加
+                        </Button>
+                      </div>
                     </div>
                     <div className="space-y-3">
                       {selectedConfigModels.length === 0 ? (
@@ -1906,6 +1943,46 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
           }}
           onSave={handleSaveModel}
         />
+      ) : null}
+      {templateImport ? (
+        <CenterModal
+          title="从模板导入模型"
+          onClose={() => { if (!templateImportBusy) { setTemplateImport(null); setTemplateImportMsg(""); } }}
+          widthClass="max-w-[720px]"
+        >
+          <div className="space-y-4">
+            <p className="text-xs text-neutral-400">
+              把中转站模板里的模型批量并入当前配置「{templateImport.config.name}」。每个模板按其服务类型加入，已存在的自动跳过 —— 一条中转站配置即可混挂图像/视频等多类型模型。可连续点多个模板。
+            </p>
+            {templateImportMsg ? (
+              <div className="rounded-lg border border-cyan-400/20 bg-cyan-400/[0.06] px-3 py-2 text-xs text-cyan-300">{templateImportMsg}</div>
+            ) : null}
+            {(["image", "video", "text", "audio"] as ServiceType[]).map((type) => {
+              const tpls = VENDOR_TEMPLATES[type] ?? [];
+              if (!tpls.length) return null;
+              return (
+                <div key={type} className="space-y-2">
+                  <div className="text-xs font-semibold text-neutral-300">{SERVICE_LABELS[type]}</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {tpls.map((tpl) => (
+                      <button
+                        key={`${type}:${tpl.vendor}:${tpl.label}`}
+                        type="button"
+                        disabled={templateImportBusy}
+                        onClick={() => void importTemplateModels(templateImport.config, tpl, type)}
+                        className="flex items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-left text-xs text-neutral-300 transition hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-white disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <ModelBrandIcon model={tpl.models[0]} vendor={tpl.vendor} providerName={tpl.label} iconKey={tpl.iconKey} size={18} />
+                        <span className="min-w-0 flex-1 truncate">{tpl.label}</span>
+                        <span className="shrink-0 text-[10px] text-neutral-500">{tpl.models.length} 个</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CenterModal>
       ) : null}
       {modelTestResult ? (
         <ModelTestResultModal result={modelTestResult} onClose={() => setModelTestResult(null)} />
