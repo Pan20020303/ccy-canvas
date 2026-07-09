@@ -198,14 +198,18 @@ const SEEDANCE_10_PRO_TEMPLATE = {
 
 // Seedream (image) — the UI exposes ratios, then the backend maps them to
 // Seedream-compatible WIDTHxHEIGHT / 2K / 3K / 4K values per model.
+// 火山方舟官方通道的 Seedream 4.0/5.0:官方文档明确支持 1K/2K/4K 分辨率
+// (size 传关键字由模型定宽高,或传精确像素)。之前只暴露 quality(Auto/High/
+// Medium/Low),用户看不到 1K 档且分辨率是被 quality 间接决定的,故改为显式
+// 分辨率档位 + 宽高比。1K 会以关键字下发(见后端 mapAspectRatioToVolcengineSize)。
 const SEEDREAM_TEMPLATE = {
   serviceType: "image" as const,
-  supportsQuality: true,
+  supportsResolution: true,
   supportsAspectRatio: true,
   supportsAutoAspect: true,
-  qualityOptions: ["Auto", "High", "Medium", "Low"],
+  resolutionOptions: ["1k", "2k", "4k"],
   aspectRatioOptions: [...DEFAULT_ASPECT_RATIO_OPTIONS],
-  defaults: { quality: "Auto", aspectRatio: "1:1" },
+  defaults: { resolution: "2k", aspectRatio: "1:1" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
 // apimart 中转站的 Gemini-3.1-Flash-Image (Nano banana2) — 与 GPT-Image-2 同端点

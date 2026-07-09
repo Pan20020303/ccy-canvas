@@ -1991,7 +1991,7 @@ func requestedImageCount(req GenerateRequest) int {
 // separate multipart `/images/edits` endpoint.
 func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
-	size := mapAspectRatioToVolcengineSize(req.Model, req.Size, req.Quality)
+	size := mapAspectRatioToVolcengineSize(req.Model, req.Size, req.Resolution, req.Quality)
 	submitPath := resolveImageGenPath(pc)
 
 	body := map[string]interface{}{
@@ -2045,8 +2045,9 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 // mapAspectRatioToVolcengineSize converts our ratio-oriented UI values into a
 // Volcengine Seedream-compatible size. Seedream image endpoints accept
 // WIDTHxHEIGHT or model-specific buckets like 2k/3k/4k, but not plain ratios.
-func mapAspectRatioToVolcengineSize(modelName, size, quality string) string {
+func mapAspectRatioToVolcengineSize(modelName, size, resolution, quality string) string {
 	s := strings.ToLower(strings.TrimSpace(size))
+	// 前端(power user / 旧版)直接把关键字或像素放进 size 字段时,原样透传。
 	switch s {
 	case "1k", "2k", "3k", "4k":
 		return s
@@ -2055,6 +2056,26 @@ func mapAspectRatioToVolcengineSize(modelName, size, quality string) string {
 		return s
 	}
 
+	// 参数面板显式选了分辨率档位(1k/2k/4k)时,用它作像素预算、与宽高比结合。
+	// Ark 接受关键字(模型自定宽高)或精确 WxH,但会拒绝小于 ~3.7M 像素的自定义
+	// 尺寸 —— 1K 即使方形(1024²≈1.05M)也在地板之下,故 1K 一律以关键字下发,
+	// 由 Ark 决定形状;2K/4K 则按比例算出精确像素(不足地板时自动放大,与
+	// quality 路径一致)。
+	if tierBase := volcengineResolutionBase(resolution); tierBase > 0 {
+		res := strings.ToLower(strings.TrimSpace(resolution))
+		if res == "1k" {
+			return "1k"
+		}
+		if s == "" || s == "auto" || s == "adaptive" || s == "1:1" {
+			return res
+		}
+		if strings.Contains(s, ":") {
+			return buildVolcengineImageSizeAtBase(s, tierBase)
+		}
+		return res
+	}
+
+	// 未显式选档位 → 回退到 quality 推导的旧逻辑(保持向后兼容)。
 	if s == "" || s == "auto" || s == "adaptive" {
 		return defaultVolcengineImageSize(modelName, quality)
 	}
@@ -2063,6 +2084,22 @@ func mapAspectRatioToVolcengineSize(modelName, size, quality string) string {
 		return buildVolcengineImageSizeFromRatio(s, quality)
 	}
 	return defaultVolcengineImageSize(modelName, quality)
+}
+
+// volcengineResolutionBase maps a UI resolution tier (1k/2k/3k/4k) to its base
+// pixel dimension; returns 0 when the input isn't a recognized tier.
+func volcengineResolutionBase(resolution string) float64 {
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "1k":
+		return 1024
+	case "2k":
+		return 2048
+	case "3k":
+		return 3072
+	case "4k":
+		return 4096
+	}
+	return 0
 }
 
 func defaultVolcengineImageSize(modelName, quality string) string {
@@ -2089,16 +2126,6 @@ func defaultVolcengineImageSize(modelName, quality string) string {
 }
 
 func buildVolcengineImageSizeFromRatio(ratio, quality string) string {
-	parts := strings.Split(strings.TrimSpace(ratio), ":")
-	if len(parts) != 2 {
-		return "2048x2048"
-	}
-	left, errLeft := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
-	right, errRight := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
-	if errLeft != nil || errRight != nil || left <= 0 || right <= 0 {
-		return "2048x2048"
-	}
-
 	base := 2048.0
 	switch normalizeVolcengineImageQuality(quality) {
 	case "high":
@@ -2107,6 +2134,24 @@ func buildVolcengineImageSizeFromRatio(ratio, quality string) string {
 		base = 3072
 	case "low":
 		base = 2048
+	}
+	return buildVolcengineImageSizeAtBase(ratio, base)
+}
+
+// buildVolcengineImageSizeAtBase renders WIDTHxHEIGHT for the given aspect ratio
+// at an explicit base dimension (the pixel budget). The longer side stays at
+// base, the shorter is scaled to the ratio (rounded to /64), then bumped up to
+// Ark's minimum custom-pixel area. Shared by the quality-derived path and the
+// explicit resolution-tier path.
+func buildVolcengineImageSizeAtBase(ratio string, base float64) string {
+	parts := strings.Split(strings.TrimSpace(ratio), ":")
+	if len(parts) != 2 {
+		return fmt.Sprintf("%dx%d", int(base), int(base))
+	}
+	left, errLeft := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	right, errRight := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if errLeft != nil || errRight != nil || left <= 0 || right <= 0 {
+		return fmt.Sprintf("%dx%d", int(base), int(base))
 	}
 
 	width := base

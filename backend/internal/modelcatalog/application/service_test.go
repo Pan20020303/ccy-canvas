@@ -2247,23 +2247,53 @@ func TestGenerateImageVolcengineMapsAspectRatioToSupportedSize(t *testing.T) {
 }
 
 func TestMapAspectRatioToVolcengineSizeDefaultsByModel(t *testing.T) {
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "auto"); got != "2k" {
+	// 无显式分辨率档位 → 回退 quality 推导(旧行为)。
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "", "auto"); got != "2k" {
 		t.Fatalf("seedream 5 auto size = %q, want 2k", got)
 	}
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "high"); got != "4k" {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "", "high"); got != "4k" {
 		t.Fatalf("seedream 5 auto high size = %q, want 4k", got)
 	}
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-3-0-t2i-250415", "auto", "auto"); got != "1024x1024" {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-3-0-t2i-250415", "auto", "", "auto"); got != "1024x1024" {
 		t.Fatalf("seedream 3 auto size = %q, want 1024x1024", got)
 	}
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "9:16", "medium"); got != "1728x3072" {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "9:16", "", "medium"); got != "1728x3072" {
 		t.Fatalf("seedream 5 9:16 medium size = %q, want 1728x3072", got)
 	}
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "16:9", "low"); got != "2560x1440" {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "16:9", "", "low"); got != "2560x1440" {
 		t.Fatalf("seedream 5 16:9 low size = %q, want 2560x1440", got)
 	}
-	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "3:2", "low"); got != "2384x1568" {
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "3:2", "", "low"); got != "2384x1568" {
 		t.Fatalf("seedream 5 3:2 low size = %q, want 2384x1568", got)
+	}
+}
+
+// 参数面板显式选择分辨率档位(1k/2k/4k)时,分辨率优先于 quality 生效。
+func TestMapAspectRatioToVolcengineSizeExplicitResolution(t *testing.T) {
+	// 1K 一律以关键字下发(即使方形也在 Ark 自定义像素地板之下),忽略比例。
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "1k", "auto"); got != "1k" {
+		t.Fatalf("seedream 5 1k auto = %q, want 1k", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "16:9", "1k", "auto"); got != "1k" {
+		t.Fatalf("seedream 5 1k 16:9 = %q, want 1k (below custom-pixel floor)", got)
+	}
+	// 2K/1:1/auto → 关键字;2K + 具体比例 → 精确像素(不足地板自动放大)。
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "1:1", "2k", "auto"); got != "2k" {
+		t.Fatalf("seedream 5 2k 1:1 = %q, want 2k", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "16:9", "2k", "auto"); got != "2560x1440" {
+		t.Fatalf("seedream 5 2k 16:9 = %q, want 2560x1440", got)
+	}
+	// 4K + 比例 → 精确像素(远超地板,直接按比例)。
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "9:16", "4k", "auto"); got != "2304x4096" {
+		t.Fatalf("seedream 5 4k 9:16 = %q, want 2304x4096", got)
+	}
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "4k", "auto"); got != "4k" {
+		t.Fatalf("seedream 5 4k auto = %q, want 4k", got)
+	}
+	// 分辨率档位应压过 quality:选 2K 时不因 quality=high 变 4K。
+	if got := mapAspectRatioToVolcengineSize("doubao-seedream-5-0-260128", "auto", "2k", "high"); got != "2k" {
+		t.Fatalf("seedream 5 2k(high quality) = %q, want 2k (resolution wins)", got)
 	}
 }
 
