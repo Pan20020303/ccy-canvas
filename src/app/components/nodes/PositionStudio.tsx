@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Brush, Loader2, Redo2, Trash2, Type, Undo2, Users, X } from 'lucide-react';
 import { Button } from '../ui/button';
 
@@ -540,7 +541,7 @@ export function PositionStudio({
     </label>
   );
 
-  return (
+  const shell = (
     <div className="fixed inset-0 z-[120] flex flex-col bg-[#0e0f13]/95 backdrop-blur-sm">
       {/* 顶栏:tab + 关闭 */}
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5">
@@ -554,9 +555,14 @@ export function PositionStudio({
             <Brush className="h-4 w-4" /> {t('自由画笔', 'Freehand')}
           </button>
         </div>
-        <button type="button" onClick={onClose} className="rounded-md p-1.5 text-neutral-400 transition hover:bg-white/10 hover:text-white">
-          <X className="h-5 w-5" />
-        </button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={handleSave} disabled={saving || !ready || !hasContent}>
+            {saving ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" />{t('保存中', 'Saving')}</> : t('保存为新图', 'Save as image')}
+          </Button>
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-neutral-400 transition hover:bg-white/10 hover:text-white">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       {/* 工具条 */}
@@ -649,10 +655,9 @@ export function PositionStudio({
             : t('画笔自由涂画 / 文字点击落字。两种模式的内容都会一起烘焙进导出图。', 'Freehand pen / click to add text. Both modes are baked into the export.')}
         </div>
         <Button variant="secondary" onClick={onClose} disabled={saving}>{t('取消', 'Cancel')}</Button>
-        <Button onClick={handleSave} disabled={saving || !ready || !hasContent}>
-          {saving ? <><Loader2 className="mr-1.5 h-4 w-4 animate-spin" />{t('保存中', 'Saving')}</> : t('保存为新图', 'Save as image')}
-        </Button>
       </div>
     </div>
   );
+
+  return createPortal(shell, document.body);
 }
