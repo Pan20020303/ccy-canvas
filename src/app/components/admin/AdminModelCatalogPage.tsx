@@ -1743,7 +1743,9 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
                             <div className="flex items-start justify-between gap-4">
                               <div className="min-w-0">
                                 <div className="flex items-center gap-3">
-                                  <ModelBrandIcon model={model.modelName} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={22} />
+                                  {/* 每个模型按其自身厂商解析图标(中转站聚合多家)，不套用
+                                      provider 级 iconKey/iconUrl，否则会被网关图标统一盖过。 */}
+                                  <ModelBrandIcon model={model.modelName} size={22} />
                                   <h4 className="truncate text-base font-semibold text-neutral-100">{model.name || model.modelName}</h4>
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2">

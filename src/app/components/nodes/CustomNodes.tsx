@@ -2509,7 +2509,7 @@ const PromptPanel = ({
             模式（文生/图生/参考生/视频编辑）由顶部 happyHorseTabs 处理，
             不再单独占一个底栏 dropdown。 */}
         <Dropdown
-          label={<ModelBrandIcon model={activeModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={14} />}
+          label={<ModelBrandIcon model={activeModel} size={14} />}
           value={displayNameFor(activeModelDisplay)}
           options={displayModels}
           onChange={handleDisplayPick}
@@ -2529,7 +2529,7 @@ const PromptPanel = ({
               ?? optTemplate?.durationOptions?.[0];
             return (
               <div className="flex w-full items-center gap-2">
-                <ModelBrandIcon model={lookupModel} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
+                <ModelBrandIcon model={lookupModel} size={18} />
                 <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{displayNameFor(option)}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>
@@ -3879,17 +3879,16 @@ function PanoramaActionEditor({
             <div className="text-xs text-neutral-400">{language === 'zh' ? '生成模型' : 'Model'}</div>
             <div className="rounded-xl border border-white/10 bg-black/20 px-1 py-1">
               <Dropdown
-                label={<ModelBrandIcon model={selectedModel} vendor={activeConfig?.vendor} providerName={activeConfig?.name} iconKey={activeConfig?.icon_key} iconUrl={activeConfig?.icon_url} size={16} />}
+                label={<ModelBrandIcon model={selectedModel} size={16} />}
                 value={selectedModel}
                 options={options}
                 onChange={(model) => updateDraft({ model })}
                 side="bottom"
                 menuMinWidth={260}
                 renderOption={(option, selected) => {
-                  const optionConfig = providerConfigs.find((config) => config.model_list.includes(option)) ?? null;
                   return (
                     <div className="flex w-full items-center gap-2">
-                      <ModelBrandIcon model={option} vendor={optionConfig?.vendor} providerName={optionConfig?.name} iconKey={optionConfig?.icon_key} iconUrl={optionConfig?.icon_url} size={18} />
+                      <ModelBrandIcon model={option} size={18} />
                       <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{option}</span>
                     </div>
                   );

@@ -41,6 +41,8 @@ export type ModelBrandKind =
   | 'luma'        // sun (Luma Dream Machine)
   | 'pika'        // play triangle
   | 'vidu'        // V
+  | 'pixverse'    // P (PixVerse)
+  | 'skyreels'    // S film (SkyReels)
   | 'recraft'     // R outline
   | 'ideogram'    // I
   | 'stability'   // S
@@ -90,7 +92,8 @@ export function getModelBrand(
   if (m.includes('happyhorse'))   return { kind: 'qwen',       color: '#e879f9', vendor: 'Alibaba · HappyHorse' };
   if (m.includes('qwen') || m.includes('tongyi') || m.includes('cosyvoice') || m.includes('sambert'))
                                    return { kind: 'qwen',       color: '#a78bfa', vendor: 'Alibaba · 通义' };
-  if (m.includes('wanx'))         return { kind: 'qwen',       color: '#c084fc', vendor: 'Alibaba · 万相' };
+  if (m.includes('wanx') || m.includes('wan2') || m.includes('wan-'))
+                                  return { kind: 'qwen',       color: '#c084fc', vendor: 'Alibaba · 万相' };
 
   // OpenAI family
   if (m.includes('sora'))         return { kind: 'sora',       color: '#0ea5e9', vendor: 'OpenAI Sora' };
@@ -142,6 +145,8 @@ export function getModelBrand(
                                   return { kind: 'luma',       color: '#fde047', vendor: 'Luma' };
   if (m.includes('pika'))         return { kind: 'pika',       color: '#ec4899', vendor: 'Pika' };
   if (m.includes('vidu'))         return { kind: 'vidu',       color: '#8b5cf6', vendor: 'Vidu' };
+  if (m.includes('pixverse'))     return { kind: 'pixverse',   color: '#a855f7', vendor: 'PixVerse' };
+  if (m.includes('skyreels'))     return { kind: 'skyreels',   color: '#f59e0b', vendor: 'SkyReels' };
   if (m.includes('runway') || m.includes('gen3') || m.includes('gen-3'))
                                   return { kind: 'runway',     color: '#fbbf24', vendor: 'Runway' };
 

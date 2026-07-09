@@ -67,7 +67,7 @@ const VALID_ICON_KINDS = new Set<ModelBrandKind>([
   'kling', 'hailuo', 'gemini', 'claude', 'deepseek', 'doubao', 'newapi',
   'relaybases', 'volcengine', 'ernie', 'zhipu', 'hunyuan', 'moonshot', 'grok',
   'stepfun', 'elevenlabs', 'luma', 'pika', 'vidu', 'recraft', 'ideogram',
-  'stability', 'generic',
+  'stability', 'pixverse', 'skyreels', 'generic',
 ]);
 
 /**
@@ -409,6 +409,22 @@ function renderShape(kind: ModelBrandKind, color: string) {
           d="M16 8 Q12 6 9 9 Q6 12 9 14 Q12 16 15 14 Q18 12 15 9"
           stroke={color} strokeWidth="2" strokeLinecap="round" fill="none"
         />
+      );
+    case 'pixverse':
+      // P monogram (PixVerse).
+      return (
+        <path
+          d="M8 6 L8 18 M8 6 L13 6 Q16 6 16 9.5 Q16 13 13 13 L8 13"
+          stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none"
+        />
+      );
+    case 'skyreels':
+      // Film-strip S (SkyReels).
+      return (
+        <>
+          <rect x="5" y="6" width="14" height="12" rx="2" fill="none" stroke={color} strokeWidth="1.6" />
+          <path d="M14 9 Q10 8 9 11 Q11 13 13 13 Q15 14 14 16 Q10 17 9 15" stroke={color} strokeWidth="1.6" strokeLinecap="round" fill="none" />
+        </>
       );
     case 'generic':
     default:
