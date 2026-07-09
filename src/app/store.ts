@@ -16,7 +16,8 @@ import {
 } from '@xyflow/react';
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
-import { generate as apiGenerate, generateStream } from './api/providerConfigs';
+import type { ServiceType } from './model-config';
+import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
@@ -1890,7 +1891,7 @@ function findReferenceProviderForRequest(
   hasReferenceImages = false,
 ): AppProviderConfig | null {
   const matchingProviders = providers.filter((provider) =>
-    provider.service_type === serviceType
+    providerServesType(provider, serviceType as ServiceType)
     && (!model || provider.model_list.includes(model)),
   );
   const preferredProvider = matchingProviders.find((provider) => preferredVendor && provider.vendor === preferredVendor);

@@ -1107,11 +1107,18 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 		if c.Status != "enabled" {
 			continue
 		}
-		if req.ServiceType != "" && c.ServiceType != req.ServiceType {
-			continue
-		}
-		if req.ServiceType != "" && !providerSupportsCapability(c, req.ServiceType) {
-			continue
+		// 一个供应商(尤其中转站)可声明多种能力(capabilities，随所挂模型的类型
+		// 自动聚合)。声明了能力就按能力放行 —— 不再要求 provider 的主 service_type
+		// 与请求相等，从而支持「一个中转站配置混挂图像/视频/文本模型」。未声明能力的
+		// 旧配置退回严格的 service_type 匹配，行为不变。
+		if req.ServiceType != "" {
+			if len(c.Capabilities) > 0 {
+				if !providerSupportsCapability(c, req.ServiceType) {
+					continue
+				}
+			} else if c.ServiceType != req.ServiceType {
+				continue
+			}
 		}
 		serves := false
 		for _, m := range c.ModelList {

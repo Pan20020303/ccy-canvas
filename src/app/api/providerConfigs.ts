@@ -96,6 +96,45 @@ export type AppProviderConfig = {
   priority: number;
 };
 
+/**
+ * 一个供应商是否服务某服务类型。中转站可在一个配置里混挂多类型模型：其主
+ * service_type 之外，capabilities(随所挂模型类型自动聚合)里声明的类型也算数。
+ */
+export function providerServesType(
+  pc: { service_type: ServiceType; capabilities?: ServiceType[] | null },
+  serviceType: ServiceType,
+): boolean {
+  return pc.service_type === serviceType || (pc.capabilities?.includes(serviceType) ?? false);
+}
+
+/**
+ * 某个模型在其供应商内的服务类型：优先读管理端「编辑模型」写入 parameter_schema
+ * .vendor_models[].type 的 per-model 类型；没有记录时退回供应商主 service_type。
+ */
+export function modelServiceType(
+  pc: { service_type: ServiceType; parameter_schema?: ModelParameterSchema | null },
+  modelName: string,
+): ServiceType {
+  const schema = pc.parameter_schema as
+    | { vendor_models?: unknown[]; vendor_all_models?: unknown[] }
+    | undefined
+    | null;
+  const list = Array.isArray(schema?.vendor_models)
+    ? schema!.vendor_models
+    : Array.isArray(schema?.vendor_all_models)
+      ? schema!.vendor_all_models
+      : [];
+  for (const raw of list) {
+    if (raw && typeof raw === "object") {
+      const m = raw as { modelName?: unknown; type?: unknown };
+      if (m.modelName === modelName && typeof m.type === "string") {
+        return m.type as ServiceType;
+      }
+    }
+  }
+  return pc.service_type;
+}
+
 /** Create/Update payload. */
 export type ProviderConfigPayload = {
   service_type: ServiceType;

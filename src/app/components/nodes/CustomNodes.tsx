@@ -64,6 +64,7 @@ import { renderMarkdown } from '../../markdown';
 import { copyTextToClipboard, copyWithToast } from '../../clipboard';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
+import { providerServesType, modelServiceType } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
 import type { Skill } from '../../api/skills';
@@ -1466,7 +1467,8 @@ const PromptPanel = ({
 
   const enabledConfigs = useMemo(
     () => backendModels
-      .filter((pc) => pc.service_type === serviceType)
+      // 中转站可混挂多类型：主 service_type 或 capabilities 命中都纳入。
+      .filter((pc) => providerServesType(pc, serviceType as ServiceType))
       .map((pc) => ({
         vendor: pc.vendor,
         name: pc.name,
@@ -1500,9 +1502,10 @@ const PromptPanel = ({
   // back to other vendors on failure.
   const availableModels = useMemo(
     () => enabledConfigs
-      .flatMap((config) => config.modelList)
+      // 混合供应商:只列出与当前节点服务类型一致的模型(按 per-model type)。
+      .flatMap((config) => config.modelList.filter((name) => modelServiceType(config.raw, name) === serviceType))
       .filter((value, index, values) => values.indexOf(value) === index),
-    [enabledConfigs],
+    [enabledConfigs, serviceType],
   );
 
   // 管理端「编辑模型」的元数据（parameter_schema.vendor_models）：
@@ -4148,12 +4151,13 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
   const sourceUrl = String(sourceData.url ?? '');
   const sourceParams = (sourceData.generationParams as Record<string, unknown> | undefined) ?? {};
   const imageProviderConfigs = useMemo(
-    () => backendModels.filter((config) => config.service_type === 'image'),
+    () => backendModels.filter((config) => providerServesType(config, 'image')),
     [backendModels],
   );
   const imageModelOptions = useMemo(
     () => imageProviderConfigs
-      .flatMap((config) => config.model_list)
+      // 混合供应商:只取图像类型的模型(按 per-model type)。
+      .flatMap((config) => config.model_list.filter((name) => modelServiceType(config, name) === 'image'))
       .filter((value, index, values) => values.indexOf(value) === index),
     [imageProviderConfigs],
   );
