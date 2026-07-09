@@ -216,7 +216,7 @@ UPDATE generation_logs
 SET status = 'persisting',
     result_url = $2,
     error_msg = '',
-    duration_ms = $6,
+    duration_ms = $5,
     cache_hit = false,
     staging_path = $3,
     staging_url = $2,
@@ -227,9 +227,14 @@ SET status = 'persisting',
 WHERE id = $1
 `
 
+// content_type 不是 generation_logs 的列，所以不入库。此前 SQL 把 duration
+// 写成 $6 却传了 content_type 作为 $5、语句里又没用到 $5 → pgx 报
+// 42P18「无法推断 $5 类型」，导致所有暂存成功的生成在转存阶段整体失败
+// (「生成成功但没返图/任务失败」的一大来源)。duration 归位到 $5、去掉 $5 的
+// content_type 传参即可。ContentType 仍保留在 Params(异步转存 payload 用它)。
 func (q *Queries) MarkGenerationLogPersisting(ctx context.Context, arg MarkGenerationLogPersistingParams) error {
 	_, err := q.db.Exec(ctx, markGenerationLogPersisting,
-		arg.ID, arg.StagingUrl, arg.StagingPath, arg.CosKey, arg.ContentType, arg.DurationMs)
+		arg.ID, arg.StagingUrl, arg.StagingPath, arg.CosKey, arg.DurationMs)
 	return err
 }
 
