@@ -4139,12 +4139,13 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
   );
 }
 
-function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string; onAnnotate?: () => void }) {
+function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
   const backendModels = useStore((state) => state.backendModels);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
+  const addHistory = useStore((state) => state.addHistory);
   const createGroup = useStore((state) => state.createGroup);
   const runNode = useStore((state) => state.runNode);
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
@@ -4170,6 +4171,55 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [hdOpen, setHdOpen] = useState(false);
+  // 人物站位/自由涂画放大编辑器 —— 所有用本工具条的图片节点(生成/上传/全景)通用。
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [studioSaving, setStudioSaving] = useState(false);
+  const handleStudioSave = async (blob: Blob) => {
+    if (studioSaving) return;
+    setStudioSaving(true);
+    try {
+      const objectUrl = URL.createObjectURL(blob);
+      let stableUrl: string;
+      try {
+        stableUrl = await uploadImageSource(objectUrl, `staged-${sourceNodeId}-${Date.now()}.png`);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      const stagedId = `img-staged-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const basePosition = nodes.find((node) => node.id === sourceNodeId)?.position ?? { x: 0, y: 0 };
+      addNode({
+        id: stagedId,
+        type: 'imageNode',
+        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
+        data: {
+          customTitle: language === 'zh' ? '站位标注图' : 'Staged image',
+          url: stableUrl,
+          output: stableUrl,
+          status: 'done',
+          sourceKind: 'derived',
+          derivedFromNodeId: sourceNodeId,
+          derivationAction: 'annotate',
+          generationParams: { aspectRatio: sourceParams.aspectRatio },
+        },
+      } as never);
+      onConnect({ source: sourceNodeId, target: stagedId, sourceHandle: null, targetHandle: null } as never);
+      addHistory({
+        id: `staged-${sourceNodeId}-${Date.now()}`,
+        title: `${(sourceData.customTitle as string) || (language === 'zh' ? '站位标注图' : 'Staged image')}`,
+        type: 'image',
+        mediaType: 'image',
+        timestamp: Date.now(),
+        thumbnail: stableUrl,
+        sourceNodeId,
+        derivationAction: 'annotate',
+      });
+      setStudioOpen(false);
+    } catch (err) {
+      toast.error(language === 'zh' ? `保存失败：${err instanceof Error ? err.message : String(err)}` : `Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setStudioSaving(false);
+    }
+  };
   // Nano Pro 高清引擎：优先基础名；只配了 " 4K" 变体时也能兜底使用。
   const nanoProModel = useMemo(() => {
     const models = imageModelOptions;
@@ -4525,8 +4575,8 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => (onAnnotate ? onAnnotate() : openDraft('edit'))}
-          title={onAnnotate ? (language === 'zh' ? '画笔标注' : 'Draw on image') : (language === 'zh' ? '局部编辑' : 'Edit region')}
+          onClick={() => setStudioOpen(true)}
+          title={language === 'zh' ? '画笔标注 / 人物站位' : 'Annotate / positioning'}
         >
           <Brush className="h-4 w-4" />
         </Button>
@@ -4711,6 +4761,15 @@ function ImageActionToolbar({ sourceNodeId, onAnnotate }: { sourceNodeId: string
               }
             })();
           }}
+        />
+      ) : null}
+      {studioOpen && sourceUrl ? (
+        <PositionStudio
+          imageUrl={toRenderableMediaUrl(sourceUrl)}
+          zh={language === 'zh'}
+          saving={studioSaving}
+          onClose={() => setStudioOpen(false)}
+          onSave={handleStudioSave}
         />
       ) : null}
     </>
@@ -6709,9 +6768,6 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   }>(null);
   const [annotateSaving, setAnnotateSaving] = useState(false);
   const annotating = annotate !== null;
-  // 人物站位/自由涂画 放大编辑器(画笔按钮打开;比节点内联涂画更全)。
-  const [studioOpen, setStudioOpen] = useState(false);
-  const [studioSaving, setStudioSaving] = useState(false);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
 
   // 标注期间接管全局快捷键（capture 期，压过画布的删除/撤销处理器）：
@@ -6817,53 +6873,6 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     }
   };
 
-  // 放大编辑器(人物站位 / 自由涂画)保存:合成后的 PNG 落成一个派生图节点并连线。
-  const handleStudioSave = async (blob: Blob) => {
-    if (studioSaving) return;
-    setStudioSaving(true);
-    try {
-      const objectUrl = URL.createObjectURL(blob);
-      let stableUrl: string;
-      try {
-        stableUrl = await uploadImageSource(objectUrl, `staged-${id}-${Date.now()}.png`);
-      } finally {
-        URL.revokeObjectURL(objectUrl);
-      }
-      const stagedId = `img-staged-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const basePosition = useStore.getState().nodes.find((node) => node.id === id)?.position ?? { x: 0, y: 0 };
-      addNode({
-        id: stagedId,
-        type: 'imageNode',
-        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
-        data: {
-          customTitle: language === 'zh' ? '站位标注图' : 'Staged image',
-          url: stableUrl,
-          output: stableUrl,
-          status: 'done',
-          sourceKind: 'derived',
-          derivedFromNodeId: id,
-          derivationAction: 'annotate',
-          generationParams: { aspectRatio: effectiveAspect },
-        },
-      } as never);
-      onConnect({ source: id, target: stagedId, sourceHandle: null, targetHandle: null } as never);
-      addHistory({
-        id: `staged-${id}-${Date.now()}`,
-        title: `${data.customTitle || (language === 'zh' ? '站位标注图' : 'Staged image')}`,
-        type: 'image',
-        mediaType: 'image',
-        timestamp: Date.now(),
-        thumbnail: stableUrl,
-        sourceNodeId: id,
-        derivationAction: 'annotate',
-      });
-      setStudioOpen(false);
-    } catch (err) {
-      toast.error(language === 'zh' ? `保存失败：${err instanceof Error ? err.message : String(err)}` : `Save failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setStudioSaving(false);
-    }
-  };
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
@@ -6909,10 +6918,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
           )
           : data.url && data.status !== 'uploading'
             ? (
-              <ImageActionToolbar
-                sourceNodeId={id}
-                onAnnotate={() => setStudioOpen(true)}
-              />
+              <ImageActionToolbar sourceNodeId={id} />
             )
             : undefined
       }
@@ -6986,15 +6992,6 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
-      {studioOpen && data.url ? (
-        <PositionStudio
-          imageUrl={toRenderableMediaUrl(String(data.url))}
-          zh={language === 'zh'}
-          saving={studioSaving}
-          onClose={() => setStudioOpen(false)}
-          onSave={handleStudioSave}
-        />
-      ) : null}
     </BaseNode>
   );
 };
