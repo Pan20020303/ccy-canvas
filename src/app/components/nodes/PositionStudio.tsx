@@ -126,6 +126,10 @@ export function PositionStudio({
   const [line, setLine] = useState(100);
   const [nameSize, setNameSize] = useState(100);
   const [labelPos, setLabelPos] = useState('auto');
+  // 「画移动轨迹」一次性模式:开启后从选中角色拖一条移动虚线(不必按 Shift)。
+  const [pathDraw, setPathDraw] = useState(false);
+  const pathDrawRef = useRef(false);
+  pathDrawRef.current = pathDraw;
   const [drawTool, setDrawTool] = useState<'pen' | 'text'>('pen');
   const [drawColor, setDrawColor] = useState('#e74c3c');
   const [drawWidth, setDrawWidth] = useState(6);
@@ -449,9 +453,9 @@ export function PositionStudio({
       marksRef.current.push(mark); selectedRef.current = mark; placingRef.current = null;
       syncSlidersToSelected(); redraw(); rerender(); return;
     }
-    // Shift 拖 = 画移动虚线:命中角色圆点 或 当前已选中角色，即从该角色开始拉轨迹
-    // (比「必须精确从圆点起拖」更宽容)。
-    if (e.shiftKey) {
+    // 画移动虚线:①按住 Shift 拖，或 ②开了「画移动轨迹」按钮。命中角色圆点或当前
+    // 已选中角色即从该角色起拖(比「必须精确从圆点起拖」更宽容)。
+    if (e.shiftKey || pathDrawRef.current) {
       const hit = findTarget(p, true);
       const m = hit?.m ?? selectedRef.current;
       if (m && !m.isLabel) {
@@ -462,6 +466,7 @@ export function PositionStudio({
         syncSlidersToSelected(); rerender();
         return;
       }
+      if (pathDrawRef.current) return; // 开了轨迹模式但没角色可拖，忽略这次点击
     }
     const labelTarget = findLabelTarget(p);
     if (labelTarget) {
@@ -523,7 +528,9 @@ export function PositionStudio({
       if (Math.hypot(ep.x - s.x, ep.y - s.y) > (cvRef.current?.width ?? 1000) * 0.06) { drag.path = pts.filter((_, i) => i % 3 === 0); drag.path.push(ep); }
       drag.x = s.x; drag.y = s.y;
     }
+    const wasShift = mode === 'shift';
     dragRef.current = null; modeRef.current = null; shiftPtsRef.current = []; dragStartRef.current = null;
+    if (wasShift && pathDrawRef.current) setPathDraw(false); // 一次性:画完一条即退出轨迹模式
     redraw(); rerender();
   };
 
@@ -620,6 +627,15 @@ export function PositionStudio({
                 {labelPos === 'custom' ? <option value="custom">{t('自定义', 'Custom')}</option> : null}
               </select>
             </label>
+            <Button
+              size="sm"
+              variant={pathDraw ? 'default' : 'secondary'}
+              disabled={!selected}
+              onClick={() => setPathDraw((v) => !v)}
+              title={t('选中角色后开启，从角色拖到目标位置即成移动虚线(也可按住 Shift 直接拖)', 'Select a role, then drag from it to draw a movement path (or hold Shift and drag)')}
+            >
+              {pathDraw ? t('拖出轨迹…', 'Drag path…') : t('画移动轨迹', 'Draw path')}
+            </Button>
           </>
         ) : (
           <>
@@ -678,7 +694,7 @@ export function PositionStudio({
       <div className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-2.5">
         <div className="min-w-0 flex-1 truncate text-xs text-neutral-500">
           {tab === 'position'
-            ? t('填名字选颜色→点【添加角色】→点图放置｜拖圆点=移动，拖箭头尖=朝向，Shift拖=画移动虚线，拖名字=挪位置｜Delete删除', 'Add role → click to place. Drag dot=move, arrow tip=facing, Shift-drag=path, drag name=reposition, Delete=remove')
+            ? t('填名字选颜色→点【添加角色】→点图放置｜拖圆点=移动，拖箭头尖=朝向，拖名字=挪位置｜移动虚线:选中角色后点【画移动轨迹】再拖(或按住 Shift 拖)｜Delete删除', 'Add role → click to place. Drag dot=move, arrow tip=facing, drag name=reposition. Path: select a role, click Draw path, then drag (or Shift-drag). Delete=remove')
             : t('画笔自由涂画 / 文字点击落字。两种模式的内容都会一起烘焙进导出图。', 'Freehand pen / click to add text. Both modes are baked into the export.')}
         </div>
         <Button variant="secondary" onClick={onClose} disabled={saving}>{t('取消', 'Cancel')}</Button>
