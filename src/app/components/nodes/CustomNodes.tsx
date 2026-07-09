@@ -1709,7 +1709,39 @@ const PromptPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, mentions, nodeId]);
 
+  // 提示词框自带撤销/重做栈:受控 textarea + @提及规范化会让浏览器原生 Ctrl+Z
+  // 失效(React 重设 value 会清空原生撤销栈)。这里维护 {文本,光标} 快照栈。
+  const promptUndoRef = useRef<{ t: string; s: number; e: number }[]>([]);
+  const promptRedoRef = useRef<{ t: string; s: number; e: number }[]>([]);
+  const lastPromptEditRef = useRef(0);
+  const applyPromptSnapshot = (snap: { t: string; s: number; e: number }) => {
+    setText(snap.t);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (ta) { ta.focus(); ta.setSelectionRange(snap.s, snap.e); }
+    });
+  };
+  const undoPrompt = () => {
+    if (!promptUndoRef.current.length) return;
+    promptRedoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+    applyPromptSnapshot(promptUndoRef.current.pop()!);
+  };
+  const redoPrompt = () => {
+    if (!promptRedoRef.current.length) return;
+    promptUndoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+    applyPromptSnapshot(promptRedoRef.current.pop()!);
+  };
+
   const onChange = (value: string) => {
+    // 每次编辑前把「编辑前文本+光标」压入撤销栈:连续输入 350ms 内合并为一步、
+    // 删除单独成步(pop 出来更符合直觉)。
+    const now = Date.now();
+    if (promptUndoRef.current.length === 0 || now - lastPromptEditRef.current > 350 || value.length < text.length) {
+      promptUndoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+      if (promptUndoRef.current.length > 300) promptUndoRef.current.shift();
+    }
+    lastPromptEditRef.current = now;
+    promptRedoRef.current = [];
     setText(value);
     const cursor = taRef.current?.selectionStart ?? value.length;
     const before = value.slice(0, cursor);
@@ -1870,6 +1902,10 @@ const PromptPanel = ({
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 提示词框自带撤销/重做(原生 Ctrl+Z 在受控+@提及下不可靠)。
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && !event.shiftKey && event.key.toLowerCase() === 'z') { event.preventDefault(); undoPrompt(); return; }
+    if (mod && (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z'))) { event.preventDefault(); redoPrompt(); return; }
     // Esc 先关闭 @提及 / 快捷提示词 浮层(优先于提交/字符编辑)。
     if (event.key === 'Escape' && (mentionOpen || slashOpen)) {
       event.preventDefault();
