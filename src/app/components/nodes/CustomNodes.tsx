@@ -1709,6 +1709,23 @@ const PromptPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, mentions, nodeId]);
 
+  // 上游参考图连线被断开后,把引用它的 @提及从提示词里一并清掉 —— 否则线没了、
+  // 提及还留着,提交时会带上一个已不再连接的参考。仅在「连接关系变化」时运行。
+  const upstreamKey = upstreamIds.join('|');
+  useEffect(() => {
+    if (mentions.length === 0) return;
+    const connected = new Set(upstreamIds);
+    const stale = mentions.filter((m) => !connected.has(m.id));
+    if (stale.length === 0) return;
+    let nextText = text;
+    for (const m of stale) nextText = nextText.split(m.tag).join('');
+    // 清掉标签移除后遗留的多余空格 / 行尾空格。
+    nextText = nextText.replace(/[^\S\n]{2,}/g, ' ').replace(/[^\S\n]+\n/g, '\n');
+    if (nextText !== text) setText(nextText);
+    setMentions((prev) => prev.filter((m) => connected.has(m.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [upstreamKey]);
+
   // 提示词框自带撤销/重做栈:受控 textarea + @提及规范化会让浏览器原生 Ctrl+Z
   // 失效(React 重设 value 会清空原生撤销栈)。这里维护 {文本,光标} 快照栈。
   const promptUndoRef = useRef<{ t: string; s: number; e: number }[]>([]);
