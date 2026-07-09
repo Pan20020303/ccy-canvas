@@ -842,6 +842,16 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     modelName: "z-image-turbo",
     ...APIMART_IMAGE_TEMPLATE,
   },
+  // apimart Midjourney:走 /midjourney/generations，MJ 参数用 --ar(由比例映射)。
+  // 无 apimart 分辨率档位；需显式比例(不给自适应)，默认 1:1。
+  "midjourney": {
+    vendor: "Midjourney",
+    modelName: "midjourney",
+    serviceType: "image",
+    supportsAspectRatio: true,
+    aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+    defaults: { aspectRatio: "1:1" },
+  },
   // ── 阿里云百炼 HappyHorse 快乐马（图/参/编/文 4 个 mode × 1.0 / 1.1 两个版本）
   // 文档：图生(i2v)、参考生(r2v)、视频编辑(video-edit)、文生(t2v)
   // 前端 UI 在 CustomNodes 里识别 happyhorse 家族，把模型 dropdown 拆成

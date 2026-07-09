@@ -633,7 +633,8 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       // model id 照抄 apimart 文档(docs.apimart.ai)请求体的 model 字段。
       // 说明：
       //  - gpt-image-1(.5)-official 是权限受限的 -official 变体，需 key 有对应授权，否则 403；
-      //  - Midjourney 走独立的 /mj/* 契约、视频模型后端暂无 apimart 通道，均未纳入。
+      //  - midjourney 走独立提交端点 /midjourney/generations(后端 generateImageMidjourneyApimart)，
+      //    MJ 参数如 --ar 由参数面板映射进 prompt；返回 2x2 拼图(upscale 为后续动作)。
       vendor: "apimart",
       label: "apimart · 全系生图 (GPT-Image / Gemini / Seedream / Qwen …)",
       baseURL: "https://api.apimart.ai/v1",
@@ -647,6 +648,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
         "gemini-2.5-flash-image-preview",
         "imagen-4.0-apimart",
         "grok-imagine-1.5-apimart",
+        "midjourney",
         "qwen-image-2.0",
         "doubao-seedance-4-5",
         "doubao-seedance-4-0",

@@ -1933,6 +1933,11 @@ func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, 
 	// data[0] 里，GET /tasks/{id} 轮询。按 base_url 嗅探路由，避免误入
 	// chat-completions 或 multipart /images/edits 形态。
 	if isApimartBaseURL(baseURL) {
+		// Midjourney 走独立的提交端点 POST /midjourney/generations(参数如 --ar
+		// 写在 prompt 内)，但轮询与其它模型共用 GET /tasks/{id}。
+		if isApimartMidjourneyModel(req.Model) {
+			return s.generateImageMidjourneyApimart(ctx, pc, baseURL, apiKey, req)
+		}
 		return s.generateImageApimart(ctx, pc, baseURL, apiKey, req)
 	}
 	schema := providerImageParameterSchema(pc, req.Model)
@@ -2513,6 +2518,93 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
 	}
 	return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+}
+
+// isApimartMidjourneyModel matches apimart 的 Midjourney/Niji 模型(以 model 名嗅探)。
+func isApimartMidjourneyModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return m == "mj" || strings.Contains(m, "midjourney") || strings.Contains(m, "niji")
+}
+
+// generateImageMidjourneyApimart drives apimart 的 Midjourney 契约(docs.apimart.ai):
+// POST /midjourney/generations {prompt}(MJ 参数如 --ar 写在 prompt 内)→
+// {code, data:[{task_id}]} → GET /tasks/{id}(与图像/视频共用任务端点)轮询到
+// status=completed，图在 result.images[0].url[0]。
+// 说明:MJ imagine 返回 2x2 拼图，upscale(U1–U4)是后续交互动作，当前画布节点
+// 流直接取拼图即可。垫图走 MJ 的「图片 URL 前置到 prompt」图生图约定。
+func (s *Service) generateImageMidjourneyApimart(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	baseURL = resolveProfileBaseURL(pc, baseURL)
+	prompt := strings.TrimSpace(req.Prompt)
+
+	// 垫图/参考图:MJ 用「图片 URL 前置到 prompt」的图生图约定，只接受公网 http(s)。
+	refs := make([]string, 0, len(req.ReferenceImages))
+	for _, raw := range req.ReferenceImages {
+		ref := strings.TrimSpace(raw)
+		if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) > 0 {
+		prompt = strings.TrimSpace(strings.Join(refs, " ") + " " + prompt)
+	}
+	// 画幅比例 → --ar(prompt 未显式写 --ar 时补)。
+	if ar := midjourneyAspectFlag(req.Size); ar != "" && !strings.Contains(prompt, "--ar") {
+		prompt = strings.TrimSpace(prompt + " " + ar)
+	}
+	if prompt == "" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Midjourney 需要非空的 prompt")
+	}
+
+	bodyJSON, _ := json.Marshal(map[string]interface{}{"prompt": prompt})
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/midjourney/generations"), strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(imageGenerationTimeout())
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
+	}
+	// 同步兜底(网关直接返图)。
+	if result := s.tryExtractImageFromPollResponse(respBody); result != nil {
+		return result, nil
+	}
+	taskID := extractImageTaskID(respBody)
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart midjourney submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+}
+
+// midjourneyAspectFlag 把 "W:H" 比例转成 MJ 的 --ar 参数;像素/auto/空 一律不转。
+func midjourneyAspectFlag(size string) string {
+	s := strings.TrimSpace(size)
+	if s == "" || !strings.Contains(s, ":") {
+		return ""
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	if _, err := strconv.Atoi(strings.TrimSpace(parts[0])); err != nil {
+		return ""
+	}
+	if _, err := strconv.Atoi(strings.TrimSpace(parts[1])); err != nil {
+		return ""
+	}
+	return "--ar " + s
 }
 
 func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {

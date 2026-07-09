@@ -143,3 +143,79 @@ func TestExtractImageTaskIDShapes(t *testing.T) {
 		}
 	}
 }
+
+// Midjourney 走独立提交端点 /midjourney/generations，但轮询共用 /tasks/{id}。
+func TestGenerateImageMidjourneyApimart(t *testing.T) {
+	fastImagePoll(t)
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	var submitted map[string]interface{}
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/midjourney/generations":
+			if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
+				t.Fatalf("decode submit: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"code":200,"data":[{"status":"submitted","task_id":"task_MJ01"}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/tasks/task_MJ01":
+			polls++
+			if polls == 1 {
+				_, _ = w.Write([]byte(`{"code":200,"data":{"status":"processing"}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":200,"data":{"status":"completed","result":{"images":[{"url":["https://upload.apimart.ai/f/image/mj_grid.png"]}]}}}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+
+	svc := &Service{}
+	pc := &domain.ProviderConfig{ServiceType: "image"}
+	result, err := svc.generateImageMidjourneyApimart(context.Background(), pc, server.URL, "k", GenerateRequest{
+		Model:           "midjourney",
+		Prompt:          "a cute cat, watercolor",
+		Size:            "16:9",
+		ReferenceImages: []string{"https://oss.example.com/ref.png", "/uploads/local.png"},
+	})
+	if err != nil {
+		t.Fatalf("mj roundtrip: %v", err)
+	}
+	if result.Content != "https://upload.apimart.ai/f/image/mj_grid.png" {
+		t.Errorf("result = %q", result.Content)
+	}
+	p, _ := submitted["prompt"].(string)
+	if !strings.Contains(p, "https://oss.example.com/ref.png") {
+		t.Errorf("public ref not prepended: %q", p)
+	}
+	if strings.Contains(p, "/uploads/local.png") {
+		t.Errorf("local ref must be dropped: %q", p)
+	}
+	if !strings.Contains(p, "--ar 16:9") {
+		t.Errorf("--ar not appended: %q", p)
+	}
+}
+
+func TestIsApimartMidjourneyModel(t *testing.T) {
+	for _, m := range []string{"midjourney", "MidJourney", "niji-6", "mj"} {
+		if !isApimartMidjourneyModel(m) {
+			t.Errorf("%q should be MJ", m)
+		}
+	}
+	for _, m := range []string{"gpt-image-2", "gemini-3.1-flash-image-preview", "doubao-seedance-4-5"} {
+		if isApimartMidjourneyModel(m) {
+			t.Errorf("%q should NOT be MJ", m)
+		}
+	}
+}
+
+func TestMidjourneyAspectFlag(t *testing.T) {
+	cases := map[string]string{"16:9": "--ar 16:9", "1:1": "--ar 1:1", "": "", "auto": "", "1024x1024": "", "16:9:1": ""}
+	for in, want := range cases {
+		if got := midjourneyAspectFlag(in); got != want {
+			t.Errorf("midjourneyAspectFlag(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
