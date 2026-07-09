@@ -626,19 +626,33 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       parameterSchema: GPT_IMAGE_SCHEMA,
     },
     {
-      // apimart 中转站：GPT-Image-2 / Gemini-3.x 全走 /v1/images/generations
-      // (size=比例 + resolution 档位 + image_urls 图生图 + task 轮询)。后端按
+      // apimart 中转站：全系图像模型均走 POST /v1/images/generations
+      // (size=比例 + resolution 档位 + image_urls 图生图 + task_id 轮询)。后端按
       // base_url 含 "apimart" 嗅探到 generateImageApimart，提交/查询端点固定，
       // 无需在此填 submit/query。参数面板走 model-templates.ts 的模型模板。
+      // model id 照抄 apimart 文档(docs.apimart.ai)请求体的 model 字段。
+      // 说明：
+      //  - gpt-image-1(.5)-official 是权限受限的 -official 变体，需 key 有对应授权，否则 403；
+      //  - Midjourney 走独立的 /mj/* 契约、视频模型后端暂无 apimart 通道，均未纳入。
       vendor: "apimart",
-      label: "apimart · GPT-Image-2 / Gemini",
+      label: "apimart · 全系生图 (GPT-Image / Gemini / Seedream / Qwen …)",
       baseURL: "https://api.apimart.ai/v1",
       apiSpec: "openai",
       models: [
         "gpt-image-2",
+        "gpt-image-1.5-official",
+        "gpt-image-1-official",
         "gemini-3.1-flash-image-preview",
-        "gemini-3.0-pro-image",
-        "gemini-2.5-flash-image",
+        "gemini-3-pro-image-preview",
+        "gemini-2.5-flash-image-preview",
+        "imagen-4.0-apimart",
+        "grok-imagine-1.5-apimart",
+        "qwen-image-2.0",
+        "doubao-seedance-4-5",
+        "doubao-seedance-4-0",
+        "doubao-seedream-5-0-lite",
+        "wan2.7-image-pro",
+        "z-image-turbo",
       ],
     },
     // 中转 / Relay
@@ -758,6 +772,53 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       models: ["sora-2", "sora-v3-pro"],
       submitEndpoint: "/v1/videos",
       queryEndpoint: "/v1/videos/{taskId}",
+    },
+    {
+      // apimart 中转站视频：全系走 POST /v1/videos/generations
+      // (model + prompt + duration + aspect_ratio + resolution + image_urls 首帧/参考图)
+      // → data[0].task_id → GET /tasks/{task_id} 轮询，结果 data.result.videos[].url。
+      // 后端按 base_url 含 "apimart" 嗅探到 generateVideoApimart，提交/查询端点固定。
+      // model id 照抄 apimart 文档(docs.apimart.ai)。-ext 权限变体未纳入(需额外授权，
+      // 同图像 -official/-ext 的 403 风险)。
+      vendor: "apimart",
+      label: "apimart · 全系视频 (Sora / Veo / Kling / Seedance / Wan …)",
+      baseURL: "https://api.apimart.ai/v1",
+      apiSpec: "openai",
+      models: [
+        "sora-2",
+        "sora-2-pro",
+        "veo3.1-fast",
+        "veo3.1-quality",
+        "veo3.1-lite",
+        "kling-v3",
+        "kling-v3-omni",
+        "kling-v2-6",
+        "kling-3.0-turbo",
+        "kling-video-o1",
+        "doubao-seedance-2.0",
+        "doubao-seedance-2.0-fast",
+        "doubao-seedance-2.0-mini",
+        "doubao-seedance-1-5-pro",
+        "MiniMax-Hailuo-2.3",
+        "MiniMax-Hailuo-2.3-Fast",
+        "MiniMax-Hailuo-02",
+        "wan2.7",
+        "wan2.7-r2v",
+        "wan2.6",
+        "wan2.5-preview",
+        "viduq3",
+        "viduq3-mix",
+        "viduq3-pro",
+        "viduq3-turbo",
+        "pixverse-v6",
+        "grok-imagine-1.5-video-apimart",
+        "gemini-omni-flash-preview",
+        "Omni-Flash-Ext",
+        "skyreels-v4-fast",
+        "skyreels-v4-std",
+        "happyhorse-1.0",
+        "happyhorse-1.1",
+      ],
     },
     // 国际
     {

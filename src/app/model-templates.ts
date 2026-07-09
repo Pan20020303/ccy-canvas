@@ -221,6 +221,32 @@ const APIMART_NANO_BANANA_2_TEMPLATE = {
   defaults: { resolution: "2k", aspectRatio: "auto" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
+// apimart 中转站其余生图模型(seedream/qwen/wan/z-image/imagen/grok/gpt-image-1.x/
+// gemini-2.5·3-pro …)的通用参数模板。统一契约同上：POST /v1/images/generations，
+// size=比例 + resolution 档位 + image_urls 图生图，由 generateImageApimart 处理。
+// 分辨率档位 1k/2k/4k(0.5k 仅 gemini-3.1 支持，见 NANO_BANANA_2 模板)，默认 2k。
+const APIMART_IMAGE_TEMPLATE = {
+  serviceType: "image" as const,
+  supportsResolution: true,
+  supportsAspectRatio: true,
+  supportsAutoAspect: true,
+  resolutionOptions: ["1k", "2k", "4k"],
+  aspectRatioOptions: [...GPT_IMAGE_2_ASPECT_OPTIONS],
+  defaults: { resolution: "2k", aspectRatio: "auto" },
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
+// apimart 中转站视频模型的公共底座:统一 POST /v1/videos/generations，支持
+// 分辨率/比例/时长 + 首帧(image_urls)图生视频，由 generateVideoApimart 处理。
+// 各模型的具体档位/时长/比例在各自条目里按 apimart 文档覆盖。seedance 系不在此
+// 声明——它们被 inferSeedanceTemplate 兜底成更完整的火山即梦视频模板。
+const APIMART_VIDEO_BASE = {
+  serviceType: "video" as const,
+  supportsResolution: true,
+  supportsAspectRatio: true,
+  supportsDuration: true,
+  referenceModes: ["text-to-video", "first-frame"] as ReferenceModeKey[],
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
 export const modelTemplates: Record<string, ModelTemplate> = {
   "gpt-4.1-mini": {
     vendor: "OpenAI",
@@ -324,6 +350,267 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Niuma",
     modelName: "sora-2",
     ...SORA_2_TEMPLATE,
+  },
+  // ── apimart 中转站视频全家桶(docs.apimart.ai)。model id 照抄文档，全部走
+  //    POST /v1/videos/generations(generateVideoApimart 按 base_url 嗅探)。
+  //    sora-2 已在上文声明；doubao-seedance-* 由 inferSeedanceTemplate 兜底。
+  "sora-2-pro": {
+    vendor: "OpenAI",
+    modelName: "sora-2-pro",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1024p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    durationOptions: [4, 8, 12, 16, 20],
+    referenceModes: ["text-to-video", "first-frame", "video-edit"],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "veo3.1-fast": {
+    vendor: "Google",
+    modelName: "veo3.1-fast",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p", "4k"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    durationOptions: [8],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "veo3.1-quality": {
+    vendor: "Google",
+    modelName: "veo3.1-quality",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p", "4k"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    durationOptions: [8],
+    defaults: { resolution: "1080p", aspectRatio: "16:9" },
+  },
+  "veo3.1-lite": {
+    vendor: "Google",
+    modelName: "veo3.1-lite",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p", "4k"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    durationOptions: [8],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "kling-v3": {
+    vendor: "Kling",
+    modelName: "kling-v3",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720P", "1080P", "4K"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "first-last"],
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
+  },
+  "kling-v3-omni": {
+    vendor: "Kling",
+    modelName: "kling-v3-omni",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["std", "pro", "4k"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "multi-image"],
+    defaults: { resolution: "pro", aspectRatio: "16:9" },
+  },
+  "kling-v2-6": {
+    vendor: "Kling",
+    modelName: "kling-v2-6",
+    ...APIMART_VIDEO_BASE,
+    supportsResolution: false,
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationOptions: [5, 10],
+    referenceModes: ["text-to-video", "first-frame", "first-last"],
+    defaults: { aspectRatio: "16:9" },
+  },
+  "kling-3.0-turbo": {
+    vendor: "Kling",
+    modelName: "kling-3.0-turbo",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "kling-video-o1": {
+    vendor: "Kling",
+    modelName: "kling-video-o1",
+    ...APIMART_VIDEO_BASE,
+    supportsResolution: false,
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationOptions: [5, 10],
+    defaults: { aspectRatio: "16:9" },
+  },
+  "MiniMax-Hailuo-2.3": {
+    vendor: "MiniMax",
+    modelName: "MiniMax-Hailuo-2.3",
+    ...APIMART_VIDEO_BASE,
+    supportsAspectRatio: false,
+    resolutionOptions: ["768p", "1080p"],
+    durationOptions: [6, 10],
+    defaults: { resolution: "768p" },
+  },
+  "MiniMax-Hailuo-2.3-Fast": {
+    vendor: "MiniMax",
+    modelName: "MiniMax-Hailuo-2.3-Fast",
+    ...APIMART_VIDEO_BASE,
+    supportsAspectRatio: false,
+    resolutionOptions: ["768p", "1080p"],
+    durationOptions: [6, 10],
+    defaults: { resolution: "768p" },
+  },
+  "MiniMax-Hailuo-02": {
+    vendor: "MiniMax",
+    modelName: "MiniMax-Hailuo-02",
+    ...APIMART_VIDEO_BASE,
+    supportsAspectRatio: false,
+    resolutionOptions: ["512p", "768p", "1080p"],
+    durationOptions: [5, 10],
+    defaults: { resolution: "768p" },
+  },
+  "wan2.7": {
+    vendor: "Alibaba",
+    modelName: "wan2.7",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationRange: { min: 2, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720P", aspectRatio: "16:9" },
+  },
+  "wan2.7-r2v": {
+    vendor: "Alibaba",
+    modelName: "wan2.7-r2v",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationOptions: [2, 5, 10, 15],
+    referenceModes: ["first-frame", "multi-image"],
+    defaults: { resolution: "720P", aspectRatio: "16:9" },
+  },
+  "wan2.6": {
+    vendor: "Alibaba",
+    modelName: "wan2.6",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationOptions: [5, 10, 15],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "wan2.5-preview": {
+    vendor: "Alibaba",
+    modelName: "wan2.5-preview",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["480p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationOptions: [5, 10],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "viduq3": {
+    vendor: "Vidu",
+    modelName: "viduq3",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["540p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "4:3", "3:4", "1:1"],
+    durationRange: { min: 1, max: 16, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "viduq3-mix": {
+    vendor: "Vidu",
+    modelName: "viduq3-mix",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["540p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "4:3", "3:4", "1:1"],
+    durationRange: { min: 1, max: 16, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "multi-image"],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "viduq3-pro": {
+    vendor: "Vidu",
+    modelName: "viduq3-pro",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["540p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "4:3", "3:4", "1:1"],
+    durationRange: { min: 1, max: 16, step: 1, defaultValue: 5 },
+    defaults: { resolution: "1080p", aspectRatio: "16:9" },
+  },
+  "viduq3-turbo": {
+    vendor: "Vidu",
+    modelName: "viduq3-turbo",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["540p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "9:16", "4:3", "3:4", "1:1"],
+    durationRange: { min: 1, max: 16, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "pixverse-v6": {
+    vendor: "PixVerse",
+    modelName: "pixverse-v6",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["360p", "540p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "4:3", "1:1", "3:4", "9:16", "2:3", "3:2", "21:9"],
+    durationRange: { min: 1, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "grok-imagine-1.5-video-apimart": {
+    vendor: "xAI",
+    modelName: "grok-imagine-1.5-video-apimart",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["480p", "720p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "3:2", "2:3"],
+    durationOptions: [6, 30],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "gemini-omni-flash-preview": {
+    vendor: "Google",
+    modelName: "gemini-omni-flash-preview",
+    ...APIMART_VIDEO_BASE,
+    supportsDuration: false,
+    resolutionOptions: ["720p"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "Omni-Flash-Ext": {
+    vendor: "apimart",
+    modelName: "Omni-Flash-Ext",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720p", "1080p", "4k"],
+    aspectRatioOptions: ["16:9", "9:16"],
+    durationOptions: [4, 6, 8, 10],
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "skyreels-v4-fast": {
+    vendor: "SkyReels",
+    modelName: "skyreels-v4-fast",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["480p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "4:3", "1:1", "9:16", "3:4"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "skyreels-v4-std": {
+    vendor: "SkyReels",
+    modelName: "skyreels-v4-std",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["480p", "720p", "1080p"],
+    aspectRatioOptions: ["16:9", "4:3", "1:1", "9:16", "3:4"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720p", aspectRatio: "16:9" },
+  },
+  "happyhorse-1.0": {
+    vendor: "Alibaba",
+    modelName: "happyhorse-1.0",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720P", aspectRatio: "16:9" },
+  },
+  "happyhorse-1.1": {
+    vendor: "Alibaba",
+    modelName: "happyhorse-1.1",
+    ...APIMART_VIDEO_BASE,
+    resolutionOptions: ["720P", "1080P"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
+    defaults: { resolution: "720P", aspectRatio: "16:9" },
   },
   // ── Manju 中转站(manjuapi.com)chat/completions 视频三家 ─────────────────
   // 模型名与中转站完全一致(sora2 无连字符、Veo 带空格),后端按名嗅探路由到
@@ -493,6 +780,67 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Google",
     modelName: "nano-banana-2",
     ...APIMART_NANO_BANANA_2_TEMPLATE,
+  },
+  // ── apimart 中转站生图全家桶(docs.apimart.ai)。model id 照抄文档请求体 model 字段，
+  //    全部走 POST /v1/images/generations(generateImageApimart 按 base_url 嗅探)。
+  //    gpt-image-2 / gemini-3.1-flash-image-preview 已在上文单独声明(带 quality/0.5k 档)。
+  "gpt-image-1.5-official": {
+    vendor: "OpenAI",
+    modelName: "gpt-image-1.5-official",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "gpt-image-1-official": {
+    vendor: "OpenAI",
+    modelName: "gpt-image-1-official",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "gemini-3-pro-image-preview": {
+    vendor: "Google",
+    modelName: "gemini-3-pro-image-preview",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "gemini-2.5-flash-image-preview": {
+    vendor: "Google",
+    modelName: "gemini-2.5-flash-image-preview",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "imagen-4.0-apimart": {
+    vendor: "Google",
+    modelName: "imagen-4.0-apimart",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "grok-imagine-1.5-apimart": {
+    vendor: "xAI",
+    modelName: "grok-imagine-1.5-apimart",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "qwen-image-2.0": {
+    vendor: "Alibaba",
+    modelName: "qwen-image-2.0",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  // apimart 文档中 seedream-4.5 / 4.0 的 model 字段实为 doubao-seedance-4-x(照抄)，
+  // seedream-5.0-lite 为 doubao-seedream-5-0-lite。
+  "doubao-seedance-4-5": {
+    vendor: "Volcengine",
+    modelName: "doubao-seedance-4-5",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "doubao-seedance-4-0": {
+    vendor: "Volcengine",
+    modelName: "doubao-seedance-4-0",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  "doubao-seedream-5-0-lite": {
+    vendor: "Volcengine",
+    modelName: "doubao-seedream-5-0-lite",
+    ...APIMART_IMAGE_TEMPLATE,
+  },
+  // wan2.7-image-pro 已在上文单独声明(带 wan 参考模式/seed/1K·2K·4K),此处不重复。
+  "z-image-turbo": {
+    vendor: "apimart",
+    modelName: "z-image-turbo",
+    ...APIMART_IMAGE_TEMPLATE,
   },
   // ── 阿里云百炼 HappyHorse 快乐马（图/参/编/文 4 个 mode × 1.0 / 1.1 两个版本）
   // 文档：图生(i2v)、参考生(r2v)、视频编辑(video-edit)、文生(t2v)
