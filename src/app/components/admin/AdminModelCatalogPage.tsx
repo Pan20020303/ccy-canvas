@@ -72,7 +72,6 @@ import {
   type Skill,
   type SkillUpsert,
 } from "../../api/skills";
-import { normalizeModelList } from "../../model-config";
 import { getSkillCommandName, getSkillTemplateBody, isPromptTemplateSkill } from "../settings/skill-agent-presenters";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -354,6 +353,59 @@ function getVendorModels(config: ProviderConfig): VendorModelDefinition[] {
     }
   });
   return models;
+}
+
+const SERVICE_TYPE_ORDER: ServiceType[] = ["image", "video", "text", "audio"];
+
+// 模型文本框的分组表头(# 图片生成 / # 视频 / # image …)反解析成 ServiceType。
+function parseModelGroupHeader(line: string): ServiceType | null {
+  const m = /^#\s*(.+?)\s*$/.exec(line);
+  if (!m) return null;
+  const aliases: Record<string, ServiceType> = {
+    image: "image", 图片: "image", 图片生成: "image", 图像: "image", 图像生成: "image",
+    video: "video", 视频: "video", 视频生成: "video",
+    text: "text", 文本: "text", 文本生成: "text",
+    audio: "audio", 音频: "audio", 音频生成: "audio",
+  };
+  return aliases[m[1].trim().toLowerCase()] ?? null;
+}
+
+// 按类型分组序列化到文本框(带 # 表头)。单类型时输出纯名字、不加表头(向后兼容)。
+function modelsToGroupedText(models: VendorModelDefinition[], primaryType: ServiceType): string {
+  const present = Array.from(new Set(models.map((m) => m.type || primaryType)));
+  if (present.length <= 1) return models.map((m) => m.modelName).join("\n");
+  const ordered = [
+    ...SERVICE_TYPE_ORDER.filter((t) => present.includes(t)),
+    ...present.filter((t) => !SERVICE_TYPE_ORDER.includes(t)),
+  ];
+  return ordered
+    .map((t) => {
+      const names = models.filter((m) => (m.type || primaryType) === t).map((m) => m.modelName);
+      return names.length ? `# ${SERVICE_LABELS[t] ?? t}\n${names.join("\n")}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// 解析带 # 表头的模型文本框 → (名字, 类型) 列表(去重保序)。无表头的行归入上一个
+// 表头或 primaryType;无法识别的 # 行忽略。
+function parseGroupedModelText(text: string, primaryType: ServiceType): Array<{ modelName: string; type: ServiceType }> {
+  const seen = new Set<string>();
+  const out: Array<{ modelName: string; type: ServiceType }> = [];
+  let current: ServiceType = primaryType;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      const header = parseModelGroupHeader(line);
+      if (header) current = header;
+      continue;
+    }
+    if (seen.has(line)) continue;
+    seen.add(line);
+    out.push({ modelName: line, type: current });
+  }
+  return out;
 }
 
 function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition): ModelEditorDraft {
@@ -818,10 +870,6 @@ function ProviderCodeEditorFallback() {
   );
 }
 
-function serviceCapabilities(serviceType: ServiceType) {
-  return [serviceType];
-}
-
 type ConfigModalProps = {
   config: ProviderConfig | null;
   open: boolean;
@@ -875,7 +923,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       setApiKey("");
       setSubmitEndpoint(config.submit_endpoint || "");
       setQueryEndpoint(config.query_endpoint || "");
-      setModelListText((config.model_list ?? []).join("\n"));
+      setModelListText(modelsToGroupedText(getVendorModels(config), config.service_type));
       setDefaultModel(config.default_model || "");
       setPriority(config.priority || 0);
       setIsDefault(Boolean(config.is_default));
@@ -955,7 +1003,8 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
   };
 
   const handleSave = async () => {
-    const modelList = normalizeModelList(modelListText);
+    const parsedModels = parseGroupedModelText(modelListText, serviceType);
+    const modelList = parsedModels.map((item) => item.modelName);
     if (!name.trim() || (adapterRuntime !== "ts" && !baseUrl.trim())) {
       setError("名称和 Base URL 不能为空");
       return;
@@ -978,6 +1027,34 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       return;
     }
 
+    // 从分组文本框推导 per-model 类型 + capabilities，并把类型写回 vendor_models
+    // (保留原有的积分/模式/隐藏等元数据，只覆盖 type)——这样从「编辑配置」保存
+    // 不再把多类型中转站拍平回单一类型。
+    {
+      const schemaObj = (parameterSchema && typeof parameterSchema === "object" ? parameterSchema : {}) as Record<string, unknown>;
+      const existingVM = Array.isArray(schemaObj.vendor_models)
+        ? (schemaObj.vendor_models as unknown[])
+        : Array.isArray(schemaObj.vendor_all_models)
+          ? (schemaObj.vendor_all_models as unknown[])
+          : [];
+      const prevByName = new Map<string, Record<string, unknown>>();
+      for (const raw of existingVM) {
+        if (raw && typeof raw === "object") {
+          const r = raw as Record<string, unknown>;
+          const nm = r.modelName ?? r.model_name ?? r.model ?? r.id ?? r.name;
+          if (typeof nm === "string" && nm) prevByName.set(nm, r);
+        }
+      }
+      const vendorModels = parsedModels.map(({ modelName, type }) => {
+        const prev = prevByName.get(modelName);
+        return prev
+          ? { ...prev, name: prev.name ?? modelName, modelName, type }
+          : { name: modelName, modelName, type };
+      });
+      parameterSchema = { ...schemaObj, vendor_models: vendorModels, vendor_all_models: vendorModels } as ProviderConfigPayload["parameter_schema"];
+    }
+    const capabilities = Array.from(new Set<ServiceType>([serviceType, ...parsedModels.map((item) => item.type)]));
+
     setSaving(true);
     setError("");
     const payload: ProviderConfigPayload = {
@@ -994,7 +1071,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       default_model: defaultModel.trim() || modelList[0],
       priority,
       is_default: isDefault,
-      capabilities: serviceCapabilities(serviceType),
+      capabilities,
       parameter_schema: parameterSchema,
       credit_cost: Math.max(0, Math.round(creditCost)),
       adapter_runtime: adapterRuntime,
@@ -1118,7 +1195,7 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
               <Field label="图标 Key"><input value={iconKey} onChange={(event) => setIconKey(event.target.value)} placeholder="openai / gemini / volcengine" className={FIELD_INPUT} /></Field>
               <Field label="图标 URL"><input value={iconUrl} onChange={(event) => setIconUrl(event.target.value)} placeholder="https://... or data:image/..." className={FIELD_INPUT} /></Field>
               <div className="pb-3">
-                <ModelBrandIcon model={defaultModel || modelListText.split(/\n/)[0]} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
+                <ModelBrandIcon model={defaultModel || modelListText.split(/\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("#")) || ""} vendor={vendor} providerName={name} iconKey={iconKey} iconUrl={iconUrl} size={24} />
               </div>
             </div>
           </section>
@@ -1174,6 +1251,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
             <SectionTitle>模型</SectionTitle>
             <Field label="模型列表（每行一个）">
               <textarea value={modelListText} onChange={(event) => setModelListText(event.target.value)} className={`${FIELD_INPUT} min-h-28 resize-none py-3`} />
+              <p className="mt-1.5 text-[11px] text-neutral-500">
+                中转站可混挂多类型：用 <code className="text-neutral-400">{"# 图片生成"}</code> / <code className="text-neutral-400">{"# 视频生成"}</code> 等表头分组，表头下的模型即归该类型；不写表头则都归上方“服务类型”。保存后各类型模型会在对应的图像/视频节点里各自出现。
+              </p>
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label="默认模型"><input value={defaultModel} onChange={(event) => setDefaultModel(event.target.value)} className={FIELD_INPUT} /></Field>
@@ -1358,6 +1438,8 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
   const [templateImport, setTemplateImport] = useState<{ config: ProviderConfig } | null>(null);
   const [templateImportBusy, setTemplateImportBusy] = useState(false);
   const [templateImportMsg, setTemplateImportMsg] = useState("");
+  // 多类型中转站:「模型设置」里按服务类型切换查看/管理(null = 全部)。
+  const [modelTypeTab, setModelTypeTab] = useState<ServiceType | null>(null);
   const activePanel = panel;
   const pageMeta = SETTINGS_PAGE_META[activePanel];
 
@@ -1387,6 +1469,13 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
   const enabledCount = configs.filter((item) => item.status === "enabled").length;
   const selectedConfig = filtered.find((config) => config.id === selectedId) ?? filtered[0] ?? null;
   const selectedConfigModels = selectedConfig ? getVendorModels(selectedConfig) : [];
+  // 该配置实际含有的服务类型(混合中转站会有多个),用于「模型设置」的类型切换标签。
+  const configModelTypes = SERVICE_TYPE_ORDER.filter((t) => selectedConfigModels.some((m) => m.type === t));
+  // 切换配置后若旧标签类型不在新配置里,自动退回“全部”。
+  const effectiveModelTab = modelTypeTab && configModelTypes.includes(modelTypeTab) ? modelTypeTab : null;
+  const shownConfigModels = effectiveModelTab
+    ? selectedConfigModels.filter((m) => m.type === effectiveModelTab)
+    : selectedConfigModels;
   const availableTextModels = useMemo(() => {
     const seen = new Set<string>();
     const models: string[] = [];
@@ -1570,12 +1659,12 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
     return updated;
   };
 
-  const openAddModel = (config: ProviderConfig) => {
+  const openAddModel = (config: ProviderConfig, defaultType?: ServiceType) => {
     setModelEditorError("");
-    setModelEditor({
-      config,
-      draft: createModelDraft(config),
-    });
+    const draft = createModelDraft(config);
+    // 在某个服务类型标签下点「手动添加」时，新模型默认就是该类型。
+    if (defaultType) draft.type = defaultType;
+    setModelEditor({ config, draft });
   };
 
   const openEditModel = (config: ProviderConfig, model: VendorModelDefinition) => {
@@ -1759,23 +1848,47 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
 
                   <div className="min-h-0 flex-1 overflow-y-auto py-4">
                     <div className="mb-4 flex items-center justify-between gap-3">
-                      <h4 className="text-sm font-semibold text-neutral-100">模型设置</h4>
-                      <div className="flex items-center gap-2">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <h4 className="shrink-0 text-sm font-semibold text-neutral-100">模型设置</h4>
+                        {/* 多类型中转站:按服务类型切换查看/管理，各类型模型分开、参数各配各的。 */}
+                        {configModelTypes.length > 1 ? (
+                          <div className="flex items-center gap-0.5 overflow-x-auto rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => setModelTypeTab(null)}
+                              className={`shrink-0 rounded-md px-2.5 py-1 text-xs transition ${effectiveModelTab === null ? "bg-white/[0.12] text-white" : "text-neutral-400 hover:text-neutral-200"}`}
+                            >
+                              全部 <span className="opacity-60">{selectedConfigModels.length}</span>
+                            </button>
+                            {configModelTypes.map((t) => (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => setModelTypeTab(t)}
+                                className={`shrink-0 rounded-md px-2.5 py-1 text-xs transition ${effectiveModelTab === t ? "bg-white/[0.12] text-white" : "text-neutral-400 hover:text-neutral-200"}`}
+                              >
+                                {SERVICE_LABELS[t]} <span className="opacity-60">{selectedConfigModels.filter((m) => m.type === t).length}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
                         <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => { setTemplateImportMsg(""); setTemplateImport({ config: selectedConfig }); }}>
                           <FolderOpen className="mr-1 h-4 w-4" />
                           从模板导入
                         </Button>
-                        <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => openAddModel(selectedConfig)}>
+                        <Button type="button" variant="secondary" size="sm" className={SETTINGS_PANEL_BUTTON} onClick={() => openAddModel(selectedConfig, effectiveModelTab ?? undefined)}>
                           <Plus className="mr-1 h-4 w-4" />
                           手动添加
                         </Button>
                       </div>
                     </div>
                     <div className="space-y-3">
-                      {selectedConfigModels.length === 0 ? (
+                      {shownConfigModels.length === 0 ? (
                         <div className="rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
                       ) : (
-                        selectedConfigModels.map((model) => (
+                        shownConfigModels.map((model) => (
                           <div key={model.modelName} className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]">
                             <div className="flex items-start justify-between gap-4">
                               <div className="min-w-0">
