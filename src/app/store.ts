@@ -425,6 +425,11 @@ type AppState = {
   setSnapToGrid: (value: boolean) => void;
   isConnectionDragging: boolean;
   setConnectionDragging: (value: boolean) => void;
+  // 人物站位/涂画 放大编辑器:全局单例，脱离节点选中/工具条生命周期(否则按 Shift
+  // 进入多选、节点工具条卸载就会把编辑器一起关掉)。
+  positionStudio: { nodeId: string; imageUrl: string } | null;
+  openPositionStudio: (payload: { nodeId: string; imageUrl: string }) => void;
+  closePositionStudio: () => void;
 };
 
 export const DEFAULT_SHORTCUTS: Record<string, string> = {
@@ -4044,6 +4049,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setSnapToGrid: (value) => set({ snapToGrid: value }),
   isConnectionDragging: false,
   setConnectionDragging: (value) => set({ isConnectionDragging: value }),
+  positionStudio: null,
+  openPositionStudio: (payload) => set({ positionStudio: payload }),
+  closePositionStudio: () => set({ positionStudio: null }),
 }), {
   name: 'cineflow-store',
   // Object-level storage with a trailing debounce: stringify + localStorage

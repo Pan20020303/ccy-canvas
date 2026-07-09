@@ -4145,7 +4145,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
-  const addHistory = useStore((state) => state.addHistory);
+  const openPositionStudio = useStore((state) => state.openPositionStudio);
   const createGroup = useStore((state) => state.createGroup);
   const runNode = useStore((state) => state.runNode);
   const sourceNode = nodes.find((node) => node.id === sourceNodeId);
@@ -4171,55 +4171,6 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [hdOpen, setHdOpen] = useState(false);
-  // 人物站位/自由涂画放大编辑器 —— 所有用本工具条的图片节点(生成/上传/全景)通用。
-  const [studioOpen, setStudioOpen] = useState(false);
-  const [studioSaving, setStudioSaving] = useState(false);
-  const handleStudioSave = async (blob: Blob) => {
-    if (studioSaving) return;
-    setStudioSaving(true);
-    try {
-      const objectUrl = URL.createObjectURL(blob);
-      let stableUrl: string;
-      try {
-        stableUrl = await uploadImageSource(objectUrl, `staged-${sourceNodeId}-${Date.now()}.png`);
-      } finally {
-        URL.revokeObjectURL(objectUrl);
-      }
-      const stagedId = `img-staged-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const basePosition = nodes.find((node) => node.id === sourceNodeId)?.position ?? { x: 0, y: 0 };
-      addNode({
-        id: stagedId,
-        type: 'imageNode',
-        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
-        data: {
-          customTitle: language === 'zh' ? '站位标注图' : 'Staged image',
-          url: stableUrl,
-          output: stableUrl,
-          status: 'done',
-          sourceKind: 'derived',
-          derivedFromNodeId: sourceNodeId,
-          derivationAction: 'annotate',
-          generationParams: { aspectRatio: sourceParams.aspectRatio },
-        },
-      } as never);
-      onConnect({ source: sourceNodeId, target: stagedId, sourceHandle: null, targetHandle: null } as never);
-      addHistory({
-        id: `staged-${sourceNodeId}-${Date.now()}`,
-        title: `${(sourceData.customTitle as string) || (language === 'zh' ? '站位标注图' : 'Staged image')}`,
-        type: 'image',
-        mediaType: 'image',
-        timestamp: Date.now(),
-        thumbnail: stableUrl,
-        sourceNodeId,
-        derivationAction: 'annotate',
-      });
-      setStudioOpen(false);
-    } catch (err) {
-      toast.error(language === 'zh' ? `保存失败：${err instanceof Error ? err.message : String(err)}` : `Save failed: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setStudioSaving(false);
-    }
-  };
   // Nano Pro 高清引擎：优先基础名；只配了 " 4K" 变体时也能兜底使用。
   const nanoProModel = useMemo(() => {
     const models = imageModelOptions;
@@ -4575,7 +4526,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => setStudioOpen(true)}
+          onClick={() => { if (sourceUrl) openPositionStudio({ nodeId: sourceNodeId, imageUrl: toRenderableMediaUrl(sourceUrl) }); }}
           title={language === 'zh' ? '画笔标注 / 人物站位' : 'Annotate / positioning'}
         >
           <Brush className="h-4 w-4" />
@@ -4763,16 +4714,82 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           }}
         />
       ) : null}
-      {studioOpen && sourceUrl ? (
-        <PositionStudio
-          imageUrl={toRenderableMediaUrl(sourceUrl)}
-          zh={language === 'zh'}
-          saving={studioSaving}
-          onClose={() => setStudioOpen(false)}
-          onSave={handleStudioSave}
-        />
-      ) : null}
     </>
+  );
+}
+
+// 人物站位/涂画编辑器的全局宿主:由 store 的 positionStudio 驱动，渲染在画布根部、
+// 独立于任何节点或其工具条的生命周期(否则按 Shift 进多选、节点工具条一卸载，
+// 编辑器就被连带关掉——这正是 Shift 拖不出轨迹的根因)。保存合成图落成派生节点。
+export function PositionStudioHost() {
+  const positionStudio = useStore((state) => state.positionStudio);
+  const closePositionStudio = useStore((state) => state.closePositionStudio);
+  const language = useStore((state) => state.language);
+  const addNode = useStore((state) => state.addNode);
+  const onConnect = useStore((state) => state.onConnect);
+  const addHistory = useStore((state) => state.addHistory);
+  const [saving, setSaving] = useState(false);
+
+  if (!positionStudio) return null;
+  const { nodeId, imageUrl } = positionStudio;
+
+  const handleSave = async (blob: Blob) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const objectUrl = URL.createObjectURL(blob);
+      let stableUrl: string;
+      try {
+        stableUrl = await uploadImageSource(objectUrl, `staged-${nodeId}-${Date.now()}.png`);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+      const srcNode = useStore.getState().nodes.find((node) => node.id === nodeId);
+      const srcData = (srcNode?.data ?? {}) as Record<string, any>;
+      const stagedId = `img-staged-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const basePosition = srcNode?.position ?? { x: 0, y: 0 };
+      addNode({
+        id: stagedId,
+        type: 'imageNode',
+        position: { x: basePosition.x + 360, y: basePosition.y + Math.random() * 40 - 20 },
+        data: {
+          customTitle: language === 'zh' ? '站位标注图' : 'Staged image',
+          url: stableUrl,
+          output: stableUrl,
+          status: 'done',
+          sourceKind: 'derived',
+          derivedFromNodeId: nodeId,
+          derivationAction: 'annotate',
+          generationParams: { aspectRatio: (srcData.generationParams as Record<string, unknown> | undefined)?.aspectRatio },
+        },
+      } as never);
+      onConnect({ source: nodeId, target: stagedId, sourceHandle: null, targetHandle: null } as never);
+      addHistory({
+        id: `staged-${nodeId}-${Date.now()}`,
+        title: `${(srcData.customTitle as string) || (language === 'zh' ? '站位标注图' : 'Staged image')}`,
+        type: 'image',
+        mediaType: 'image',
+        timestamp: Date.now(),
+        thumbnail: stableUrl,
+        sourceNodeId: nodeId,
+        derivationAction: 'annotate',
+      });
+      closePositionStudio();
+    } catch (err) {
+      toast.error(language === 'zh' ? `保存失败：${err instanceof Error ? err.message : String(err)}` : `Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <PositionStudio
+      imageUrl={imageUrl}
+      zh={language === 'zh'}
+      saving={saving}
+      onClose={closePositionStudio}
+      onSave={handleSave}
+    />
   );
 }
 

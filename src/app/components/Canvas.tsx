@@ -65,7 +65,7 @@ import {
   resolveBackendAssetUrl,
   setReferencePayloadValue,
 } from '../reference-media';
-import { nodeTypes } from './nodes/CustomNodes';
+import { nodeTypes, PositionStudioHost } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
@@ -2479,6 +2479,9 @@ const InnerCanvas = () => {
       />
 
       <SaveAssetDialog />
+
+      {/* 人物站位/涂画放大编辑器:全局单例，独立于节点选中/工具条生命周期 */}
+      <PositionStudioHost />
 
       {/* 3D 导演台 overlay — 仅在用户打开时挂载,关闭后整个 WebGL 上下文释放.
           key=节点 id:目标节点变化时强制全新挂载,演员/道具/机位这些
