@@ -5,25 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Runner is the agent loop. Conceptually:
 //
-//   while step < maxSteps:
-//     resp = llm.chat(messages, tools)
-//     if no tool calls:
-//       emit("message", resp.content); return
-//     for each tool_call:
-//       emit("tool_call"); result = tool.execute(); emit("tool_result")
-//       messages += {role:"tool", tool_call_id, content: result}
+//	while step < maxSteps:
+//	  resp = llm.chat(messages, tools)
+//	  if no tool calls:
+//	    emit("message", resp.content); return
+//	  for each tool_call:
+//	    emit("tool_call"); result = tool.execute(); emit("tool_result")
+//	    messages += {role:"tool", tool_call_id, content: result}
 //
 // Mirrors the OpenAI Agents SDK without the multi-agent / handoff machinery.
 //
 // Strategy:
-//   "reactive" — the default tool-calling loop above (LLM decides each step).
-//   "scripted" — same loop but prefaces with a one-shot "make a plan first"
-//                turn that's emitted as a `thought` event, giving the user a
-//                preview of intent before any tool runs.
+//
+//	"reactive" — the default tool-calling loop above (LLM decides each step).
+//	"scripted" — same loop but prefaces with a one-shot "make a plan first"
+//	             turn that's emitted as a `thought` event, giving the user a
+//	             preview of intent before any tool runs.
 type Runner struct {
 	LLM *LLMClient
 	// Endpoints is the upstream provider list that serves the model.
@@ -60,6 +62,18 @@ type RunStats struct {
 	// Usage 是最后一轮 LLM 调用的 token 用量。prompt+completion ≈ 本轮结束后的
 	// 上下文规模(下一轮的 prompt 大致就是它)——驱动前端的上下文窗口计量表。
 	Usage Usage
+	// ToolTranscript 是本次运行的紧凑工具记录(名称/参数/结果,均截断)。
+	// handler 把它持久化为 role="tool_log" 会话消息,下一轮注入 system prompt,
+	// 让后续轮次"记得"之前执行过什么 —— 跨轮工具历史(长任务连续性)。
+	ToolTranscript []ToolTranscriptEntry
+}
+
+// ToolTranscriptEntry 单条工具执行摘要。
+type ToolTranscriptEntry struct {
+	Name   string
+	Args   string
+	OK     bool
+	Result string
 }
 
 // Run executes the agent loop, streaming events via emit.
@@ -188,6 +202,12 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 				emitResult["result"] = result
 			}
 			emit(EventToolResult, emitResult)
+			stats.ToolTranscript = append(stats.ToolTranscript, ToolTranscriptEntry{
+				Name:   tc.Function.Name,
+				Args:   truncateForTranscript(tc.Function.Arguments, 200),
+				OK:     toolErr == nil,
+				Result: truncateForTranscript(result, 300),
+			})
 
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
@@ -221,4 +241,56 @@ func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {
 		})
 	}
 	return sanitized
+}
+
+// ─── 跨轮工具历史(P3)────────────────────────────────────────────────────────
+// 单轮内 messages 保有完整 tool_calls/tool 结果,但跨轮持久化只存 user/最终回复,
+// 下一轮完全不知道之前执行过什么。这里把每轮工具记录压缩成紧凑文本持久化
+// (role="tool_log" 会话消息),下一轮以 system prompt 注入 —— 不进 messages,
+// 避免 OpenAI tool 消息的严格配对校验,同时 token 预算可控。
+
+// truncateForTranscript 按 rune 截断(防切碎中文),超长加省略号。
+func truncateForTranscript(s string, max int) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// FormatToolTranscript 把一轮的工具记录压成多行紧凑文本(持久化格式):
+//
+//	✓ list_nodes({}) → [{"id":"n1"...
+//	✕ run_node({"node_id":"x"}) → {"error":"..."}
+func FormatToolTranscript(entries []ToolTranscriptEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, e := range entries {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		mark := "✓"
+		if !e.OK {
+			mark = "✕"
+		}
+		fmt.Fprintf(&b, "%s %s(%s) → %s", mark, e.Name, e.Args, e.Result)
+	}
+	return b.String()
+}
+
+// BuildToolHistoryPrompt 把最近几条 tool_log(每条 = 一轮的紧凑记录,时间升序)
+// 组装成注入 system prompt 的段落。maxLogs 限制轮数、总长再兜底截断。
+func BuildToolHistoryPrompt(logs []string, maxLogs int) string {
+	if len(logs) == 0 {
+		return ""
+	}
+	if maxLogs > 0 && len(logs) > maxLogs {
+		logs = logs[len(logs)-maxLogs:]
+	}
+	joined := strings.Join(logs, "\n---\n")
+	joined = truncateForTranscript(joined, 4000)
+	return "【最近工具执行记录】\n以下是你在本会话之前轮次里实际执行过的工具及结果(✓成功/✕失败),延续任务时不要重复已完成的操作:\n" + joined
 }

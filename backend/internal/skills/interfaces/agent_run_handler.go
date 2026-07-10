@@ -215,6 +215,17 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
 	// Memory nudge(hermes 式):提醒模型主动读写跨会话持久记忆。
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentMemoryGuide)
+	// 跨轮工具历史(P3):把之前轮次的紧凑工具记录注入 system prompt,让本轮
+	// "记得"已执行过什么。tool_log 行不进 messages(sanitize 会滤掉),无配对风险。
+	var toolLogs []string
+	for _, m := range historyMessages {
+		if m.Role == "tool_log" && strings.TrimSpace(m.Content) != "" {
+			toolLogs = append(toolLogs, m.Content)
+		}
+	}
+	if hist := skillsapp.BuildToolHistoryPrompt(toolLogs, 2); hist != "" {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + hist)
+	}
 
 	startedAt := time.Now()
 	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
@@ -249,6 +260,15 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 			Role:           "user",
 			Content:        req.Message,
 		})
+		// 紧凑工具记录(P3):持久化本轮工具执行摘要,供下一轮注入 system prompt。
+		// 放在 user 之后、assistant 之前,保持时间序。前端历史读 agent_runs,不受影响。
+		if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
+			_, _ = rt.q.InsertAgentConversationMessage(r.Context(), sqlc.InsertAgentConversationMessageParams{
+				ConversationID: conversation.ID,
+				Role:           "tool_log",
+				Content:        transcript,
+			})
+		}
 		_, _ = rt.q.InsertAgentConversationMessage(r.Context(), sqlc.InsertAgentConversationMessageParams{
 			ConversationID: conversation.ID,
 			Role:           "assistant",
