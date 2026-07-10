@@ -72,11 +72,59 @@ type ChatResponse struct {
 // render a partial JSON-encoded tool call usefully.
 type StreamCallback func(delta string)
 
+// StreamOpts bundles the per-request streaming knobs so ChatStreamMulti's
+// signature stays stable as options grow.
+type StreamOpts struct {
+	// OnDelta receives assistant text token chunks (may be nil).
+	OnDelta StreamCallback
+	// OnReasoning receives reasoning/thinking token chunks (deepseek/qwen 系
+	// 网关的 delta.reasoning_content / delta.reasoning 字段;may be nil)。
+	OnReasoning StreamCallback
+	// Thinking 深度思考开关:nil=按模型默认;true/false=显式开/关。
+	// 仅对已知思考类模型下发控制字段(见 applyThinkingControl),不影响其它模型。
+	Thinking *bool
+}
+
 // isQwenHybridThinkingModel 判断百炼 qwen3.7 混合思考模型(qwen3.7-max/plus 及
 // 日期快照)。modelcatalog.isQwenThinkingModel 的孪生 —— skills 包不 import
 // modelcatalog(层级纠缠),两处同步维护。
 func isQwenHybridThinkingModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "qwen3.7-")
+}
+
+// isThinkingCapableModel 判断"思考类"模型:deepseek 系、*-thinking、*-reasoner、
+// glm-4.5+ 以及 qwen3.7 hybrid。用于决定是否允许下发 enable_thinking 控制字段
+// (vLLM/SGLang/百炼及主流中转的事实标准;名单外的模型一律不发,避免严格网关 400)。
+// 前端 model-templates.isThinkingCapableModel 是它的孪生,两处同步维护。
+func isThinkingCapableModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return isQwenHybridThinkingModel(m) ||
+		strings.Contains(m, "deepseek") ||
+		strings.Contains(m, "-thinking") ||
+		strings.Contains(m, "reasoner") ||
+		strings.Contains(m, "glm-4.5") || strings.Contains(m, "glm-4.6")
+}
+
+// applyThinkingControl 按开关与模型家族设置请求体的思考控制字段:
+//   - nil(未指定):保持既有行为 —— qwen3.7 hybrid 显式关(agent 工具循环不需要
+//     数分钟的 reasoning 空转),其它模型不动(deepseek 等默认自带思考)。
+//   - true:qwen3.7 显式开;其它思考类模型默认已开,不发字段。
+//   - false:所有思考类模型发 enable_thinking=false。
+func applyThinkingControl(body map[string]any, model string, thinking *bool) {
+	switch {
+	case thinking == nil:
+		if isQwenHybridThinkingModel(model) {
+			body["enable_thinking"] = false
+		}
+	case *thinking:
+		if isQwenHybridThinkingModel(model) {
+			body["enable_thinking"] = true
+		}
+	default:
+		if isThinkingCapableModel(model) {
+			body["enable_thinking"] = false
+		}
+	}
 }
 
 type LLMClient struct {
@@ -156,6 +204,19 @@ func (c *LLMClient) ChatStreamMulti(
 	onDelta StreamCallback,
 	health ChannelHealthReporter,
 ) (*ChatResponse, error) {
+	return c.ChatStreamMultiOpts(ctx, endpoints, model, messages, tools, StreamOpts{OnDelta: onDelta}, health)
+}
+
+// ChatStreamMultiOpts 是 ChatStreamMulti 的完整版:reasoning 流回调 + 思考开关。
+func (c *LLMClient) ChatStreamMultiOpts(
+	ctx context.Context,
+	endpoints []Endpoint,
+	model string,
+	messages []ChatMessage,
+	tools []ToolDef,
+	opts StreamOpts,
+	health ChannelHealthReporter,
+) (*ChatResponse, error) {
 	if len(endpoints) == 0 {
 		return nil, errors.New("no endpoints configured for model")
 	}
@@ -165,7 +226,7 @@ func (c *LLMClient) ChatStreamMulti(
 		const maxAttempts = 3
 		var endpointLastErr error
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, onDelta)
+			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, opts)
 			if err == nil {
 				if health != nil && ep.ProviderID != "" {
 					health.OnEndpointSuccess(ctx, ep.ProviderID)
@@ -205,7 +266,7 @@ func (c *LLMClient) doStream(
 	baseURL, apiKey, model string,
 	messages []ChatMessage,
 	tools []ToolDef,
-	onDelta StreamCallback,
+	opts StreamOpts,
 ) (*ChatResponse, error) {
 	body := map[string]any{
 		"model":    model,
@@ -215,13 +276,10 @@ func (c *LLMClient) doStream(
 		// 不支持该选项的网关会忽略它 —— 那时 usage 为 0,前端计量表自然隐藏。
 		"stream_options": map[string]any{"include_usage": true},
 	}
-	// 百炼 qwen3.7 混合思考模型默认开思考:agent 循环每一步都会先产出数分钟的
-	// reasoning(本客户端不解析 reasoning delta,UI 只见「思考中…」空转),工具
-	// 调用类任务完全不需要。显式关闭 —— 与 modelcatalog.applyQwenThinkingDefaults
-	// 同规则(严格按模型名 gate,不影响其它模型;包间不互相 import,故此处内联)。
-	if isQwenHybridThinkingModel(model) {
-		body["enable_thinking"] = false
-	}
+	// 思考控制:nil 保持模型默认(qwen3.7 例外,默认显式关);true/false 显式开关。
+	// 严格按模型名 gate,不影响非思考类模型 —— 与 modelcatalog.applyQwenThinkingDefaults
+	// 同规则(包间不互相 import,故此处内联)。
+	applyThinkingControl(body, model, opts.Thinking)
 	if len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
@@ -251,15 +309,16 @@ func (c *LLMClient) doStream(
 	// Detect by Content-Type and fall back to the one-shot parser.
 	ct := resp.Header.Get("Content-Type")
 	if !strings.Contains(ct, "event-stream") && !strings.Contains(ct, "text/plain") {
-		return parseOneShot(resp.Body, onDelta)
+		return parseOneShot(resp.Body, opts)
 	}
 
-	return parseSSE(resp.Body, onDelta)
+	return parseSSE(resp.Body, opts)
 }
 
 // parseSSE consumes a Server-Sent Events stream and reconstructs the OpenAI
 // response. Each `data: {...}` line carries a chunk; `data: [DONE]` ends it.
-func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
+func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
+	onDelta := opts.OnDelta
 	scanner := bufio.NewScanner(r)
 	// SSE chunks from some providers can be large (tool args, structured output).
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -284,7 +343,11 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
+					Content string `json:"content"`
+					// 思考流:dashscope/deepseek 系用 reasoning_content,
+					// OpenRouter 等用 reasoning —— 两个都认。
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
 					ToolCalls []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id,omitempty"`
@@ -311,6 +374,10 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 			continue
 		}
 		choice := chunk.Choices[0]
+
+		if rDelta := choice.Delta.ReasoningContent + choice.Delta.Reasoning; rDelta != "" && opts.OnReasoning != nil {
+			opts.OnReasoning(rDelta)
+		}
 
 		if delta := choice.Delta.Content; delta != "" {
 			contentBuilder.WriteString(delta)
@@ -358,7 +425,8 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 // parseOneShot handles the fallback case where the relay ignored stream:true
 // and returned a regular JSON body. We still emit the whole text as a single
 // delta so the UI sees something.
-func parseOneShot(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
+func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
+	onDelta := opts.OnDelta
 	raw, err := io.ReadAll(io.LimitReader(r, 4*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("LLM read: %w", err)
@@ -366,8 +434,9 @@ func parseOneShot(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Content   string     `json:"content"`
-				ToolCalls []ToolCall `json:"tool_calls"`
+				Content          string     `json:"content"`
+				ReasoningContent string     `json:"reasoning_content"`
+				ToolCalls        []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -380,6 +449,9 @@ func parseOneShot(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 		return nil, errors.New("LLM returned no choices")
 	}
 	choice := parsed.Choices[0]
+	if choice.Message.ReasoningContent != "" && opts.OnReasoning != nil {
+		opts.OnReasoning(choice.Message.ReasoningContent)
+	}
 	if choice.Message.Content != "" && onDelta != nil {
 		onDelta(choice.Message.Content)
 	}

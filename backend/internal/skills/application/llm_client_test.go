@@ -14,7 +14,7 @@ func TestParseSSECapturesUsageTailChunk(t *testing.T) {
 		`data: [DONE]`,
 	}, "\n\n") + "\n\n"
 
-	resp, err := parseSSE(strings.NewReader(stream), nil)
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{})
 	if err != nil {
 		t.Fatalf("parseSSE error: %v", err)
 	}
@@ -29,12 +29,70 @@ func TestParseSSECapturesUsageTailChunk(t *testing.T) {
 // 不带 usage 的流(网关不支持 include_usage)→ Usage 保持零值,不报错。
 func TestParseSSENoUsageIsZero(t *testing.T) {
 	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
-	resp, err := parseSSE(strings.NewReader(stream), nil)
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{})
 	if err != nil {
 		t.Fatalf("parseSSE error: %v", err)
 	}
 	if resp.Usage.TotalTokens != 0 {
 		t.Fatalf("usage = %+v, want zero", resp.Usage)
+	}
+}
+
+// reasoning_content / reasoning 两种字段都要流式回调;不进 Content。
+func TestParseSSEStreamsReasoning(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"reasoning_content":"用户在打招呼,"}}]}`,
+		`data: {"choices":[{"delta":{"reasoning":"直接回应即可。"}}]}`,
+		`data: {"choices":[{"delta":{"content":"你好！"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	var reasoning strings.Builder
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{
+		OnReasoning: func(d string) { reasoning.WriteString(d) },
+	})
+	if err != nil {
+		t.Fatalf("parseSSE error: %v", err)
+	}
+	if reasoning.String() != "用户在打招呼,直接回应即可。" {
+		t.Fatalf("reasoning = %q", reasoning.String())
+	}
+	if resp.Content != "你好！" {
+		t.Fatalf("content = %q, want 你好！(reasoning 不应混入)", resp.Content)
+	}
+}
+
+// 思考开关按模型 gate:qwen 默认关、显式可开;deepseek 默认不动、显式可关;
+// 非思考模型任何情况都不发字段。
+func TestApplyThinkingControl(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		model    string
+		thinking *bool
+		want     any // nil 表示不应设置 enable_thinking
+	}{
+		{"qwen3.7-plus", nil, false},
+		{"qwen3.7-plus", &on, true},
+		{"qwen3.7-plus", &off, false},
+		{"deepseek-v4-flash", nil, nil},
+		{"deepseek-v4-flash", &on, nil},
+		{"deepseek-v4-flash", &off, false},
+		{"gpt-4.1-mini", nil, nil},
+		{"gpt-4.1-mini", &off, nil},
+	}
+	for _, c := range cases {
+		body := map[string]any{}
+		applyThinkingControl(body, c.model, c.thinking)
+		got, ok := body["enable_thinking"]
+		if c.want == nil {
+			if ok {
+				t.Fatalf("%s thinking=%v: enable_thinking 不应设置,got %v", c.model, c.thinking, got)
+			}
+			continue
+		}
+		if !ok || got != c.want {
+			t.Fatalf("%s thinking=%v: enable_thinking = %v(ok=%v), want %v", c.model, c.thinking, got, ok, c.want)
+		}
 	}
 }
 

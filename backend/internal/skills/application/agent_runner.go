@@ -51,6 +51,8 @@ type RunInput struct {
 	History      []ChatMessage
 	Tools        []Tool
 	Strategy     string // "reactive" (default) or "scripted"
+	// Thinking 深度思考开关(nil=按模型默认)。透传到 LLM 请求的思考控制字段。
+	Thinking *bool
 }
 
 // RunStats summarizes what happened during the run. Used by the handler to
@@ -121,12 +123,22 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			endpoints = []Endpoint{{BaseURL: r.BaseURL, APIKey: r.APIKey}}
 		}
 		var streamedAnyText bool
-		resp, err := r.LLM.ChatStreamMulti(ctx, endpoints, model, messages, toolDefs, func(delta string) {
-			if delta == "" {
-				return
-			}
-			streamedAnyText = true
-			emit("message_delta", map[string]string{"delta": delta})
+		resp, err := r.LLM.ChatStreamMultiOpts(ctx, endpoints, model, messages, toolDefs, StreamOpts{
+			OnDelta: func(delta string) {
+				if delta == "" {
+					return
+				}
+				streamedAnyText = true
+				emit("message_delta", map[string]string{"delta": delta})
+			},
+			// 思考流:reasoning token 实时推给前端(思考块流式增长 + 读秒)。
+			OnReasoning: func(delta string) {
+				if delta == "" {
+					return
+				}
+				emit(EventThoughtDelta, map[string]string{"delta": delta})
+			},
+			Thinking: in.Thinking,
 		}, r.Health)
 		if err != nil {
 			emit(EventError, map[string]string{"message": err.Error()})

@@ -14,12 +14,14 @@ import type { Edge, Node } from "@xyflow/react";
 import type { AgentConversationTurn } from "../components/agent-conversation";
 
 export type AgentSSEEventType =
-  | "thought" | "tool_call" | "tool_result"
+  | "thought" | "thought_delta" | "tool_call" | "tool_result"
   | "message" | "message_delta" | "canvas_patch"
   | "conversation" | "ask_user" | "usage" | "error" | "done";
 
 export type AgentSSEEvent =
   | { type: "thought";       data: { content: string } }
+  // 思考流:reasoning token 实时推送(deepseek/qwen 思考模型)——思考块流式增长。
+  | { type: "thought_delta"; data: { delta: string } }
   | { type: "tool_call";     data: { id: string; name: string; arguments: string } }
   | { type: "tool_result";   data: { id: string; name: string; ok: boolean; result?: string; error?: string } }
   | { type: "message_delta"; data: { delta: string } }
@@ -60,6 +62,9 @@ export async function runAgent(
     /** 可用生成模型清单(image/video/audio)。注入 system prompt,
      *  让 agent 能挑模型并经 run_node(model=...) 编排生成。 */
     generation_models?: Record<string, string[]>;
+    /** 深度思考开关(composer「深度思考」按钮)。省略=按模型默认;
+     *  仅对思考类模型生效(后端按模型名 gate)。 */
+    thinking?: boolean;
   },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {

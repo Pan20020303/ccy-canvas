@@ -1132,6 +1132,26 @@ export function getModelTemplate(
   return applyParameterSchema(base, provider?.parameter_schema);
 }
 
+/** 思考类模型判定(deepseek 系 / *-thinking / *-reasoner / glm-4.5+ / qwen3.7 hybrid)。
+ *  后端 skills/application.isThinkingCapableModel 的孪生 —— 两处同步维护。
+ *  命中时智能体 composer 显示「深度思考」开关。 */
+export function isThinkingCapableModel(modelName?: string | null): boolean {
+  if (!modelName) return false;
+  const m = modelName.trim().toLowerCase();
+  return m.startsWith("qwen3.7-")
+    || m.includes("deepseek")
+    || m.includes("-thinking")
+    || m.includes("reasoner")
+    || m.includes("glm-4.5") || m.includes("glm-4.6");
+}
+
+/** 深度思考开关的默认档位:qwen3.7 hybrid 默认关(后端为 agent 工具循环显式
+ *  关闭了它的思考);deepseek 等其余思考模型默认开(模型自身默认行为)。 */
+export function isThinkingDefaultOn(modelName?: string | null): boolean {
+  if (!isThinkingCapableModel(modelName)) return false;
+  return !modelName!.trim().toLowerCase().startsWith("qwen3.7-");
+}
+
 export function getTemplatesForServiceType(serviceType: ServiceType): ModelTemplate[] {
   return Object.values(modelTemplates).filter((template) => template.serviceType === serviceType);
 }

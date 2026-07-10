@@ -9,7 +9,8 @@ import (
 
 // SSE event types emitted by the agent runner.
 const (
-	EventThought    = "thought"      // model reasoning preview
+	EventThought      = "thought"       // model reasoning preview
+	EventThoughtDelta = "thought_delta" // streaming reasoning token chunk
 	EventToolCall   = "tool_call"    // model decided to invoke a tool
 	EventToolResult = "tool_result"  // tool execution finished
 	EventMessage    = "message"      // assistant final text reply

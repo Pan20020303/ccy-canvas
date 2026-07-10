@@ -75,6 +75,9 @@ type agentRunRequest struct {
 	// If no provider serves it, ResolveModelEndpoints returns an error and the
 	// turn is rejected with a clear 400 — same as any unconfigured model.
 	Model string `json:"model,omitempty"`
+	// 深度思考开关(composer 的「深度思考」按钮)。nil=按模型默认;
+	// true/false 显式开关,仅对思考类模型生效(见 application.applyThinkingControl)。
+	Thinking *bool `json:"thinking,omitempty"`
 }
 
 type agentRunHistoryTurn struct {
@@ -176,9 +179,11 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// when the server transparently created a new thread.
 	emitter.Emit("conversation", map[string]string{"id": formatUUID(conversation.ID)})
 
+	// 最近 12 轮(一轮 user/tool_log/assistant 3 行)。查询自身取的是时间尾部,
+	// 长会话时 LLM 看到的是最新上下文而非最早几轮。
 	historyMessages, err := rt.q.ListAgentConversationMessages(r.Context(), sqlc.ListAgentConversationMessagesParams{
 		ConversationID: conversation.ID,
-		Limit:          24,
+		Limit:          36,
 	})
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load conversation messages"})
@@ -251,6 +256,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		History:      toRunHistoryFromMessages(historyMessages),
 		Tools:        tools,
 		Strategy:     agent.Strategy,
+		Thinking:     req.Thinking,
 	}, emitter.Emit)
 	durationMs := int32(time.Since(startedAt).Milliseconds())
 
