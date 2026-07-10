@@ -1622,6 +1622,29 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		}
 	}
 
+	// ─── Node-level in-flight dedup ────────────────────────────────
+	// 「提交后一段时间没返回,就重发一条一样的」→ 双扣。图片/视频走异步队列,前端每次
+	// 提交都生成新的随机 request_id(只为去重 apiClient 自身的 HTTP 重试),所以上面的
+	// request_id 快路挡不住用户手动重发。这里按内容兜底:同一用户、同一节点、同一模型、
+	// 同一提示词若已有在途任务(pending/queued/running/retrying),直接返回它、不再
+	// reserve/扣费。只匹配「完全相同的请求」——改了提示词或换了模型即视为新生成,
+	// 不误挡 re-roll(重掷)。node_id 为空(无画布上下文)时跳过。
+	if h.q != nil && strings.TrimSpace(input.Body.NodeId) != "" {
+		if existing, derr := h.q.GetInflightGenerationLogByNode(ctx, sqlc.GetInflightGenerationLogByNodeParams{
+			UserID:      userID,
+			NodeID:      input.Body.NodeId,
+			ServiceType: input.Body.ServiceType,
+			Model:       input.Body.Model,
+			Prompt:      input.Body.Prompt,
+		}); derr == nil {
+			out := &generateOutput{}
+			out.Body.Data.GenerateResult = application.GenerateResult{Type: "queued", Content: ""}
+			out.Body.Data.TaskID = formatPgUUID(existing.ID)
+			out.Body.RequestID = httpx.RequestIDFrom(ctx)
+			return out, nil
+		}
+	}
+
 	// ─── Per-generation credit reserve ─────────────────────────────
 	// Resolve the per-model price and reserve it up-front so we can hard
 	// block (402) before doing any work. A terminal failure later refunds

@@ -66,3 +66,20 @@ FROM generation_logs
 WHERE user_id = $1
   AND node_id = ANY($2::text[])
 ORDER BY node_id, created_at DESC;
+
+-- name: GetInflightGenerationLogByNode :one
+-- 节点级在途去重：同一用户、同一节点、同一模型、同一提示词若已有在途任务
+-- (pending/queued/running/retrying)，返回最近一条。用于挡「一段时间没返回就
+-- 重发一条一样的请求」——图片/视频异步队列每次提交 request_id 都是新随机值，
+-- 上面的 request_id 快路挡不住用户手动重发，这里按内容兜底避免重复 reserve/扣费。
+-- 只匹配完全相同的请求（改提示词/换模型即视为新生成，不误挡 re-roll）。
+SELECT id, user_id, node_id, service_type, model, status, created_at
+FROM generation_logs
+WHERE user_id = $1
+  AND node_id = $2
+  AND service_type = $3
+  AND model = $4
+  AND prompt = $5
+  AND status IN ('pending', 'queued', 'running', 'retrying')
+ORDER BY created_at DESC
+LIMIT 1;

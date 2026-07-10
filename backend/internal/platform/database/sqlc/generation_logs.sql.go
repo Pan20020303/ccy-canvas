@@ -355,3 +355,60 @@ func (q *Queries) GetLatestGenerationLogsForUserNodes(ctx context.Context, arg G
 	}
 	return items, nil
 }
+
+const getInflightGenerationLogByNode = `-- name: GetInflightGenerationLogByNode :one
+SELECT id, user_id, node_id, service_type, model, status, created_at
+FROM generation_logs
+WHERE user_id = $1
+  AND node_id = $2
+  AND service_type = $3
+  AND model = $4
+  AND prompt = $5
+  AND status IN ('pending', 'queued', 'running', 'retrying')
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetInflightGenerationLogByNodeParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	NodeID      string      `json:"node_id"`
+	ServiceType string      `json:"service_type"`
+	Model       string      `json:"model"`
+	Prompt      string      `json:"prompt"`
+}
+
+type GetInflightGenerationLogByNodeRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	NodeID      string             `json:"node_id"`
+	ServiceType string             `json:"service_type"`
+	Model       string             `json:"model"`
+	Status      string             `json:"status"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// 节点级在途去重：同一用户、同一节点、同一模型、同一提示词若已有在途任务
+// (pending/queued/running/retrying)，返回最近一条。用于挡「一段时间没返回就
+// 重发一条一样的请求」——图片/视频异步队列每次提交 request_id 都是新随机值，
+// 上面的 request_id 快路挡不住用户手动重发，这里按内容兜底避免重复 reserve/扣费。
+// 只匹配完全相同的请求（改提示词/换模型即视为新生成，不误挡 re-roll）。
+func (q *Queries) GetInflightGenerationLogByNode(ctx context.Context, arg GetInflightGenerationLogByNodeParams) (GetInflightGenerationLogByNodeRow, error) {
+	row := q.db.QueryRow(ctx, getInflightGenerationLogByNode,
+		arg.UserID,
+		arg.NodeID,
+		arg.ServiceType,
+		arg.Model,
+		arg.Prompt,
+	)
+	var i GetInflightGenerationLogByNodeRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.NodeID,
+		&i.ServiceType,
+		&i.Model,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
