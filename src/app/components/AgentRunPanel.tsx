@@ -520,6 +520,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         history: priorHistory,
         conversation_id: runConversationId ?? undefined,
         model: overrideModel ?? undefined,
+        // 记忆隔离域:每个项目的智能体记忆互相独立(save_memory / deep_retrieve /
+        // 自动轮次记忆都按 user+agent+project 隔离)。
+        project_id: useStore.getState().activeBackendProjectId ?? undefined,
       },
       (event) => {
         switch (event.type) {

@@ -54,6 +54,8 @@ export async function runAgent(
     history?: AgentConversationTurn[];
     conversation_id?: string;
     model?: string;
+    /** 当前项目 id:后端用它做记忆隔离域(每个项目的智能体记忆互相独立)。 */
+    project_id?: string;
   },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {

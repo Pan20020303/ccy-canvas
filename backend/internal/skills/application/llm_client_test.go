@@ -37,3 +37,20 @@ func TestParseSSENoUsageIsZero(t *testing.T) {
 		t.Fatalf("usage = %+v, want zero", resp.Usage)
 	}
 }
+
+// qwen3.7 gate 与 modelcatalog.isQwenThinkingModel 同规则(孪生,两处同步维护)。
+func TestIsQwenHybridThinkingModel(t *testing.T) {
+	cases := map[string]bool{
+		"qwen3.7-plus":           true,
+		"qwen3.7-max-2026-06-08": true,
+		"QWEN3.7-PLUS":           true,
+		"qwen-plus":              false,
+		"gpt-4.1-mini":           false,
+		"":                       false,
+	}
+	for model, want := range cases {
+		if got := isQwenHybridThinkingModel(model); got != want {
+			t.Fatalf("isQwenHybridThinkingModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}

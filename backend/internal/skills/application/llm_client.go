@@ -72,6 +72,13 @@ type ChatResponse struct {
 // render a partial JSON-encoded tool call usefully.
 type StreamCallback func(delta string)
 
+// isQwenHybridThinkingModel 判断百炼 qwen3.7 混合思考模型(qwen3.7-max/plus 及
+// 日期快照)。modelcatalog.isQwenThinkingModel 的孪生 —— skills 包不 import
+// modelcatalog(层级纠缠),两处同步维护。
+func isQwenHybridThinkingModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "qwen3.7-")
+}
+
 type LLMClient struct {
 	httpClient *http.Client
 }
@@ -207,6 +214,13 @@ func (c *LLMClient) doStream(
 		// 要求网关在流末尾附带 usage 尾包(OpenAI 兼容),用于上下文窗口计量。
 		// 不支持该选项的网关会忽略它 —— 那时 usage 为 0,前端计量表自然隐藏。
 		"stream_options": map[string]any{"include_usage": true},
+	}
+	// 百炼 qwen3.7 混合思考模型默认开思考:agent 循环每一步都会先产出数分钟的
+	// reasoning(本客户端不解析 reasoning delta,UI 只见「思考中…」空转),工具
+	// 调用类任务完全不需要。显式关闭 —— 与 modelcatalog.applyQwenThinkingDefaults
+	// 同规则(严格按模型名 gate,不影响其它模型;包间不互相 import,故此处内联)。
+	if isQwenHybridThinkingModel(model) {
+		body["enable_thinking"] = false
 	}
 	if len(tools) > 0 {
 		body["tools"] = tools
