@@ -265,7 +265,9 @@ export function AgentAssistantThread({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
-        <ThreadPrimitive.Viewport className="prompt-editor-scroll flex-1 overflow-y-auto px-4 py-4">
+        {/* min-h-0:flex 子项默认 min-height:auto,长内容会把线程区撑高、把
+            composer 顶出面板 —— 必须显式允许收缩,让滚动发生在视口内。 */}
+        <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <div data-aui-messages className="space-y-3">
             <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
           </div>

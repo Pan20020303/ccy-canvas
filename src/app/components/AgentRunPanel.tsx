@@ -91,6 +91,27 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const updateNodeData = useStore((s) => s.updateNodeData);
   const runNode = useStore((s) => s.runNode);
   const backendModels = useStore((s) => s.backendModels);
+  const requestCanvasFocus = useStore((s) => s.requestCanvasFocus);
+  const panelWidth = useStore((s) => s.agentPanelWidth);
+  const setPanelWidth = useStore((s) => s.setAgentPanelWidth);
+  // 左缘拖拽调宽:pointerdown 后跟随全局 pointermove(宽度 = 视口宽 - 指针x),
+  // 拖拽期间禁用 body 文本选择,松手结束。宽度 clamp + 持久化在 store setter 里。
+  const [resizing, setResizing] = useState(false);
+  const startResize = useCallback((event: React.PointerEvent) => {
+    event.preventDefault();
+    setResizing(true);
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    const onMove = (e: PointerEvent) => setPanelWidth(window.innerWidth - e.clientX);
+    const onUp = () => {
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [setPanelWidth]);
   const startAgentNodePick = useStore((s) => s.startAgentNodePick);
   const cancelAgentNodePick = useStore((s) => s.cancelAgentNodePick);
   const agentNodePickActive = useStore((s) => s.agentNodePickActive);
@@ -331,6 +352,18 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
+  // 自动追踪 agent 创建的节点:视口平滑飞行到新节点并选中(requestCanvasFocus,
+  // 420ms 动画)。大画布上用户不用再满图找 agent 刚建的节点。300ms 去抖 ——
+  // agent 连创多个节点时镜头只飞向最后一个,不来回乱飞。
+  const focusTimerRef = useRef<number | null>(null);
+  const scheduleNodeFocus = useCallback((nodeId: string) => {
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => {
+      focusTimerRef.current = null;
+      requestCanvasFocus(nodeId);
+    }, 300);
+  }, [requestCanvasFocus]);
+
   const applyPatch = useCallback((event: AgentSSEEvent) => {
     if (event.type !== "canvas_patch") return;
     const patch = event.data;
@@ -344,6 +377,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           data: (incoming.data ?? {}) as Record<string, unknown>,
         };
         addNode(safe);
+        if (safe.id) scheduleNodeFocus(safe.id);
         break;
       }
       case "add_edge": {
@@ -432,7 +466,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
     }
-  }, [addNode, onConnect, runNode, updateNodeData, executionMode, backendModels]);
+  }, [addNode, onConnect, runNode, updateNodeData, executionMode, backendModels, scheduleNodeFocus]);
 
   const start = async (overrideMessage?: string) => {
     const source = overrideMessage ?? message;
@@ -797,9 +831,15 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   return (
     <div
       ref={panelRef}
-      style={{ display: open ? "flex" : "none" }}
-      className="absolute inset-y-0 right-0 z-40 flex h-full w-[480px] flex-col overflow-hidden border-l border-[var(--agent-border)] bg-[var(--agent-bg)] shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+      style={{ display: open ? "flex" : "none", width: panelWidth }}
+      className="absolute inset-y-0 right-0 z-40 flex h-full flex-col overflow-hidden border-l border-[var(--agent-border)] bg-[var(--agent-bg)] shadow-[0_0_40px_rgba(0,0,0,0.5)]"
     >
+      {/* 左缘拖拽手柄:拖动调节面板宽度(380–860px,持久化)。 */}
+      <div
+        onPointerDown={startResize}
+        title={zh ? "拖动调节宽度" : "Drag to resize"}
+        className={`absolute inset-y-0 left-0 z-50 w-1.5 cursor-ew-resize transition-colors ${resizing ? "bg-cyan-400/50" : "bg-transparent hover:bg-cyan-400/30"}`}
+      />
       {agentNodePickActive ? createPortal(
         <div className="fixed left-1/2 top-4 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-400/30 bg-[#15181d]/95 px-4 py-2 text-xs text-cyan-100 shadow-2xl backdrop-blur">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
@@ -886,8 +926,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         }
       />
 
-      {/* Composer */}
-      <div className="relative border-t border-[var(--agent-border)] p-3">
+      {/* Composer —— shrink-0:无论消息区多长,对话框永远完整固定在底部。 */}
+      <div className="relative shrink-0 border-t border-[var(--agent-border)] p-3">
         {/* Slash command popup — appears when the message starts with `/`. */}
         {slashSuggestions.length > 0 ? (
           <SlashMenu

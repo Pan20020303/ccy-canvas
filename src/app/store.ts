@@ -246,6 +246,9 @@ type AppState = {
   // push the canvas left / pull the navbar in to make room — no overlap).
   agentPanelOpen: boolean;
   setAgentPanelOpen: (open: boolean) => void;
+  /** 智能体面板宽度(px,可拖拽调节,localStorage 持久)。routes 用它给主区让位。 */
+  agentPanelWidth: number;
+  setAgentPanelWidth: (width: number) => void;
   agentNodePickActive: boolean;
   agentPickedNode: { id: string; label: string; thumb: string } | null;
   startAgentNodePick: () => void;
@@ -775,6 +778,21 @@ const seedInvitations: AdminInvitation[] = [
 
 const runAborters: Record<string, AbortController> = {};
 const runTokens: Record<string, string> = {};
+// 智能体面板宽度边界:最窄保证 composer 控件不换行,最宽给大屏留出画布空间。
+const AGENT_PANEL_MIN_WIDTH = 380;
+const AGENT_PANEL_MAX_WIDTH = 860;
+function clampAgentPanelWidth(width: number): number {
+  if (!Number.isFinite(width)) return 480;
+  return Math.min(AGENT_PANEL_MAX_WIDTH, Math.max(AGENT_PANEL_MIN_WIDTH, Math.round(width)));
+}
+function readAgentPanelWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem('agentPanelWidth'));
+    if (stored > 0) return clampAgentPanelWidth(stored);
+  } catch { /* SSR / privacy mode */ }
+  return 480;
+}
+
 const generationTimeoutMs = 900 * 1000;
 const TASK_RESULT_RECOVERY_WINDOW_MS = generationTimeoutMs + 60 * 1000;
 
@@ -2005,6 +2023,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   agentPanelOpen: false,
   setAgentPanelOpen: (open) => set({ agentPanelOpen: open }),
+  agentPanelWidth: readAgentPanelWidth(),
+  setAgentPanelWidth: (width) => {
+    const clamped = clampAgentPanelWidth(width);
+    try { localStorage.setItem('agentPanelWidth', String(clamped)); } catch { /* ignore */ }
+    set({ agentPanelWidth: clamped });
+  },
   agentNodePickActive: false,
   agentPickedNode: null,
   startAgentNodePick: () => set({ agentNodePickActive: true, agentPickedNode: null }),

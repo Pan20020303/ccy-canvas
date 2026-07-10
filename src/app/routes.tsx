@@ -25,12 +25,12 @@ import { SettingsModal } from "./components/SettingsModal";
 import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
 
-const AGENT_PANEL_WIDTH = 480;
-
 const Workspace = () => {
   const setBackendModels = useStore((state) => state.setBackendModels);
   const agentPanelOpen = useStore((state) => state.agentPanelOpen);
   const setAgentPanelOpen = useStore((state) => state.setAgentPanelOpen);
+  // 面板宽度可拖拽调节(AgentRunPanel 左缘手柄),主区 padding 跟随让位。
+  const agentPanelWidth = useStore((state) => state.agentPanelWidth);
 
   useEffect(() => {
     let ignore = false;
@@ -55,7 +55,7 @@ const Workspace = () => {
   return (
     <div
       className="relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 transition-[padding] duration-200 ease-out selection:bg-cyan-500/30"
-      style={{ paddingRight: agentPanelOpen ? AGENT_PANEL_WIDTH : 0 }}
+      style={{ paddingRight: agentPanelOpen ? agentPanelWidth : 0 }}
     >
       <Navbar />
       <Toolbar />
