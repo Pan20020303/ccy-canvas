@@ -5,6 +5,7 @@ import clsx from 'clsx';
 
 import Magnet from '../Magnet';
 import { useStore } from '../../store';
+import { toRenderableMediaUrl } from '../../reference-media';
 
 /**
  * 3D 导演台节点 — inline 卡片,不持有 WebGL 上下文。
@@ -180,8 +181,10 @@ export function DirectorStageNode({ id, data: rawData, selected }: NodeProps) {
         {previewUrl ? (
           <div className="flex flex-col">
             <div className="relative aspect-[16/10] w-full bg-black">
+              {/* COS/OSS 直链在部分网络环境不可达(防盗链/超时)——统一走
+                  后端媒体代理(与其他图片节点一致),相对 /uploads 原样保留。 */}
               <img
-                src={previewUrl}
+                src={toRenderableMediaUrl(previewUrl, { thumbWidth: 720 })}
                 alt="director stage preview"
                 className="absolute inset-0 h-full w-full object-cover"
               />

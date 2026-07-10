@@ -5,6 +5,7 @@ import clsx from 'clsx';
 
 import Magnet from '../Magnet';
 import { useStore } from '../../store';
+import { toRenderableMediaUrl } from '../../reference-media';
 
 /**
  * 构图预览节点 (compositionPreviewNode) —— 导演台「确认构图」后,每个机位
@@ -124,9 +125,10 @@ export function CompositionPreviewNode({ data: rawData, selected }: NodeProps) {
 
         {/* 主体:快照图 —— 全面屏,图就是整张卡;meta 悬浮在图上 hover 才出现. */}
         <div className={clsx('relative w-full bg-black', aspectClass)}>
+          {/* 同 DirectorStageNode:直链经媒体代理,避免 COS 防盗链/网络不可达黑图。 */}
           {hasImage ? (
             <img
-              src={data.image}
+              src={toRenderableMediaUrl(data.image, { thumbWidth: 960 })}
               alt={`composition from ${data.cameraLabel}`}
               className="h-full w-full object-cover"
             />
