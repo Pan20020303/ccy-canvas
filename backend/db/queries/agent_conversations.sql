@@ -54,8 +54,14 @@ VALUES ($1, $2, $3)
 RETURNING id, conversation_id, role, content, created_at;
 
 -- name: ListAgentConversationMessages :many
+-- 取「最新」N 行再按时间正序返回:长会话时 UI 与 LLM 历史都应看到最近的
+-- 轮次,而不是最早的(旧版 ASC LIMIT 会把新消息截掉)。
 SELECT id, conversation_id, role, content, created_at
-FROM agent_conversation_messages
-WHERE conversation_id = $1
-ORDER BY created_at ASC
-LIMIT $2;
+FROM (
+    SELECT id, conversation_id, role, content, created_at
+    FROM agent_conversation_messages
+    WHERE conversation_id = $1
+    ORDER BY created_at DESC
+    LIMIT $2
+) tail
+ORDER BY created_at ASC;

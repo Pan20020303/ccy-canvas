@@ -173,6 +173,13 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     });
   }
 
+  // 204 No Content / 空响应体(典型:DELETE 成功)——没有 envelope 可解析,
+  // 直接视为成功。此前这里会误抛 UNEXPECTED_RESPONSE(甚至向 fallback 重发),
+  // 调用方 catch 后 UI 不更新,表现为"删除没反应"。
+  if (!rawBody.trim()) {
+    return undefined as T;
+  }
+
   if (!body || !isApiEnvelope<T>(body)) {
     if (fallbackUrl && fallbackUrl !== url) {
       return requestWithResolvedUrl<T>(fallbackUrl, init);
@@ -205,6 +212,9 @@ async function requestWithResolvedUrl<T>(url: string, init?: RequestInit): Promi
     } catch {
       body = null;
     }
+  }
+  if (response.ok && !rawBody.trim()) {
+    return undefined as T;
   }
   if (!response.ok || !body || !isApiEnvelope<T>(body)) {
     throw new ApiClientError({

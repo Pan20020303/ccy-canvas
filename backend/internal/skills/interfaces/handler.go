@@ -627,9 +627,10 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 		return nil, huma.Error500InternalServerError("Failed to load conversation history")
 	}
 
+	// 一轮 run 最多写 3 行(user / tool_log / assistant),×3 保证 limit 轮完整。
 	messages, err := h.q.ListAgentConversationMessages(ctx, sqlc.ListAgentConversationMessagesParams{
 		ConversationID: conversation.ID,
-		Limit:          input.Limit * 2,
+		Limit:          input.Limit * 3,
 	})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to list conversation history")
@@ -910,24 +911,33 @@ func (h *Handler) loadReadableAgent(ctx context.Context, agentID string) (sqlc.A
 	return agent, uid, nil
 }
 
+// toConversationItems 把按时间序的消息行折叠成 (user_input, final_reply) 轮次。
+// 按角色扫描配对,而不是固定步长 2:一轮 run 会写 user / tool_log / assistant
+// 三行,内部角色(tool_log)不进 UI 历史,硬配对会让所有后续轮次错位。
 func toConversationItems(messages []sqlc.AgentConversationMessage) []AgentConversationItem {
-	items := make([]AgentConversationItem, 0, (len(messages)+1)/2)
-	for index := 0; index < len(messages); index += 2 {
-		item := AgentConversationItem{}
-		item.CreatedAt = formatTime(messages[index].CreatedAt)
-		if messages[index].Role == "user" {
-			item.UserInput = messages[index].Content
-		} else if messages[index].Role == "assistant" {
-			item.FinalReply = messages[index].Content
-		}
-		if index+1 < len(messages) {
-			if messages[index+1].Role == "assistant" {
-				item.FinalReply = messages[index+1].Content
-			} else if messages[index+1].Role == "user" && item.UserInput == "" {
-				item.UserInput = messages[index+1].Content
+	items := make([]AgentConversationItem, 0, len(messages)/2+1)
+	open := -1 // 等待 assistant 回复的未闭合轮次下标
+	for _, m := range messages {
+		switch m.Role {
+		case "user":
+			items = append(items, AgentConversationItem{
+				UserInput: m.Content,
+				CreatedAt: formatTime(m.CreatedAt),
+			})
+			open = len(items) - 1
+		case "assistant":
+			if open >= 0 && items[open].FinalReply == "" {
+				items[open].FinalReply = m.Content
+			} else {
+				items = append(items, AgentConversationItem{
+					FinalReply: m.Content,
+					CreatedAt:  formatTime(m.CreatedAt),
+				})
 			}
+			open = -1
+		default:
+			// tool_log 等内部记录:仅供下一轮 system prompt 注入,不进 UI。
 		}
-		items = append(items, item)
 	}
 	return items
 }

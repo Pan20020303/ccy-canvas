@@ -128,10 +128,14 @@ type ListAgentConversationMessagesParams struct {
 
 const listAgentConversationMessages = `-- name: ListAgentConversationMessages :many
 SELECT id, conversation_id, role, content, created_at
-FROM agent_conversation_messages
-WHERE conversation_id = $1
+FROM (
+    SELECT id, conversation_id, role, content, created_at
+    FROM agent_conversation_messages
+    WHERE conversation_id = $1
+    ORDER BY created_at DESC
+    LIMIT $2
+) tail
 ORDER BY created_at ASC
-LIMIT $2
 `
 
 func (q *Queries) ListAgentConversationMessages(ctx context.Context, arg ListAgentConversationMessagesParams) ([]AgentConversationMessage, error) {
