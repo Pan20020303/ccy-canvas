@@ -566,6 +566,10 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
       apiSpec: "openai",
       models: [
+        // Qwen3.7 旗舰(混合思考模型)：后端对 qwen3.7-* 默认关思考走快速指令模式，
+        // 见 backend applyQwenThinkingDefaults。
+        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen-max",
         "qwen-plus",
         "qwen-turbo",

@@ -147,12 +147,16 @@ var streamHTTPClient = &http.Client{}
 // Blocks until the stream ends ([DONE]), errors, or ctx is cancelled. No
 // client-side Timeout: the caller's ctx (the SSE request context) bounds it.
 func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt string, onDelta func(string) error) (string, error) {
-	reqBody, err := json.Marshal(map[string]any{
+	streamBody := map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},
 		"max_tokens": textGenMaxTokens(),
 		"stream":     true,
-	})
+	}
+	// qwen3.7 混合思考模型:关思考。流式虽无 60s 超时,但开思考会先长时间只吐
+	// reasoning_content(本函数只累加 delta.content),UI 看着像卡死;关掉后答案立即流式产出。
+	applyQwenThinkingDefaults(streamBody, model)
+	reqBody, err := json.Marshal(streamBody)
 	if err != nil {
 		return "", apperror.Wrap(apperror.CodeInternal, "Failed to marshal stream request", err)
 	}

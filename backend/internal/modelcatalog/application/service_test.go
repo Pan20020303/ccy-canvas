@@ -1714,6 +1714,81 @@ func TestGenerateImageReferenceFormatUsesChatCompletionsOnlyForRefs(t *testing.T
 	}
 }
 
+func TestIsQwenThinkingModel(t *testing.T) {
+	cases := map[string]bool{
+		"qwen3.7-max":            true,
+		"qwen3.7-plus":           true,
+		"qwen3.7-max-2026-06-08": true,
+		"QWEN3.7-PLUS":           true, // 大小写不敏感
+		"qwen-max":               false,
+		"qwen-plus":              false,
+		"qwen3-max":              false, // 仅 gate qwen3.7 系列
+		"gpt-4.1-mini":           false,
+		"deepseek-v4-pro":        false,
+		"":                       false,
+	}
+	for model, want := range cases {
+		if got := isQwenThinkingModel(model); got != want {
+			t.Fatalf("isQwenThinkingModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+// qwen3.7 混合思考模型的同步文本请求应带 enable_thinking=false;其它模型不带。
+func TestGenerateTextQwenThinkingGate(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{
+		providerConfigs: []domain.ProviderConfig{{
+			ID:              "provider-qwen-text",
+			ServiceType:     "text",
+			Vendor:          "Alibaba",
+			Status:          "enabled",
+			BaseURL:         server.URL,
+			EncryptedAPIKey: encryptedKey,
+			ModelList:       []string{"qwen3.7-max", "qwen-plus"},
+		}},
+	}
+	service := NewService(repo, key)
+
+	// qwen3.7-max → 带 enable_thinking=false
+	if _, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "text", Model: "qwen3.7-max", Prompt: "写一句广告语",
+	}); err != nil {
+		t.Fatalf("Generate(qwen3.7-max) error: %v", err)
+	}
+	if v, ok := captured["enable_thinking"]; !ok || v != false {
+		t.Fatalf("qwen3.7-max enable_thinking = %v (present=%v), want false", v, ok)
+	}
+
+	// qwen-plus(非 3.7)→ 不带 enable_thinking
+	captured = nil
+	if _, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "text", Model: "qwen-plus", Prompt: "写一句广告语",
+	}); err != nil {
+		t.Fatalf("Generate(qwen-plus) error: %v", err)
+	}
+	if _, ok := captured["enable_thinking"]; ok {
+		t.Fatalf("qwen-plus 不应带 enable_thinking，实际 body=%#v", captured)
+	}
+}
+
 func TestGenerateImageChatCompletionsParsesDataURLResponse(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

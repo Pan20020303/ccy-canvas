@@ -2877,6 +2877,25 @@ func textGenMaxTokens() int {
 	return 8192
 }
 
+// isQwenThinkingModel 判断是否为百炼 Qwen3.7 混合思考模型(qwen3.7-max/plus 及其
+// 日期快照)。这类模型默认开启思考模式,会先产出一大段 reasoning_content 再出
+// content;本项目文本节点只取最终 content,故对它们关思考(见 applyQwenThinkingDefaults)。
+func isQwenThinkingModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "qwen3.7-")
+}
+
+// applyQwenThinkingDefaults 对 qwen3.7 混合思考模型显式关闭默认思考模式。
+// 百炼 qwen3.7-max/plus 默认 enable_thinking=true:先长时间产出推理内容再出答案,
+// 同步路径有 60s 硬超时(max 档复杂提示极易超时)、且多烧 token,而我们只取最终
+// content 看不到推理。故退化为快速指令模式。enable_thinking 是非 OpenAI 标准参数,
+// DashScope 兼容端点从请求体读取(等价 OpenAI SDK 的 extra_body)。严格按模型名
+// gate,避免发给 OpenAI/DeepSeek 等报「未知参数」。
+func applyQwenThinkingDefaults(body map[string]any, model string) {
+	if isQwenThinkingModel(model) {
+		body["enable_thinking"] = false
+	}
+}
+
 func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	body := map[string]interface{}{
 		"model": req.Model,
@@ -2885,6 +2904,7 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 		},
 		"max_tokens": textGenMaxTokens(),
 	}
+	applyQwenThinkingDefaults(body, req.Model)
 	bodyJSON, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(string(bodyJSON)))

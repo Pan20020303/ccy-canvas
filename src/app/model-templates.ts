@@ -257,6 +257,19 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     serviceType: "text",
     modelName: "gpt-4.1-mini",
   },
+  // 阿里云百炼 Qwen3.7 旗舰文本(混合思考模型)。走 DashScope 兼容端点
+  // /compatible-mode/v1 的标准 chat/completions；后端对 qwen3.7-* 默认关思考
+  // (enable_thinking=false)以适配同步/流式文本节点(仅取最终 content)。
+  "qwen3.7-max": {
+    vendor: "Alibaba",
+    serviceType: "text",
+    modelName: "qwen3.7-max",
+  },
+  "qwen3.7-plus": {
+    vendor: "Alibaba",
+    serviceType: "text",
+    modelName: "qwen3.7-plus",
+  },
   "gpt-image-2": {
     vendor: "OpenAI",
     serviceType: "image",
