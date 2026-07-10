@@ -150,7 +150,7 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 	streamBody := map[string]any{
 		"model":      model,
 		"messages":   []map[string]any{{"role": "user", "content": buildChatUserContent(prompt, images)}},
-		"max_tokens": textGenMaxTokens(),
+		"max_tokens": textMaxTokensForModel(model),
 		"stream":     true,
 	}
 	// qwen3.7 混合思考模型:关思考。流式虽无 60s 超时,但开思考会先长时间只吐

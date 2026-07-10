@@ -1776,6 +1776,10 @@ func TestGenerateTextQwenThinkingGate(t *testing.T) {
 	if v, ok := captured["enable_thinking"]; !ok || v != false {
 		t.Fatalf("qwen3.7-max enable_thinking = %v (present=%v), want false", v, ok)
 	}
+	// max_tokens 应按模型能力抬到 65536(防长输出被 8192 截断)。JSON 数字解成 float64。
+	if mt, _ := captured["max_tokens"].(float64); int(mt) != 65536 {
+		t.Fatalf("qwen3.7-max max_tokens = %v, want 65536", captured["max_tokens"])
+	}
 
 	// qwen-plus(非 3.7)→ 不带 enable_thinking
 	captured = nil
@@ -1786,6 +1790,30 @@ func TestGenerateTextQwenThinkingGate(t *testing.T) {
 	}
 	if _, ok := captured["enable_thinking"]; ok {
 		t.Fatalf("qwen-plus 不应带 enable_thinking，实际 body=%#v", captured)
+	}
+}
+
+func TestTextMaxTokensForModel(t *testing.T) {
+	t.Setenv("TEXT_MAX_TOKENS", "") // 确保不受环境覆盖
+	cases := map[string]int{
+		"qwen3.7-max":            65536,
+		"qwen3.7-max-2026-06-08": 65536,
+		"qwen3.7-plus":           32768,
+		"qwen3.7-plus-2026-05-26": 32768,
+		"qwen-plus":              8192, // 非 3.7 保守
+		"deepseek-v4-pro":        8192,
+		"gpt-4.1-mini":           8192,
+		"":                       8192,
+	}
+	for model, want := range cases {
+		if got := textMaxTokensForModel(model); got != want {
+			t.Fatalf("textMaxTokensForModel(%q) = %d, want %d", model, got, want)
+		}
+	}
+	// 管理员显式设置优先(硬上限)
+	t.Setenv("TEXT_MAX_TOKENS", "4000")
+	if got := textMaxTokensForModel("qwen3.7-max"); got != 4000 {
+		t.Fatalf("with TEXT_MAX_TOKENS=4000, qwen3.7-max = %d, want 4000 (env wins)", got)
 	}
 }
 

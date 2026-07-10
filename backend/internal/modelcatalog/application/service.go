@@ -1231,7 +1231,7 @@ func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest
 		Messages: []ChatMessage{
 			{Role: "user", Content: req.Prompt},
 		},
-		MaxTokens: textGenMaxTokens(),
+		MaxTokens: textMaxTokensForModel(req.Model),
 	})
 	if err != nil {
 		return nil, err
@@ -2877,6 +2877,28 @@ func textGenMaxTokens() int {
 	return 8192
 }
 
+// textMaxTokensForModel 按模型的输出上限给 max_tokens,避免固定 8192 把长输出
+// (如多幕分镜)截断。max_tokens 只是「上限」——模型正常结束(finish_reason=stop)
+// 时并不会多写,故放宽不影响普通短输出、只防止提前截断。
+//   - 管理员显式设了 TEXT_MAX_TOKENS → 尊重它(全局硬上限,优先级最高)。
+//   - 否则按模型能力:百炼 qwen3.7-max 支持 65536、qwen3.7-plus 32768;
+//     其它模型保守用 8192(deepseek 等输出上限较低,贸然调高会被拒)。
+func textMaxTokensForModel(model string) int {
+	if v := strings.TrimSpace(os.Getenv("TEXT_MAX_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "qwen3.7-max"):
+		return 65536
+	case strings.HasPrefix(m, "qwen3.7-"): // plus 及其它 3.7 变体
+		return 32768
+	}
+	return 8192
+}
+
 // isQwenThinkingModel 判断是否为百炼 Qwen3.7 混合思考模型(qwen3.7-max/plus 及其
 // 日期快照)。这类模型默认开启思考模式,会先产出一大段 reasoning_content 再出
 // content;本项目文本节点只取最终 content,故对它们关思考(见 applyQwenThinkingDefaults)。
@@ -2926,7 +2948,7 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 		"messages": []map[string]any{
 			{"role": "user", "content": buildChatUserContent(req.Prompt, req.ReferenceImages)},
 		},
-		"max_tokens": textGenMaxTokens(),
+		"max_tokens": textMaxTokensForModel(req.Model),
 	}
 	applyQwenThinkingDefaults(body, req.Model)
 	bodyJSON, _ := json.Marshal(body)
