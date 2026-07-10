@@ -15,7 +15,7 @@
  * 交互型卡片(ask_user / pending_run / canvas / error)不进消息流,经 footer 插槽
  * 渲染在消息之后。
  */
-import { createContext, useContext, useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ActionBarPrimitive,
@@ -27,13 +27,14 @@ import {
   groupPartByType,
   useExternalStoreRuntime,
   useMessage,
+  useThreadListItem,
   useThreadListItemRuntime,
   type ExternalStoreThreadListAdapter,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowDown, Check, ChevronRight, Copy, MessageSquareQuote, Plus, TriangleAlert, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, Check, ChevronRight, Copy, MessageSquareQuote, Plus, Sparkles, TriangleAlert, Trash2, Wrench, X } from "lucide-react";
 
 import { DotMatrix } from "./ui/dot-matrix";
 import type { AgentConversationTurn } from "../agent-conversation";
@@ -50,7 +51,7 @@ export type ThreadToolStep = {
     output?: string;
   };
 };
-export type ThreadThoughtStep = { kind: "thought"; id: string; content: string };
+export type ThreadThoughtStep = { kind: "thought"; id: string; content: string; streaming?: boolean };
 export type ThreadRunStep =
   | ThreadToolStep
   | ThreadThoughtStep
@@ -252,9 +253,47 @@ function makeUserMessage(zh: boolean): FC {
   };
 }
 
-/** 可折叠「思考」块。 */
-const ReasoningBlock: FC<{ text: string; zh: boolean }> = ({ text, zh }) => {
-  const [open, setOpen] = useState(false);
+/** 可折叠「思考」块(DeepSeek 式):
+ *  - 流式:自动展开,头部「思考中 · X.Xs」读秒,内容实时增长并自动滚到底;
+ *  - 结束:自动收起,头部「已深度思考 · X.Xs」+ 单行预览,点击可展开全文。 */
+const ReasoningBlock: FC<{ text: string; streaming?: boolean; zh: boolean }> = ({ text, streaming = false, zh }) => {
+  const [open, setOpen] = useState(streaming);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const startRef = useRef<number | null>(null);
+  const doneMsRef = useRef<number | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (streaming) {
+      setOpen(true);
+      if (startRef.current == null) startRef.current = performance.now();
+      const timer = window.setInterval(() => {
+        if (startRef.current != null) setElapsedMs(performance.now() - startRef.current);
+      }, 100);
+      return () => window.clearInterval(timer);
+    }
+    // 流式 → 结束的那次切换:冻结时长,自动收起。
+    if (startRef.current != null && doneMsRef.current == null) {
+      doneMsRef.current = performance.now() - startRef.current;
+      setElapsedMs(doneMsRef.current);
+      setOpen(false);
+    }
+    return undefined;
+  }, [streaming]);
+
+  // 流式内容自动滚到底,像终端一样跟随最新思考。
+  useEffect(() => {
+    if (streaming && open && bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [text, streaming, open]);
+
+  const secs = elapsedMs > 0 ? ` · ${(elapsedMs / 1000).toFixed(1)}s` : "";
+  const label = streaming
+    ? (zh ? "思考中" : "Thinking") + secs
+    : doneMsRef.current != null
+      ? (zh ? "已深度思考" : "Thought") + secs
+      : (zh ? "思考" : "Reasoning");
   return (
     <div className="rounded-lg border border-white/[0.07] bg-white/[0.02]">
       <button
@@ -262,11 +301,20 @@ const ReasoningBlock: FC<{ text: string; zh: boolean }> = ({ text, zh }) => {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] text-neutral-500 transition hover:text-neutral-300"
       >
-        <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-        {zh ? "思考" : "Reasoning"}
+        {streaming
+          ? <DotMatrix state="thinking" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+          : <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />}
+        <span className={`shrink-0 tabular-nums ${streaming ? "text-cyan-300" : ""}`}>{label}</span>
         <span className="min-w-0 flex-1 truncate text-neutral-600">{open ? "" : text}</span>
       </button>
-      {open ? <div className="whitespace-pre-wrap break-words px-3 pb-2.5 text-[11px] leading-relaxed text-neutral-400">{text}</div> : null}
+      {open ? (
+        <div
+          ref={bodyRef}
+          className={`prompt-editor-scroll whitespace-pre-wrap break-words px-3 pb-2.5 text-[11px] leading-relaxed text-neutral-400 ${streaming ? "max-h-[240px] overflow-y-auto" : ""}`}
+        >
+          {text}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -359,49 +407,94 @@ const ToolGroupBlock: FC<{ count: number; running: boolean; zh: boolean; childre
   );
 };
 
-// 连续 tool-call 归入 "group-tool" 组(assistant-ui 官方 ToolGroup 模式)。
-const groupToolCalls = groupPartByType({ "tool-call": ["group-tool"] });
+/** 思维链外壳(assistant-ui chain-of-thought 分组):连续的 思考+工具调用
+ *  合成一条可折叠时间线。运行中自动展开并显示点阵;标题带步数。 */
+const ChainOfThoughtBlock: FC<{ steps: number; running: boolean; zh: boolean; children: ReactNode }> = ({ steps, running, zh, children }) => {
+  const [open, setOpen] = useState(running);
+  useEffect(() => { if (running) setOpen(true); }, [running]);
+  return (
+    <div className="rounded-lg border border-white/[0.07] bg-white/[0.015]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-400 transition hover:text-neutral-200"
+      >
+        {running ? (
+          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+        ) : (
+          <Sparkles className="h-3 w-3 shrink-0 text-neutral-500" />
+        )}
+        <span>{zh ? `思维链 · ${steps} 步` : `Chain of thought · ${steps} steps`}</span>
+        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {/* 时间线:左侧竖线串起思考块与工具卡。 */}
+      {open ? <div className="ml-3.5 space-y-1.5 border-l border-white/10 pb-2 pl-2.5 pr-2">{children}</div> : null}
+    </div>
+  );
+};
+
+// 思维链分组(assistant-ui 官方 chain-of-thought 模式):连续的 reasoning +
+// tool-call 先并入 "group-thought" 外壳,内部再按类型分 reasoning/tool 子组。
+const groupChainOfThought = groupPartByType({
+  reasoning: ["group-thought", "group-reasoning"],
+  "tool-call": ["group-thought", "group-tool"],
+});
 
 function makeAssistantMessage(zh: boolean): FC {
   return function AssistantMessage() {
     return (
+      // 气泡只在用户侧(DeepSeek 式):assistant 回复保持全宽平铺,阅读面积最大。
       <MessagePrimitive.Root className="group/msg flex flex-col items-start">
         <div className="w-full max-w-full space-y-2 text-[13px] leading-relaxed text-neutral-200">
-          <MessagePrimitive.GroupedParts groupBy={groupToolCalls}>
-            {({ part, children }) => {
-              switch (part.type) {
-                case "group-tool":
-                  // 单个工具直接平铺;≥2 个折叠成工具组。
-                  if (part.indices.length < 2) return <>{children}</>;
-                  return (
-                    <ToolGroupBlock count={part.indices.length} running={part.status.type === "running"} zh={zh}>
-                      {children}
-                    </ToolGroupBlock>
-                  );
-                case "text":
-                  return (
-                    <MarkdownTextPrimitive
-                      // GFM:管道表格/删除线/任务列表(分镜表就是管道表格,不开就渲染成原文)。
-                      remarkPlugins={[remarkGfm]}
-                      preprocess={normalizeAgentMarkdown}
-                      // 长流式内容降优先级解析,打字/滚动不被逐 token 重排卡住。
-                      defer
-                      components={MD_COMPONENTS}
-                    />
-                  );
-                case "reasoning":
-                  return <ReasoningBlock text={(part as { text: string }).text} zh={zh} />;
-                case "image":
-                  return <ImagePartView image={(part as { image: string }).image} />;
-                case "tool-call": {
-                  const tc = part as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
-                  return <ToolCallCard toolName={tc.toolName} argsText={tc.argsText} result={tc.result} isError={tc.isError} zh={zh} />;
+            <MessagePrimitive.GroupedParts groupBy={groupChainOfThought}>
+              {({ part, children }) => {
+                switch (part.type) {
+                  case "group-thought":
+                    // 思维链外壳:只有 1 个 part 时不套壳(单独的思考块/工具卡自渲染)。
+                    if (part.indices.length < 2) return <>{children}</>;
+                    return (
+                      <ChainOfThoughtBlock steps={part.indices.length} running={part.status.type === "running"} zh={zh}>
+                        {children}
+                      </ChainOfThoughtBlock>
+                    );
+                  case "group-reasoning":
+                    // 思考子组:ReasoningBlock 自带折叠,不再套壳。
+                    return <>{children}</>;
+                  case "group-tool":
+                    // 单个工具直接平铺;≥2 个折叠成工具组。
+                    if (part.indices.length < 2) return <>{children}</>;
+                    return (
+                      <ToolGroupBlock count={part.indices.length} running={part.status.type === "running"} zh={zh}>
+                        {children}
+                      </ToolGroupBlock>
+                    );
+                  case "text":
+                    return (
+                      <MarkdownTextPrimitive
+                        // GFM:管道表格/删除线/任务列表(分镜表就是管道表格,不开就渲染成原文)。
+                        remarkPlugins={[remarkGfm]}
+                        preprocess={normalizeAgentMarkdown}
+                        // 长流式内容降优先级解析,打字/滚动不被逐 token 重排卡住。
+                        defer
+                        components={MD_COMPONENTS}
+                      />
+                    );
+                  case "reasoning": {
+                    // aui 给 parts 注入 status:运行中且是最后一个 part → running。
+                    const status = (part as { status?: { type?: string } }).status;
+                    return <ReasoningBlock text={(part as { text: string }).text} streaming={status?.type === "running"} zh={zh} />;
+                  }
+                  case "image":
+                    return <ImagePartView image={(part as { image: string }).image} />;
+                  case "tool-call": {
+                    const tc = part as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
+                    return <ToolCallCard toolName={tc.toolName} argsText={tc.argsText} result={tc.result} isError={tc.isError} zh={zh} />;
+                  }
+                  default:
+                    return null;
                 }
-                default:
-                  return null;
-              }
-            }}
-          </MessagePrimitive.GroupedParts>
+              }}
+            </MessagePrimitive.GroupedParts>
         </div>
         <MessageActionBar align="start" zh={zh} />
       </MessagePrimitive.Root>
@@ -488,6 +581,9 @@ const AgentThreadListItem: FC = () => {
   // 直接调 runtime 的 delete —— ThreadListItemPrimitive.Delete 受 capability
   // gate 影响,ExternalStore 下可能整个不渲染/无响应。
   const itemRuntime = useThreadListItemRuntime();
+  const title = useThreadListItem((item) => item.title);
+  // 删除前二次确认(portal 小弹窗):防误触,删了不可恢复。
+  const [confirming, setConfirming] = useState(false);
   return (
     <ThreadListItemPrimitive.Root className="group/thread flex items-center gap-1 rounded-lg px-1 transition hover:bg-white/[0.05] data-[active]:bg-white/[0.08]">
       <ThreadListItemPrimitive.Trigger asChild>
@@ -498,11 +594,43 @@ const AgentThreadListItem: FC = () => {
       <button
         type="button"
         title="删除会话"
-        onClick={() => { void itemRuntime.delete(); }}
+        onClick={() => setConfirming(true)}
         className="shrink-0 rounded p-1 text-neutral-600 opacity-0 transition hover:bg-rose-500/15 hover:text-rose-300 group-hover/thread:opacity-100"
       >
         <Trash2 className="h-3 w-3" />
       </button>
+      {confirming
+        ? createPortal(
+            <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirming(false)}>
+              <div className="w-[300px] rounded-xl border border-white/12 bg-[#17191e] p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-2 text-[13px] font-medium text-neutral-100">
+                  <Trash2 className="h-3.5 w-3.5 text-rose-300" />
+                  删除会话？
+                </div>
+                <div className="mt-1.5 truncate text-[11px] text-neutral-400">
+                  「{title?.trim() || "新对话"}」的全部消息将被删除,不可恢复。
+                </div>
+                <div className="mt-3.5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirming(false)}
+                    className="rounded-md border border-white/10 px-3 py-1.5 text-[11.5px] text-neutral-300 transition hover:bg-white/5 hover:text-white"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirming(false); void itemRuntime.delete(); }}
+                    className="rounded-md border border-rose-400/40 bg-rose-500/20 px-3 py-1.5 text-[11.5px] text-rose-100 transition hover:bg-rose-500/35"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </ThreadListItemPrimitive.Root>
   );
 };
@@ -516,6 +644,7 @@ export function AgentThread({
   runSteps,
   streamingReply,
   running,
+  elapsedMs,
   onQuote,
   footer,
 }: {
@@ -523,6 +652,8 @@ export function AgentThread({
   runSteps: ThreadRunStep[];
   streamingReply: string;
   running: boolean;
+  /** 当前运行的已耗时(ms)。运行中显示为读秒,置于「思考中…」上方。 */
+  elapsedMs?: number | null;
   /** 选中消息文本 → 引用到 composer。 */
   onQuote?: (text: string) => void;
   /** 渲染在消息之后的交互卡片区(ask_user / 待确认生成 / 画布操作 / 错误)。 */
@@ -532,15 +663,22 @@ export function AgentThread({
   const UserMessage = useMemo(() => makeUserMessage(zh), [zh]);
 
   return (
-    <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
-      <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
+    <ThreadPrimitive.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
+      <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
         <div data-aui-messages className="space-y-3">
           <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
         </div>
-        {running && runSteps.length === 0 && !streamingReply ? (
-          <div className="flex items-center gap-2 text-xs text-cyan-300">
-            <DotMatrix state="thinking" className="h-4 w-4" />
-            {zh ? "思考中…" : "Thinking…"}
+        {running ? (
+          <div className="mt-1 space-y-1">
+            {elapsedMs != null ? (
+              <div className="text-[10px] tabular-nums text-neutral-500">{(elapsedMs / 1000).toFixed(1)}s</div>
+            ) : null}
+            {runSteps.length === 0 && !streamingReply ? (
+              <div className="flex items-center gap-2 text-xs text-cyan-300">
+                <DotMatrix state="thinking" className="h-4 w-4" />
+                {zh ? "思考中…" : "Thinking…"}
+              </div>
+            ) : null}
           </div>
         ) : null}
         {footer}

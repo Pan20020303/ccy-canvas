@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
+import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
@@ -33,9 +33,13 @@ import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/AgentAssistantThread";
-import { getModelTemplate } from "../model-templates";
+import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
 
-const HISTORY_LIMIT = 12;
+// 从服务器拉取的历史轮数(后端上限 50)。
+const HISTORY_FETCH_LIMIT = 50;
+// 内存中保留的消息条数上限:面板显示的就是这份历史,裁小了会让长会话
+// "只剩后半截"。400 条 ≈ 200 轮,远超正常会话长度,仅防极端内存膨胀。
+const HISTORY_LIMIT = 400;
 const CONVERSATIONS_KEY = (agentId: string, convId: string) => `${agentId}::${convId}`;
 
 function shouldReduceMotion(): boolean {
@@ -69,7 +73,9 @@ type ToolInvocation = {
 };
 
 type RunStep =
-  | { kind: "thought"; id: string; content: string }
+  // streaming=true 表示 reasoning 流还在增长(thought_delta 持续追加);
+  // 收到叙述文本/工具调用/最终回复时闭合。
+  | { kind: "thought"; id: string; content: string; streaming?: boolean }
   | { kind: "tool"; id: string; invocation: ToolInvocation }
   | { kind: "canvas"; id: string; op: string }
   | { kind: "ask_user"; id: string; question: string; options: string[]; allowCustom: boolean }
@@ -206,6 +212,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedMs, setRunFinishedMs] = useState<number | null>(null);
+  // 当前 run 所属的会话 key:运行状态(思考中/步骤/流式文本)只渲染在这个会话
+  // 下面 —— 新建/切换会话时不再"串台"到别的会话。
+  const [runConvKey, setRunConvKey] = useState<string | null>(null);
+  // 深度思考开关(composer)。null=未手动设置,按当前模型默认;模型切换时重置。
+  const [deepThinking, setDeepThinking] = useState<boolean | null>(null);
   // 上下文窗口用量(最近一轮 LLM 调用的 usage;prompt 已含全部历史)。
   // 驱动 composer 右下角的「602.7k / 1.0M (60%)」计量表。切换会话时清零。
   const [ctxUsage, setCtxUsage] = useState<{ prompt: number; completion: number; total: number } | null>(null);
@@ -316,7 +327,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (!selectedId || !activeConvId || !conversationKey) return;
     if (loadedHistoryIds[conversationKey]) return;
-    void listAgentConversationHistory(selectedId, HISTORY_LIMIT, activeConvId)
+    void listAgentConversationHistory(selectedId, HISTORY_FETCH_LIMIT, activeConvId)
       .then((items) => {
         setConversationStore((prev) => ({
           ...prev,
@@ -334,13 +345,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   );
   const conversations = selectedId ? conversationsByAgent[selectedId] ?? [] : [];
 
+  // 当前 run 是否属于正在显示的会话:不是就不渲染 思考中/步骤/流式文本
+  // (它们只出现在发起 run 的那个会话下面,切换会话不串台)。
+  const runHere = runConvKey === conversationKey;
+
   // assistant-ui runtime:消息线程 + 会话列表(ThreadList adapter)共用。
   // start 是 const 声明在后 —— onSend 回调只在事件时执行,届时已初始化。
   const threadRuntime = useAgentThreadRuntime({
     history: conversationHistory,
-    runSteps,
-    streamingReply,
-    running,
+    runSteps: runHere ? runSteps : [],
+    streamingReply: runHere ? streamingReply : "",
+    running: running && runHere,
     onSend: (text) => void start(text),
     threadList: {
       threadId: activeConvId ?? undefined,
@@ -517,6 +532,20 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     }
   }, [addNode, onConnect, runNode, updateNodeData, executionMode, backendModels, scheduleNodeFocus]);
 
+  // 闭合最后一个仍在流式增长的思考步骤 —— 一旦模型开始输出叙述文本/工具调用/
+  // 最终回复,说明这一段 reasoning 已经结束(ReasoningBlock 随之收起并定格耗时)。
+  const sealStreamingThought = (steps: RunStep[]): RunStep[] => {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const s = steps[i];
+      if (s.kind === "thought" && s.streaming) {
+        const next = steps.slice();
+        next[i] = { ...s, streaming: false };
+        return next;
+      }
+    }
+    return steps;
+  };
+
   const start = async (overrideMessage?: string) => {
     const source = overrideMessage ?? message;
     if (!selectedId || !source.trim() || running || !selectedAgent) return;
@@ -553,6 +582,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setActiveSkillName(outbound.invokedSkillName);
     setStreamingReply("");
     setRunSteps([]);
+    setRunConvKey(initialKey);
     const startedAt = performance.now();
     setRunStartedAt(startedAt);
     setRunFinishedMs(null);
@@ -579,6 +609,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         // 可用生成模型清单 → system prompt,让 agent 编排图片/视频生成
         // (create_node + set_prompt + run_node(model=...))。
         generation_models: buildGenerationModelCatalog(backendModels),
+        // 深度思考开关:仅思考类模型下发;未手动设置时按模型默认档位。
+        thinking: thinkingSupported ? thinkingOn : undefined,
       },
       (event) => {
         switch (event.type) {
@@ -596,15 +628,36 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   [newKey]: appendConversationTurn(prev[newKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages),
                 }));
               }
+              // 标记该会话历史已就绪:否则 conversationKey 变化会触发历史
+              // 拉取,run 未落库时拉到空数组,把乐观 push 的气泡整个覆盖
+              // (首次运行"只见思考中、不见回答"的根因)。
+              setLoadedHistoryIds((prev) => ({ ...prev, [newKey]: true }));
               currentKey = newKey;
+              setRunConvKey(newKey);
             }
             break;
           }
+          case "thought_delta":
+            // reasoning 流:追加到最后一个开放的思考步骤;没有就开一个新块。
+            setRunSteps((prev) => {
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const s = prev[i];
+                if (s.kind === "thought" && s.streaming) {
+                  const next = prev.slice();
+                  next[i] = { ...s, content: s.content + event.data.delta };
+                  return next;
+                }
+              }
+              return [...prev, { kind: "thought", id: `thought-${prev.length}`, content: event.data.delta, streaming: true }];
+            });
+            break;
           case "message_delta":
+            setRunSteps(sealStreamingThought);
             setStreamingReply((prev) => prev + event.data.delta);
             break;
           case "message": {
             const finalText = event.data.content;
+            setRunSteps(sealStreamingThought);
             setStreamingReply("");
             if (currentKey) {
               setConversationStore((prev) => ({
@@ -619,7 +672,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             break;
           }
           case "thought":
-            setRunSteps((prev) => [...prev, {
+            setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "thought",
               id: `thought-${prev.length}`,
               content: event.data.content,
@@ -635,7 +688,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             }]);
             break;
           case "tool_call":
-            setRunSteps((prev) => [...prev, {
+            setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "tool",
               id: `tool-${prev.length}`,
               invocation: {
@@ -687,7 +740,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             });
             break;
           case "error":
-            setRunSteps((prev) => [...prev, {
+            setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "error",
               id: `err-${prev.length}`,
               message: event.data.message,
@@ -697,6 +750,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             abortRef.current = null;
             break;
           case "done":
+            setRunSteps(sealStreamingThought);
             setRunning(false);
             setRunFinishedMs(performance.now() - startedAt);
             abortRef.current = null;
@@ -727,6 +781,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const stop = () => {
     abortRef.current?.();
     abortRef.current = null;
+    setRunSteps(sealStreamingThought);
     setRunning(false);
     if (runStartedAt != null) {
       setRunFinishedMs(performance.now() - runStartedAt);
@@ -767,13 +822,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   };
 
   // Start a brand-new chat thread, leaving the prior one intact in the list.
+  // 同 switchToConversation:进行中的 run 状态不清空(渲染层按会话隔离)。
   const newChat = async () => {
     if (!selectedId) return;
-    setStreamingReply("");
-    setRunSteps([]);
-    setRunStartedAt(null);
-    setRunFinishedMs(null);
-    setCtxUsage(null);
+    if (!running) {
+      setStreamingReply("");
+      setRunSteps([]);
+      setRunStartedAt(null);
+      setRunFinishedMs(null);
+      setCtxUsage(null);
+      setRunConvKey(null);
+    }
     try {
       const created = await createAgentConversation(selectedId, "");
       setConversationsByAgent((prev) => ({
@@ -789,15 +848,20 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     }
   };
 
-  // Switch to an existing thread.
+  // Switch to an existing thread. 有 run 在跑时保留其状态 —— 运行中的
+  // 思考/步骤只在 runConvKey 对应的会话里渲染(见 runHere gating),切走
+  // 不清空,切回还能看到进行中的 run。
   const switchToConversation = (cid: string) => {
     if (!selectedId) return;
     setActiveConversationId((prev) => ({ ...prev, [selectedId]: cid }));
-    setStreamingReply("");
-    setRunSteps([]);
-    setRunStartedAt(null);
-    setRunFinishedMs(null);
-    setCtxUsage(null);
+    if (!running) {
+      setStreamingReply("");
+      setRunSteps([]);
+      setRunStartedAt(null);
+      setRunFinishedMs(null);
+      setCtxUsage(null);
+      setRunConvKey(null);
+    }
   };
 
   const removeConversation = async (cid: string) => {
@@ -844,8 +908,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // close. The enter animation still fires via the `open`-keyed effect above.
   const hasAnyContent = conversationHistory.length > 0 || streamingReply || runSteps.length > 0;
   // 思考/工具步骤进 assistant-ui 消息流;交互与信息型卡片(提问/待确认生成/
-  // 画布操作/错误)保留原有卡片组件,渲染在消息之后。
-  const interactiveSteps = runSteps.filter(
+  // 画布操作/错误)保留原有卡片组件,渲染在消息之后。仅在 run 所属会话显示。
+  const interactiveSteps = (runHere ? runSteps : []).filter(
     (s) => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
   );
   const quickChips = allInvokableSkills.slice(0, 8);
@@ -861,6 +925,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       setOverrideModel(allModels[0]);
     }
   }, [overrideModel, selectedAgent?.model, allModels]);
+  // 深度思考:换模型后回到该模型的默认档位(qwen3.7 默认关,deepseek 等默认开)。
+  useEffect(() => { setDeepThinking(null); }, [currentModel]);
+  const thinkingSupported = isThinkingCapableModel(currentModel);
+  const thinkingOn = deepThinking ?? isThinkingDefaultOn(currentModel);
   // Provider config that owns a model name — powers the brand icon.
   const modelConfig = (m: string) => backendModels.find((c) => (c.model_list ?? []).includes(m));
   const removeReferencedNode = (id: string) => setReferencedNodes((prev) => prev.filter((n) => n.id !== id));
@@ -921,14 +989,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         <div className="flex items-center gap-2">
           <Bot className="h-4 w-4 text-neutral-300" />
           <span className="text-sm font-medium text-neutral-100">{zh ? "智能体" : "Agent"}</span>
-          {runStartedAt != null ? (
-            <span className={`ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] tabular-nums ${
-              running ? "bg-white/10 text-neutral-200" : "bg-white/[0.04] text-neutral-500"
-            }`}>
-              {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : null}
-              {formatElapsed(liveElapsedMs)}
-            </span>
-          ) : null}
+          {/* 读秒移到消息流「思考中…」上方(AgentThread elapsedMs);运行中
+              header 只留一个轻量转圈,提示后台有 run(含切到其他会话时)。 */}
+          {running ? <Loader2 className="ml-1 h-3 w-3 animate-spin text-neutral-400" /> : null}
         </div>
         <div className="flex items-center gap-1 text-neutral-500">
           <button type="button" onClick={() => void newChat()} disabled={running || !selectedId} className="rounded-md p-1.5 transition hover:bg-white/5 hover:text-white disabled:opacity-40" title={zh ? "新建会话" : "New chat"}>
@@ -945,9 +1008,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
       {/* Body: 会话列表(assistant-ui ThreadList)+ 主栏。共享同一 runtime。 */}
       <AssistantRuntimeProvider runtime={threadRuntime}>
-      <div className="flex min-h-0 flex-1">
+      {/* min-w-0:flex 子项默认 min-width:auto,超宽内容(w-max 的 GFM 表格)
+          会把整列撑破面板,右半截被 overflow-hidden 裁掉(表格也因此失去
+          横向滚动)。锁死宽度后,宽表格回到自己的 overflow-x 容器里滚。 */}
+      <div className="flex min-h-0 min-w-0 flex-1">
         {!sidebarCollapsed ? <AgentThreadList zh={zh} /> : null}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
 
       {/* Conversation thread — assistant-ui 驱动(结构化 parts + markdown +
           自动滚动/回到底部)。交互型卡片(提问/待确认生成/画布操作/错误)经
@@ -959,9 +1025,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       ) : null}
       <AgentThread
         zh={zh}
-        runSteps={runSteps}
-        streamingReply={streamingReply}
-        running={running}
+        runSteps={runHere ? runSteps : []}
+        streamingReply={runHere ? streamingReply : ""}
+        running={running && runHere}
+        elapsedMs={running && runHere ? liveElapsedMs : null}
         onQuote={quoteIntoComposer}
         footer={
           interactiveSteps.length > 0 ? (
@@ -1104,6 +1171,26 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               <Plus className="h-4 w-4" />
             </button>
             <ExecutionModeToggle mode={executionMode} onToggle={toggleExecutionMode} zh={zh} />
+            {/* 深度思考开关:仅思考类模型(deepseek / qwen3.7 / *-thinking…)显示。
+                开=模型输出 reasoning 流(思考块实时可见);关=直接回答,更快。 */}
+            {thinkingSupported ? (
+              <button
+                type="button"
+                onClick={() => setDeepThinking(!thinkingOn)}
+                disabled={running}
+                title={thinkingOn
+                  ? (zh ? "深度思考已开启：先推理再回答（点击关闭）" : "Deep thinking ON (click to disable)")
+                  : (zh ? "深度思考已关闭：直接回答更快（点击开启）" : "Deep thinking OFF (click to enable)")}
+                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[10px] transition disabled:opacity-40 ${
+                  thinkingOn
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : "border-[var(--agent-border)] text-neutral-500 hover:bg-white/5 hover:text-neutral-300"
+                }`}
+              >
+                <BrainCircuit className="h-3 w-3" />
+                {zh ? "深度思考" : "Think"}
+              </button>
+            ) : null}
             <div className="ml-auto flex items-center gap-1.5">
               {/* Standalone model selector, pinned right. Always visible. */}
               {(
