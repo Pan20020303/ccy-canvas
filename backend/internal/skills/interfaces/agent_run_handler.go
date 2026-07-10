@@ -183,6 +183,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	boundSkills := skillsapp.LoadBoundSkills(r.Context(), rt.q, agent.SkillIDs)
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
+	tools = append(tools, skillsapp.BuildSaveMemoryTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildCreatorSuiteSubAgentTools(rt.q, rt.executor, agent)...)
 	tools = append(tools, skillsapp.BuildAskUserTool(emitter.Emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
@@ -212,6 +213,8 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// Interaction guide: analyse intent first; for ambiguous requests offer a
 	// multiple-choice question via ask_user instead of guessing.
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+	// Memory nudge(hermes 式):提醒模型主动读写跨会话持久记忆。
+	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentMemoryGuide)
 
 	startedAt := time.Now()
 	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
@@ -251,6 +254,10 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 			Role:           "assistant",
 			Content:        stats.FinalReply,
 		})
+		// 自动轮次记忆:把本轮 user/assistant 写入 agent_memories(会话消息只在
+		// 本会话内可见,记忆才是 deep_retrieve 跨会话召回的来源)。best-effort。
+		skillsapp.PersistTurnMemory(r.Context(), rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID,
+			formatUUID(conversation.ID), req.Message, stats.FinalReply)
 		// Auto-fill the title from the first user turn so the switcher has
 		// something more meaningful than "新对话". Keep existing titles intact.
 		nextTitle := conversation.Title

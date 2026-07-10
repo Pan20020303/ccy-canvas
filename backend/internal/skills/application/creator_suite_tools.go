@@ -18,16 +18,12 @@ type deepRetrieveTool struct {
 }
 
 func BuildDeepRetrieveTool(q *sqlc.Queries, userID, agentID pgtype.UUID, projectID, workspaceID string) Tool {
-	isolationKey := strings.TrimSpace(projectID + ":" + workspaceID)
-	if isolationKey == ":" {
-		isolationKey = "default"
-	}
-	return &deepRetrieveTool{q: q, userID: userID, agentID: agentID, isolationKey: isolationKey}
+	return &deepRetrieveTool{q: q, userID: userID, agentID: agentID, isolationKey: memoryIsolationKey(projectID, workspaceID)}
 }
 
 func (t *deepRetrieveTool) Name() string { return "deep_retrieve" }
 func (t *deepRetrieveTool) Description() string {
-	return "Retrieve persisted agent memory snippets for the current project/workspace."
+	return "检索你的持久记忆(跨会话):用户偏好、项目设定、历史对话要点。需要回忆用户背景或之前聊过的内容时调用。query 传关键词。"
 }
 func (t *deepRetrieveTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20}},"required":["query"],"additionalProperties":false}`)
@@ -68,6 +64,115 @@ func (t *deepRetrieveTool) Execute(ctx context.Context, args json.RawMessage) (s
 	}
 	raw, _ := json.Marshal(out)
 	return string(raw), nil
+}
+
+// ─── save_memory:模型主动持久化长期记忆(hermes 式 self-nudge)────────────────
+// 与 deep_retrieve 同一隔离域(user+agent+project:workspace):save 存进去的,
+// retrieve 一定能召回。给模型一个「记住这件事」的动作,是跨会话个性化的写入端。
+
+const memoryContentMaxLen = 2000 // 防单条爆表;超长截断(按 rune,防切碎中文)
+
+func truncateMemoryContent(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= memoryContentMaxLen {
+		return s
+	}
+	return string(r[:memoryContentMaxLen])
+}
+
+type saveMemoryTool struct {
+	q            *sqlc.Queries
+	userID       pgtype.UUID
+	agentID      pgtype.UUID
+	isolationKey string
+}
+
+func BuildSaveMemoryTool(q *sqlc.Queries, userID, agentID pgtype.UUID, projectID, workspaceID string) Tool {
+	return &saveMemoryTool{q: q, userID: userID, agentID: agentID, isolationKey: memoryIsolationKey(projectID, workspaceID)}
+}
+
+// memoryIsolationKey 与 BuildDeepRetrieveTool 的规则保持一致(读写同域)。
+func memoryIsolationKey(projectID, workspaceID string) string {
+	key := strings.TrimSpace(projectID + ":" + workspaceID)
+	if key == ":" {
+		return "default"
+	}
+	return key
+}
+
+func (t *saveMemoryTool) Name() string { return "save_memory" }
+func (t *saveMemoryTool) Description() string {
+	return "把值得长期记住的信息存入持久记忆(跨会话生效):用户偏好、项目设定、重要决定、反复出现的事实。content 写一句自包含的陈述;kind 选 preference/fact/decision/profile 之一。"
+}
+func (t *saveMemoryTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"要记住的内容(一句自包含的陈述)"},"kind":{"type":"string","enum":["preference","fact","decision","profile"]}},"required":["content"],"additionalProperties":false}`)
+}
+func (t *saveMemoryTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var input struct {
+		Content string `json:"content"`
+		Kind    string `json:"kind"`
+	}
+	_ = json.Unmarshal(args, &input)
+	content := truncateMemoryContent(input.Content)
+	if content == "" {
+		return `{"saved":false,"reason":"content is empty"}`, nil
+	}
+	kind := strings.TrimSpace(input.Kind)
+	if kind == "" {
+		kind = "fact"
+	}
+	meta, _ := json.Marshal(map[string]string{"kind": kind, "source": "save_memory"})
+	if _, err := t.q.InsertAgentMemory(ctx, sqlc.InsertAgentMemoryParams{
+		UserID:       t.userID,
+		AgentID:      t.agentID,
+		IsolationKey: t.isolationKey,
+		Role:         "memory",
+		Content:      content,
+		Embedding:    []byte(`[]`),
+		Metadata:     meta,
+		Summarized:   false,
+	}); err != nil {
+		return "", err
+	}
+	return `{"saved":true}`, nil
+}
+
+// AgentMemoryGuide 追加进每个 agent 的 system prompt:提醒模型主动使用跨会话
+// 持久记忆(写入靠 save_memory,召回靠 deep_retrieve)。
+const AgentMemoryGuide = `【持久记忆】
+你拥有跨会话的持久记忆(按用户隔离):
+- 当用户透露长期有效的信息(偏好、项目设定、重要决定、个人背景)时,主动调用 save_memory 记住它;
+- 当需要回忆用户背景、之前的约定或历史对话要点时,调用 deep_retrieve 检索;
+- 不要把一次性的临时指令存入记忆。`
+
+// PersistTurnMemory 把一轮成功对话写入 agent_memories(best-effort,失败静默):
+// 会话消息只在本会话内加载,写进记忆后 deep_retrieve 才能跨会话召回。
+func PersistTurnMemory(ctx context.Context, q *sqlc.Queries, userID, agentID pgtype.UUID, projectID, workspaceID, conversationID, userMsg, finalReply string) {
+	if q == nil {
+		return
+	}
+	key := memoryIsolationKey(projectID, workspaceID)
+	meta, _ := json.Marshal(map[string]string{"source": "turn", "conversation_id": conversationID})
+	for _, m := range []struct{ role, content string }{
+		{"user", userMsg},
+		{"assistant", finalReply},
+	} {
+		content := truncateMemoryContent(m.content)
+		if content == "" {
+			continue
+		}
+		_, _ = q.InsertAgentMemory(ctx, sqlc.InsertAgentMemoryParams{
+			UserID:       userID,
+			AgentID:      agentID,
+			IsolationKey: key,
+			Role:         m.role,
+			Content:      content,
+			Embedding:    []byte(`[]`),
+			Metadata:     meta,
+			Summarized:   false,
+		})
+	}
 }
 
 type subAgentTool struct {
