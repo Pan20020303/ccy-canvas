@@ -3654,7 +3654,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       let lastFlush = 0;
       let cleared = false;
       try {
-        const resp = await generateStream({ model: payload.model ?? '', prompt: resolvedPrompt, node_id: nodeId, project_id: get().activeBackendProjectId ?? undefined }, aborter.signal);
+        // 视觉文本模型(如 qwen3.7-plus)才把连入的参考图一并发过去;纯文本模型
+        // (gpt/deepseek/qwen3.7-max…)不带图,后端仍走纯文本 content(零回归)。
+        const visionImages = getModelTemplate(payload.model ?? '')?.supportsVision
+          ? referenceMedia.imageUrls
+          : [];
+        const resp = await generateStream({
+          model: payload.model ?? '',
+          prompt: resolvedPrompt,
+          node_id: nodeId,
+          project_id: get().activeBackendProjectId ?? undefined,
+          image_urls: visionImages.length > 0 ? visionImages : undefined,
+        }, aborter.signal);
         if (!resp.ok) {
           let msg = zhFail();
           try { const j = await resp.json(); if (j?.error) msg = String(j.error); } catch { /* non-JSON */ }

@@ -1789,6 +1789,74 @@ func TestGenerateTextQwenThinkingGate(t *testing.T) {
 	}
 }
 
+func TestBuildChatUserContent(t *testing.T) {
+	// 无图 → 纯文本字符串(向后兼容)。
+	if got := buildChatUserContent("hi", nil); got != "hi" {
+		t.Fatalf("no images: got %#v, want string \"hi\"", got)
+	}
+	// 公网/COS/data URL → 多模态数组,text part + image_url part(原样透传)。
+	got := buildChatUserContent("看图", []string{"https://cos.example.com/a.png"})
+	parts, ok := got.([]map[string]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("with image: got %#v, want 2-part array", got)
+	}
+	if parts[0]["type"] != "text" || parts[0]["text"] != "看图" {
+		t.Fatalf("part0 = %#v, want text 看图", parts[0])
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Fatalf("part1 type = %#v, want image_url", parts[1])
+	}
+	iu, _ := parts[1]["image_url"].(map[string]string)
+	if iu["url"] != "https://cos.example.com/a.png" {
+		t.Fatalf("image_url = %#v, want passthrough", parts[1]["image_url"])
+	}
+	// 全部图不可读(本地不存在) → 退回纯文本,避免发只含 text part 的畸形数组。
+	if got := buildChatUserContent("x", []string{"/uploads/does-not-exist.png"}); got != "x" {
+		t.Fatalf("unreadable image: got %#v, want fallback string \"x\"", got)
+	}
+}
+
+// 文本请求带参考图时,发给模型的 content 应为多模态数组(text + image_url),
+// 供 qwen3.7-plus 等视觉文本模型读图。
+func TestGenerateTextSendsMultimodalContentWithImages(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"一只橘猫"}}]}`))
+	}))
+	defer server.Close()
+
+	repo := &fakeRepository{providerConfigs: []domain.ProviderConfig{{
+		ID: "p-vlm", ServiceType: "text", Vendor: "Alibaba", Status: "enabled",
+		BaseURL: server.URL, EncryptedAPIKey: encryptedKey, ModelList: []string{"qwen3.7-plus"},
+	}}}
+	service := NewService(repo, key)
+
+	if _, err := service.Generate(context.Background(), GenerateRequest{
+		ServiceType: "text", Model: "qwen3.7-plus", Prompt: "反推这张图的提示词",
+		ReferenceImages: []string{"https://cos.example.com/forest.png"},
+	}); err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	msgs, _ := captured["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatalf("no messages captured: %#v", captured)
+	}
+	content := msgs[0].(map[string]any)["content"]
+	arr, ok := content.([]any)
+	if !ok || len(arr) < 2 {
+		t.Fatalf("content = %#v, want multimodal array with image_url", content)
+	}
+	if arr[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("content[1] = %#v, want image_url part", arr[1])
+	}
+}
+
 func TestGenerateImageChatCompletionsParsesDataURLResponse(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")

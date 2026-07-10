@@ -45,10 +45,11 @@ func (rt *TextStreamRouter) RegisterChi(r chi.Router) {
 }
 
 type textStreamBody struct {
-	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
-	NodeID    string `json:"node_id"`
-	ProjectID string `json:"project_id"`
+	Model     string   `json:"model"`
+	Prompt    string   `json:"prompt"`
+	NodeID    string   `json:"node_id"`
+	ProjectID string   `json:"project_id"`
+	ImageUrls []string `json:"image_urls"` // 视觉文本模型(qwen3.7-plus 等)的参考图
 }
 
 func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -86,9 +87,10 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	genReq := modelapp.GenerateRequest{
-		ServiceType: "text",
-		Model:       body.Model,
-		Prompt:      body.Prompt,
+		ServiceType:     "text",
+		Model:           body.Model,
+		Prompt:          body.Prompt,
+		ReferenceImages: body.ImageUrls,
 	}
 
 	// Reserve credits up-front so we can hard-block (402) BEFORE any work and

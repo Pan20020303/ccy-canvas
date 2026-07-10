@@ -1267,7 +1267,7 @@ export function generate(
  *  POST a body). Frames: `data: {"type":"token"|"done"|"error", ...}\n\n`.
  *  Cookies (ccy_session) go via credentials:'include'. */
 export function generateStream(
-  body: { model: string; prompt: string; node_id?: string; project_id?: string },
+  body: { model: string; prompt: string; node_id?: string; project_id?: string; image_urls?: string[] },
   signal?: AbortSignal,
 ): Promise<Response> {
   return fetch(resolveApiUrl("/api/app/text/stream"), {

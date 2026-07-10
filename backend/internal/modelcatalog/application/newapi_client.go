@@ -146,10 +146,10 @@ var streamHTTPClient = &http.Client{}
 // identical, only (baseURL, token) differ. Returns the full accumulated text.
 // Blocks until the stream ends ([DONE]), errors, or ctx is cancelled. No
 // client-side Timeout: the caller's ctx (the SSE request context) bounds it.
-func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt string, onDelta func(string) error) (string, error) {
+func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt string, images []string, onDelta func(string) error) (string, error) {
 	streamBody := map[string]any{
 		"model":      model,
-		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+		"messages":   []map[string]any{{"role": "user", "content": buildChatUserContent(prompt, images)}},
 		"max_tokens": textGenMaxTokens(),
 		"stream":     true,
 	}

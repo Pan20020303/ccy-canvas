@@ -29,6 +29,9 @@ export type ModelTemplate = {
   audioSettingOptions?: string[];
   /** When true, exposes a numeric seed input (0..2147483647) for reproducible runs. */
   supportsSeed?: boolean;
+  /** 文本模型是否支持视觉(读图)。true 时,文本节点会把连入的参考图作为 image_url
+   *  一并发给模型(如百炼 qwen3.7-plus 多模态);false/未设 → 纯文本,连图会被忽略。 */
+  supportsVision?: boolean;
   durationRange?: DurationRange;
   /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
   durationOptions?: number[];
@@ -264,11 +267,15 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Alibaba",
     serviceType: "text",
     modelName: "qwen3.7-max",
+    // Max 现阶段纯文本(官方文档:后续开放多模态),故不标 vision。
   },
   "qwen3.7-plus": {
     vendor: "Alibaba",
     serviceType: "text",
     modelName: "qwen3.7-plus",
+    // Plus 原生多模态(文档:支持 image_url 图片输入、OpenAI 兼容)。标 vision 后,
+    // 文本节点会把连入的参考图一并发给模型 —— 支撑「连图 → 反推提示词」等图文推理。
+    supportsVision: true,
   },
   "gpt-image-2": {
     vendor: "OpenAI",

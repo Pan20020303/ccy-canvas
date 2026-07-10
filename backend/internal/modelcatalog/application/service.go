@@ -1222,7 +1222,7 @@ func (s *Service) StreamText(ctx context.Context, req GenerateRequest, onDelta f
 		baseURL = s.newAPI.baseURL
 		token = s.newAPI.token
 	}
-	return streamChatCompletions(ctx, baseURL, token, req.Model, req.Prompt, onDelta)
+	return streamChatCompletions(ctx, baseURL, token, req.Model, req.Prompt, req.ReferenceImages, onDelta)
 }
 
 func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest) (*GenerateResult, error) {
@@ -2896,11 +2896,35 @@ func applyQwenThinkingDefaults(body map[string]any, model string) {
 	}
 }
 
+// buildChatUserContent 构造 OpenAI 兼容 chat 的 user content。无参考图 → 纯文本
+// 字符串(向后兼容,零风险);有参考图 → 多模态数组 [{type:text},{type:image_url}…],
+// 供「视觉文本模型」(如百炼 qwen3.7-plus)读图。本地 /uploads 图转 data URI,公网/COS
+// URL 原样透传(供应商直接抓取)。前端只在模型支持视觉时才带图(见 supportsVision),
+// 故纯文本模型永远走字符串分支,不会误发 image_url 触发「未知参数/不支持图片」。
+func buildChatUserContent(prompt string, images []string) any {
+	if len(images) == 0 {
+		return prompt
+	}
+	parts := make([]map[string]any, 0, len(images)+1)
+	parts = append(parts, map[string]any{"type": "text", "text": prompt})
+	for _, img := range images {
+		u, err := localPathToDataURL(img)
+		if err != nil || strings.TrimSpace(u) == "" {
+			continue
+		}
+		parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": u}})
+	}
+	if len(parts) == 1 { // 所有图都转换失败 → 退回纯文本
+		return prompt
+	}
+	return parts
+}
+
 func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	body := map[string]interface{}{
 		"model": req.Model,
-		"messages": []map[string]string{
-			{"role": "user", "content": req.Prompt},
+		"messages": []map[string]any{
+			{"role": "user", "content": buildChatUserContent(req.Prompt, req.ReferenceImages)},
 		},
 		"max_tokens": textGenMaxTokens(),
 	}
