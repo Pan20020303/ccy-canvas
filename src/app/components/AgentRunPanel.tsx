@@ -1303,7 +1303,8 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** 上下文窗口计量表:「上下文窗口  602.7k / 1.0M (60%)」+ 细进度条。
+/** 上下文用量(assistant-ui ContextDisplay 式):SVG 环形 donut + 悬浮详情卡。
+ *  阈值配色对齐 aui:<65% 绿(emerald)/ 65–85% 琥珀(amber)/ >85% 红(red)。
  *  usage 取最近一轮 LLM 调用(prompt 已含全部历史,即当前上下文规模)。 */
 function ContextWindowMeter({
   usage, limit, zh,
@@ -1312,26 +1313,59 @@ function ContextWindowMeter({
   limit?: number;
   zh: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const used = usage.total;
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : null;
-  const barColor = pct == null ? "bg-cyan-400" : pct >= 90 ? "bg-rose-400" : pct >= 70 ? "bg-amber-400" : "bg-cyan-400";
+  const ringColor = pct == null ? "#22d3ee" : pct > 85 ? "#ef4444" : pct >= 65 ? "#f59e0b" : "#10b981";
+  const R = 7;
+  const C = 2 * Math.PI * R;
+  const frac = pct == null ? 1 : Math.max(0.02, pct / 100);
+  const rows: Array<[string, string]> = [
+    [zh ? "使用比例" : "Usage", pct == null ? (zh ? "未知(模型未声明上限)" : "unknown") : `${pct}%`],
+    [zh ? "输入 tokens" : "Input", formatTokens(usage.prompt)],
+    [zh ? "输出 tokens" : "Output", formatTokens(usage.completion)],
+    [zh ? "总计" : "Total", formatTokens(used)],
+    ...(limit ? ([
+      [zh ? "剩余" : "Remaining", formatTokens(Math.max(0, limit - used))],
+      [zh ? "上下文上限" : "Window", formatTokens(limit)],
+    ] as Array<[string, string]>) : []),
+  ];
   return (
     <div
-      className="mt-1.5 flex items-center gap-2 border-t border-white/[0.06] pt-1.5"
-      title={zh
-        ? `提示 ${formatTokens(usage.prompt)} · 生成 ${formatTokens(usage.completion)}(最近一轮）`
-        : `prompt ${formatTokens(usage.prompt)} · completion ${formatTokens(usage.completion)} (last turn)`}
+      className="relative mt-1.5 flex cursor-default items-center gap-2 border-t border-white/[0.06] pt-1.5"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      aria-label={zh ? "上下文用量" : "Context usage"}
     >
-      <span className="shrink-0 text-[10px] text-neutral-500">{zh ? "上下文窗口" : "Context window"}</span>
-      <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.07]">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
-          style={{ width: `${pct ?? 100}%`, opacity: pct == null ? 0.35 : 1 }}
+      {/* donut ring:进度环从 12 点方向顺时针。 */}
+      <svg width="15" height="15" viewBox="0 0 18 18" className="shrink-0 -rotate-90">
+        <circle cx="9" cy="9" r={R} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="2.6" />
+        <circle
+          cx="9" cy="9" r={R} fill="none"
+          stroke={ringColor} strokeWidth="2.6" strokeLinecap="round"
+          strokeDasharray={`${C * frac} ${C}`}
+          style={{ opacity: pct == null ? 0.4 : 1, transition: "stroke-dasharray 0.5s, stroke 0.3s" }}
         />
-      </div>
-      <span className="shrink-0 text-[10px] tabular-nums text-neutral-400">
+      </svg>
+      <span className="shrink-0 text-[10px] text-neutral-500">{zh ? "上下文窗口" : "Context"}</span>
+      <span className="ml-auto shrink-0 text-[10px] tabular-nums text-neutral-400">
         {formatTokens(used)}{limit ? ` / ${formatTokens(limit)} (${pct}%)` : ""}
       </span>
+      {open ? (
+        <div className="absolute bottom-full right-0 z-50 mb-2 w-[216px] rounded-xl border border-white/12 bg-[#17191e] p-3 shadow-2xl">
+          <div className="pb-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+            {zh ? "上下文用量 · 最近一轮" : "Context usage · last turn"}
+          </div>
+          <div className="space-y-1">
+            {rows.map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between text-[10.5px]">
+                <span className="text-neutral-500">{k}</span>
+                <span className="tabular-nums text-neutral-200">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

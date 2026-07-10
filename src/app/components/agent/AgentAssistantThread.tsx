@@ -121,16 +121,18 @@ function normalizeAgentMarkdown(text: string): string {
 }
 
 const MD_COMPONENTS = {
-  p: (props: React.HTMLAttributes<HTMLParagraphElement>) => <p className="mb-2 last:mb-0" {...props} />,
+  // break-words:超长连续字符(URL/无空格提示词)强制换行,决不把消息区
+  // 往右平铺;真正的宽内容(表格/代码块)各自带横向滚动容器。
+  p: (props: React.HTMLAttributes<HTMLParagraphElement>) => <p className="mb-2 break-words last:mb-0" {...props} />,
   ul: (props: React.HTMLAttributes<HTMLUListElement>) => <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />,
   ol: (props: React.OlHTMLAttributes<HTMLOListElement>) => <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />,
-  li: (props: React.LiHTMLAttributes<HTMLLIElement>) => <li className="mb-0.5" {...props} />,
+  li: (props: React.LiHTMLAttributes<HTMLLIElement>) => <li className="mb-0.5 break-words" {...props} />,
   h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => <h1 className="mb-2 mt-3 text-[15px] font-semibold first:mt-0" {...props} />,
   h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => <h2 className="mb-1.5 mt-2.5 text-[14px] font-semibold first:mt-0" {...props} />,
   h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => <h3 className="mb-1 mt-2 text-[13px] font-semibold first:mt-0" {...props} />,
   a: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200" target="_blank" rel="noreferrer" {...props} />,
   blockquote: (props: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) => <blockquote className="mb-2 border-l-2 border-white/15 pl-3 text-neutral-400" {...props} />,
-  code: (props: React.HTMLAttributes<HTMLElement>) => <code className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]" {...props} />,
+  code: (props: React.HTMLAttributes<HTMLElement>) => <code className="break-all rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]" {...props} />,
   pre: (props: React.HTMLAttributes<HTMLPreElement>) => (
     <pre className="prompt-editor-scroll mb-2 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed [&>code]:bg-transparent [&>code]:p-0" {...props} />
   ),
@@ -664,7 +666,9 @@ export function AgentThread({
 
   return (
     <ThreadPrimitive.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
-      <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
+      {/* overflow-x-hidden:视口永不横滚 —— 超宽内容(表格/代码块)必须在
+          自己的 overflow-x-auto 容器里滚,长文本一律换行。 */}
+      <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4">
         <div data-aui-messages className="space-y-3">
           <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
         </div>
