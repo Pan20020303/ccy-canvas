@@ -13,6 +13,7 @@
  */
 import { useMemo, useState, type FC, type ReactNode } from "react";
 import {
+  ActionBarPrimitive,
   AssistantRuntimeProvider,
   MessagePrimitive,
   ThreadPrimitive,
@@ -20,6 +21,7 @@ import {
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
+import remarkGfm from "remark-gfm";
 import { ArrowDown, Check, ChevronRight, Copy, Loader2, TriangleAlert, Wrench } from "lucide-react";
 
 import type { AgentConversationTurn } from "../agent-conversation";
@@ -89,6 +91,18 @@ function buildMessages(
   return messages;
 }
 
+/** 渲染前归一化模型输出:
+ *  - `<br>`(模型在表格单元格里常用)→ 表格行内换成空格(GFM 表格必须单行,
+ *    换行会拆断表格);普通行换成真换行。react-markdown 默认不渲染 raw HTML,
+ *    不处理的话 `<br>` 会以字面文本吐出来。 */
+function normalizeAgentMarkdown(text: string): string {
+  if (!text.includes("<br")) return text;
+  return text
+    .split("\n")
+    .map((line) => line.replace(/<br\s*\/?>/gi, line.includes("|") ? " " : "\n"))
+    .join("\n");
+}
+
 const MD_COMPONENTS = {
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => <p className="mb-2 last:mb-0" {...props} />,
   ul: (props: React.HTMLAttributes<HTMLUListElement>) => <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />,
@@ -104,18 +118,48 @@ const MD_COMPONENTS = {
     <pre className="prompt-editor-scroll mb-2 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed [&>code]:bg-transparent [&>code]:p-0" {...props} />
   ),
   hr: () => <hr className="my-2 border-white/10" />,
-  table: (props: React.TableHTMLAttributes<HTMLTableElement>) => <table className="mb-2 w-full border-collapse text-[11px]" {...props} />,
+  // 宽表格(分镜表 7+ 列)在窄面板里横向滚动,不撑破消息区。
+  table: (props: React.TableHTMLAttributes<HTMLTableElement>) => (
+    <div className="prompt-editor-scroll mb-2 overflow-x-auto">
+      <table className="w-max min-w-full border-collapse text-[11px]" {...props} />
+    </div>
+  ),
   th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => <th className="border border-white/10 bg-white/[0.04] px-2 py-1 text-left" {...props} />,
   td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => <td className="border border-white/10 px-2 py-1" {...props} />,
 };
 
-const UserMessage: FC = () => (
-  <MessagePrimitive.Root className="flex justify-end">
-    <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-white/10 px-3.5 py-2 text-[13px] leading-relaxed text-neutral-100">
-      <MessagePrimitive.Parts />
-    </div>
-  </MessagePrimitive.Root>
+/** 悬浮复制条(DeepSeek 式):hover 消息时浮现,点击复制整条消息文本,
+ *  1.5s 内图标切成 ✓。运行中隐藏(避免复制半截流式内容)。 */
+const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, zh }) => (
+  <ActionBarPrimitive.Root
+    hideWhenRunning
+    className={`mt-1 flex items-center opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 focus-within:opacity-100 ${align === "end" ? "justify-end" : ""}`}
+  >
+    <ActionBarPrimitive.Copy
+      copiedDuration={1500}
+      title={zh ? "复制" : "Copy"}
+      className="group/copy flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
+    >
+      <Copy className="h-3 w-3 group-data-[copied]/copy:hidden" />
+      <Check className="hidden h-3 w-3 text-emerald-400 group-data-[copied]/copy:block" />
+      <span className="group-data-[copied]/copy:hidden">{zh ? "复制" : "Copy"}</span>
+      <span className="hidden text-emerald-400 group-data-[copied]/copy:block">{zh ? "已复制" : "Copied"}</span>
+    </ActionBarPrimitive.Copy>
+  </ActionBarPrimitive.Root>
 );
+
+function makeUserMessage(zh: boolean): FC {
+  return function UserMessage() {
+    return (
+      <MessagePrimitive.Root className="group/msg flex flex-col items-end">
+        <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-white/10 px-3.5 py-2 text-[13px] leading-relaxed text-neutral-100">
+          <MessagePrimitive.Parts />
+        </div>
+        <MessageActionBar align="end" zh={zh} />
+      </MessagePrimitive.Root>
+    );
+  };
+}
 
 /** 可折叠「思考」块。 */
 const ReasoningBlock: FC<{ text: string; zh: boolean }> = ({ text, zh }) => {
@@ -201,11 +245,20 @@ const ToolCallCard: FC<{
 function makeAssistantMessage(zh: boolean): FC {
   return function AssistantMessage() {
     return (
-      <MessagePrimitive.Root className="flex justify-start">
+      <MessagePrimitive.Root className="group/msg flex flex-col items-start">
         <div className="w-full max-w-full space-y-2 text-[13px] leading-relaxed text-neutral-200">
           <MessagePrimitive.Parts
             components={{
-              Text: () => <MarkdownTextPrimitive components={MD_COMPONENTS} />,
+              Text: () => (
+                <MarkdownTextPrimitive
+                  // GFM:管道表格/删除线/任务列表(分镜表就是管道表格,不开就渲染成原文)。
+                  remarkPlugins={[remarkGfm]}
+                  preprocess={normalizeAgentMarkdown}
+                  // 长流式内容降优先级解析,打字/滚动不被逐 token 重排卡住。
+                  defer
+                  components={MD_COMPONENTS}
+                />
+              ),
               Reasoning: ({ text }) => <ReasoningBlock text={text} zh={zh} />,
               tools: {
                 Fallback: (part) => (
@@ -221,6 +274,7 @@ function makeAssistantMessage(zh: boolean): FC {
             }}
           />
         </div>
+        <MessageActionBar align="start" zh={zh} />
       </MessagePrimitive.Root>
     );
   };
@@ -261,6 +315,7 @@ export function AgentAssistantThread({
   });
 
   const AssistantMessage = useMemo(() => makeAssistantMessage(zh), [zh]);
+  const UserMessage = useMemo(() => makeUserMessage(zh), [zh]);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
