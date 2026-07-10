@@ -13,8 +13,11 @@ import * as THREE from 'three';
 
 import { useStore } from '../../store';
 import { uploadFile } from '../../api/projects';
+import { generateStream } from '../../api/providerConfigs';
+import { toRenderableMediaUrl } from '../../reference-media';
 import type { DirectorStageData, ActorPose } from './DirectorStageNode';
 import { PROP_DEFS, PropMesh, propDefOf, type PropTransform } from './director-props';
+import { buildBlockingPrompt, parseBlockingPlan, pickVisionModel } from './director-blocking';
 
 /**
  * Full-screen 3D 导演台编辑器.
@@ -974,7 +977,9 @@ async function uploadSnapshotDataUrl(dataUrl: string, filename: string): Promise
 type ReferenceLayer = { image: string; width: number; height: number; timestamp: number };
 function ReferenceLayerPlane({ layer }: { layer: ReferenceLayer }) {
   const texture = useMemo(() => {
-    const tex = new THREE.TextureLoader().load(layer.image);
+    // 直链走媒体代理:COS/OSS 直链既可能被防盗链拒,也过不了 WebGL 纹理的
+    // CORS 检查;代理是同源的,两个问题一起解决。
+    const tex = new THREE.TextureLoader().load(toRenderableMediaUrl(layer.image));
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }, [layer.image]);
@@ -1777,7 +1782,7 @@ export function DirectorStageOverlay() {
 
   /** AI识图弹窗「生成站位参考」:把上传图设为站位参考层;覆盖模式额外
    *  重置演员/道具/机位/环境到初始态(参考弹窗里两个单选的语义)。 */
-  const applyReferenceLayer = useCallback((p: { image: string; width: number; height: number; overwrite: boolean }) => {
+  const applyReferenceLayer = useCallback((p: { image: string; width: number; height: number; overwrite: boolean; recognize?: boolean }) => {
     const ts = Date.now();
     setRefLayer({ image: p.image, width: p.width, height: p.height, timestamp: ts });
     if (p.overwrite) {
@@ -1789,12 +1794,115 @@ export function DirectorStageOverlay() {
       setStageSettings({ ...DEFAULT_STAGE_SETTINGS });
     }
     // 后台换成 /uploads URL(base64 不入持久化);还在当前这张时才替换。
-    void uploadSnapshotDataUrl(p.image, `stage-ref-${ts}.png`).then((url) => {
+    const uploaded = uploadSnapshotDataUrl(p.image, `stage-ref-${ts}.png`).then((url) => {
       if (url && url !== p.image) {
         setRefLayer((prev) => (prev && prev.timestamp === ts ? { ...prev, image: url } : prev));
       }
+      return url;
     });
+    if (p.recognize) {
+      void uploaded.then((url) => runBlockingRecognition(url ?? p.image, p.width, p.height, p.overwrite));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // AI 站位识别状态:进行中显示顶部提示条;错误短暂展示后自动消失。
+  const [recognizing, setRecognizing] = useState(false);
+  const [recognizeNote, setRecognizeNote] = useState<string | null>(null);
+  const noteTimerRef = useRef<number | null>(null);
+  const flashNote = useCallback((msg: string) => {
+    setRecognizeNote(msg);
+    if (noteTimerRef.current) window.clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = window.setTimeout(() => setRecognizeNote(null), 5000);
+  }, []);
+
+  /** 图片 → 视觉模型识别人物站位/道具 → 摆上舞台。
+   *  overwrite=true 时替换现有演员/道具;false(插入)时追加。
+   *  放置走 setActors/setStageProps —— 350ms 防抖历史自动入栈,可 undo。 */
+  const runBlockingRecognition = useCallback(async (image: string, imgW: number, imgH: number, overwrite: boolean) => {
+    const isZh = useStore.getState().language === 'zh';
+    const model = pickVisionModel(useStore.getState().backendModels);
+    if (!model) {
+      flashNote(isZh ? '没有可用的视觉模型(需要支持看图的文本模型,如 qwen3.7-plus)' : 'No vision-capable text model configured');
+      return;
+    }
+    setRecognizing(true);
+    try {
+      const resp = await generateStream({
+        model,
+        prompt: buildBlockingPrompt(imgW, imgH),
+        project_id: useStore.getState().activeBackendProjectId ?? undefined,
+        image_urls: [image],
+      });
+      if (!resp.ok) {
+        let msg = isZh ? '识别请求失败' : 'Recognition request failed';
+        try { const j = await resp.json(); if (j?.error) msg = String(j.error); } catch { /* non-JSON */ }
+        flashNote(msg);
+        return;
+      }
+      // 读 SSE 收集最终文本(token 累积,done 帧优先)。
+      const reader = resp.body?.getReader();
+      if (!reader) { flashNote(isZh ? '识别失败:无响应流' : 'No response stream'); return; }
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accum = '';
+      let finalText = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep = buffer.indexOf('\n\n');
+        while (sep >= 0) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          sep = buffer.indexOf('\n\n');
+          const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+          if (!dataLine) continue;
+          let evt: { type?: string; content?: string; message?: string };
+          try { evt = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
+          if (evt.type === 'token') accum += evt.content ?? '';
+          else if (evt.type === 'done') finalText = evt.content || accum;
+          else if (evt.type === 'error') { flashNote(evt.message || (isZh ? '识别失败' : 'Recognition failed')); return; }
+        }
+      }
+      const plan = parseBlockingPlan(finalText || accum);
+      if (!plan) {
+        flashNote(isZh ? '未能从画面中识别出人物/道具' : 'Nothing recognizable in the image');
+        return;
+      }
+      const ts = Date.now();
+      const newActors: ActorTransform[] = plan.actors.map((a, i) => ({
+        ...DEFAULT_ACTOR,
+        pose: { ...DEFAULT_ACTOR.pose },
+        id: `actor-ai-${ts}-${i}`,
+        label: a.label,
+        position: [a.x, 0, a.z],
+        rotationY: a.rotationY,
+      }));
+      const newProps: PropTransform[] = plan.props.map((p, i) => ({
+        id: `prop-ai-${ts}-${i}`,
+        assetId: p.assetId,
+        label: propDefOf(p.assetId).zh,
+        position: [p.x, 0, p.z],
+        rotationY: p.rotationY,
+        scale: p.scale,
+      }));
+      if (overwrite) {
+        if (newActors.length > 0) setActors(newActors);
+        setStageProps(newProps);
+      } else {
+        setActors((prev) => [...prev, ...newActors]);
+        setStageProps((prev) => [...prev, ...newProps]);
+      }
+      flashNote(isZh
+        ? `已按画面摆放:${newActors.length} 个人物、${newProps.length} 个道具(可拖动微调)`
+        : `Placed ${newActors.length} actors and ${newProps.length} props from the image`);
+    } catch (err) {
+      flashNote(err instanceof Error ? err.message : (useStore.getState().language === 'zh' ? '识别失败' : 'Recognition failed'));
+    } finally {
+      setRecognizing(false);
+    }
+  }, [flashNote]);
 
   /** 右下机位面板的实时预览 —— 离屏按机位比例渲染,700ms 一帧;选中了某个
    *  机位标记就预览它,否则预览活跃机位。finalize 抓图期间暂停,避免争抢
@@ -2550,6 +2658,15 @@ export function DirectorStageOverlay() {
             setAiVisionOpen(false);
           }}
         />
+      ) : null}
+      {/* AI 站位识别状态条:进行中常显,结果/错误短暂展示。 */}
+      {recognizing || recognizeNote ? (
+        <div className="absolute left-1/2 top-16 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-violet-400/30 bg-[#15121d]/95 px-4 py-2 text-[11.5px] text-violet-100 shadow-2xl backdrop-blur">
+          {recognizing ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-300" /> : null}
+          {recognizing
+            ? (language === 'zh' ? 'AI 正在识别画面人物与道具…' : 'Recognizing actors & props…')
+            : recognizeNote}
+        </div>
       ) : null}
       {envPopover === 'labels' ? (
         <LabelsPanel settings={stageSettings} onPatch={patchStageSettings} onClose={() => setEnvPopover(null)} />
@@ -3420,13 +3537,14 @@ function TogglePill({ on, onToggle }: { on: boolean; onToggle: () => void }) {
  *  两个页签 + 插入/覆盖单选)。生成 = 把图半透明平铺在舞台地面辅助摆位。 */
 function StageVisionModal({ onClose, onGenerate }: {
   onClose: () => void;
-  onGenerate: (p: { image: string; width: number; height: number; overwrite: boolean }) => void;
+  onGenerate: (p: { image: string; width: number; height: number; overwrite: boolean; recognize: boolean }) => void;
 }) {
   const language = useStore((s) => s.language);
   const zh = language === 'zh';
   const [tab, setTab] = useState<'upload' | 'history'>('upload');
   const [img, setImg] = useState<{ src: string; width: number; height: number } | null>(null);
   const [overwrite, setOverwrite] = useState(false);
+  const [recognize, setRecognize] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const readFile = (f: File | undefined | null) => {
@@ -3536,6 +3654,23 @@ function StageVisionModal({ onClose, onGenerate }: {
           </div>
         </div>
 
+        {/* AI 识别开关:铺参考层之外,再让视觉模型按画面自动摆放人物/道具。 */}
+        <button
+          type="button"
+          onClick={() => setRecognize((v) => !v)}
+          className="mt-3 flex w-full items-center gap-2 rounded-lg border border-white/10 bg-white/[0.02] px-3.5 py-2.5 text-left transition hover:border-white/25"
+        >
+          <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${recognize ? 'border-violet-300 bg-violet-500/40' : 'border-white/30'}`}>
+            {recognize ? <span className="text-[9px] leading-none text-white">✓</span> : null}
+          </span>
+          <span className="flex flex-col gap-0.5">
+            <span className="text-[12.5px] text-white/90">{zh ? 'AI 识别站位并自动摆放' : 'AI blocking recognition'}</span>
+            <span className="text-[10.5px] leading-relaxed text-white/45">
+              {zh ? '视觉模型分析画面中的人物与道具,按其位置/朝向摆上舞台(消耗积分,可撤销)' : 'A vision model places actors & props on the stage to match the image (uses credits, undoable)'}
+            </span>
+          </span>
+        </button>
+
         <div className="mt-4 flex items-center justify-between border-t border-white/[0.06] pt-3">
           <span className="text-[10.5px] text-white/35">
             {zh ? '生成后可在「全景」面板移除站位参考层' : 'Remove the layer later from the Backdrop panel'}
@@ -3543,7 +3678,7 @@ function StageVisionModal({ onClose, onGenerate }: {
           <button
             type="button"
             disabled={!img}
-            onClick={() => img && onGenerate({ image: img.src, width: img.width, height: img.height, overwrite })}
+            onClick={() => img && onGenerate({ image: img.src, width: img.width, height: img.height, overwrite, recognize })}
             className="flex items-center gap-1.5 rounded-md border border-violet-400/40 bg-violet-500/[0.18] px-3.5 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/70 hover:bg-violet-500/[0.3] disabled:cursor-default disabled:opacity-40"
           >
             {zh ? '生成站位参考' : 'Generate'}
