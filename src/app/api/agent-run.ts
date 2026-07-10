@@ -36,7 +36,8 @@ export type CanvasPatch =
   | { op: "add_node";        node: Node }
   | { op: "add_edge";        edge: Edge }
   | { op: "patch_node_data"; node_id: string; patch: Record<string, unknown> }
-  | { op: "run_node";        node_id: string };
+  // model:agent 经 run_node(model=...) 指定生成模型(编排图片/视频生成)。
+  | { op: "run_node";        node_id: string; model?: string };
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 
@@ -56,6 +57,9 @@ export async function runAgent(
     model?: string;
     /** 当前项目 id:后端用它做记忆隔离域(每个项目的智能体记忆互相独立)。 */
     project_id?: string;
+    /** 可用生成模型清单(image/video/audio)。注入 system prompt,
+     *  让 agent 能挑模型并经 run_node(model=...) 编排生成。 */
+    generation_models?: Record<string, string[]>;
   },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {

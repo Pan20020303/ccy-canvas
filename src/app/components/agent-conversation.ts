@@ -3,6 +3,9 @@ export type AgentConversationRole = "user" | "assistant";
 export type AgentConversationTurn = {
   role: AgentConversationRole;
   content: string;
+  /** 附图(如引用的画布节点缩略图):随消息显示为 image parts。
+   *  仅本地会话内有效 —— 服务器持久化的是纯文本,历史重载后不带图。 */
+  images?: string[];
 };
 
 export type AgentConversationStore = Record<string, AgentConversationTurn[]>;
@@ -16,13 +19,17 @@ export function appendConversationTurn(
   role: AgentConversationRole,
   content: string,
   limit = 12,
+  images?: string[],
 ): AgentConversationTurn[] {
   const normalized = content.trim();
   if (!normalized) {
     return history;
   }
 
-  const next = [...history, { role, content: normalized }];
+  const turn: AgentConversationTurn = images && images.length > 0
+    ? { role, content: normalized, images }
+    : { role, content: normalized };
+  const next = [...history, turn];
   return next.slice(-limit);
 }
 

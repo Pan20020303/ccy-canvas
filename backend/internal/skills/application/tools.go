@@ -331,19 +331,24 @@ type runNodeTool struct{ state *CanvasState }
 
 func (t *runNodeTool) Name() string { return "run_node" }
 func (t *runNodeTool) Description() string {
-	return "Trigger generation on the target node. The browser will perform the actual API call; this just signals it to start."
+	return "Trigger generation on the target node (image/video/text/audio). Optionally pass `model` to pick a specific generation model (see 可用生成模型 in the system prompt). The browser performs the actual API call; this just signals it to start."
 }
 func (t *runNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"model":{"type":"string","description":"生成模型名(可选;省略则用节点已选/默认模型)"}},"required":["node_id"]}`)
 }
 func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		NodeID string `json:"node_id"`
+		Model  string `json:"model"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	t.state.emit(EventCanvasPatch, map[string]any{"op": "run_node", "node_id": p.NodeID})
+	patch := map[string]any{"op": "run_node", "node_id": p.NodeID}
+	if strings.TrimSpace(p.Model) != "" {
+		patch["model"] = strings.TrimSpace(p.Model)
+	}
+	t.state.emit(EventCanvasPatch, patch)
 	return `{"ok":true,"note":"Submitted to browser for generation"}`, nil
 }
 

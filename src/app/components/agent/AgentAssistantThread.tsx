@@ -4,26 +4,38 @@
  * 用 @assistant-ui/react 的 ExternalStoreRuntime 把面板既有状态
  * (历史轮次 + 当前运行的 思考/工具调用/流式文本)映射成结构化消息 parts:
  *   - thought      → reasoning part(可折叠的「思考」块)
- *   - tool_call    → tool-call part(带参数/结果展开的工具卡片)
- *   - 流式回复      → text part(markdown 渲染)
- * 视口/自动滚动/回到底部按钮由 ThreadPrimitive 提供。
+ *   - tool_call    → tool-call part(工具卡片;连续多个自动折叠成工具组)
+ *   - 流式回复      → text part(GFM markdown 渲染)
+ *   - 附图          → image part(点击放大)
+ * 另提供:线程列表(ThreadListPrimitive,历史会话切换)、选中文本引用
+ * (SelectionToolbarPrimitive)、DotMatrix 状态点阵、消息悬浮复制。
  *
- * 交互型卡片(ask_user / pending_run / canvas / error)不进消息流 ——
- * 它们由面板经 `footer` 插槽渲染在消息之后(运行尾声出现,顺序不失真)。
+ * 结构:面板层用 useAgentThreadRuntime 建 runtime,再用 AssistantRuntimeProvider
+ * 包住 <AgentThreadList>(侧栏)与 <AgentThread>(视口)—— 两者共享同一 runtime。
+ * 交互型卡片(ask_user / pending_run / canvas / error)不进消息流,经 footer 插槽
+ * 渲染在消息之后。
  */
-import { useMemo, useState, type FC, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type FC, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   ActionBarPrimitive,
-  AssistantRuntimeProvider,
   MessagePrimitive,
+  SelectionToolbarPrimitive,
+  ThreadListItemPrimitive,
+  ThreadListPrimitive,
   ThreadPrimitive,
+  groupPartByType,
   useExternalStoreRuntime,
+  useMessage,
+  useThreadListItemRuntime,
+  type ExternalStoreThreadListAdapter,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowDown, Check, ChevronRight, Copy, Loader2, TriangleAlert, Wrench } from "lucide-react";
+import { ArrowDown, Check, ChevronRight, Copy, MessageSquareQuote, Plus, TriangleAlert, Trash2, Wrench, X } from "lucide-react";
 
+import { DotMatrix } from "./ui/dot-matrix";
 import type { AgentConversationTurn } from "../agent-conversation";
 
 // 与 AgentRunPanel 共享的运行步骤形状(仅取本组件需要的字段,避免循环依赖)。
@@ -54,7 +66,11 @@ function buildMessages(
   const messages: ThreadMessageLike[] = history.map((turn, index) => ({
     id: `h-${index}`,
     role: turn.role,
-    content: [{ type: "text" as const, text: turn.content }],
+    content: [
+      // 附图(引用的画布节点等)在文本之前显示。
+      ...(turn.images ?? []).map((url) => ({ type: "image" as const, image: url })),
+      { type: "text" as const, text: turn.content },
+    ],
   }));
 
   // 当前运行 → 一条带结构化 parts 的 assistant 消息(思考/工具/流式文本)。
@@ -118,6 +134,10 @@ const MD_COMPONENTS = {
     <pre className="prompt-editor-scroll mb-2 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed [&>code]:bg-transparent [&>code]:p-0" {...props} />
   ),
   hr: () => <hr className="my-2 border-white/10" />,
+  img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
+    // eslint-disable-next-line jsx-a11y/alt-text
+    <img className="my-1 max-w-full rounded-lg border border-white/10" loading="lazy" {...props} />
+  ),
   // 宽表格(分镜表 7+ 列)在窄面板里横向滚动,不撑破消息区。
   table: (props: React.TableHTMLAttributes<HTMLTableElement>) => (
     <div className="prompt-editor-scroll mb-2 overflow-x-auto">
@@ -128,32 +148,103 @@ const MD_COMPONENTS = {
   td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => <td className="border border-white/10 px-2 py-1" {...props} />,
 };
 
+/** 消息里的图片 part:圆角缩略图,点击放大(portal 全屏灯箱)。 */
+const ImagePartView: FC<{ image: string; alt?: string }> = ({ image, alt }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="group/img relative mb-1.5 block max-w-[220px] overflow-hidden rounded-xl border border-white/10 transition hover:border-white/25"
+        title={alt || ""}
+      >
+        <img src={image} alt={alt || ""} loading="lazy" className="block max-h-[180px] w-full object-cover transition group-hover/img:scale-[1.02]" />
+      </button>
+      {open
+        ? createPortal(
+            <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/85 p-8 backdrop-blur-sm" onClick={() => setOpen(false)}>
+              <img src={image} alt={alt || ""} className="max-h-full max-w-full rounded-xl shadow-2xl" />
+              <button type="button" className="absolute right-4 top-4 rounded-full border border-white/15 bg-black/50 p-2 text-neutral-300 hover:text-white" onClick={() => setOpen(false)}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+};
+
+/** 健壮复制:clipboard API 需要 secure context(https/localhost),局域网 http
+ *  访问时静默失败 —— 退回隐藏 textarea + execCommand,两条路都保证有反馈。 */
+async function copyTextRobust(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
 /** 悬浮复制条(DeepSeek 式):hover 消息时浮现,点击复制整条消息文本,
- *  1.5s 内图标切成 ✓。运行中隐藏(避免复制半截流式内容)。 */
-const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, zh }) => (
-  <ActionBarPrimitive.Root
-    hideWhenRunning
-    className={`mt-1 flex items-center opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 focus-within:opacity-100 ${align === "end" ? "justify-end" : ""}`}
-  >
-    <ActionBarPrimitive.Copy
-      copiedDuration={1500}
-      title={zh ? "复制" : "Copy"}
-      className="group/copy flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
+ *  1.5s 内图标切成 ✓。运行中隐藏(避免复制半截流式内容)。
+ *  不用 ActionBarPrimitive.Copy —— 它依赖 clipboard API,http 环境点了没反应。 */
+const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, zh }) => {
+  const [copied, setCopied] = useState(false);
+  const getText = useMessage((m) =>
+    m.content
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join("\n\n"),
+  );
+  return (
+    <ActionBarPrimitive.Root
+      hideWhenRunning
+      className={`mt-1 flex items-center opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 focus-within:opacity-100 ${align === "end" ? "justify-end" : ""}`}
     >
-      <Copy className="h-3 w-3 group-data-[copied]/copy:hidden" />
-      <Check className="hidden h-3 w-3 text-emerald-400 group-data-[copied]/copy:block" />
-      <span className="group-data-[copied]/copy:hidden">{zh ? "复制" : "Copy"}</span>
-      <span className="hidden text-emerald-400 group-data-[copied]/copy:block">{zh ? "已复制" : "Copied"}</span>
-    </ActionBarPrimitive.Copy>
-  </ActionBarPrimitive.Root>
-);
+      <button
+        type="button"
+        title={zh ? "复制" : "Copy"}
+        onClick={() => {
+          void copyTextRobust(getText).then((ok) => {
+            if (ok) {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            }
+          });
+        }}
+        className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
+      >
+        {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+        {copied ? <span className="text-emerald-400">{zh ? "已复制" : "Copied"}</span> : <span>{zh ? "复制" : "Copy"}</span>}
+      </button>
+    </ActionBarPrimitive.Root>
+  );
+};
 
 function makeUserMessage(zh: boolean): FC {
   return function UserMessage() {
     return (
       <MessagePrimitive.Root className="group/msg flex flex-col items-end">
         <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-white/10 px-3.5 py-2 text-[13px] leading-relaxed text-neutral-100">
-          <MessagePrimitive.Parts />
+          <MessagePrimitive.Parts
+            components={{
+              Image: ({ image }) => <ImagePartView image={image} />,
+            }}
+          />
         </div>
         <MessageActionBar align="end" zh={zh} />
       </MessagePrimitive.Root>
@@ -200,7 +291,7 @@ const ToolCallCard: FC<{
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px]"
       >
         {running ? (
-          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-cyan-300" />
+          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
         ) : isError ? (
           <TriangleAlert className="h-3 w-3 shrink-0 text-rose-300" />
         ) : (
@@ -242,37 +333,75 @@ const ToolCallCard: FC<{
   );
 };
 
+/** 工具组(assistant-ui ToolGroup 式):连续 ≥2 个工具调用折叠成一组,
+ *  运行中自动展开并显示点阵动画,结束后可收起。 */
+const ToolGroupBlock: FC<{ count: number; running: boolean; zh: boolean; children: ReactNode }> = ({ count, running, zh, children }) => {
+  const [open, setOpen] = useState(running);
+  // 流式期间自动展开(官方 ToolGroup 的 auto-expand 行为)。
+  useEffect(() => { if (running) setOpen(true); }, [running]);
+  return (
+    <div className="rounded-lg border border-white/[0.08] bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-400 transition hover:text-neutral-200"
+      >
+        {running ? (
+          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+        ) : (
+          <Wrench className="h-3 w-3 shrink-0 text-neutral-500" />
+        )}
+        <span>{zh ? `${count} 个工具调用` : `${count} tool calls`}</span>
+        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open ? <div className="space-y-1.5 px-1.5 pb-1.5">{children}</div> : null}
+    </div>
+  );
+};
+
+// 连续 tool-call 归入 "group-tool" 组(assistant-ui 官方 ToolGroup 模式)。
+const groupToolCalls = groupPartByType({ "tool-call": ["group-tool"] });
+
 function makeAssistantMessage(zh: boolean): FC {
   return function AssistantMessage() {
     return (
       <MessagePrimitive.Root className="group/msg flex flex-col items-start">
         <div className="w-full max-w-full space-y-2 text-[13px] leading-relaxed text-neutral-200">
-          <MessagePrimitive.Parts
-            components={{
-              Text: () => (
-                <MarkdownTextPrimitive
-                  // GFM:管道表格/删除线/任务列表(分镜表就是管道表格,不开就渲染成原文)。
-                  remarkPlugins={[remarkGfm]}
-                  preprocess={normalizeAgentMarkdown}
-                  // 长流式内容降优先级解析,打字/滚动不被逐 token 重排卡住。
-                  defer
-                  components={MD_COMPONENTS}
-                />
-              ),
-              Reasoning: ({ text }) => <ReasoningBlock text={text} zh={zh} />,
-              tools: {
-                Fallback: (part) => (
-                  <ToolCallCard
-                    toolName={part.toolName}
-                    argsText={part.argsText}
-                    result={part.result}
-                    isError={part.isError}
-                    zh={zh}
-                  />
-                ),
-              },
+          <MessagePrimitive.GroupedParts groupBy={groupToolCalls}>
+            {({ part, children }) => {
+              switch (part.type) {
+                case "group-tool":
+                  // 单个工具直接平铺;≥2 个折叠成工具组。
+                  if (part.indices.length < 2) return <>{children}</>;
+                  return (
+                    <ToolGroupBlock count={part.indices.length} running={part.status.type === "running"} zh={zh}>
+                      {children}
+                    </ToolGroupBlock>
+                  );
+                case "text":
+                  return (
+                    <MarkdownTextPrimitive
+                      // GFM:管道表格/删除线/任务列表(分镜表就是管道表格,不开就渲染成原文)。
+                      remarkPlugins={[remarkGfm]}
+                      preprocess={normalizeAgentMarkdown}
+                      // 长流式内容降优先级解析,打字/滚动不被逐 token 重排卡住。
+                      defer
+                      components={MD_COMPONENTS}
+                    />
+                  );
+                case "reasoning":
+                  return <ReasoningBlock text={(part as { text: string }).text} zh={zh} />;
+                case "image":
+                  return <ImagePartView image={(part as { image: string }).image} />;
+                case "tool-call": {
+                  const tc = part as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
+                  return <ToolCallCard toolName={tc.toolName} argsText={tc.argsText} result={tc.result} isError={tc.isError} zh={zh} />;
+                }
+                default:
+                  return null;
+              }
             }}
-          />
+          </MessagePrimitive.GroupedParts>
         </div>
         <MessageActionBar align="start" zh={zh} />
       </MessagePrimitive.Root>
@@ -280,31 +409,49 @@ function makeAssistantMessage(zh: boolean): FC {
   };
 }
 
-export function AgentAssistantThread({
-  zh,
+/** 选中文本引用按钮(SelectionToolbar 内):把选中内容交给面板 composer。
+ *  Root 已保证选区在单条消息内且 mousedown 不清除选区 —— 点击时直接读选区即可。 */
+const QuoteSelectionButton: FC<{ zh: boolean; onQuote: (text: string) => void }> = ({ zh, onQuote }) => (
+  <button
+    type="button"
+    onClick={() => {
+      const text = window.getSelection()?.toString() ?? "";
+      if (text.trim()) {
+        onQuote(text);
+        window.getSelection()?.removeAllRanges();
+      }
+    }}
+    className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] text-neutral-200 transition hover:bg-white/10"
+  >
+    <MessageSquareQuote className="h-3.5 w-3.5 text-cyan-300" />
+    {zh ? "引用" : "Quote"}
+  </button>
+);
+
+// ─── runtime + 视口 + 线程列表(供面板组装)────────────────────────────────────
+
+export function useAgentThreadRuntime({
   history,
   runSteps,
   streamingReply,
   running,
   onSend,
-  footer,
+  threadList,
 }: {
-  zh: boolean;
   history: AgentConversationTurn[];
   runSteps: ThreadRunStep[];
   streamingReply: string;
   running: boolean;
-  /** aui composer 未启用,但 runtime 需要 onNew;转发到面板的 start()。 */
   onSend: (text: string) => void;
-  /** 渲染在消息之后的交互卡片区(ask_user / 待确认生成 / 画布操作 / 错误)。 */
-  footer?: ReactNode;
+  /** 会话列表适配器:threads/threadId/onSwitchToThread/onSwitchToNewThread/onDelete。 */
+  threadList?: ExternalStoreThreadListAdapter;
 }) {
   const messages = useMemo(
     () => buildMessages(history, runSteps, streamingReply, running),
     [history, runSteps, streamingReply, running],
   );
 
-  const runtime = useExternalStoreRuntime({
+  return useExternalStoreRuntime({
     messages,
     isRunning: running,
     convertMessage: (m: ThreadMessageLike) => m,
@@ -312,38 +459,107 @@ export function AgentAssistantThread({
       const part = message.content[0];
       if (part?.type === "text") onSend(part.text);
     },
+    adapters: threadList ? { threadList } : undefined,
   });
+}
 
+/** 历史会话列表(assistant-ui ThreadList):新建/切换/删除,当前会话高亮。
+ *  必须渲染在 AssistantRuntimeProvider 内。 */
+export function AgentThreadList({ zh }: { zh: boolean }) {
+  return (
+    <ThreadListPrimitive.Root className="flex w-[172px] shrink-0 flex-col gap-1.5 border-r border-[var(--agent-border)] bg-white/[0.015] p-2">
+      <ThreadListPrimitive.New asChild>
+        <button
+          type="button"
+          className="flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/15 px-2 py-1.5 text-[11px] text-neutral-400 transition hover:border-white/30 hover:bg-white/[0.04] hover:text-white"
+        >
+          <Plus className="h-3 w-3" />
+          {zh ? "新对话" : "New chat"}
+        </button>
+      </ThreadListPrimitive.New>
+      <div className="prompt-editor-scroll min-h-0 flex-1 space-y-0.5 overflow-y-auto">
+        <ThreadListPrimitive.Items components={{ ThreadListItem: AgentThreadListItem }} />
+      </div>
+    </ThreadListPrimitive.Root>
+  );
+}
+
+const AgentThreadListItem: FC = () => {
+  // 直接调 runtime 的 delete —— ThreadListItemPrimitive.Delete 受 capability
+  // gate 影响,ExternalStore 下可能整个不渲染/无响应。
+  const itemRuntime = useThreadListItemRuntime();
+  return (
+    <ThreadListItemPrimitive.Root className="group/thread flex items-center gap-1 rounded-lg px-1 transition hover:bg-white/[0.05] data-[active]:bg-white/[0.08]">
+      <ThreadListItemPrimitive.Trigger asChild>
+        <button type="button" className="min-w-0 flex-1 truncate px-1 py-1.5 text-left text-[11px] text-neutral-300">
+          <ThreadListItemPrimitive.Title fallback="新对话" />
+        </button>
+      </ThreadListItemPrimitive.Trigger>
+      <button
+        type="button"
+        title="删除会话"
+        onClick={() => { void itemRuntime.delete(); }}
+        className="shrink-0 rounded p-1 text-neutral-600 opacity-0 transition hover:bg-rose-500/15 hover:text-rose-300 group-hover/thread:opacity-100"
+      >
+        <Trash2 className="h-3 w-3" />
+      </button>
+    </ThreadListItemPrimitive.Root>
+  );
+};
+
+// 面板层可用的 activeConversation 上下文(备用;aui data-active 不生效时可切换)。
+export const ActiveThreadContext = createContext<string | null>(null);
+export const useActiveThread = () => useContext(ActiveThreadContext);
+
+export function AgentThread({
+  zh,
+  runSteps,
+  streamingReply,
+  running,
+  onQuote,
+  footer,
+}: {
+  zh: boolean;
+  runSteps: ThreadRunStep[];
+  streamingReply: string;
+  running: boolean;
+  /** 选中消息文本 → 引用到 composer。 */
+  onQuote?: (text: string) => void;
+  /** 渲染在消息之后的交互卡片区(ask_user / 待确认生成 / 画布操作 / 错误)。 */
+  footer?: ReactNode;
+}) {
   const AssistantMessage = useMemo(() => makeAssistantMessage(zh), [zh]);
   const UserMessage = useMemo(() => makeUserMessage(zh), [zh]);
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
-        {/* min-h-0:flex 子项默认 min-height:auto,长内容会把线程区撑高、把
-            composer 顶出面板 —— 必须显式允许收缩,让滚动发生在视口内。 */}
-        <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          <div data-aui-messages className="space-y-3">
-            <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+    <ThreadPrimitive.Root className="relative flex min-h-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
+      <ThreadPrimitive.Viewport className="prompt-editor-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div data-aui-messages className="space-y-3">
+          <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+        </div>
+        {running && runSteps.length === 0 && !streamingReply ? (
+          <div className="flex items-center gap-2 text-xs text-cyan-300">
+            <DotMatrix state="thinking" className="h-4 w-4" />
+            {zh ? "思考中…" : "Thinking…"}
           </div>
-          {running && runSteps.length === 0 && !streamingReply ? (
-            <div className="flex items-center gap-2 text-xs text-cyan-300">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {zh ? "思考中…" : "Thinking…"}
-            </div>
-          ) : null}
-          {footer}
-        </ThreadPrimitive.Viewport>
-        <ThreadPrimitive.ScrollToBottom asChild>
-          <button
-            type="button"
-            title={zh ? "回到底部" : "Scroll to bottom"}
-            className="absolute bottom-3 left-1/2 z-10 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border border-white/15 bg-[#1a1d23] text-neutral-300 shadow-lg transition hover:bg-[#23272e] hover:text-white disabled:hidden"
-          >
-            <ArrowDown className="h-3.5 w-3.5" />
-          </button>
-        </ThreadPrimitive.ScrollToBottom>
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
+        ) : null}
+        {footer}
+      </ThreadPrimitive.Viewport>
+      {/* 选中消息文本 → 浮出「引用」工具条。 */}
+      {onQuote ? (
+        <SelectionToolbarPrimitive.Root className="z-[80] rounded-xl border border-white/15 bg-[#1a1d23]/95 p-0.5 shadow-2xl backdrop-blur">
+          <QuoteSelectionButton zh={zh} onQuote={onQuote} />
+        </SelectionToolbarPrimitive.Root>
+      ) : null}
+      <ThreadPrimitive.ScrollToBottom asChild>
+        <button
+          type="button"
+          title={zh ? "回到底部" : "Scroll to bottom"}
+          className="absolute bottom-3 left-1/2 z-10 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border border-white/15 bg-[#1a1d23] text-neutral-300 shadow-lg transition hover:bg-[#23272e] hover:text-white disabled:hidden"
+        >
+          <ArrowDown className="h-3.5 w-3.5" />
+        </button>
+      </ThreadPrimitive.ScrollToBottom>
+    </ThreadPrimitive.Root>
   );
 }

@@ -15,6 +15,9 @@ export const Navbar = () => {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
+  // 面板宽度可拖拽 —— 让位必须跟随实际宽度(硬编码 480 会在拖宽后被面板压住)。
+  const agentPanelWidth = useStore((s) => s.agentPanelWidth);
+  const agentPanelResizing = useStore((s) => s.agentPanelResizing);
   const { user, creditSummary, logout, refreshCredits } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
@@ -105,8 +108,8 @@ export const Navbar = () => {
   return (
     <div
       ref={rootRef}
-      style={{ right: agentPanelOpen ? 480 : 0 }}
-      className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 transition-[right] duration-200 ease-out"
+      style={{ right: agentPanelOpen ? agentPanelWidth : 0 }}
+      className={`pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 ${agentPanelResizing ? "" : "transition-[right] duration-200 ease-out"}`}
     >
       {/* Left: logo pill + 返回 — both routes back to the project homepage. */}
       <div className="pointer-events-auto flex items-center gap-2">

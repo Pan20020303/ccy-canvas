@@ -8,6 +8,7 @@ package interfaces
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -66,6 +67,9 @@ type agentRunRequest struct {
 	ProjectID   string                `json:"project_id,omitempty"`
 	WorkspaceID string                `json:"workspace_id,omitempty"`
 	TaskContext json.RawMessage       `json:"task_context,omitempty"`
+	// 可用生成模型清单(前端从已启用 provider 提取)。注入 system prompt,
+	// 让 agent 能挑合适的图片/视频模型并经 run_node(model=...) 编排生成。
+	GenerationModels map[string][]string `json:"generation_models,omitempty"`
 	// Optional per-message model override (from the composer model picker).
 	// When set, it replaces the agent's configured model for this turn only.
 	// If no provider serves it, ResolveModelEndpoints returns an error and the
@@ -215,6 +219,18 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
 	// Memory nudge(hermes 式):提醒模型主动读写跨会话持久记忆。
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentMemoryGuide)
+	// 可用生成模型清单:agent 可以创建图片/视频节点并经 run_node(model=...)
+	// 指定模型触发生成 —— 大语言模型编排其它生成模型的关键上下文。
+	if len(req.GenerationModels) > 0 {
+		var b strings.Builder
+		b.WriteString("【可用生成模型】\n你可以用 create_node + set_prompt + run_node 编排图片/视频生成;run_node 可带 model 参数指定模型:\n")
+		for _, kind := range []string{"image", "video", "audio"} {
+			if models := req.GenerationModels[kind]; len(models) > 0 {
+				fmt.Fprintf(&b, "- %s: %s\n", kind, strings.Join(models, ", "))
+			}
+		}
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + strings.TrimSpace(b.String()))
+	}
 	// 跨轮工具历史(P3):把之前轮次的紧凑工具记录注入 system prompt,让本轮
 	// "记得"已执行过什么。tool_log 行不进 messages(sanitize 会滤掉),无配对风险。
 	var toolLogs []string

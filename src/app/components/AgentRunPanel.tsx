@@ -31,7 +31,8 @@ import { getSkillCommandName } from "./settings/skill-agent-presenters";
 import { displayNameOf, getCurrentUser } from "../api/me";
 import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
-import { AgentAssistantThread } from "./agent/AgentAssistantThread";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/AgentAssistantThread";
 import { getModelTemplate } from "../model-templates";
 
 const HISTORY_LIMIT = 12;
@@ -39,6 +40,22 @@ const CONVERSATIONS_KEY = (agentId: string, convId: string) => `${agentId}::${co
 
 function shouldReduceMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** 从已启用 provider 提取生成模型清单(image/video/audio),供 agent 编排生成。 */
+function buildGenerationModelCatalog(configs: { service_type: string; capabilities?: string[]; model_list: string[] }[]): Record<string, string[]> | undefined {
+  const byKind: Record<string, string[]> = {};
+  for (const cfg of configs) {
+    const kinds = new Set<string>([cfg.service_type, ...(cfg.capabilities ?? [])]);
+    for (const kind of kinds) {
+      if (kind !== "image" && kind !== "video" && kind !== "audio") continue;
+      for (const m of cfg.model_list ?? []) {
+        const list = (byKind[kind] ??= []);
+        if (!list.includes(m)) list.push(m);
+      }
+    }
+  }
+  return Object.keys(byKind).length > 0 ? byKind : undefined;
 }
 
 type ToolInvocation = {
@@ -94,12 +111,14 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const requestCanvasFocus = useStore((s) => s.requestCanvasFocus);
   const panelWidth = useStore((s) => s.agentPanelWidth);
   const setPanelWidth = useStore((s) => s.setAgentPanelWidth);
+  const setPanelResizing = useStore((s) => s.setAgentPanelResizing);
   // 左缘拖拽调宽:pointerdown 后跟随全局 pointermove(宽度 = 视口宽 - 指针x),
-  // 拖拽期间禁用 body 文本选择,松手结束。宽度 clamp + 持久化在 store setter 里。
+  // 拖拽期间禁用 body 文本选择 + 全局让位过渡(画布/导航实时跟手),松手结束。
   const [resizing, setResizing] = useState(false);
   const startResize = useCallback((event: React.PointerEvent) => {
     event.preventDefault();
     setResizing(true);
+    setPanelResizing(true);
     const prevUserSelect = document.body.style.userSelect;
     document.body.style.userSelect = "none";
     const onMove = (e: PointerEvent) => setPanelWidth(window.innerWidth - e.clientX);
@@ -108,10 +127,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       setResizing(false);
+      setPanelResizing(false);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-  }, [setPanelWidth]);
+  }, [setPanelWidth, setPanelResizing]);
   const startAgentNodePick = useStore((s) => s.startAgentNodePick);
   const cancelAgentNodePick = useStore((s) => s.cancelAgentNodePick);
   const agentNodePickActive = useStore((s) => s.agentNodePickActive);
@@ -314,6 +334,34 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   );
   const conversations = selectedId ? conversationsByAgent[selectedId] ?? [] : [];
 
+  // assistant-ui runtime:消息线程 + 会话列表(ThreadList adapter)共用。
+  // start 是 const 声明在后 —— onSend 回调只在事件时执行,届时已初始化。
+  const threadRuntime = useAgentThreadRuntime({
+    history: conversationHistory,
+    runSteps,
+    streamingReply,
+    running,
+    onSend: (text) => void start(text),
+    threadList: {
+      threadId: activeConvId ?? undefined,
+      threads: conversations.map((c) => ({
+        id: c.id,
+        status: "regular" as const,
+        title: c.title?.trim() || undefined,
+      })),
+      onSwitchToThread: (id) => switchToConversation(id),
+      onSwitchToNewThread: () => void newChat(),
+      onDelete: (id) => void removeConversation(id),
+    },
+  });
+
+  // 选中消息文本 → 以 markdown 引用块插入 composer(SelectionToolbar「引用」)。
+  const quoteIntoComposer = useCallback((text: string) => {
+    const quoted = text.trim().split("\n").map((l) => `> ${l}`).join("\n");
+    setMessage((prev) => `${quoted}\n\n${prev}`);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
   // Slash menu: open when the message looks like `/foo...` and no space has
   // been typed yet. Discovery spans ALL invokable skills (not just bound) so
   // a freshly-imported skill is reachable immediately.
@@ -457,10 +505,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             prompt,
             availableModels: allConfiguredModels,
             status: "pending",
-            chosenModel: data.model || fallbackModel,
+            // agent 经 run_node(model=...) 指定的模型优先(编排生图/生视频)。
+            chosenModel: patch.model || data.model || fallbackModel,
           }]);
         } else {
-          const model = data.model || fallbackModel;
+          const model = patch.model || data.model || fallbackModel;
           runNode(patch.node_id, { prompt, model });
         }
         break;
@@ -478,6 +527,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     const refPreamble = referencedNodes.length
       ? `（参考画布节点：${referencedNodes.map((n) => `${n.label}#${n.id.slice(0, 6)}`).join("，")}）\n`
       : "";
+    // 引用的画布节点缩略图 → 随用户消息显示为 image parts(点击可放大)。
+    const turnImages = referencedNodes
+      .map((n) => (n.thumb ? toRenderableMediaUrl(n.thumb, { thumbWidth: 720 }) : ""))
+      .filter(Boolean);
     const targetAgentId = selectedId;
 
     // The active conversation id may be null on a fresh agent panel (no
@@ -492,7 +545,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (initialKey) {
       setConversationStore((prev) => ({
         ...prev,
-        [initialKey]: appendConversationTurn(prev[initialKey] ?? [], "user", rawMessage, HISTORY_LIMIT),
+        [initialKey]: appendConversationTurn(prev[initialKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages),
       }));
     }
     setMessage("");
@@ -523,6 +576,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         // 记忆隔离域:每个项目的智能体记忆互相独立(save_memory / deep_retrieve /
         // 自动轮次记忆都按 user+agent+project 隔离)。
         project_id: useStore.getState().activeBackendProjectId ?? undefined,
+        // 可用生成模型清单 → system prompt,让 agent 编排图片/视频生成
+        // (create_node + set_prompt + run_node(model=...))。
+        generation_models: buildGenerationModelCatalog(backendModels),
       },
       (event) => {
         switch (event.type) {
@@ -537,7 +593,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               if (!currentKey) {
                 setConversationStore((prev) => ({
                   ...prev,
-                  [newKey]: appendConversationTurn(prev[newKey] ?? [], "user", rawMessage, HISTORY_LIMIT),
+                  [newKey]: appendConversationTurn(prev[newKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages),
                 }));
               }
               currentKey = newKey;
@@ -798,6 +854,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     requestAnimationFrame(() => inputRef.current?.focus());
   };
   const currentModel = overrideModel ?? selectedAgent?.model ?? "";
+  // 模型默认选中已有的:agent 没配置默认模型时,自动选第一个可用文本模型,
+  // 不让用户面对空的「选择模型」。
+  useEffect(() => {
+    if (!overrideModel && !selectedAgent?.model && allModels.length > 0) {
+      setOverrideModel(allModels[0]);
+    }
+  }, [overrideModel, selectedAgent?.model, allModels]);
   // Provider config that owns a model name — powers the brand icon.
   const modelConfig = (m: string) => backendModels.find((c) => (c.model_list ?? []).includes(m));
   const removeReferencedNode = (id: string) => setReferencedNodes((prev) => prev.filter((n) => n.id !== id));
@@ -880,18 +943,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       </div>
 
-      {/* Body: history sidebar + main column */}
+      {/* Body: 会话列表(assistant-ui ThreadList)+ 主栏。共享同一 runtime。 */}
+      <AssistantRuntimeProvider runtime={threadRuntime}>
       <div className="flex min-h-0 flex-1">
-        <ConversationSidebar
-          collapsed={sidebarCollapsed}
-          conversations={conversations}
-          activeId={activeConvId}
-          disabled={running || !selectedId}
-          onPick={switchToConversation}
-          onDelete={(cid) => void removeConversation(cid)}
-          onNew={() => void newChat()}
-          zh={zh}
-        />
+        {!sidebarCollapsed ? <AgentThreadList zh={zh} /> : null}
         <div className="flex min-h-0 flex-1 flex-col">
 
       {/* Conversation thread — assistant-ui 驱动(结构化 parts + markdown +
@@ -902,13 +957,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           {zh ? `本次已触发技能 ${activeSkillName}` : `Triggered skill ${activeSkillName}`}
         </div>
       ) : null}
-      <AgentAssistantThread
+      <AgentThread
         zh={zh}
-        history={conversationHistory}
         runSteps={runSteps}
         streamingReply={streamingReply}
         running={running}
-        onSend={(text) => void start(text)}
+        onQuote={quoteIntoComposer}
         footer={
           interactiveSteps.length > 0 ? (
             <div className="space-y-2">
@@ -1150,6 +1204,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       </div>
         </div>
       </div>
+      </AssistantRuntimeProvider>
     </div>
   );
 }
@@ -1253,82 +1308,6 @@ function ExecutionModeToggle({ mode, onToggle, zh }: { mode: "manual" | "auto"; 
 }
 
 /** Always-visible conversation history sidebar (collapses to width 0). */
-function ConversationSidebar({
-  collapsed,
-  conversations,
-  activeId,
-  disabled,
-  onPick,
-  onDelete,
-  onNew,
-  zh,
-}: {
-  collapsed: boolean;
-  conversations: AgentConversationSummary[];
-  activeId: string | null;
-  disabled: boolean;
-  onPick: (cid: string) => void;
-  onDelete: (cid: string) => void;
-  onNew: () => void;
-  zh: boolean;
-}) {
-  if (collapsed) return null;
-  return (
-    <div className="flex w-[190px] shrink-0 flex-col border-r border-[var(--agent-border)] bg-black/20">
-      <div className="flex items-center justify-between px-3 py-2.5">
-        <span className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-300">
-          <MessagesSquare className="h-3 w-3" />
-          {zh ? "历史会话" : "History"}
-        </span>
-        <button
-          type="button"
-          onClick={onNew}
-          disabled={disabled}
-          title={zh ? "新建会话" : "New chat"}
-          className="flex h-6 w-6 items-center justify-center rounded border border-cyan-400/30 bg-cyan-500/10 text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
-        >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      <div className="prompt-editor-scroll flex-1 space-y-1 overflow-y-auto px-2 pb-2" onWheel={(e) => e.stopPropagation()}>
-        {conversations.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1 px-2 text-center text-[11px] text-neutral-600">
-            <MessagesSquare className="h-5 w-5 opacity-40" />
-            {zh ? "暂无历史会话" : "No conversations yet"}
-          </div>
-        ) : (
-          conversations.map((conv) => {
-            const active = conv.id === activeId;
-            const title = conv.title?.trim() || (zh ? "未命名会话" : "Untitled");
-            return (
-              <div
-                key={conv.id}
-                className={`group flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 transition ${
-                  active ? "bg-cyan-500/15 text-cyan-50" : "text-neutral-300 hover:bg-white/[0.05]"
-                }`}
-                onClick={() => onPick(conv.id)}
-              >
-                <span className="min-w-0 flex-1 truncate text-[11px]">{title}</span>
-                {typeof conv.message_count === "number" && conv.message_count > 0 ? (
-                  <span className="shrink-0 text-[9px] tabular-nums text-neutral-500">{conv.message_count}</span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={(e) => { e.stopPropagation(); onDelete(conv.id); }}
-                  title={zh ? "删除会话" : "Delete"}
-                  className="shrink-0 text-neutral-600 opacity-0 transition hover:text-rose-300 group-hover:opacity-100"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-}
-
 function AgentPicker({
   agents,
   selectedId,
@@ -1562,9 +1541,15 @@ function PendingRunCard({
   onSkip: () => void;
   onPickModel: (model: string) => void;
 }) {
-  const isVideo = step.serviceType === "video";
-  const Icon = isVideo ? Film : Music2;
-  const typeLabel = isVideo ? (zh ? "视频生成" : "Video generation") : (zh ? "音频生成" : "Audio generation");
+  // 完整服务类型映射(旧版只认 video/audio,图像会被误标成「音频生成」)。
+  const Icon = step.serviceType === "video" ? Film
+    : step.serviceType === "audio" ? Music2
+    : step.serviceType === "image" ? ImageIcon
+    : Sparkles;
+  const typeLabel = step.serviceType === "video" ? (zh ? "视频生成" : "Video generation")
+    : step.serviceType === "audio" ? (zh ? "音频生成" : "Audio generation")
+    : step.serviceType === "image" ? (zh ? "图像生成" : "Image generation")
+    : (zh ? "文本生成" : "Text generation");
 
   if (step.status === "skipped") {
     return (

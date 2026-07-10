@@ -249,6 +249,9 @@ type AppState = {
   /** 智能体面板宽度(px,可拖拽调节,localStorage 持久)。routes 用它给主区让位。 */
   agentPanelWidth: number;
   setAgentPanelWidth: (width: number) => void;
+  /** 拖拽调宽进行中:主区/导航栏禁用让位过渡,画布实时跟手不滞后。 */
+  agentPanelResizing: boolean;
+  setAgentPanelResizing: (resizing: boolean) => void;
   agentNodePickActive: boolean;
   agentPickedNode: { id: string; label: string; thumb: string } | null;
   startAgentNodePick: () => void;
@@ -2029,6 +2032,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try { localStorage.setItem('agentPanelWidth', String(clamped)); } catch { /* ignore */ }
     set({ agentPanelWidth: clamped });
   },
+  agentPanelResizing: false,
+  setAgentPanelResizing: (resizing) => set({ agentPanelResizing: resizing }),
   agentNodePickActive: false,
   agentPickedNode: null,
   startAgentNodePick: () => set({ agentNodePickActive: true, agentPickedNode: null }),
