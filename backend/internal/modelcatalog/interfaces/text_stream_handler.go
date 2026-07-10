@@ -152,15 +152,25 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 	})
 	settled = true
 	if serr != nil {
-		// Refund ONLY when nothing was produced (a real provider/config failure).
-		// If partial text streamed, the user got value — keep the reserve. A
-		// mid-stream client disconnect also lands here; refunding-only-on-empty
-		// avoids double-charging a fresh failure while not over-refunding.
-		if cost > 0 && strings.TrimSpace(full) == "" {
-			rt.svc.RefundCredits(context.Background(), claims.UserID, cost, "refund: text stream failed node="+body.NodeID)
+		// 退款判定:
+		//  ① 客户端中断(浏览器 120s 超时 aborter.abort() / 断网 / 关页面):用户没
+		//     拿到可用结果、多半会「一段时间没返回就重发一条一样的」,若此处保留扣费
+		//     就会双扣。故只要是客户端取消,无论是否已产出部分 token,一律退款。
+		//  ② 真实的 provider/配置失败且零产出。
+		// 两者都退;只有「真实失败但已流出部分文本」才保留(用户确实拿到了内容)。
+		clientGone := r.Context().Err() != nil || errors.Is(serr, context.Canceled) || errors.Is(serr, context.DeadlineExceeded)
+		if cost > 0 && (clientGone || strings.TrimSpace(full) == "") {
+			rt.svc.RefundCredits(context.Background(), claims.UserID, cost, "refund: text stream "+refundReasonForStream(clientGone)+" node="+body.NodeID)
 		}
 		_ = writeFrame(map[string]string{"type": "error", "message": serr.Error()})
 		return
 	}
 	_ = writeFrame(map[string]string{"type": "done", "content": full})
+}
+
+func refundReasonForStream(clientGone bool) string {
+	if clientGone {
+		return "canceled"
+	}
+	return "failed"
 }
