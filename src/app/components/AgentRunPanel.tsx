@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Copy, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, User2, Wrench, X, Zap } from "lucide-react";
+import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
@@ -31,6 +31,8 @@ import { getSkillCommandName } from "./settings/skill-agent-presenters";
 import { displayNameOf, getCurrentUser } from "../api/me";
 import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
+import { AgentAssistantThread } from "./agent/AgentAssistantThread";
+import { getModelTemplate } from "../model-templates";
 
 const HISTORY_LIMIT = 12;
 const CONVERSATIONS_KEY = (agentId: string, convId: string) => `${agentId}::${convId}`;
@@ -163,6 +165,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedMs, setRunFinishedMs] = useState<number | null>(null);
+  // 上下文窗口用量(最近一轮 LLM 调用的 usage;prompt 已含全部历史)。
+  // 驱动 composer 右下角的「602.7k / 1.0M (60%)」计量表。切换会话时清零。
+  const [ctxUsage, setCtxUsage] = useState<{ prompt: number; completion: number; total: number } | null>(null);
 
   // Slash command picker: opens when the input starts with `/`. Mirrors the
   // Claude / Cursor behavior where typing `/` reveals bound skill templates.
@@ -180,7 +185,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [running, runSteps]);
 
   const abortRef = useRef<(() => void) | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -245,11 +249,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     clearAgentPickedNode();
   }, [agentPickedNode, clearAgentPickedNode]);
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [conversationStore, streamingReply, runSteps, selectedId]);
+  // (自动滚动由 assistant-ui 的 ThreadPrimitive.Viewport 接管。)
 
   // Load this agent's conversation list whenever the agent changes. Pick the
   // most recent thread as active (server returns them ordered DESC), or
@@ -586,6 +586,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             }]);
             applyPatch(event);
             break;
+          case "usage":
+            setCtxUsage({
+              prompt: event.data.prompt_tokens,
+              completion: event.data.completion_tokens,
+              total: event.data.total_tokens,
+            });
+            break;
           case "error":
             setRunSteps((prev) => [...prev, {
               kind: "error",
@@ -673,6 +680,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setRunSteps([]);
     setRunStartedAt(null);
     setRunFinishedMs(null);
+    setCtxUsage(null);
     try {
       const created = await createAgentConversation(selectedId, "");
       setConversationsByAgent((prev) => ({
@@ -696,6 +704,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setRunSteps([]);
     setRunStartedAt(null);
     setRunFinishedMs(null);
+    setCtxUsage(null);
   };
 
   const removeConversation = async (cid: string) => {
@@ -741,6 +750,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // in-flight agent run / streaming SSE and the history sidebar state survive a
   // close. The enter animation still fires via the `open`-keyed effect above.
   const hasAnyContent = conversationHistory.length > 0 || streamingReply || runSteps.length > 0;
+  // 思考/工具步骤进 assistant-ui 消息流;交互与信息型卡片(提问/待确认生成/
+  // 画布操作/错误)保留原有卡片组件,渲染在消息之后。
+  const interactiveSteps = runSteps.filter(
+    (s) => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
+  );
   const quickChips = allInvokableSkills.slice(0, 8);
   const applyQuickChip = (skill: Skill) => {
     setMessage(getSkillCommandName(skill) + " ");
@@ -837,35 +851,28 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         />
         <div className="flex min-h-0 flex-1 flex-col">
 
-      {/* Conversation scroll area */}
-      <div
-        ref={scrollRef}
-        // Stop wheel from bubbling up to ReactFlow (which would zoom the
-        // canvas) so users can scroll the chat naturally.
-        onWheel={(event) => event.stopPropagation()}
-        className="prompt-editor-scroll flex-1 space-y-3 overflow-y-auto px-4 py-4"
-      >
-        {activeSkillName ? (
-          <div className="rounded-md border border-cyan-400/20 bg-cyan-500/10 px-3 py-2 text-[11px] text-cyan-100">
-            {zh ? `本次已触发技能 ${activeSkillName}` : `Triggered skill ${activeSkillName}`}
-          </div>
-        ) : null}
-
-        {conversationHistory.map((turn, index) => (
-          <ChatBubble key={`turn-${index}`} role={turn.role} content={turn.content} />
-        ))}
-
-        {/* Per-run steps. Consecutive identical tool calls (e.g. read_node ×N)
-            collapse into one expandable row so they don't flood the chat. */}
-        {runSteps.length > 0 ? (
-          <div className="space-y-2 pl-9">
-            {groupRunSteps(runSteps).map((group) =>
-              group.type === "tools" && group.tools.length > 1 ? (
-                <ToolGroupRow key={group.id} name={group.name} tools={group.tools} tick={tick} zh={zh} />
-              ) : (
+      {/* Conversation thread — assistant-ui 驱动(结构化 parts + markdown +
+          自动滚动/回到底部)。交互型卡片(提问/待确认生成/画布操作/错误)经
+          footer 插槽渲染在消息之后。 */}
+      {activeSkillName ? (
+        <div className="mx-4 mt-3 rounded-md border border-cyan-400/20 bg-cyan-500/10 px-3 py-2 text-[11px] text-cyan-100">
+          {zh ? `本次已触发技能 ${activeSkillName}` : `Triggered skill ${activeSkillName}`}
+        </div>
+      ) : null}
+      <AgentAssistantThread
+        zh={zh}
+        history={conversationHistory}
+        runSteps={runSteps}
+        streamingReply={streamingReply}
+        running={running}
+        onSend={(text) => void start(text)}
+        footer={
+          interactiveSteps.length > 0 ? (
+            <div className="space-y-2">
+              {interactiveSteps.map((step) => (
                 <RunStepRow
-                  key={group.type === "tools" ? group.tools[0].id : group.step.id}
-                  step={group.type === "tools" ? group.tools[0] : group.step}
+                  key={step.id}
+                  step={step}
                   tick={tick}
                   zh={zh}
                   onConfirmRun={confirmPendingRun}
@@ -873,20 +880,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   onPickModel={updatePendingModel}
                   onChoice={(text) => void start(text)}
                 />
-              ),
-            )}
-          </div>
-        ) : null}
-
-        {streamingReply ? (
-          <ChatBubble role="assistant" content={streamingReply} streaming />
-        ) : running && runSteps.length === 0 ? (
-          <div className="flex items-center gap-2 pl-9 text-xs text-cyan-300">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            {zh ? "思考中…" : "Thinking…"}
-          </div>
-        ) : null}
-      </div>
+              ))}
+            </div>
+          ) : null
+        }
+      />
 
       {/* Composer */}
       <div className="relative border-t border-[var(--agent-border)] p-3">
@@ -1100,10 +1098,55 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               )}
             </div>
           </div>
+          {/* 上下文窗口计量表(右下角):最近一轮 usage / 模型上下文上限。
+              网关不回 usage 时不显示;模型没声明上限时只显示已用量。 */}
+          {ctxUsage ? (
+            <ContextWindowMeter usage={ctxUsage} limit={getModelTemplate(currentModel)?.contextWindow} zh={zh} />
+          ) : null}
         </div>
       </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** token 数字格式化:602700 → "602.7k",1000000 → "1.0M"。 */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** 上下文窗口计量表:「上下文窗口  602.7k / 1.0M (60%)」+ 细进度条。
+ *  usage 取最近一轮 LLM 调用(prompt 已含全部历史,即当前上下文规模)。 */
+function ContextWindowMeter({
+  usage, limit, zh,
+}: {
+  usage: { prompt: number; completion: number; total: number };
+  limit?: number;
+  zh: boolean;
+}) {
+  const used = usage.total;
+  const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : null;
+  const barColor = pct == null ? "bg-cyan-400" : pct >= 90 ? "bg-rose-400" : pct >= 70 ? "bg-amber-400" : "bg-cyan-400";
+  return (
+    <div
+      className="mt-1.5 flex items-center gap-2 border-t border-white/[0.06] pt-1.5"
+      title={zh
+        ? `提示 ${formatTokens(usage.prompt)} · 生成 ${formatTokens(usage.completion)}(最近一轮）`
+        : `prompt ${formatTokens(usage.prompt)} · completion ${formatTokens(usage.completion)} (last turn)`}
+    >
+      <span className="shrink-0 text-[10px] text-neutral-500">{zh ? "上下文窗口" : "Context window"}</span>
+      <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.07]">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+          style={{ width: `${pct ?? 100}%`, opacity: pct == null ? 0.35 : 1 }}
+        />
+      </div>
+      <span className="shrink-0 text-[10px] tabular-nums text-neutral-400">
+        {formatTokens(used)}{limit ? ` / ${formatTokens(limit)} (${pct}%)` : ""}
+      </span>
     </div>
   );
 }
@@ -1374,151 +1417,6 @@ function AgentPicker({
               </button>
             );
           })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ChatBubble({
-  role,
-  content,
-  streaming = false,
-}: {
-  role: "user" | "assistant";
-  content: string;
-  streaming?: boolean;
-}) {
-  const isUser = role === "user";
-  // Mount animation: user bubbles slide in from the right, assistant from
-  // the left, both fade-in. Keeps the visual rhythm of a real chat.
-  const bubbleRef = useMountFadeIn<HTMLDivElement>(
-    isUser ? { opacity: 0, x: 18 } : { opacity: 0, x: -18 },
-    { duration: 0.26 },
-  );
-  if (isUser) {
-    return (
-      <div ref={bubbleRef} className="group flex items-start justify-end gap-2">
-        <div className="flex max-w-[78%] flex-col items-end">
-          <div className="rounded-2xl rounded-tr-sm bg-cyan-500/20 px-3.5 py-2.5 text-sm text-neutral-100 ring-1 ring-cyan-400/20">
-            <div className="whitespace-pre-wrap break-words">{content}</div>
-          </div>
-          <BubbleActions content={content} align="end" />
-        </div>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 ring-1 ring-cyan-400/30">
-          <User2 className="h-3.5 w-3.5 text-cyan-200" />
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div ref={bubbleRef} className="group flex items-start gap-2">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.06] ring-1 ring-white/10">
-        <Bot className="h-3.5 w-3.5 text-neutral-300" />
-      </div>
-      <div className="flex max-w-[78%] flex-col items-start">
-        <div className="rounded-2xl rounded-tl-sm bg-white/[0.04] px-3.5 py-2.5 text-sm text-neutral-100 ring-1 ring-white/8">
-          <div className="whitespace-pre-wrap break-words">
-            {content}
-            {streaming ? <span className="ml-0.5 inline-block h-3.5 w-[2px] translate-y-0.5 animate-pulse bg-cyan-300" /> : null}
-          </div>
-        </div>
-        {!streaming ? <BubbleActions content={content} align="start" /> : null}
-      </div>
-    </div>
-  );
-}
-
-function BubbleActions({ content, align }: { content: string; align: "start" | "end" }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-    } catch {
-      // Fall back to a hidden textarea so older browsers / non-secure
-      // contexts (http://localhost) without the Clipboard API still work.
-      const textarea = document.createElement("textarea");
-      textarea.value = content;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      try { document.execCommand("copy"); } catch { /* swallowed */ }
-      document.body.removeChild(textarea);
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <div className={`mt-1 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 ${align === "end" ? "self-end" : "self-start"}`}>
-      <button
-        type="button"
-        onClick={() => void copy()}
-        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:bg-white/5 hover:text-neutral-200"
-        title={copied ? "已复制" : "复制"}
-      >
-        {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-        <span>{copied ? "已复制" : "复制"}</span>
-      </button>
-    </div>
-  );
-}
-
-type ToolStep = Extract<RunStep, { kind: "tool" }>;
-type RunStepGroup =
-  | { type: "tools"; id: string; name: string; tools: ToolStep[] }
-  | { type: "single"; step: RunStep };
-
-/** Collapse runs of consecutive same-name tool calls into one group so a
- *  loop of read_node ×N renders as a single expandable row. */
-function groupRunSteps(steps: RunStep[]): RunStepGroup[] {
-  const out: RunStepGroup[] = [];
-  for (const step of steps) {
-    if (step.kind === "tool") {
-      const last = out[out.length - 1];
-      if (last && last.type === "tools" && last.name === step.invocation.name) {
-        last.tools.push(step);
-        continue;
-      }
-      out.push({ type: "tools", id: step.id, name: step.invocation.name, tools: [step] });
-    } else {
-      out.push({ type: "single", step });
-    }
-  }
-  return out;
-}
-
-/** Collapsed summary for a batch of identical tool calls. */
-function ToolGroupRow({ name, tools, tick, zh }: { name: string; tools: ToolStep[]; tick: number; zh: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  void tick;
-  const running = tools.some((t) => t.invocation.status === "running");
-  const done = tools.filter((t) => t.invocation.status === "success").length;
-  const failed = tools.filter((t) => t.invocation.status === "error").length;
-  return (
-    <div className="overflow-hidden rounded-lg border border-[var(--agent-border)] bg-white/[0.02]">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] transition hover:bg-white/[0.03]"
-      >
-        <ChevronRight className={`h-3 w-3 shrink-0 text-neutral-500 transition-transform ${expanded ? "rotate-90" : ""}`} />
-        <Wrench className="h-3 w-3 shrink-0 text-neutral-500" />
-        <span className="truncate text-neutral-300">{name}</span>
-        <span className="shrink-0 rounded-full bg-white/10 px-1.5 text-[10px] text-neutral-400">×{tools.length}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[10px] text-neutral-500">
-          {running ? <Loader2 className="h-3 w-3 animate-spin text-cyan-300" /> : null}
-          {done > 0 ? <span className="text-emerald-400/80">{done}✓</span> : null}
-          {failed > 0 ? <span className="text-rose-400/80">{failed}✕</span> : null}
-        </span>
-      </button>
-      {expanded ? (
-        <div className="space-y-1 border-t border-[var(--agent-border)] px-2 py-1.5">
-          {tools.map((t) => (
-            <ToolInvocationCard key={t.id} invocation={t.invocation} zh={zh} />
-          ))}
         </div>
       ) : null}
     </div>

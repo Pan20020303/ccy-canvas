@@ -16,6 +16,7 @@ const (
 	EventCanvasPatch = "canvas_patch" // mutation the frontend should apply
 	EventError      = "error"        // fatal error, run stops
 	EventDone       = "done"         // run finished normally
+	EventUsage      = "usage"        // token usage (context-window meter)
 )
 
 // Emitter wraps an http.ResponseWriter and provides thread-safe writes of

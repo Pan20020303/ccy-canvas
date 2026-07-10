@@ -48,11 +48,21 @@ type ToolDefFn struct {
 	Parameters  json.RawMessage `json:"parameters"` // JSON Schema
 }
 
+// Usage mirrors the OpenAI `usage` object. Drives the context-window meter:
+// prompt_tokens ≈ how full the context was when this turn was sent, total_tokens
+// ≈ context after this turn (which becomes part of next turn's context).
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // ChatResponse is the agent-relevant subset of the upstream response.
 type ChatResponse struct {
 	Content      string
 	ToolCalls    []ToolCall
 	FinishReason string
+	Usage        Usage
 }
 
 // StreamCallback is invoked for each text delta as it arrives on the wire.
@@ -194,6 +204,9 @@ func (c *LLMClient) doStream(
 		"model":    model,
 		"messages": messages,
 		"stream":   true,
+		// 要求网关在流末尾附带 usage 尾包(OpenAI 兼容),用于上下文窗口计量。
+		// 不支持该选项的网关会忽略它 —— 那时 usage 为 0,前端计量表自然隐藏。
+		"stream_options": map[string]any{"include_usage": true},
 	}
 	if len(tools) > 0 {
 		body["tools"] = tools
@@ -241,6 +254,7 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 		contentBuilder strings.Builder
 		toolCalls      []ToolCall
 		finishReason   string
+		usage          Usage
 	)
 
 	for scanner.Scan() {
@@ -269,10 +283,15 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *Usage `json:"usage"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			// Some relays send a final non-JSON line (e.g. error JSON without "data:").
 			continue
+		}
+		// usage 尾包通常 choices 为空 —— 必须在下面的空-choices 跳过之前抓取。
+		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
+			usage = *chunk.Usage
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -318,6 +337,7 @@ func parseSSE(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 		Content:      contentBuilder.String(),
 		ToolCalls:    toolCalls,
 		FinishReason: finishReason,
+		Usage:        usage,
 	}, nil
 }
 
@@ -337,6 +357,7 @@ func parseOneShot(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage Usage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, fmt.Errorf("LLM parse: %w", err)
@@ -352,6 +373,7 @@ func parseOneShot(r io.Reader, onDelta StreamCallback) (*ChatResponse, error) {
 		Content:      choice.Message.Content,
 		ToolCalls:    choice.Message.ToolCalls,
 		FinishReason: choice.FinishReason,
+		Usage:        parsed.Usage,
 	}, nil
 }
 

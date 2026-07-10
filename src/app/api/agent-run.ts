@@ -16,7 +16,7 @@ import type { AgentConversationTurn } from "../components/agent-conversation";
 export type AgentSSEEventType =
   | "thought" | "tool_call" | "tool_result"
   | "message" | "message_delta" | "canvas_patch"
-  | "conversation" | "ask_user" | "error" | "done";
+  | "conversation" | "ask_user" | "usage" | "error" | "done";
 
 export type AgentSSEEvent =
   | { type: "thought";       data: { content: string } }
@@ -27,6 +27,8 @@ export type AgentSSEEvent =
   | { type: "canvas_patch";  data: CanvasPatch }
   | { type: "conversation";  data: { id: string } }
   | { type: "ask_user";      data: { question: string; options: string[]; allow_custom?: boolean } }
+  // 每轮 LLM 调用后的 token 用量(最近一轮,prompt 已含全部历史)——驱动上下文窗口计量表。
+  | { type: "usage";         data: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }
   | { type: "error";         data: { message: string } }
   | { type: "done";          data: { steps: number } };
 

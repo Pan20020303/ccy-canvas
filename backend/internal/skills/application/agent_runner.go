@@ -57,6 +57,9 @@ type RunStats struct {
 	Steps      int
 	ToolCalls  int
 	FinalReply string
+	// Usage 是最后一轮 LLM 调用的 token 用量。prompt+completion ≈ 本轮结束后的
+	// 上下文规模(下一轮的 prompt 大致就是它)——驱动前端的上下文窗口计量表。
+	Usage Usage
 }
 
 // Run executes the agent loop, streaming events via emit.
@@ -114,6 +117,18 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		if err != nil {
 			emit(EventError, map[string]string{"message": err.Error()})
 			return stats, err
+		}
+
+		// 上下文计量:每轮把网关返回的 usage 推给前端(不支持 include_usage 的
+		// 网关返回 0,前端计量表隐藏)。取最近一轮而非累加 —— prompt_tokens 已
+		// 包含全部历史,累加会重复计。
+		if resp.Usage.TotalTokens > 0 {
+			stats.Usage = resp.Usage
+			emit(EventUsage, map[string]int{
+				"prompt_tokens":     resp.Usage.PromptTokens,
+				"completion_tokens": resp.Usage.CompletionTokens,
+				"total_tokens":      resp.Usage.TotalTokens,
+			})
 		}
 
 		if len(resp.ToolCalls) == 0 {

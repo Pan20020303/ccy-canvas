@@ -32,6 +32,9 @@ export type ModelTemplate = {
   /** 文本模型是否支持视觉(读图)。true 时,文本节点会把连入的参考图作为 image_url
    *  一并发给模型(如百炼 qwen3.7-plus 多模态);false/未设 → 纯文本,连图会被忽略。 */
   supportsVision?: boolean;
+  /** 模型上下文窗口上限(tokens)。驱动智能体面板的上下文用量计量表
+   *  (如「602.7k / 1.0M (60%)」);未声明的模型不显示上限,只显示已用量。 */
+  contextWindow?: number;
   durationRange?: DurationRange;
   /** Fixed duration choices (e.g. [6, 10]). When present, takes priority over durationRange slider. */
   durationOptions?: number[];
@@ -268,6 +271,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     serviceType: "text",
     modelName: "qwen3.7-max",
     // Max 现阶段纯文本(官方文档:后续开放多模态),故不标 vision。
+    contextWindow: 1_000_000, // 官方:1M tokens 上下文
   },
   "qwen3.7-plus": {
     vendor: "Alibaba",
@@ -276,6 +280,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     // Plus 原生多模态(文档:支持 image_url 图片输入、OpenAI 兼容)。标 vision 后,
     // 文本节点会把连入的参考图一并发给模型 —— 支撑「连图 → 反推提示词」等图文推理。
     supportsVision: true,
+    contextWindow: 1_000_000, // 官方:1M tokens 上下文
   },
   "gpt-image-2": {
     vendor: "OpenAI",
