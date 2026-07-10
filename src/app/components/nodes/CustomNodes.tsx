@@ -1657,6 +1657,15 @@ const PromptPanel = ({
     void loadPromptShortcuts().then((rows) => { if (alive) { setShortcuts(rows); setShortcutsReady(true); } });
     return () => { alive = false; };
   }, [isTextNode]);
+  // 快捷提示词是模块级缓存(整会话只拉一次),管理端「提示词管理」改完后画布不会
+  // 自动更新。故每次「呼出下拉的那一刻」强制刷新一次:先展示缓存(不闪),拉到最新
+  // 就无缝替换 —— 保证用户浏览到的永远是当前的模板,无需整页刷新。
+  useEffect(() => {
+    if (!isTextNode || !slashOpen) return;
+    let alive = true;
+    void loadPromptShortcuts(true).then((rows) => { if (alive) { setShortcuts(rows); setShortcutsReady(true); } });
+    return () => { alive = false; };
+  }, [slashOpen, isTextNode]);
 
   /** Measure the SCREEN (viewport) position of the @ trigger character inside
    *  the textarea, where top points to just below the @ line. Screen coords let
