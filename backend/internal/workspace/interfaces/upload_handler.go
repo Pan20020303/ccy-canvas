@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -100,10 +101,22 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			}
 		}
 		filename := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-		url, err := assetstore.Save(r.Context(), fmt.Sprintf("%s/%s", dateDir, filename), file, contentType)
+		key := fmt.Sprintf("%s/%s", dateDir, filename)
+		url, err := assetstore.Save(r.Context(), key, file, contentType)
 		if err != nil {
-			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file"})
-			return
+			// 之前这里静默吞错(生产 500 无从排查):必须落日志,并降级到
+			// 本地磁盘 —— 对象存储(COS/OSS)故障时上传不该整体瘫痪。
+			log.Printf("[upload] primary store save failed (key=%s): %v — falling back to local disk", key, err)
+			if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+				httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file (storage error, see server log)"})
+				return
+			}
+			url, err = assetstore.SaveLocal(r.Context(), key, file, contentType)
+			if err != nil {
+				log.Printf("[upload] local fallback also failed (key=%s): %v", key, err)
+				httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file (storage error, see server log)"})
+				return
+			}
 		}
 
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{

@@ -40,6 +40,12 @@ func Save(ctx context.Context, key string, body io.Reader, contentType string) (
 	return store.Save(ctx, key, body, contentType)
 }
 
+// SaveLocal 强制落本地磁盘(UPLOAD_DIR,默认 uploads/),返回 /uploads/<key>。
+// 供上传链路在对象存储故障时降级使用 —— 云存储挂了不该让用户完全传不了图。
+func SaveLocal(ctx context.Context, key string, body io.Reader, contentType string) (string, error) {
+	return localStore{root: envOrDefault("UPLOAD_DIR", "uploads")}.Save(ctx, key, body, contentType)
+}
+
 func UploadFile(ctx context.Context, key string, localPath string, contentType string) (string, error) {
 	store, err := Default()
 	if err != nil {
