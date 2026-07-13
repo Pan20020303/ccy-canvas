@@ -228,14 +228,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   // composer 自适应高度(DeepSeek 式):随内容自动长高,到 40vh 封顶后
   // 才在框内出滚动条;清空(发送后)自动缩回两行。
+  // 依赖带上 open:面板 display:none 时 scrollHeight 为 0,若在隐藏时把
+  // 高度写死成 0px,重新打开后输入框就"消失"了 —— 不可见时不写高度,
+  // 打开时再重算一遍。
   useEffect(() => {
     const ta = inputRef.current;
     if (!ta) return;
     ta.style.height = "auto";
+    const sh = ta.scrollHeight;
+    if (sh <= 0) {
+      ta.style.height = ""; // 不可见:清掉内联高度,交还 rows=2 默认
+      return;
+    }
     const max = Math.round(window.innerHeight * 0.4);
-    ta.style.height = `${Math.min(ta.scrollHeight, max)}px`;
-    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
-  }, [message]);
+    ta.style.height = `${Math.min(sh, max)}px`;
+    ta.style.overflowY = sh > max ? "auto" : "hidden";
+  }, [message, open]);
 
   // Ticking clock so live elapsed counters refresh every 100ms while running.
   const [tick, setTick] = useState(0);
