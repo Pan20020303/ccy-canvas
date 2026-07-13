@@ -142,6 +142,9 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 		}
 
 		update := insertAgentParamsToUpdate(existing.ID, params)
+		// 技能绑定是运营配置(管理员/脚本随时增删),seed 不拥有它 ——
+		// 否则每次后端重启都会把 skill_ids 抹回空数组,绑定"莫名消失"。
+		update.SkillIDs = existing.SkillIDs
 		if agentSeedMatches(existing, update) {
 			report.Existing++
 			continue

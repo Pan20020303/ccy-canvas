@@ -41,6 +41,7 @@ func TestResolveSlashSkillMessage(t *testing.T) {
 	}
 
 	expected := "Use the following bound skill template while answering.\n\n" +
+		GuideUsageRules + "\n\n" +
 		"Skill: /rewrite\n" +
 		"Template:\n" +
 		"Rewrite the user's selected content in a warmer, more premium tone.\n\n" +

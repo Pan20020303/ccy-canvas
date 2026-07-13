@@ -37,6 +37,9 @@ func ResolveSlashSkillMessage(raw string, boundSkills []sqlc.Skill) (string, str
 		message := strings.Join([]string{
 			"Use the following bound skill template while answering.",
 			"",
+			// 与工具路径同一份使用规约:自检等仪式内化、提问走 ask_user 选项卡。
+			GuideUsageRules,
+			"",
 			"Skill: " + commandName,
 			"Template:",
 			templateBody,

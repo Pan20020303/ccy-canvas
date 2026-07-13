@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -105,6 +106,8 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	messages = append(messages, sanitizeConversationHistory(in.History)...)
 	messages = append(messages, ChatMessage{Role: "user", Content: in.UserMessage})
 	toolDefs := ToOpenAIDefs(in.Tools)
+	// "模拟执行"打回只做一次:二次仍嘴硬就放行,靠人看穿,不无限烧轮次。
+	phantomRetried := false
 
 	for step := 0; step < max; step++ {
 		select {
@@ -158,6 +161,21 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		}
 
 		if len(resp.ToolCalls) == 0 {
+			// 防"模拟执行"幻觉:回复声称已创建/连线/写入了画布内容,但整个
+			// run 一次画布写工具都没调过 —— 画布实际纹丝不动。打回去要求
+			// 真实执行(整个 run 只打回一次,避免死循环)。
+			if !phantomRetried && hasCanvasWriteTool(in.Tools) &&
+				claimsCanvasWrite(resp.Content) && !didCanvasWrite(stats.ToolTranscript) {
+				phantomRetried = true
+				emit(EventThought, map[string]string{
+					"content": "校验:回复声称已修改画布,但未调用任何画布工具 —— 已要求真实执行。",
+				})
+				messages = append(messages,
+					ChatMessage{Role: "assistant", Content: resp.Content},
+					ChatMessage{Role: "user", Content: "(系统校验)你刚才声称已在画布上创建/修改了内容,但你没有调用任何画布工具,画布实际没有任何变化。请立即用工具真实执行(创建节点用 create_node 并把完整内容放进 data.content;需要连线用 connect_nodes),完成后再简短汇报。绝不要再声称已完成未真实执行的操作。"},
+				)
+				continue
+			}
 			// No tools requested → the streamed text is the final reply.
 			// If the relay didn't actually stream and onDelta never fired,
 			// fall back to a one-shot message event so the UI sees something.
@@ -232,6 +250,41 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 
 	emit(EventError, map[string]string{"message": "Max steps exceeded"})
 	return stats, errors.New("max steps exceeded")
+}
+
+// ─── 防"模拟执行"幻觉 ─────────────────────────────────────────────────────────
+// 模型在长上下文(方法论文档等)里容易退化成"叙述模式":不调工具、直接
+// 宣称"已创建节点/已连线"。画布只认工具调用,这类回复就是伪造。
+
+// canvasWriteToolNames 是会真实改动画布的工具名。
+var canvasWriteToolNames = map[string]bool{
+	"create_node": true, "set_prompt": true, "connect_nodes": true,
+	"run_node": true, "move_node": true, "delete_node": true, "create_group": true,
+}
+
+// phantomClaimRe 命中"已/成功 + 写动词 + 节点/画布/连线"式的完成声明。
+var phantomClaimRe = regexp.MustCompile(`(已|成功)[^。！!\n]{0,16}(创建|新建|添加|写入|连线|连接|生成)[^。！!\n]{0,24}(节点|画布|连线)`)
+
+func claimsCanvasWrite(text string) bool {
+	return phantomClaimRe.MatchString(text)
+}
+
+func didCanvasWrite(transcript []ToolTranscriptEntry) bool {
+	for _, t := range transcript {
+		if canvasWriteToolNames[t.Name] && t.OK {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCanvasWriteTool(tools []Tool) bool {
+	for _, t := range tools {
+		if canvasWriteToolNames[t.Name()] {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {

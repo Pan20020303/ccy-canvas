@@ -236,6 +236,13 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// Interaction guide: analyse intent first; for ambiguous requests offer a
 	// multiple-choice question via ask_user instead of guessing.
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+	// 真实执行军规:画布只认工具调用,防"模拟执行"式幻觉(声称已创建实际没动)。
+	if agent.CanvasTools {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" +
+			"【真实执行】画布的一切变化(创建节点/连线/写入内容/触发生成)只能通过工具调用完成。" +
+			"严禁在未调用工具的情况下声称『已创建/已连线/已写入/已完成』——那是伪造,系统会校验并打回。" +
+			"要把内容写入画布时,调 create_node 并把完整内容放进 data.content;先执行,后汇报。")
+	}
 	// Memory nudge(hermes 式):提醒模型主动读写跨会话持久记忆。
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentMemoryGuide)
 	// 技能方法论指引:绑定的文档型技能是"领域方法论库"(剧本转分镜、
@@ -244,7 +251,9 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" +
 			"【技能方法论】你绑定的技能工具中,凡描述为方法论/模板/工作流的(如剧本转分镜、视频提示词模板、台词表情改写)," +
 			"在遇到匹配场景时必须先调用对应技能工具取回完整方法论,然后严格按方法论执行任务;不要跳过方法论凭记忆自由发挥。" +
-			"一次任务只取用最相关的技能,取回后不必复述文档本身。")
+			"一次任务只取用最相关的技能,取回后不必复述文档本身。" +
+			"方法论文档里的自检报告/开场仪式在内部完成,严禁打印给用户;" +
+			"文档要求向用户提问或选择时,一律经 ask_user 工具给出 options 选项,不在回复正文里罗列选项。")
 	}
 	// 可用生成模型清单:agent 可以创建图片/视频节点并经 run_node(model=...)
 	// 指定模型触发生成 —— 大语言模型编排其它生成模型的关键上下文。

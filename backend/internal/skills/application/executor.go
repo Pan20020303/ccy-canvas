@@ -75,7 +75,7 @@ func (e *Executor) Invoke(ctx context.Context, skill sqlc.Skill, inputs json.Raw
 		// 这让"剧本转分镜/提示词模板"这类知识库技能可以被 agent 按场景
 		// 自动调用:工具 description 写清触发情境,LLM 判断命中就取文档。
 		if body := guideContentMD(skill); body != "" {
-			return &Result{Type: "text", Content: body}, nil
+			return &Result{Type: "text", Content: GuideUsageRules + "\n\n--- 方法论正文 ---\n\n" + body}, nil
 		}
 		return e.invokePrompt(ctx, skill, inputs)
 	case "code":
@@ -83,6 +83,14 @@ func (e *Executor) Invoke(ctx context.Context, skill sqlc.Skill, inputs json.Raw
 	}
 	return nil, apperror.New(apperror.CodeInvalidInput, "Unknown skill kind: "+skill.Kind)
 }
+
+// GuideUsageRules 是方法论文档注入时的使用规约。这类文档多为"对话粘贴"
+// 场景编写(要求先输出自检报告、让用户回复 A/B/C 选择),照本宣科会把
+// 仪式性内容打给用户、把选择题印在正文里 —— 在 agent 语境下全部内化。
+const GuideUsageRules = "【方法论使用规约——优先级高于文档内的输出要求】\n" +
+	"1. 文档中的『自检报告 / 开场自检 / 确认清单』等仪式性环节:在你的内部思考里完成,严禁打印给用户;\n" +
+	"2. 文档要求向用户提问、确认或做选择(如 A/B/C/D、请选择、需要确认)时:必须调用 ask_user 工具,把每个选项放进 options,不要在回复正文里罗列选项;\n" +
+	"3. 你的回复只输出对用户有价值的成果(分析、分镜、提示词等),保持排版干净,不复述文档本身、不输出文档的元说明。"
 
 // guideContentMD:prompt 技能里"纯方法论文档"的判定 —— 有 content_md 且
 // 没有 user_template/system_prompt(没有可执行的子模型模板)。
