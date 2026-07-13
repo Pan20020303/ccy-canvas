@@ -60,6 +60,8 @@ type agentRunRequest struct {
 	// Current canvas snapshot for the agent to reason about.
 	Nodes []skillsapp.CanvasNode `json:"nodes"`
 	Edges []skillsapp.CanvasEdge `json:"edges"`
+	// 分组(名字+成员+外壳几何):支撑"放在分组X上面"这类空间指令。
+	Groups []skillsapp.CanvasGroup `json:"groups,omitempty"`
 	// Recent conversation context for the selected agent. Kept for backward
 	// compat with the old API shape; server-side history is the source of
 	// truth now and overrides this if non-empty.
@@ -230,7 +232,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	// This is re-built per run, so every new conversation / turn sees the latest
 	// canvas state.
 	systemPrompt := agent.SystemPrompt
-	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges); overview != "" {
+	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges, req.Groups); overview != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n（以下是本次对话最新的画布状态）\n" + overview)
 	}
 	// Interaction guide: analyse intent first; for ambiguous requests offer a

@@ -58,11 +58,59 @@ type XY struct {
 	Y float64 `json:"y"`
 }
 
+// CanvasGroup 是前端分组(Group)的镜像:成员节点 id + 可选的外壳几何。
+type CanvasGroup struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	NodeIDs  []string `json:"nodeIds"`
+	Position *XY      `json:"position,omitempty"`
+	Width    float64  `json:"width,omitempty"`
+	Height   float64  `json:"height,omitempty"`
+}
+
 func NewCanvasState(nodes []CanvasNode, edges []CanvasEdge, emit func(string, any)) *CanvasState {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
 	return &CanvasState{Nodes: nodes, Edges: edges, emit: emit}
+}
+
+// 节点卡片的粗略占位(宽 × 高):画布节点多为 300px 宽卡片,高度按中等内容估。
+const (
+	nodeSlotW = 340.0
+	nodeSlotH = 280.0
+)
+
+// placeClear 从期望位置开始找不与现有节点重叠的落点:先垂直向下扫,扫不出
+// 再右移一列重扫。模型给坐标时普遍"盲放"(反复用同一个默认值),不避让的
+// 话所有新节点都会叠死在一起。
+func (s *CanvasState) placeClear(want XY) XY {
+	overlaps := func(p XY) bool {
+		for _, n := range s.Nodes {
+			if abs(n.Position.X-p.X) < nodeSlotW && abs(n.Position.Y-p.Y) < nodeSlotH {
+				return true
+			}
+		}
+		return false
+	}
+	pos := want
+	for col := 0; col < 8; col++ {
+		for row := 0; row < 24; row++ {
+			if !overlaps(pos) {
+				return pos
+			}
+			pos.Y += nodeSlotH
+		}
+		pos = XY{X: want.X + float64(col+1)*nodeSlotW, Y: want.Y}
+	}
+	return want
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // nextID generates a unique node/edge id that won't collide with the existing
@@ -118,12 +166,12 @@ func (t *listNodesTool) Execute(_ context.Context, _ json.RawMessage) (string, e
 // inject into the agent's system prompt. Giving the model the full node list
 // up-front stops it from "exploring" the canvas by calling read_node on every
 // node one-by-one (which floods the run with dozens of tool calls).
-func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge) string {
+func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge, groups ...[]CanvasGroup) string {
 	if len(nodes) == 0 {
-		return "【画布快照】当前画布为空（没有任何节点）。"
+		return "【画布快照】当前画布为空（没有任何节点）。创建节点时从 (100, 100) 开始排布,同排节点 x 间距 340、换行 y 间距 280。"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "【画布快照】共 %d 个节点、%d 条连线。以下是完整节点清单（id · 类型 · 名称 · 产物 · 内容摘要）：\n", len(nodes), len(edges))
+	fmt.Fprintf(&b, "【画布快照】共 %d 个节点、%d 条连线。以下是完整节点清单（id · 类型 · 位置 · 名称 · 产物 · 内容摘要）：\n", len(nodes), len(edges))
 	for _, n := range nodes {
 		name := ""
 		if v, ok := n.Data["sourceName"].(string); ok && v != "" {
@@ -144,6 +192,7 @@ func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge) string {
 			}
 		}
 		b.WriteString("- " + n.ID + " · " + n.Type)
+		fmt.Fprintf(&b, " · @(%.0f, %.0f)", n.Position.X, n.Position.Y)
 		if name != "" {
 			b.WriteString(" · " + name)
 		}
@@ -155,8 +204,52 @@ func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("说明：以上已是完整画布快照，你已经掌握画布上的全部节点，**不要逐个调用 read_node 去遍历所有节点**。仅当确实需要某个具体节点的完整 prompt / url 等细节时，才对那一个节点调用 read_node；需要按类型或关键词筛选时用 find_nodes。")
+	// 分组段落:名字 + 包围盒,支撑"放在分组X上面/旁边"这类空间指令。
+	if len(groups) > 0 && len(groups[0]) > 0 {
+		byID := make(map[string]CanvasNode, len(nodes))
+		for _, n := range nodes {
+			byID[n.ID] = n
+		}
+		b.WriteString("【分组】\n")
+		for _, g := range groups[0] {
+			minX, minY, maxX, maxY, count := groupBounds(g, byID)
+			if count == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s(id %s):%d 个成员,包围盒 x∈[%.0f, %.0f] y∈[%.0f, %.0f]\n",
+				g.Name, g.ID, count, minX, maxX, minY, maxY)
+		}
+	}
+	b.WriteString("【空间规则】创建节点必须给出经过推算的坐标：参考上面各节点/分组的真实位置，把新节点放到目标附近的空白处（节点间距至少 340×280）。" +
+		"「放在某分组上面」= x 取该分组包围盒的 x 范围内、y = 包围盒 y 下界 - 300；「右侧」= x = 包围盒 x 上界 + 360。" +
+		"连续创建多个节点时按每行间隔 340、每列间隔 280 排开，不要反复使用同一个坐标；若坐标与已有节点重叠，系统会自动向下避让并在结果里返回实际落点。\n" +
+		"说明：以上已是完整画布快照，你已经掌握画布上的全部节点，**不要逐个调用 read_node 去遍历所有节点**。仅当确实需要某个具体节点的完整 prompt / url 等细节时，才对那一个节点调用 read_node；需要按类型或关键词筛选时用 find_nodes。")
 	return b.String()
+}
+
+// groupBounds 计算分组包围盒:有外壳几何用外壳,否则按成员节点位置聚合。
+func groupBounds(g CanvasGroup, byID map[string]CanvasNode) (minX, minY, maxX, maxY float64, count int) {
+	if g.Position != nil && g.Width > 0 && g.Height > 0 {
+		return g.Position.X, g.Position.Y, g.Position.X + g.Width, g.Position.Y + g.Height, len(g.NodeIDs)
+	}
+	first := true
+	for _, id := range g.NodeIDs {
+		n, ok := byID[id]
+		if !ok {
+			continue
+		}
+		count++
+		if first {
+			minX, minY, maxX, maxY = n.Position.X, n.Position.Y, n.Position.X+nodeSlotW, n.Position.Y+nodeSlotH
+			first = false
+			continue
+		}
+		minX = min(minX, n.Position.X)
+		minY = min(minY, n.Position.Y)
+		maxX = max(maxX, n.Position.X+nodeSlotW)
+		maxY = max(maxY, n.Position.Y+nodeSlotH)
+	}
+	return
 }
 
 // askUserTool lets the agent pause and ask the user a clarifying question with
@@ -251,11 +344,14 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 		}
 	}
 	t.state.mu.Lock()
-	node := CanvasNode{ID: t.state.nextID("ag"), Type: p.Type, Position: p.Position, Data: p.Data}
+	// 自动避让:模型给的坐标与现有节点重叠时,就近挪到空位。
+	placed := t.state.placeClear(p.Position)
+	node := CanvasNode{ID: t.state.nextID("ag"), Type: p.Type, Position: placed, Data: p.Data}
 	t.state.Nodes = append(t.state.Nodes, node)
 	t.state.mu.Unlock()
 	t.state.emit(EventCanvasPatch, map[string]any{"op": "add_node", "node": node})
-	out, _ := json.Marshal(map[string]string{"id": node.ID})
+	// 把实际落点回给模型:连续创建多个节点时它才能基于真实位置继续排布。
+	out, _ := json.Marshal(map[string]any{"id": node.ID, "position": placed})
 	return string(out), nil
 }
 

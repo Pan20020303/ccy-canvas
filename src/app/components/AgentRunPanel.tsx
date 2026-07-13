@@ -620,6 +620,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         message: refPreamble + outbound.message,
         nodes: nodes as unknown[],
         edges: edges as unknown[],
+        groups: useStore.getState().groups as unknown[],
         history: priorHistory,
         conversation_id: runConversationId ?? undefined,
         model: overrideModel ?? undefined,

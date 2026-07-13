@@ -54,6 +54,9 @@ export async function runAgent(
     message: string;
     nodes: unknown[];
     edges: unknown[];
+    /** 画布分组(名字/成员/外壳几何)——注入 system prompt 的空间上下文,
+     *  支撑"放在分组X上面"这类指令。 */
+    groups?: unknown[];
     history?: AgentConversationTurn[];
     conversation_id?: string;
     model?: string;
