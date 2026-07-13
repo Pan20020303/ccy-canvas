@@ -38,6 +38,83 @@ func TestParseSSENoUsageIsZero(t *testing.T) {
 	}
 }
 
+// Ollama 系网关的非标准 tool_calls:arguments 是 JSON 对象(标准是字符串),
+// index 放在 function 里。两种都必须解析出来,不能整块丢弃。
+func TestParseSSEObjectArgumentsToolCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","function":{"index":0,"name":"get_weather","arguments":{"city":"Beijing"}}}]},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{})
+	if err != nil {
+		t.Fatalf("parseSSE error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1 (%#v)", len(resp.ToolCalls), resp.ToolCalls)
+	}
+	tc := resp.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Function.Name != "get_weather" {
+		t.Fatalf("tool call mismatch: %#v", tc)
+	}
+	if tc.Function.Arguments != `{"city":"Beijing"}` {
+		t.Fatalf("arguments = %q, want JSON text", tc.Function.Arguments)
+	}
+	if resp.FinishReason != "stop" {
+		t.Fatalf("finish reason = %q", resp.FinishReason)
+	}
+}
+
+// 残次网关把上游 HTTP 400 原文嵌进 200 SSE 流:整条流零产出时必须上抛
+// 为 "LLM HTTP 4xx" 错误,触发 tool_calls 形态降级重试。
+func TestParseSSEEmbeddedHTTPErrorSurfaces(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`HTTP/1.1 400 Bad Request`,
+		`Content-Type: application/json; charset=utf-8`,
+		``,
+		`{"error":{"message":"Value looks like object, but can't find closing '}' symbol","type":"ollama_error"}}`,
+	}, "\n\n") + "\n\n"
+
+	_, err := parseSSE(strings.NewReader(stream), StreamOpts{})
+	if err == nil {
+		t.Fatal("expected embedded 4xx to surface as error")
+	}
+	if !strings.Contains(err.Error(), "LLM HTTP 4") {
+		t.Fatalf("error %q should carry the LLM HTTP 4 marker for fallback retry", err)
+	}
+}
+
+// 正常有产出的流,即使中途混入非 data 行,也不应报错。
+func TestParseSSEIgnoresGarbageWhenContentPresent(t *testing.T) {
+	stream := strings.Join([]string{
+		`: ping`,
+		`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{})
+	if err != nil || resp.Content != "hi" {
+		t.Fatalf("resp=%v err=%v", resp, err)
+	}
+}
+
+// 标准 OpenAI 分片(arguments 字符串逐段追加)不受兼容改动影响。
+func TestParseSSEStringArgumentsStillAccumulate(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"run","arguments":"{\"a\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}, "\n\n") + "\n\n"
+
+	resp, err := parseSSE(strings.NewReader(stream), StreamOpts{})
+	if err != nil {
+		t.Fatalf("parseSSE error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Arguments != `{"a":1}` {
+		t.Fatalf("tool calls = %#v", resp.ToolCalls)
+	}
+}
+
 // reasoning_content / reasoning 两种字段都要流式回调;不进 Content。
 func TestParseSSEStreamsReasoning(t *testing.T) {
 	stream := strings.Join([]string{

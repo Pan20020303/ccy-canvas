@@ -127,6 +127,74 @@ func applyThinkingControl(body map[string]any, model string, thinking *bool) {
 	}
 }
 
+// flexString 接受「字符串或任意 JSON 值」:OpenAI 标准里 tool_calls 的
+// arguments 是 JSON 字符串,但 Ollama 系网关会直接给 JSON 对象 ——
+// 按 string 解会让整个 chunk Unmarshal 失败,工具调用被静默丢弃。
+// 非字符串值原样保留其 JSON 文本(对象 → `{"city":"Beijing"}`)。
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = flexString(s)
+		return nil
+	}
+	if string(b) == "null" {
+		*f = ""
+		return nil
+	}
+	*f = flexString(b)
+	return nil
+}
+
+// hasToolCallHistory 判断消息序列里是否有 assistant tool_calls 回传。
+func hasToolCallHistory(messages []ChatMessage) bool {
+	for _, m := range messages {
+		if len(m.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// messagesWithObjectToolArgs 把 assistant tool_calls 的 arguments 从 JSON 字符串
+// 换成 JSON 对象:Ollama 原生模板只认对象并对字符串报 4xx("can't find
+// closing '}'"),而 OpenAI 标准网关只认字符串。仅在标准形态被网关拒绝后
+// 作为降级重试形态使用(见 ChatStreamMultiOpts)。
+func messagesWithObjectToolArgs(messages []ChatMessage) []any {
+	out := make([]any, 0, len(messages))
+	for _, m := range messages {
+		if len(m.ToolCalls) == 0 {
+			out = append(out, m)
+			continue
+		}
+		tcs := make([]map[string]any, 0, len(m.ToolCalls))
+		for _, tc := range m.ToolCalls {
+			var args any = tc.Function.Arguments
+			if json.Valid([]byte(tc.Function.Arguments)) {
+				args = json.RawMessage(tc.Function.Arguments)
+			}
+			tcs = append(tcs, map[string]any{
+				"id":   tc.ID,
+				"type": tc.Type,
+				"function": map[string]any{
+					"name":      tc.Function.Name,
+					"arguments": args,
+				},
+			})
+		}
+		mm := map[string]any{"role": m.Role, "tool_calls": tcs}
+		if m.Content != "" {
+			mm["content"] = m.Content
+		}
+		out = append(out, mm)
+	}
+	return out
+}
+
 type LLMClient struct {
 	httpClient *http.Client
 }
@@ -225,8 +293,10 @@ func (c *LLMClient) ChatStreamMultiOpts(
 	for _, ep := range endpoints {
 		const maxAttempts = 3
 		var endpointLastErr error
+		objectArgs := false
+		triedObjectArgs := false
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, opts)
+			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, opts, objectArgs)
 			if err == nil {
 				if health != nil && ep.ProviderID != "" {
 					health.OnEndpointSuccess(ctx, ep.ProviderID)
@@ -240,6 +310,13 @@ func (c *LLMClient) ChatStreamMultiOpts(
 			// because a 5xx / 401 / etc. from one provider doesn't tell us
 			// anything about whether the others will fail too.
 			if !isTransientStreamError(err) {
+				// Ollama 系网关不认字符串式 tool_calls.arguments(4xx):
+				// 换对象形态对同一 endpoint 降级重试一次。
+				if !triedObjectArgs && hasToolCallHistory(messages) && strings.Contains(err.Error(), "LLM HTTP 4") {
+					triedObjectArgs = true
+					objectArgs = true
+					continue
+				}
 				break
 			}
 			if attempt == maxAttempts {
@@ -267,10 +344,16 @@ func (c *LLMClient) doStream(
 	messages []ChatMessage,
 	tools []ToolDef,
 	opts StreamOpts,
+	objectToolArgs bool,
 ) (*ChatResponse, error) {
+	// objectToolArgs:tool_calls.arguments 以 JSON 对象发送(Ollama 降级形态)。
+	var wireMessages any = messages
+	if objectToolArgs {
+		wireMessages = messagesWithObjectToolArgs(messages)
+	}
 	body := map[string]any{
 		"model":    model,
-		"messages": messages,
+		"messages": wireMessages,
 		"stream":   true,
 		// 要求网关在流末尾附带 usage 尾包(OpenAI 兼容),用于上下文窗口计量。
 		// 不支持该选项的网关会忽略它 —— 那时 usage 为 0,前端计量表自然隐藏。
@@ -332,7 +415,18 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "data:") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			// 残次网关(见过 OllamaAPIGateway)在流式模式下先回 200,再把上游的
+			// HTTP 4xx 错误响应「原文」嵌进流里,之后既不发 [DONE] 也不关连接,
+			// 而且末尾的 JSON 错误体没有换行(Scanner 永远凑不满一行)——只能
+			// 在读到 4xx 状态行的瞬间立即终止上抛,让上层换 tool_calls 形态
+			// 降级重试,绝不等一个永远不会结束的流。
+			if fields := strings.Fields(line); len(fields) >= 2 && strings.HasPrefix(fields[0], "HTTP/1.") && strings.HasPrefix(fields[1], "4") {
+				return nil, fmt.Errorf("LLM HTTP 4xx (embedded in stream): %s", line)
+			}
 			continue
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
@@ -349,12 +443,14 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 					ReasoningContent string `json:"reasoning_content"`
 					Reasoning        string `json:"reasoning"`
 					ToolCalls []struct {
-						Index    int    `json:"index"`
+						// index 标准在 tool_call 层;Ollama 系网关放到 function 里 —— 两处都认。
+						Index    *int   `json:"index"`
 						ID       string `json:"id,omitempty"`
 						Type     string `json:"type,omitempty"`
 						Function struct {
-							Name      string `json:"name,omitempty"`
-							Arguments string `json:"arguments,omitempty"`
+							Index     *int       `json:"index"`
+							Name      string     `json:"name,omitempty"`
+							Arguments flexString `json:"arguments,omitempty"`
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
@@ -386,12 +482,18 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 			}
 		}
 
-		for _, tcDelta := range choice.Delta.ToolCalls {
+		for seq, tcDelta := range choice.Delta.ToolCalls {
+			idx := seq // 两处都没给 index 时按出现顺序排
+			if tcDelta.Index != nil {
+				idx = *tcDelta.Index
+			} else if tcDelta.Function.Index != nil {
+				idx = *tcDelta.Function.Index
+			}
 			// Grow the slice as needed to fit the index.
-			for len(toolCalls) <= tcDelta.Index {
+			for len(toolCalls) <= idx {
 				toolCalls = append(toolCalls, ToolCall{Type: "function"})
 			}
-			target := &toolCalls[tcDelta.Index]
+			target := &toolCalls[idx]
 			if tcDelta.ID != "" {
 				target.ID = tcDelta.ID
 			}
@@ -402,7 +504,7 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 				target.Function.Name = tcDelta.Function.Name
 			}
 			if tcDelta.Function.Arguments != "" {
-				target.Function.Arguments += tcDelta.Function.Arguments
+				target.Function.Arguments += string(tcDelta.Function.Arguments)
 			}
 		}
 
@@ -434,9 +536,17 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Content          string     `json:"content"`
-				ReasoningContent string     `json:"reasoning_content"`
-				ToolCalls        []ToolCall `json:"tool_calls"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				// arguments 用 flexString:Ollama 系网关给 JSON 对象而非字符串。
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string     `json:"name"`
+						Arguments flexString `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -455,9 +565,24 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	if choice.Message.Content != "" && onDelta != nil {
 		onDelta(choice.Message.Content)
 	}
+	toolCalls := make([]ToolCall, 0, len(choice.Message.ToolCalls))
+	for _, tc := range choice.Message.ToolCalls {
+		typ := tc.Type
+		if typ == "" {
+			typ = "function"
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:   tc.ID,
+			Type: typ,
+			Function: ToolCallFn{
+				Name:      tc.Function.Name,
+				Arguments: string(tc.Function.Arguments),
+			},
+		})
+	}
 	return &ChatResponse{
 		Content:      choice.Message.Content,
-		ToolCalls:    choice.Message.ToolCalls,
+		ToolCalls:    toolCalls,
 		FinishReason: choice.FinishReason,
 		Usage:        parsed.Usage,
 	}, nil
