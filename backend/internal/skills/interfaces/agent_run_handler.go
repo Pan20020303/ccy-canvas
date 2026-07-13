@@ -238,6 +238,14 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
 	// Memory nudge(hermes 式):提醒模型主动读写跨会话持久记忆。
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentMemoryGuide)
+	// 技能方法论指引:绑定的文档型技能是"领域方法论库"(剧本转分镜、
+	// 提示词模板等)。命中场景先取方法论再动手,而不是凭通用能力自由发挥。
+	if len(boundSkills) > 0 {
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" +
+			"【技能方法论】你绑定的技能工具中,凡描述为方法论/模板/工作流的(如剧本转分镜、视频提示词模板、台词表情改写)," +
+			"在遇到匹配场景时必须先调用对应技能工具取回完整方法论,然后严格按方法论执行任务;不要跳过方法论凭记忆自由发挥。" +
+			"一次任务只取用最相关的技能,取回后不必复述文档本身。")
+	}
 	// 可用生成模型清单:agent 可以创建图片/视频节点并经 run_node(model=...)
 	// 指定模型触发生成 —— 大语言模型编排其它生成模型的关键上下文。
 	if len(req.GenerationModels) > 0 {

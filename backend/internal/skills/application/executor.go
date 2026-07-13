@@ -70,11 +70,33 @@ func (e *Executor) Invoke(ctx context.Context, skill sqlc.Skill, inputs json.Raw
 	case "http":
 		return e.invokeHTTP(ctx, skill, inputs)
 	case "prompt":
+		// 方法论文档型技能:spec 只有 content_md、没有可执行模板 —— 把全文
+		// 直接返回给调用方(agent 拿到方法论后自己照做),不转包给子模型。
+		// 这让"剧本转分镜/提示词模板"这类知识库技能可以被 agent 按场景
+		// 自动调用:工具 description 写清触发情境,LLM 判断命中就取文档。
+		if body := guideContentMD(skill); body != "" {
+			return &Result{Type: "text", Content: body}, nil
+		}
 		return e.invokePrompt(ctx, skill, inputs)
 	case "code":
 		return nil, apperror.New(apperror.CodeInvalidInput, "Code kind is not yet supported (Phase 4)")
 	}
 	return nil, apperror.New(apperror.CodeInvalidInput, "Unknown skill kind: "+skill.Kind)
+}
+
+// guideContentMD:prompt 技能里"纯方法论文档"的判定 —— 有 content_md 且
+// 没有 user_template/system_prompt(没有可执行的子模型模板)。
+func guideContentMD(skill sqlc.Skill) string {
+	var spec struct {
+		ContentMD    string `json:"content_md"`
+		UserTemplate string `json:"user_template"`
+		SystemPrompt string `json:"system_prompt"`
+	}
+	_ = json.Unmarshal(skill.Spec, &spec)
+	if strings.TrimSpace(spec.UserTemplate) != "" || strings.TrimSpace(spec.SystemPrompt) != "" {
+		return ""
+	}
+	return strings.TrimSpace(spec.ContentMD)
 }
 
 // ────────────────────────── HTTP kind ──────────────────────────
