@@ -65,6 +65,9 @@ export async function runAgent(
     /** 深度思考开关(composer「深度思考」按钮)。省略=按模型默认;
      *  仅对思考类模型生效(后端按模型名 gate)。 */
     thinking?: boolean;
+    /** 视觉模型名:后端据此注册 analyze_image 看图工具,agent 能"看"
+     *  画布图片(描述/反推提示词/分析构图)。省略则不注册。 */
+    vision_model?: string;
   },
   onEvent: (event: AgentSSEEvent) => void,
 ): Promise<() => void> {

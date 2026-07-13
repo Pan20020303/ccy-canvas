@@ -78,6 +78,9 @@ type agentRunRequest struct {
 	// 深度思考开关(composer 的「深度思考」按钮)。nil=按模型默认;
 	// true/false 显式开关,仅对思考类模型生效(见 application.applyThinkingControl)。
 	Thinking *bool `json:"thinking,omitempty"`
+	// 视觉模型(前端 pickVisionModel 挑选)。设置后注册 analyze_image 工具,
+	// agent 可以"看"画布上的图片(描述/反推提示词/分析构图)。
+	VisionModel string `json:"vision_model,omitempty"`
 }
 
 type agentRunHistoryTurn struct {
@@ -169,6 +172,17 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	tools := []skillsapp.Tool{}
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
+		// 看图工具:前端挑好视觉模型传进来,解析得到端点才注册 ——
+		// 没配视觉模型时 agent 不见此工具,不会瞎调。
+		if vm := strings.TrimSpace(req.VisionModel); vm != "" {
+			if vres, verr := rt.catalogSvc.ResolveModelEndpoints(r.Context(), vm); verr == nil && len(vres) > 0 {
+				veps := make([]skillsapp.Endpoint, 0, len(vres))
+				for _, ep := range vres {
+					veps = append(veps, skillsapp.Endpoint{ProviderID: ep.ProviderID, BaseURL: ep.BaseURL, APIKey: ep.APIKey})
+				}
+				tools = append(tools, skillsapp.BuildAnalyzeImageTool(canvas, rt.llm, veps, vm))
+			}
+		}
 	}
 	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ConversationID)
 	if err != nil {

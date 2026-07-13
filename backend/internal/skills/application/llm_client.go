@@ -588,6 +588,67 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	}, nil
 }
 
+// VisionOneShot 发送一轮多模态消息(问题 + 一张图)并返回文本回复。
+// ChatMessage.Content 是纯文本(agent 主循环用),多模态 content parts 在
+// 这里手工构造 —— 只服务 analyze_image 这类"看图"工具,非流式一把梭。
+func (c *LLMClient) VisionOneShot(
+	ctx context.Context,
+	endpoints []Endpoint,
+	model string,
+	imageURL string,
+	prompt string,
+) (string, error) {
+	if len(endpoints) == 0 {
+		return "", errors.New("no endpoints configured for vision model")
+	}
+	body := map[string]any{
+		"model":  model,
+		"stream": false,
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": prompt},
+				{"type": "image_url", "image_url": map[string]string{"url": imageURL}},
+			},
+		}},
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	var lastErr error
+	for _, ep := range endpoints {
+		answer, err := c.visionOnce(ctx, ep, bodyJSON)
+		if err == nil {
+			return answer, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, bodyJSON []byte) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.BaseURL+"/chat/completions", bytes.NewReader(bodyJSON))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+ep.APIKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return "", fmt.Errorf("vision LLM HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+	parsed, err := parseOneShot(resp.Body, StreamOpts{})
+	if err != nil {
+		return "", err
+	}
+	return parsed.Content, nil
+}
+
 // isTransientStreamError tells whether an error is worth retrying. Covers the
 // usual "relay closed the idle TLS connection" symptoms.
 func isTransientStreamError(err error) bool {

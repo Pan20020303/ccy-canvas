@@ -34,6 +34,7 @@ import { ModelBrandIcon } from "./ModelBrandIcon";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/AgentAssistantThread";
 import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
+import { pickVisionModel } from "./nodes/director-blocking";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
 const HISTORY_FETCH_LIMIT = 50;
@@ -630,6 +631,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         generation_models: buildGenerationModelCatalog(backendModels),
         // 深度思考开关:仅思考类模型下发;未手动设置时按模型默认档位。
         thinking: thinkingSupported ? thinkingOn : undefined,
+        // 视觉模型:后端据此注册 analyze_image 看图工具(没配就不注册)。
+        vision_model: pickVisionModel(backendModels) ?? undefined,
       },
       (event) => {
         switch (event.type) {
