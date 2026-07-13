@@ -226,6 +226,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // composer 自适应高度(DeepSeek 式):随内容自动长高,到 40vh 封顶后
+  // 才在框内出滚动条;清空(发送后)自动缩回两行。
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const max = Math.round(window.innerHeight * 0.4);
+    ta.style.height = `${Math.min(ta.scrollHeight, max)}px`;
+    ta.style.overflowY = ta.scrollHeight > max ? "auto" : "hidden";
+  }, [message]);
+
   // Ticking clock so live elapsed counters refresh every 100ms while running.
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -1157,7 +1168,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             placeholder={zh ? "描述操作或用 @ 引用…" : "Describe an action, or @ to reference…"}
             rows={2}
             onWheel={(event) => event.stopPropagation()}
-            className="prompt-editor-scroll max-h-[160px] w-full resize-none bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
+            className="prompt-editor-scroll w-full resize-none bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
             disabled={running}
           />
           <div className="mt-1.5 flex items-center gap-1.5">

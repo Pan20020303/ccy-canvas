@@ -132,9 +132,18 @@ const MD_COMPONENTS = {
   h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => <h3 className="mb-1 mt-2 text-[13px] font-semibold first:mt-0" {...props} />,
   a: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a className="text-cyan-300 underline decoration-cyan-300/40 underline-offset-2 hover:text-cyan-200" target="_blank" rel="noreferrer" {...props} />,
   blockquote: (props: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) => <blockquote className="mb-2 border-l-2 border-white/15 pl-3 text-neutral-400" {...props} />,
-  code: (props: React.HTMLAttributes<HTMLElement>) => <code className="break-all rounded bg-white/10 px-1 py-0.5 font-mono text-[11px]" {...props} />,
-  pre: (props: React.HTMLAttributes<HTMLPreElement>) => (
-    <pre className="prompt-editor-scroll mb-2 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed [&>code]:bg-transparent [&>code]:p-0" {...props} />
+  // overflow-wrap:anywhere:正常单词仍在空格处折行(不从单词中间断),
+  // 只有超过整行宽的无空格长串才在必要处断 —— 决不向右溢出。
+  // className 必须「合并」而不是被展开的 props 覆盖:aui 的代码块管线
+  // (CodeOverride → withDefaultProps)总会传入 className(可能为空串),
+  // 放在 {...props} 前面会被整个抹掉 —— 样式失效、代码块回到不折行。
+  code: ({ className, ...props }: React.HTMLAttributes<HTMLElement>) => (
+    <code className={`rounded bg-white/10 px-1 py-0.5 font-mono text-[11px] [overflow-wrap:anywhere] ${className ?? ""}`} {...props} />
+  ),
+  // pre-wrap:模型常把提示词/描述写成缩进行,markdown 会当代码块(white-space:pre
+  // 不折行,中文行直接被面板右缘截断)。保留缩进与换行、允许折行;单词不拆。
+  pre: ({ className, ...props }: React.HTMLAttributes<HTMLPreElement>) => (
+    <pre className={`mb-2 whitespace-pre-wrap break-words rounded-lg border border-white/10 bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed [overflow-wrap:anywhere] [&>code]:bg-transparent [&>code]:p-0 ${className ?? ""}`} {...props} />
   ),
   hr: () => <hr className="my-2 border-white/10" />,
   img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => (
