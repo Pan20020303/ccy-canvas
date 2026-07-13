@@ -117,6 +117,7 @@ export function DirectorStageNode({ id, data: rawData, selected }: NodeProps) {
   const language = useStore((state) => state.language);
   const openDirectorStage = useStore((state) => state.openDirectorStage);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
+  const connectionDragType = useStore((state) => state.connectionDragType);
   const title = data.customTitle || (language === 'zh' ? '导演台' : 'Director Stage');
 
   const previewUrl = data.editorPreview
@@ -153,12 +154,19 @@ export function DirectorStageNode({ id, data: rawData, selected }: NodeProps) {
           selected ? 'shadow-[0_0_0_1px_rgb(255,255,255)]' : '',
         )}
       >
-        {/* 全卡 target 命中区 */}
+        {/* 全卡 target 命中区(正向拖线);反向拖线时换全卡 source 接。 */}
         <Handle
           type="target"
           position={Position.Left}
           className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[20px] !border-0 !bg-transparent !opacity-0"
-          style={{ transform: 'none', pointerEvents: isConnectionDragging ? 'auto' : 'none' }}
+          style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType !== 'target' ? 'auto' : 'none' }}
+        />
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="edge-source-full"
+          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[20px] !border-0 !bg-transparent !opacity-0"
+          style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType === 'target' ? 'auto' : 'none' }}
         />
         {/* 贴边渲染锚点 —— 连好的线连到节点边缘(右/左缘垂直居中),而不是
             外侧 20px 的 `+` 泡泡。1px、透明、pointer-events:none 纯渲染锚点。 */}

@@ -1107,7 +1107,8 @@ const InnerCanvas = () => {
   const onConnectStart = useCallback((_: any, params: any) => {
     connectingFrom.current = { nodeId: params.nodeId, handleId: params.handleId };
     bulkConnectFrom.current = null;
-    setConnectionDragging(true);
+    // 带上起点类型:从左+(target)拉出的反向线,节点侧要切换全卡命中区的方向。
+    setConnectionDragging(true, params.handleType ?? 'source');
   }, [setConnectionDragging]);
 
   const onConnectEnd = useCallback((event: any) => {

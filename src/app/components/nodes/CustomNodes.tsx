@@ -2905,6 +2905,7 @@ const BaseNode = ({
 }) => {
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
+  const connectionDragType = useStore((state) => state.connectionDragType);
   const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
   // The quick-connect `+` bubbles only show on hover / sole-selection; gate the
   // magnet effect to those states so the global mousemove listeners aren't
@@ -3040,7 +3041,17 @@ const BaseNode = ({
           type="target"
           position={Position.Left}
           className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
-          style={{ transform: 'none', pointerEvents: isConnectionDragging ? 'auto' : 'none' }}
+          style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType !== 'target' ? 'auto' : 'none' }}
+        />
+        {/* 全卡 source 命中区:只在「从左+(target)拉出的反向线」拖动时激活,
+            让反向线也能落到卡片任意位置(此前只能精确命中 20px 的右+泡泡)。
+            与上面的全卡 target 互斥启用,二者不会抢同一次拖放。 */}
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="edge-source-full"
+          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
+          style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType === 'target' ? 'auto' : 'none' }}
         />
         {/* Flush render anchors. A FINISHED wire is drawn to these — they sit
             exactly ON the node's right/left edge (vertical center), courtesy of

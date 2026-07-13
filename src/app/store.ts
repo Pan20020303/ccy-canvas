@@ -430,7 +430,10 @@ type AppState = {
   snapToGrid: boolean;
   setSnapToGrid: (value: boolean) => void;
   isConnectionDragging: boolean;
-  setConnectionDragging: (value: boolean) => void;
+  setConnectionDragging: (value: boolean, handleType?: 'source' | 'target' | null) => void;
+  /** 当前拖线的起点类型:source=从右+拉出(正向),target=从左+拉出(反向)。
+   *  反向拖线时节点激活"全卡 source 命中区",线才能落到卡片任意位置。 */
+  connectionDragType: 'source' | 'target' | null;
   // 人物站位/涂画 放大编辑器:全局单例，脱离节点选中/工具条生命周期(否则按 Shift
   // 进入多选、节点工具条卸载就会把编辑器一起关掉)。
   positionStudio: { nodeId: string; imageUrl: string } | null;
@@ -4088,7 +4091,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   snapToGrid: false,
   setSnapToGrid: (value) => set({ snapToGrid: value }),
   isConnectionDragging: false,
-  setConnectionDragging: (value) => set({ isConnectionDragging: value }),
+  connectionDragType: null,
+  setConnectionDragging: (value, handleType) => set({
+    isConnectionDragging: value,
+    // 结束拖线时清空;开始时未知类型按 source(正向)处理,保持旧调用兼容。
+    connectionDragType: value ? (handleType ?? 'source') : null,
+  }),
   positionStudio: null,
   openPositionStudio: (payload) => set({ positionStudio: payload }),
   closePositionStudio: () => set({ positionStudio: null }),
