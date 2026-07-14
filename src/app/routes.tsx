@@ -12,6 +12,7 @@ import { AdminMembersPage } from "./components/admin/AdminMembersPage";
 import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
 import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
+import { AdminPromptTemplatesPage } from "./components/admin/AdminPromptTemplatesPage";
 import { AgentRunPanel } from "./components/AgentRunPanel";
 import { Canvas } from "./components/Canvas";
 import { CanvasLoader } from "./components/CanvasLoader";
@@ -205,6 +206,14 @@ export const router = createBrowserRouter([
     Component: () => (
       <ProtectedRoute requireRole="admin">
         <AdminAgentRunsPage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/prompt-templates",
+    Component: () => (
+      <ProtectedRoute requireRole="admin">
+        <AdminPromptTemplatesPage />
       </ProtectedRoute>
     ),
   },

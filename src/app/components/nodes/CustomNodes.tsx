@@ -53,6 +53,7 @@ import {
   Quote,
   Code,
   Link as LinkIcon,
+  BookMarked,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
@@ -88,6 +89,7 @@ import {
 } from '../../text-node-modes';
 import { getGenerationProgressPercent } from './loading-progress';
 import { PrecisionStudio } from './PrecisionStudio';
+import { PromptTemplateLibrary } from './PromptTemplateLibrary';
 import {
   ANGLE_STUDIO_PRESETS,
   LIGHT_RIG_PRESETS,
@@ -7618,6 +7620,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   // 全屏里 预览(渲染 Markdown) vs 编辑(改 Markdown 源) 的切换。默认预览，
   // 空节点打开时切到编辑（见打开全屏的处理）。
   const [fsEditMode, setFsEditMode] = useState(false);
+  // 「提示词库」弹窗:选模板写入本节点(空则替换,有内容则换行追加)。
+  const [showPromptLibrary, setShowPromptLibrary] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Background color + corner-resize. Live size is tracked locally during a
@@ -8238,9 +8242,21 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
                 </div>
               )
             ) : fsEditMode && !isGenerating ? (
-              // 编辑：Markdown 工具栏 + 改 Markdown 源的 textarea（内容统一为 Markdown）。
+              // 编辑：Markdown 工具栏（居中）+ 右侧「提示词库」+ 改 Markdown 源的 textarea。
               <div className="flex min-h-0 flex-1 flex-col gap-2">
-                <div className="flex justify-center">{renderMarkdownToolbar()}</div>
+                <div className="relative flex justify-center">
+                  {renderMarkdownToolbar()}
+                  <button
+                    type="button"
+                    onClick={() => setShowPromptLibrary(true)}
+                    title={language === 'zh' ? '从提示词库选择模板写入' : 'Insert from prompt library'}
+                    className="absolute right-0 top-1/2 flex h-7 -translate-y-1/2 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 text-[12px] text-neutral-300 transition hover:border-cyan-400/30 hover:bg-white/[0.06] hover:text-cyan-200"
+                    data-testid="open-prompt-library"
+                  >
+                    <BookMarked className="h-3.5 w-3.5" />
+                    {language === 'zh' ? '提示词库' : 'Library'}
+                  </button>
+                </div>
                 <textarea
                   ref={textareaRef}
                   value={dataContent}
@@ -8264,6 +8280,16 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         </div>,
         document.body,
       ) : null}
+      <PromptTemplateLibrary
+        open={showPromptLibrary}
+        onClose={() => setShowPromptLibrary(false)}
+        onApply={(tpl) => {
+          // 空节点直接写入;已有内容则空行分隔追加,避免覆盖用户手写内容。
+          updateNodeData(id, { content: dataContent.trim() ? `${dataContent}\n\n${tpl}` : tpl });
+          setShowPromptLibrary(false);
+        }}
+        language={language}
+      />
     </BaseNode>
   );
 };
