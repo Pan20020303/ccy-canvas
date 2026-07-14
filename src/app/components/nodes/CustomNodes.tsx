@@ -1355,16 +1355,23 @@ const PromptPanel = ({
       || type === 'directorStageNode' || type === 'compositionPreviewNode';
     const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
     const isAudio = type === 'audioNode' || type === 'referenceAudioNode';
+    const isText = type === 'textNode';
     // 音频没有可用缩略图（url 是 mp3，塞进 <img> 就是裂图）——留空走图标卡；
     // 视频优先用封面帧，兜底才是原始视频 url。
-    const thumb = isAudio ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
-    const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'other';
-    const label = isImage ? `图片${idx + 1}` : isVideo ? `视频${idx + 1}` : isAudio ? `音频${idx + 1}` : `节点${idx + 1}`;
-    const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : '节';
+    const thumb = isAudio || isText ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
+    const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : isText ? 'text' : 'other';
+    const label = isImage ? `图片${idx + 1}` : isVideo ? `视频${idx + 1}` : isAudio ? `音频${idx + 1}` : isText ? `文本${idx + 1}` : `节点${idx + 1}`;
+    const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : isText ? '文' : '节';
+    // 文本引用不占缩略图位:内容预览显示在提示词框上方的 chip 行,生成时
+    // 由 store.collectUpstreamText 自动并入提示词(与这里取同一字段)。
+    const textContent = isText && typeof d.content === 'string' ? d.content.replace(/\s+/g, ' ').trim() : '';
     // mediaUrl:悬停预览用的原始媒体(音频/视频要能播,不只是缩略图)。
     const mediaUrl = d.url || '';
-    return { id, edgeId: edge.id, type, kind, thumb, mediaUrl, label, icon, index: idx + 1 };
+    return { id, edgeId: edge.id, type, kind, thumb, mediaUrl, label, icon, index: idx + 1, textContent };
   }), [upstreamEdges, allNodes]);
+  // 媒体类引用走缩略图横条;文本类引用走独立 chip 行(不占图片位)。
+  const mediaRefs = upstreamNodes.filter((up) => up.kind !== 'text');
+  const textRefs = upstreamNodes.filter((up) => up.kind === 'text');
 
   const currentNode = allNodes.find((node) => node.id === nodeId);
   const params = getNodeParams(currentNode?.data);
@@ -2399,7 +2406,7 @@ const PromptPanel = ({
   const previewStrip = (
     <>
     <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
-      {upstreamNodes.map((up, idx) => {
+      {mediaRefs.map((up, idx) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id);
         const isUsed = Boolean(matched);
@@ -2482,6 +2489,40 @@ const PromptPanel = ({
         <Plus className="h-4 w-4" />
       </button>
     </div>
+    {/* 文本引用 chip 行:连进来的文本节点不占参考图位,以「文本·内容预览」
+        形式提示,生成时其内容会自动并入提示词(collectUpstreamText)。 */}
+    {textRefs.length > 0 ? (
+      <div className="mb-1 flex flex-col gap-1 px-1">
+        {textRefs.map((up) => (
+          <div
+            key={up.edgeId}
+            className="group/ref flex items-center gap-1.5 rounded-lg bg-white/[0.05] px-2 py-1"
+            title={up.textContent || (language === 'zh' ? '空文本节点' : 'Empty text node')}
+          >
+            <span className="shrink-0 rounded bg-white/10 px-1.5 py-px text-[9px] leading-relaxed text-neutral-400">
+              {language === 'zh' ? '文本' : 'TEXT'}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-300">
+              {up.textContent || (language === 'zh' ? '(空文本节点)' : '(empty)')}
+            </span>
+            <span className="shrink-0 text-[9px] text-neutral-500">
+              {language === 'zh' ? '将并入提示词' : 'joins the prompt'}
+            </span>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEdgesChange([{ id: up.edgeId, type: 'remove' }] as never);
+              }}
+              className="shrink-0 flex h-4 w-4 items-center justify-center rounded-full text-neutral-500 opacity-0 transition group-hover/ref:opacity-100 hover:bg-rose-500/20 hover:text-rose-300"
+              title={language === 'zh' ? '移除引用' : 'Disconnect reference'}
+            >
+              <X className="h-2.5 w-2.5" strokeWidth={3} />
+            </button>
+          </div>
+        ))}
+      </div>
+    ) : null}
     {refLimitBar}
     </>
   );
