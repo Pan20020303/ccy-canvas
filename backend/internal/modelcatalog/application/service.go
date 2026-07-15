@@ -341,6 +341,22 @@ func (s *Service) RefundCredits(ctx context.Context, userID string, amount int32
 		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 	}
 	log.Printf("[credits] INVARIANT BREACH: refund LOST after 3 attempts — user %s amount %d reason %q: %v (manual reconciliation required)", userID, amount, reason, lastErr)
+	// Observability only (no billing-logic change): surface the lost refund as an
+	// admin alert so ops can reconcile it manually, instead of it dying in a log
+	// nobody reads. Best-effort with a fresh context — the caller's may be done.
+	actx, acancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer acancel()
+	errMsg := "unknown"
+	if lastErr != nil {
+		errMsg = lastErr.Error()
+	}
+	s.CreateAdminAlert(actx, domain.AdminAlert{
+		ServiceType:  "credits",
+		ErrorCode:    "refund_lost",
+		ErrorMessage: fmt.Sprintf("退款丢失,需人工对账 — 用户 %s 金额 %d 原因 %q: %s", userID, amount, reason, errMsg),
+		Source:       "credits",
+		Severity:     "high",
+	})
 }
 
 // NewService creates a new model catalog Service.

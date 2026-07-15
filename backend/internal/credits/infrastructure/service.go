@@ -3,6 +3,7 @@ package infrastructure
 import (
 	"context"
 	"errors"
+	"log"
 
 	creditapp "ccy-canvas/backend/internal/credits/application"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -12,6 +13,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// logLedgerWriteFailure records a swallowed ledger-write error. The balance
+// UPDATE is authoritative; a missing ledger row only breaks auditability, so we
+// log (never fail the operation) — but no longer silently. Observability only.
+func logLedgerWriteFailure(kind string, err error) {
+	if err != nil {
+		log.Printf("[credits] WARNING ledger write failed (%s) — balance is correct but audit trail is incomplete: %v", kind, err)
+	}
+}
 
 type Service struct {
 	queries *sqlc.Queries
@@ -70,14 +80,14 @@ func (s Service) applyDailyReset(ctx context.Context, queries *sqlc.Queries, uid
 	if err != nil {
 		return // pgx.ErrNoRows = already reset today; other errors are non-fatal
 	}
-	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+	logLedgerWriteFailure("daily_reset", queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
 		UserID:       uid,
 		AccountID:    acct.ID,
 		Type:         "daily_reset",
 		Amount:       acct.CurrentBalance,
 		BalanceAfter: acct.CurrentBalance,
 		Reason:       "每日额度重置",
-	})
+	}))
 }
 
 // Reserve atomically deducts amount from the user's balance at generation
@@ -107,14 +117,14 @@ func (s Service) Reserve(ctx context.Context, userID string, amount int32, reaso
 		return err
 	}
 	// Ledger is best-effort audit; the balance deduction above is authoritative.
-	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+	logLedgerWriteFailure("reserve", queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
 		UserID:       uid,
 		AccountID:    row.ID,
 		Type:         "reserve",
 		Amount:       amount,
 		BalanceAfter: row.CurrentBalance,
 		Reason:       reason,
-	})
+	}))
 	return nil
 }
 
@@ -140,14 +150,14 @@ func (s Service) Refund(ctx context.Context, userID string, amount int32, reason
 	if err != nil {
 		return err
 	}
-	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+	logLedgerWriteFailure("refund", queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
 		UserID:       uid,
 		AccountID:    acct.ID,
 		Type:         "refund",
 		Amount:       amount,
 		BalanceAfter: acct.CurrentBalance,
 		Reason:       reason,
-	})
+	}))
 	return nil
 }
 
