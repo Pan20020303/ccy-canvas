@@ -11,6 +11,10 @@ import { TaskQueue } from "./TaskQueue";
 import { CollaborationControls } from "./CollaborationControls";
 import { CreditLedgerModal } from "./CreditLedgerModal";
 
+// 英文切换暂时下线:i18n 词条覆盖率过低(大量面板仍是中文),切到英文是
+// 最差的半成品中间态。先藏按钮止损,待覆盖补齐后翻回 true 即可恢复。
+const SHOW_LANGUAGE_TOGGLE = false;
+
 export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
   const theme = useStore((s) => s.theme);
@@ -137,14 +141,17 @@ export const Navbar = () => {
       {/* Right: controls cluster */}
       <div className="pointer-events-auto flex items-center gap-2">
         {/* Icon-only language toggle (reference proportions); the current
-            language lives in the tooltip. */}
-        <button
-          onClick={toggleLanguage}
-          title={language === "en" ? "Language: EN \u2192 \u4e2d\u6587" : "\u8bed\u8a00: \u4e2d\u6587 \u2192 EN"}
-          className={`flex h-9 w-9 items-center justify-center ${pillBase} text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
-        >
-          <Languages className="h-4 w-4" />
-        </button>
+            language lives in the tooltip. Hidden until i18n coverage is complete
+            (SHOW_LANGUAGE_TOGGLE). */}
+        {SHOW_LANGUAGE_TOGGLE ? (
+          <button
+            onClick={toggleLanguage}
+            title={language === "en" ? "Language: EN \u2192 \u4e2d\u6587" : "\u8bed\u8a00: \u4e2d\u6587 \u2192 EN"}
+            className={`flex h-9 w-9 items-center justify-center ${pillBase} text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
+          >
+            <Languages className="h-4 w-4" />
+          </button>
+        ) : null}
 
         {/* 协作控件:私有→「协作」按钮;协作中→创建者/积分下拉 + 协作中状态。 */}
         {user ? <SaveStatusIndicator language={language} /> : null}

@@ -5173,23 +5173,27 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           <Scissors className="h-3.5 w-3.5" />
           {language === 'zh' ? '剪辑' : 'Trim'}
         </Button>
-        {/* 未开发:裁剪 / 高清 / 解析 / 智能去字幕 —— 置灰不可点。 */}
-        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
-          <Crop className="h-3.5 w-3.5" />
-          {language === 'zh' ? '裁剪' : 'Crop'}
-        </Button>
-        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
-          <Sparkles className="h-3.5 w-3.5" />
-          {language === 'zh' ? '高清' : 'HD'}
-        </Button>
-        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
-          <FileText className="h-3.5 w-3.5" />
-          {language === 'zh' ? '解析' : 'Parse'}
-        </Button>
-        <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
-          <Highlighter className="h-3.5 w-3.5" />
-          {language === 'zh' ? '智能去字幕' : 'Subtitle clean'}
-        </Button>
+        {/* 未开发:裁剪 / 高清 / 解析 / 智能去字幕 —— 整体隐藏(见 SHOW_WIP_MEDIA_ACTIONS)。 */}
+        {SHOW_WIP_MEDIA_ACTIONS ? (
+          <>
+            <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+              <Crop className="h-3.5 w-3.5" />
+              {language === 'zh' ? '裁剪' : 'Crop'}
+            </Button>
+            <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+              <Sparkles className="h-3.5 w-3.5" />
+              {language === 'zh' ? '高清' : 'HD'}
+            </Button>
+            <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+              <FileText className="h-3.5 w-3.5" />
+              {language === 'zh' ? '解析' : 'Parse'}
+            </Button>
+            <Button variant="ghost" size="sm" disabled className={disabledActionButtonClass} title={language === 'zh' ? '开发中，暂未开放' : 'Coming soon'}>
+              <Highlighter className="h-3.5 w-3.5" />
+              {language === 'zh' ? '智能去字幕' : 'Subtitle clean'}
+            </Button>
+          </>
+        ) : null}
         {/* 音视频分离:直接提取整段音频(无下拉)。 */}
         <Button variant="ghost" size="sm" onClick={extractAudio} className={actionButtonClass}>
           <Music className="h-3.5 w-3.5" />
@@ -5324,6 +5328,11 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
  *  变速（真实生效，写 data.playbackRate 由播放器应用）· 音频裁剪 · 格式转换 ·
  *  音频提取 · 内容检测 · 下载。裁剪/转换/提取/检测暂无后端能力 — 按钮占位
  *  禁用，悬停提示即将上线。 */
+// 视频/音频节点上的「开发中」占位按钮(裁剪/高清/解析/去字幕、音频裁剪/转换
+// /提取/检测)先整体隐藏:常驻置灰的死按钮持续消耗用户信任,不如藏起来,待
+// 真正接入后翻回 true 恢复。
+const SHOW_WIP_MEDIA_ACTIONS = false;
+
 const AUDIO_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 0.5] as const;
 
 function AudioActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
@@ -5358,22 +5367,27 @@ function AudioActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       >
         {rate}x
       </Button>
-      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
-        <Scissors className="h-3.5 w-3.5" />
-        {zh ? '音频裁剪' : 'Trim'}
-      </Button>
-      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
-        <ArrowRightLeft className="h-3.5 w-3.5" />
-        {zh ? '格式转换' : 'Convert'}
-      </Button>
-      <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
-        <Mic className="h-3.5 w-3.5" />
-        {zh ? '音频提取' : 'Extract'}
-      </Button>
-      <div className="mx-1 h-5 w-px bg-white/10" />
-      <Button variant="ghost" size="icon" className={disabledClass} disabled title={zh ? `内容检测 · ${comingSoon}` : `Safety check · ${comingSoon}`}>
-        <ShieldCheck className="h-4 w-4" />
-      </Button>
+      {/* 音频裁剪/格式转换/音频提取/内容检测 —— 整体隐藏(见 SHOW_WIP_MEDIA_ACTIONS)。 */}
+      {SHOW_WIP_MEDIA_ACTIONS ? (
+        <>
+          <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+            <Scissors className="h-3.5 w-3.5" />
+            {zh ? '音频裁剪' : 'Trim'}
+          </Button>
+          <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+            <ArrowRightLeft className="h-3.5 w-3.5" />
+            {zh ? '格式转换' : 'Convert'}
+          </Button>
+          <Button variant="ghost" size="sm" className={clsx(actionButtonClass, disabledClass)} disabled title={comingSoon}>
+            <Mic className="h-3.5 w-3.5" />
+            {zh ? '音频提取' : 'Extract'}
+          </Button>
+          <div className="mx-1 h-5 w-px bg-white/10" />
+          <Button variant="ghost" size="icon" className={disabledClass} disabled title={zh ? `内容检测 · ${comingSoon}` : `Safety check · ${comingSoon}`}>
+            <ShieldCheck className="h-4 w-4" />
+          </Button>
+        </>
+      ) : null}
       <Button
         variant="ghost"
         size="icon"
