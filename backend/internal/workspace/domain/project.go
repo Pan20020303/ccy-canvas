@@ -17,6 +17,15 @@ type Project struct {
 	UpdatedAt time.Time
 }
 
+// TemplateProject is a lightweight view of a project marked as a template,
+// shown on the homepage "start from a template" wall.
+type TemplateProject struct {
+	ID        string
+	Name      string
+	CoverURL  string
+	CreatedAt time.Time
+}
+
 // ProjectAccess is a project plus the caller's collaboration context:
 // whether it's collaborative and the caller's effective role
 // (creator/admin/collaborator/visitor).

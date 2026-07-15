@@ -77,6 +77,38 @@ export function duplicateProject(projectId: string): Promise<BackendProject> {
 }
 
 // ---------------------------------------------------------------------------
+// Templates(画布模板:首页「从模板开始」)
+// ---------------------------------------------------------------------------
+
+export type CanvasTemplate = {
+  id: string;
+  name: string;
+  cover_url: string;
+  created_at: string;
+};
+
+/** 全站公开模板(任何登录用户可见)。 */
+export function listTemplates(): Promise<CanvasTemplate[]> {
+  return apiClient.get<CanvasTemplate[]>("/api/app/templates");
+}
+
+/** 从模板创建:复用 duplicate,后端对模板放行非 owner 复制。 */
+export function useTemplate(templateId: string): Promise<BackendProject> {
+  return duplicateProject(templateId);
+}
+
+/** 管理员:把某项目标记/取消为模板。 */
+export function setProjectTemplate(
+  projectId: string,
+  isTemplate: boolean,
+): Promise<{ id: string; is_template: boolean }> {
+  return apiClient.patch<{ id: string; is_template: boolean }>(
+    `/api/admin/projects/${projectId}/template`,
+    { is_template: isTemplate },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Collaboration
 // ---------------------------------------------------------------------------
 

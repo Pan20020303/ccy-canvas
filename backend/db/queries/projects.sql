@@ -14,6 +14,21 @@ SELECT id, owner_id, name, cover_url, folder_id, created_at, updated_at
 FROM projects
 WHERE id = $1;
 
+-- name: ListTemplateProjects :many
+-- 首页「从模板开始」:全站模板项目,任何登录用户可见,倒序。
+SELECT id, name, cover_url, created_at
+FROM projects
+WHERE is_template
+ORDER BY created_at DESC
+LIMIT 100;
+
+-- name: SetProjectTemplate :exec
+-- 管理端把某项目标记/取消为模板。
+UPDATE projects SET is_template = $2, updated_at = now() WHERE id = $1;
+
+-- name: GetProjectIsTemplate :one
+SELECT is_template FROM projects WHERE id = $1;
+
 -- name: UpdateProjectName :one
 UPDATE projects
 SET name = $2, updated_at = now()

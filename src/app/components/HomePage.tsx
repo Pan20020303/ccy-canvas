@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import clsx from 'clsx';
 import {
@@ -16,6 +16,7 @@ import {
   Plus,
   Search,
   Shield,
+  Sparkles,
   Trash2,
   Users,
   Zap,
@@ -27,9 +28,13 @@ import {
   deleteProject as apiDeleteProject,
   duplicateProject as apiDuplicateProject,
   listFolders,
+  listTemplates,
+  setProjectTemplate as apiSetProjectTemplate,
   updateProject as apiUpdateProject,
   uploadFile,
+  useTemplate as apiUseTemplate,
   type BackendFolder,
+  type CanvasTemplate,
 } from '../api/projects';
 import { useAuth } from '../auth/AuthProvider';
 import { MediaThumb } from './MediaThumb';
@@ -174,6 +179,36 @@ export function HomePage() {
     } finally {
       setBusyId(null);
     }
+  };
+
+  // 画布模板墙:全站公开模板,点「使用」即复制成我的项目并打开。
+  const [templates, setTemplates] = useState<CanvasTemplate[]>([]);
+  const templateIds = useMemo(() => new Set(templates.map((t) => t.id)), [templates]);
+  const refreshTemplates = useCallback(async () => {
+    if (!user) return;
+    try { setTemplates(await listTemplates()); } catch { /* 非致命:模板墙静默降级为空 */ }
+  }, [user]);
+  useEffect(() => { void refreshTemplates(); }, [refreshTemplates]);
+
+  const handleUseTemplate = async (templateId: string) => {
+    if (busyId) return;
+    setBusyId(`tpl-${templateId}`);
+    try {
+      const created = await apiUseTemplate(templateId);
+      await refreshBackendProjects();
+      if (created?.id) await switchBackendProject(created.id);
+      navigate('/app');
+    } catch { /* 失败保持在首页 */ } finally {
+      setBusyId(null);
+    }
+  };
+
+  // 管理员:把某项目标记/取消为模板,即时刷新模板墙。
+  const toggleTemplate = async (projectId: string, makeTemplate: boolean) => {
+    try {
+      await apiSetProjectTemplate(projectId, makeTemplate);
+      await refreshTemplates();
+    } catch { /* 忽略,UI 下次刷新自愈 */ }
   };
 
   const startCreating = async () => {
@@ -435,6 +470,44 @@ export function HomePage() {
           </div>
         ) : null}
 
+        {/* 从模板开始 —— 官方/精选模板墙,点「使用」复制成我的项目并打开。
+            仅在根层级、非搜索、且有模板时出现,帮新用户跨过空白画布。 */}
+        {templates.length > 0 && !openFolder && !search ? (
+          <div className="mb-9" data-testid="template-wall">
+            <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-neutral-300">
+              <Sparkles className="h-4 w-4 text-cyan-300" />
+              {zh ? '从模板开始' : 'Start from a template'}
+            </div>
+            <div className="flex gap-4 overflow-x-auto pb-2">
+              {templates.map((tpl) => (
+                <div key={tpl.id} className="group/tpl w-[220px] shrink-0" data-testid="template-card">
+                  <div className="relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#26272d] to-[#191a1f]">
+                    {tpl.cover_url ? (
+                      <MediaThumb src={tpl.cover_url} alt={tpl.name} className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-neutral-600">
+                        <Sparkles className="h-8 w-8" />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void handleUseTemplate(tpl.id)}
+                      disabled={busyId !== null}
+                      data-testid="use-template"
+                      className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 backdrop-blur-[1px] transition group-hover/tpl:opacity-100 disabled:opacity-60"
+                    >
+                      <span className="rounded-full border border-cyan-400/40 bg-cyan-400/15 px-4 py-1.5 text-[12.5px] text-cyan-100">
+                        {busyId === `tpl-${tpl.id}` ? (zh ? '创建中…' : 'Creating…') : (zh ? '使用此模板' : 'Use template')}
+                      </span>
+                    </button>
+                  </div>
+                  <div className="mt-2 truncate px-0.5 text-[12.5px] text-neutral-300" title={tpl.name}>{tpl.name}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-[repeat(auto-fill,minmax(236px,1fr))] gap-x-5 gap-y-8">
           {/* 开始创作 — 参考风格：虚线空卡，无实体边框底。 */}
           <div>
@@ -579,6 +652,19 @@ export function HomePage() {
                             <Copy className="h-3.5 w-3.5 text-neutral-500" />
                             {zh ? '创建副本' : 'Duplicate'}
                           </button>
+                          {user?.role === 'admin' ? (
+                            <button
+                              type="button"
+                              className={menuItemCls}
+                              data-testid="toggle-template"
+                              onClick={() => { setCardMenu(null); void toggleTemplate(project.id, !templateIds.has(project.id)); }}
+                            >
+                              <Sparkles className="h-3.5 w-3.5 text-cyan-400/70" />
+                              {templateIds.has(project.id)
+                                ? (zh ? '取消模板' : 'Unset template')
+                                : (zh ? '设为模板' : 'Set as template')}
+                            </button>
+                          ) : null}
                           <div
                             className="relative"
                             onMouseEnter={() => setCardMenu({ projectId: project.id, submenu: true })}

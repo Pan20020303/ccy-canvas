@@ -139,6 +139,63 @@ func (q *Queries) GetProjectByID(ctx context.Context, id pgtype.UUID) (Project, 
 	return i, err
 }
 
+const listTemplateProjects = `-- name: ListTemplateProjects :many
+SELECT id, name, cover_url, created_at
+FROM projects
+WHERE is_template
+ORDER BY created_at DESC
+LIMIT 100
+`
+
+type ListTemplateProjectsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	CoverUrl  string             `json:"cover_url"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListTemplateProjects(ctx context.Context) ([]ListTemplateProjectsRow, error) {
+	rows, err := q.db.Query(ctx, listTemplateProjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTemplateProjectsRow{}
+	for rows.Next() {
+		var i ListTemplateProjectsRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.CoverUrl, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
+const setProjectTemplate = `-- name: SetProjectTemplate :exec
+UPDATE projects SET is_template = $2, updated_at = now() WHERE id = $1
+`
+
+type SetProjectTemplateParams struct {
+	ID         pgtype.UUID `json:"id"`
+	IsTemplate bool        `json:"is_template"`
+}
+
+func (q *Queries) SetProjectTemplate(ctx context.Context, arg SetProjectTemplateParams) error {
+	_, err := q.db.Exec(ctx, setProjectTemplate, arg.ID, arg.IsTemplate)
+	return err
+}
+
+const getProjectIsTemplate = `-- name: GetProjectIsTemplate :one
+SELECT is_template FROM projects WHERE id = $1
+`
+
+func (q *Queries) GetProjectIsTemplate(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getProjectIsTemplate, id)
+	var isTemplate bool
+	err := row.Scan(&isTemplate)
+	return isTemplate, err
+}
+
 const listProjectFoldersByOwner = `-- name: ListProjectFoldersByOwner :many
 SELECT id, owner_id, name, created_at
 FROM project_folders

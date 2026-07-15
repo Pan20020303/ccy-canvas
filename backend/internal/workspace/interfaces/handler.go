@@ -91,6 +91,7 @@ func toCanvasData(s domain.CanvasSnapshot) CanvasData {
 }
 
 var userSecurity = []map[string][]string{{httpapi.SecuritySchemeName: {}}}
+var adminSecurity = []map[string][]string{{httpapi.SecuritySchemeName: {authn.ScopeAdmin}}}
 
 // RegisterRoutes registers workspace operations on the huma API.
 func (h *Handler) RegisterRoutes(api huma.API) {
@@ -160,6 +161,24 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSecurity,
 		DefaultStatus: http.StatusCreated,
 	}, h.duplicateProject)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-templates",
+		Method:      http.MethodGet,
+		Path:        "/api/app/templates",
+		Summary:     "List public canvas templates for the homepage",
+		Tags:        []string{"App", "Projects"},
+		Security:    userSecurity,
+	}, h.listTemplates)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "set-project-template",
+		Method:      http.MethodPatch,
+		Path:        "/api/admin/projects/{id}/template",
+		Summary:     "Mark/unmark a project as a public template",
+		Tags:        []string{"Admin", "Projects"},
+		Security:    adminSecurity,
+	}, h.setProjectTemplate)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "list-folders",
@@ -534,8 +553,12 @@ func (h *Handler) duplicateProject(ctx context.Context, input *duplicateProjectI
 	if err != nil || source == nil {
 		return nil, huma.Error404NotFound("Project not found")
 	}
+	// You can duplicate your own project OR any public template (that's how
+	// "start from a template" works — the source is owned by an admin/curator).
 	if source.OwnerID != claims.UserID {
-		return nil, huma.Error403Forbidden("Access denied")
+		if isTpl, terr := h.repo.IsProjectTemplate(ctx, input.ID); terr != nil || !isTpl {
+			return nil, huma.Error403Forbidden("Access denied")
+		}
 	}
 
 	copyName := source.Name + " 副本"
@@ -563,6 +586,76 @@ func (h *Handler) duplicateProject(ctx context.Context, input *duplicateProjectI
 
 	out := &duplicateProjectOutput{}
 	out.Body.Data = toProjectItem(*created)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type TemplateItem struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CoverURL  string    `json:"cover_url"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type listTemplatesOutput struct {
+	Body struct {
+		Data      []TemplateItem `json:"data"`
+		RequestID string         `json:"request_id"`
+	}
+}
+
+func (h *Handler) listTemplates(ctx context.Context, _ *struct{}) (*listTemplatesOutput, error) {
+	if _, ok := authn.ClaimsFromContext(ctx); !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	tpls, err := h.repo.ListTemplates(ctx)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list templates", err)
+	}
+	out := &listTemplatesOutput{}
+	out.Body.Data = make([]TemplateItem, 0, len(tpls))
+	for _, t := range tpls {
+		out.Body.Data = append(out.Body.Data, TemplateItem{
+			ID: t.ID, Name: t.Name, CoverURL: t.CoverURL, CreatedAt: t.CreatedAt,
+		})
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type setProjectTemplateInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		IsTemplate bool `json:"is_template"`
+	}
+}
+
+// Named type (not an anonymous struct) so huma derives a unique schema name —
+// an inline `Data struct{...}` gets auto-named "DataStruct" and collides with
+// other handlers' anonymous Data structs, panicking at route registration.
+type SetTemplateResult struct {
+	ID         string `json:"id"`
+	IsTemplate bool   `json:"is_template"`
+}
+
+type setProjectTemplateOutput struct {
+	Body struct {
+		Data      SetTemplateResult `json:"data"`
+		RequestID string            `json:"request_id"`
+	}
+}
+
+func (h *Handler) setProjectTemplate(ctx context.Context, input *setProjectTemplateInput) (*setProjectTemplateOutput, error) {
+	// Admin scope is enforced by the route Security; still confirm the project exists.
+	if source, err := h.repo.GetProjectByID(ctx, input.ID); err != nil || source == nil {
+		return nil, huma.Error404NotFound("Project not found")
+	}
+	if err := h.repo.SetProjectTemplate(ctx, input.ID, input.Body.IsTemplate); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update template flag", err)
+	}
+	out := &setProjectTemplateOutput{}
+	out.Body.Data.ID = input.ID
+	out.Body.Data.IsTemplate = input.Body.IsTemplate
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }

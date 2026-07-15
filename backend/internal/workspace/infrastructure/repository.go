@@ -136,6 +136,46 @@ func (r *Repository) GetProjectByID(ctx context.Context, projectID string) (*dom
 	return &proj, nil
 }
 
+// ListTemplates returns all projects marked as templates (any user can see them).
+func (r *Repository) ListTemplates(ctx context.Context) ([]domain.TemplateProject, error) {
+	rows, err := r.q.ListTemplateProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.TemplateProject, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.TemplateProject{
+			ID:        uuidStr(row.ID),
+			Name:      row.Name,
+			CoverURL:  row.CoverUrl,
+			CreatedAt: row.CreatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// SetProjectTemplate marks/unmarks a project as a template (admin action).
+func (r *Repository) SetProjectTemplate(ctx context.Context, projectID string, isTemplate bool) error {
+	pgID, err := parsePgUUID(projectID)
+	if err != nil {
+		return err
+	}
+	return r.q.SetProjectTemplate(ctx, sqlc.SetProjectTemplateParams{ID: pgID, IsTemplate: isTemplate})
+}
+
+// IsProjectTemplate reports whether a project is a public template.
+func (r *Repository) IsProjectTemplate(ctx context.Context, projectID string) (bool, error) {
+	pgID, err := parsePgUUID(projectID)
+	if err != nil {
+		return false, err
+	}
+	v, err := r.q.GetProjectIsTemplate(ctx, pgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return v, err
+}
+
 func (r *Repository) UpdateProjectName(ctx context.Context, projectID, ownerID, name string) (*domain.Project, error) {
 	pgProj, err := parsePgUUID(projectID)
 	if err != nil {
