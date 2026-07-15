@@ -1,0 +1,918 @@
+@keyframes node-sweep {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(450%); }
+}
+
+/* Theme palette — dark is the default; .theme-light overrides on <html>. */
+:root {
+  --ccy-bg: #0a0a0a;
+  --ccy-bg-soft: #15181d;
+  --ccy-fg: #e5e5e5;
+  --ccy-fg-soft: rgba(229, 229, 229, 0.75);
+  --ccy-border: rgba(255, 255, 255, 0.10);
+  --ccy-scrollbar-size: 8px;
+  --ccy-scrollbar-track: transparent;
+  --ccy-scrollbar-border: transparent;
+  --ccy-scrollbar-thumb: rgba(255, 255, 255, 0.24);
+  --ccy-scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
+}
+
+html,
+body,
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ccy-scrollbar-thumb) var(--ccy-scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: var(--ccy-scrollbar-size);
+  height: var(--ccy-scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--ccy-scrollbar-track);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 40px;
+  border: 2px solid var(--ccy-scrollbar-border);
+  border-radius: 999px;
+  background-color: var(--ccy-scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ccy-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Light theme — applies when <html class="theme-light">
+   We aggressively override the project's hardcoded Tailwind dark colors
+   so individual components don't all need refactoring to CSS variables.
+   ───────────────────────────────────────────────────────────────────────── */
+html.theme-light {
+  --ccy-bg: #f5f6f8;
+  --ccy-bg-soft: #ffffff;
+  --ccy-fg: #1c1f24;
+  --ccy-fg-soft: rgba(28, 31, 36, 0.72);
+  --ccy-border: rgba(0, 0, 0, 0.10);
+  --ccy-scrollbar-thumb: rgba(0, 0, 0, 0.22);
+  --ccy-scrollbar-thumb-hover: rgba(0, 0, 0, 0.34);
+  color-scheme: light;
+  background: var(--ccy-bg);
+}
+html.theme-light body {
+  background: var(--ccy-bg);
+  color: var(--ccy-fg);
+}
+
+/* ─── Page background (Canvas wrapper, login bg, etc.) ─────────────────── */
+html.theme-light .bg-\[\#0a0a0a\],
+html.theme-light .bg-\[\#0c0c0c\],
+html.theme-light .bg-\[\#060606\],
+html.theme-light .bg-\[\#0d0d0d\] {
+  background-color: var(--ccy-bg) !important;
+}
+html.theme-light .bg-\[\#101010\],
+html.theme-light .bg-\[\#101010\]\/90,
+html.theme-light .bg-\[\#101010\]\/95 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+html.theme-light .bg-\[\#1a1a1a\],
+html.theme-light .bg-\[\#181818\] {
+  background-color: #ffffff !important;
+}
+
+/* History assets + Settings modal surfaces */
+html.theme-light .bg-\[\#262626\]\/96,
+html.theme-light .bg-\[\#0c0e11\] {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#1f1f1f\],
+html.theme-light .bg-\[\#111\] {
+  background-color: #f8f9fb !important;
+}
+
+/* ─── Translucent overlays (navbar, toolbars, modal scrim) ─────────────── */
+html.theme-light .bg-black\/40,
+html.theme-light .bg-black\/45,
+html.theme-light .bg-black\/55,
+html.theme-light .bg-black\/30 {
+  background-color: rgba(255, 255, 255, 0.78) !important;
+}
+html.theme-light .bg-black\/20 {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+/* ─── Tooltip pills (icon hover labels) ────────────────────────────────── */
+/* In light mode flip the dark pill into a white card with dark text, so
+   "空间/项目" hints feel native to the theme instead of being black boxes. */
+html.theme-light .bg-black\/60,
+html.theme-light .bg-black\/70,
+html.theme-light .bg-black\/80,
+html.theme-light .bg-black\/85,
+html.theme-light .bg-black\/90 {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.22) !important;
+}
+html.theme-light .bg-black\/60 *,
+html.theme-light .bg-black\/70 *,
+html.theme-light .bg-black\/80 *,
+html.theme-light .bg-black\/85 *,
+html.theme-light .bg-black\/90 * {
+  color: #1c1f24 !important;
+}
+
+/* ─── Preview / lightbox modal (PreviewModal in CustomNodes) ───────────── */
+/* bg-black/90 is used by PreviewModal as the full-screen scrim. Keep it
+   subtle so it doesn't feel like a dark overlay slammed on a light app. */
+html.theme-light .fixed.inset-0.bg-black\/90 {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(8px);
+}
+
+/* ─── Panel surfaces (sidebars, popovers, dropdowns, nodes) ────────────── */
+html.theme-light .bg-\[\#15181d\]\/90,
+html.theme-light .bg-\[\#15181d\]\/92,
+html.theme-light .bg-\[\#15181d\]\/95,
+html.theme-light .bg-\[\#1a1d22\]\/90,
+html.theme-light .bg-\[\#1a1d22\]\/95,
+html.theme-light .bg-\[\#1a1d22\]\/96,
+html.theme-light .bg-\[\#1a1d22\]\/98,
+html.theme-light .bg-\[\#111111\],
+html.theme-light .bg-\[\#111111\]\/95,
+html.theme-light .bg-\[\#141414\],
+html.theme-light .bg-\[\#171717\],
+html.theme-light .bg-\[\#13161b\]\/98,
+html.theme-light .bg-\[\#252525\]\/98 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  color: var(--ccy-fg);
+}
+
+/* ─── Admin radial / linear gradient backdrops ─────────────────────────── */
+html.theme-light [class*="bg-[radial-gradient"],
+html.theme-light [class*="bg-[linear-gradient(180deg,rgba(255,255,255,0.025)"] {
+  background: transparent !important;
+}
+/* AdminSidebar dark gradient -> light gradient */
+html.theme-light .bg-\[linear-gradient\(180deg\2c \#121212_0\%\2c \#0c0c0c_100\%\)\] {
+  background: linear-gradient(180deg, #ffffff 0%, #f5f6f8 100%) !important;
+}
+
+/* AdminOverview stat cards + chart cards specific dark gradients */
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(19\2c 19\2c 19\2c 0\.98\)\2c rgba\(12\2c 12\2c 12\2c 0\.96\)\)\],
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(18\2c 18\2c 18\2c 0\.98\)\2c rgba\(11\2c 11\2c 11\2c 0\.98\)\)\] {
+  background: linear-gradient(180deg, #ffffff, #f4f5f7) !important;
+}
+
+/* ─── Recharts canvas — invert plot colors so they read on white ───────── */
+html.theme-light .recharts-cartesian-grid line {
+  stroke: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .recharts-text {
+  fill: #5a6270 !important;
+}
+html.theme-light .recharts-tooltip-wrapper > div {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .recharts-default-tooltip {
+  background: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  color: #1c1f24 !important;
+}
+
+/* ─── Tables (admin grids) ─────────────────────────────────────────────── */
+html.theme-light table thead tr {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+html.theme-light table tbody tr.hover\:bg-white\/\[0\.02\]:hover {
+  background-color: rgba(0, 0, 0, 0.025) !important;
+}
+html.theme-light .divide-white\/\[0\.04\] > * + * {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Borders with admin-specific tones */
+html.theme-light .border-white\/\[0\.06\],
+html.theme-light .border-white\/\[0\.04\] {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* ─── Subtle surfaces (hover, pressed, cards) ──────────────────────────── */
+html.theme-light .bg-white\/\[0\.02\],
+html.theme-light .bg-white\/\[0\.03\],
+html.theme-light .bg-white\/\[0\.035\],
+html.theme-light .bg-white\/\[0\.04\],
+html.theme-light .bg-white\/\[0\.05\],
+html.theme-light .bg-white\/\[0\.06\],
+html.theme-light .bg-white\/\[0\.08\],
+html.theme-light .bg-white\/5,
+html.theme-light .bg-white\/8,
+html.theme-light .bg-white\/10,
+html.theme-light .bg-white\/15 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+/* ─── Text colors ──────────────────────────────────────────────────────── */
+html.theme-light .text-white,
+html.theme-light .text-neutral-100,
+html.theme-light .text-neutral-200 {
+  color: #1c1f24 !important;
+}
+html.theme-light .text-neutral-300 {
+  color: #3b4250 !important;
+}
+html.theme-light .text-neutral-400 {
+  color: #5a6270 !important;
+}
+html.theme-light .text-neutral-500 {
+  color: #717a89 !important;
+}
+html.theme-light .text-neutral-600 {
+  color: #98a0ad !important;
+}
+
+/* ─── Borders ──────────────────────────────────────────────────────────── */
+html.theme-light .border-white\/5,
+html.theme-light .border-white\/6,
+html.theme-light .border-white\/8,
+html.theme-light .border-white\/\[0\.06\],
+html.theme-light .border-white\/\[0\.08\],
+html.theme-light .border-white\/10,
+html.theme-light .border-white\/15,
+html.theme-light .border-white\/20 {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* ─── Hover states (most common ones) ──────────────────────────────────── */
+html.theme-light .hover\:bg-white\/5:hover,
+html.theme-light .hover\:bg-white\/10:hover,
+html.theme-light .hover\:bg-white\/\[0\.06\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* ─── React Flow ───────────────────────────────────────────────────────── */
+html.theme-light .react-flow__background pattern circle,
+html.theme-light .react-flow__background pattern path {
+  fill: #cbd0d6;
+  stroke: #cbd0d6;
+}
+html.theme-light .react-flow__edge-path {
+  stroke: rgba(0, 0, 0, 0.35);
+}
+
+/* ─── Node shells (BaseNode gradient + border) ─────────────────────────── */
+html.theme-light .group .relative > div[class*="from-white"][class*="to-transparent"] {
+  --tw-gradient-from: rgba(0, 0, 0, 0.04);
+  --tw-gradient-to:   rgba(0, 0, 0, 0);
+}
+html.theme-light .group > div .bg-\[linear-gradient\(180deg\2c rgba\(29\2c 34\2c 42\2c 0\.82\)\2c rgba\(15\2c 18\2c 24\2c 0\.74\)\)\],
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(29\2c 34\2c 42\2c 0\.82\)\2c rgba\(15\2c 18\2c 24\2c 0\.74\)\)\] {
+  background: linear-gradient(180deg, #ffffff, #f4f5f7) !important;
+}
+html.theme-light .bg-\[linear-gradient\(180deg\2c rgba\(42\2c 42\2c 42\2c 0\.92\)\2c rgba\(29\2c 29\2c 29\2c 0\.96\)\)\] {
+  background: linear-gradient(180deg, #ffffff, #f4f5f7) !important;
+}
+
+/* ─── Inputs ───────────────────────────────────────────────────────────── */
+html.theme-light input[type="text"],
+html.theme-light input[type="email"],
+html.theme-light input[type="password"],
+html.theme-light input[type="number"],
+html.theme-light input[type="search"],
+html.theme-light textarea {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+html.theme-light input::placeholder,
+html.theme-light textarea::placeholder {
+  color: #98a0ad !important;
+}
+
+/* ─── Cyan accent text stays cyan (action items / links) ───────────────── */
+html.theme-light .text-cyan-200,
+html.theme-light .text-cyan-300,
+html.theme-light .text-cyan-400 {
+  color: #0e7490 !important;
+}
+
+/* ─── Rich text editor inside nodes ────────────────────────────────────── */
+html.theme-light .rich-text-editor {
+  color: #1c1f24;
+}
+
+/* ─── Scrollbar in light mode ──────────────────────────────────────────── */
+html.theme-light .prompt-editor-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--ccy-scrollbar-thumb);
+}
+html.theme-light .prompt-editor-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ccy-scrollbar-thumb-hover);
+}
+html.theme-light .prompt-editor-scroll {
+  scrollbar-color: var(--ccy-scrollbar-thumb) var(--ccy-scrollbar-track);
+}
+
+/* ─── Cursors — use native OS cursors, no custom skins.
+   Buttons/links keep the finger pointer via their own `cursor-pointer` classes.
+   Text inputs get the I-beam from the UA stylesheet.
+   On the canvas:
+     - default          → arrow (also used during marquee/box-select)
+     - space held       → grab  (ready to pan)
+     - panning / node-drag → grabbing
+     - connecting an edge → crosshair
+     - resizing a node    → handled by the resize handle's own cursor
+*/
+.react-flow__pane,
+.react-flow__renderer,
+.react-flow__container {
+  cursor: default !important;
+}
+
+.react-flow__pane.dragging,
+.react-flow__node.dragging {
+  cursor: grabbing !important;
+}
+
+.react-flow__handle {
+  cursor: crosshair;
+}
+
+/* Canvas grab/grabbing mode — overrides all ReactFlow internals */
+.canvas-mode-grab,
+.canvas-mode-grab *,
+.canvas-mode-grab .react-flow__pane,
+.canvas-mode-grab .react-flow__node,
+.canvas-mode-grab .react-flow__renderer {
+  cursor: grab !important;
+}
+
+.canvas-mode-grabbing,
+.canvas-mode-grabbing *,
+.canvas-mode-grabbing .react-flow__pane,
+.canvas-mode-grabbing .react-flow__node,
+.canvas-mode-grabbing .react-flow__renderer {
+  cursor: grabbing !important;
+}
+
+/* Modal entrance — backdrop fade + panel rise/scale. Plays each time the
+   element mounts (used by the History Assets modal). */
+@keyframes ccy-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ccy-modal-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+.ccy-fade-in { animation: ccy-fade-in 0.2s ease-out; }
+.ccy-modal-in { animation: ccy-modal-in 0.24s cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .ccy-fade-in, .ccy-modal-in { animation: none; }
+}
+
+/* Multi-select bounding box: give it breathing room so the dashed frame sits
+   a bit outside the selected nodes instead of hugging them tightly. The outline
+   (with offset) draws the visible border padding without changing node bounds. */
+.react-flow__nodesselection-rect {
+  border: none !important;
+  border-radius: 14px;
+  outline: 1.5px dashed rgba(255, 255, 255, 0.4);
+  outline-offset: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Rich text editor — restore semantic styles inside contentEditable. */
+.rich-text-editor h1 { font-size: 1.5rem; font-weight: 600; margin: 0.5em 0 0.25em; }
+.rich-text-editor h2 { font-size: 1.25rem; font-weight: 600; margin: 0.5em 0 0.25em; }
+.rich-text-editor h3 { font-size: 1.1rem; font-weight: 600; margin: 0.4em 0 0.2em; }
+.rich-text-editor p { margin: 0.25em 0; }
+.rich-text-editor ul { list-style: disc; padding-left: 1.5em; margin: 0.25em 0; }
+.rich-text-editor ol { list-style: decimal; padding-left: 1.5em; margin: 0.25em 0; }
+.rich-text-editor hr { border: none; border-top: 1px solid rgba(255,255,255,0.15); margin: 0.6em 0; }
+.rich-text-editor b, .rich-text-editor strong { font-weight: 700; }
+.rich-text-editor i, .rich-text-editor em { font-style: italic; }
+
+/* Rendered Markdown (marked + DOMPurify output). Reuses .rich-text-editor for
+   headings/lists/emphasis above; these add the pieces markdown emits that the
+   old contentEditable never did: tables, code, blockquotes, links, images. */
+.rich-text-editor a { color: #7cc4ff; text-decoration: underline; text-underline-offset: 2px; }
+.rich-text-editor code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  padding: 0.1em 0.34em;
+  white-space: break-spaces;
+  word-break: break-word;
+}
+.rich-text-editor pre {
+  background: rgba(0,0,0,0.32);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 0.7em 0.85em;
+  margin: 0.5em 0;
+  overflow-x: auto;
+}
+.rich-text-editor pre code { background: none; border: none; padding: 0; font-size: 0.82em; white-space: pre; }
+.rich-text-editor blockquote {
+  border-left: 3px solid rgba(255,255,255,0.22);
+  margin: 0.5em 0;
+  padding: 0.1em 0 0.1em 0.85em;
+  color: rgba(255,255,255,0.66);
+}
+.rich-text-editor table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.92em;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rich-text-editor th, .rich-text-editor td {
+  border: 1px solid rgba(255,255,255,0.14);
+  padding: 0.34em 0.6em;
+  text-align: left;
+  vertical-align: top;
+}
+.rich-text-editor th { background: rgba(255,255,255,0.05); font-weight: 600; }
+.rich-text-editor img { max-width: 100%; border-radius: 6px; }
+/* Text-highlight (font background color) via <mark data-hl="…">. Dark text on a
+   light swatch so it stays readable on the node's dark shell. */
+.rich-text-editor mark { background: #fde68a; color: #1a1d22; border-radius: 3px; padding: 0 0.15em; }
+.rich-text-editor mark[data-hl="yellow"] { background: #fde68a; color: #1a1d22; }
+.rich-text-editor mark[data-hl="green"]  { background: #bbf7d0; color: #14231a; }
+.rich-text-editor mark[data-hl="teal"]   { background: #99f6e4; color: #0f2723; }
+.rich-text-editor mark[data-hl="blue"]   { background: #bae6fd; color: #0f2233; }
+.rich-text-editor mark[data-hl="purple"] { background: #ddd6fe; color: #201a33; }
+.rich-text-editor mark[data-hl="pink"]   { background: #fbcfe8; color: #2e1022; }
+.rich-text-editor mark[data-hl="orange"] { background: #fed7aa; color: #2e1a06; }
+.rich-text-editor mark[data-hl="red"]    { background: #fecaca; color: #2e0d0d; }
+.rich-text-editor > :first-child { margin-top: 0; }
+.rich-text-editor > :last-child { margin-bottom: 0; }
+.rich-text-editor ul.contains-task-list { list-style: none; padding-left: 0.4em; }
+.rich-text-editor li.task-list-item { list-style: none; }
+html.theme-light .rich-text-editor a { color: #1a66c9; }
+html.theme-light .rich-text-editor code { background: rgba(0,0,0,0.05); border-color: rgba(0,0,0,0.08); }
+html.theme-light .rich-text-editor pre { background: rgba(0,0,0,0.045); border-color: rgba(0,0,0,0.08); }
+html.theme-light .rich-text-editor blockquote { border-left-color: rgba(0,0,0,0.18); color: rgba(0,0,0,0.6); }
+html.theme-light .rich-text-editor th, html.theme-light .rich-text-editor td { border-color: rgba(0,0,0,0.14); }
+html.theme-light .rich-text-editor th { background: rgba(0,0,0,0.04); }
+
+/* Thin dark scrollbar — works for vertical and horizontal overflow alike. */
+.prompt-editor-scroll::-webkit-scrollbar {
+  width: var(--ccy-scrollbar-size);
+  height: var(--ccy-scrollbar-size);
+}
+.prompt-editor-scroll::-webkit-scrollbar-track {
+  background: var(--ccy-scrollbar-track);
+  border-radius: 999px;
+}
+.prompt-editor-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid var(--ccy-scrollbar-border);
+  border-radius: 999px;
+  background-color: var(--ccy-scrollbar-thumb);
+  background-clip: padding-box;
+}
+.prompt-editor-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ccy-scrollbar-thumb-hover);
+}
+.prompt-editor-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ccy-scrollbar-thumb) var(--ccy-scrollbar-track);
+}
+
+/* Force dark native dropdowns for the model service config dialog (and any
+   select inside a modal dialog). `color-scheme: dark` makes Chrome render
+   the native option list with a dark background; the explicit option rule
+   covers Firefox / Edge where `color-scheme` alone is not enough. */
+[data-testid="provider-config-modal"] select,
+[role="dialog"] select {
+  color-scheme: dark;
+}
+[data-testid="provider-config-modal"] select option,
+[role="dialog"] select option {
+  background-color: #1a1a1a;
+  color: #f5f5f5;
+}
+[data-testid="provider-config-modal"] select option:checked,
+[role="dialog"] select option:checked {
+  background-color: #2a2a2a;
+  color: #ffffff;
+}
+
+/* ── Loading spinner — used in NodeLoadingCenterBadge / ImageGenerationOverlay.
+   Pure SVG + CSS so we don't ship a Lottie runtime just for one rotating ring.
+   Two layered strokes:
+     · soft track ring (low-opacity full circle)
+     · accent arc (~25% of the circumference) rotating endlessly
+   The accent arc uses stroke-dasharray to draw only a quarter of the circle. */
+@keyframes ccy-spin {
+  to { transform: rotate(360deg); }
+}
+.ccy-spinner {
+  display: inline-block;
+  vertical-align: middle;
+}
+.ccy-spinner-arc {
+  transform-origin: center;
+  animation: ccy-spin 0.95s linear infinite;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Light theme — adaptations for the 2026-07 additions
+   (canvas chrome, zoom ruler, guide/HD modals, homepage, BorderGlow cards)
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Canvas wrapper + homepage grounds */
+html.theme-light .bg-\[\#1d1f24\],
+html.theme-light .bg-\[\#121316\] {
+  background-color: var(--ccy-bg) !important;
+}
+
+/* New panel surfaces: 画布指南 / 高清弹窗 / 重命名弹层 / 卡片菜单 /
+   标注色盘 / 图片工具条 / 连线删除钮底色 / 首页头像菜单 */
+html.theme-light .bg-\[\#101218\],
+html.theme-light .bg-\[\#16171b\],
+html.theme-light .bg-\[\#17181d\]\/97,
+html.theme-light .bg-\[\#15181d\],
+html.theme-light .bg-\[\#101114\]\/95,
+html.theme-light .bg-\[\#12161d\]\/95,
+html.theme-light .bg-\[\#0f141d\]\/88 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+
+/* BorderGlow cards: the surface color rides an INLINE --card-bg custom
+   property, so only an !important custom-property override can win. */
+html.theme-light .border-glow-card {
+  --card-bg: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Homepage cover placeholders / folder tiles (dark gradient stops) */
+html.theme-light [class*="from-[#26272d]"] {
+  background: linear-gradient(180deg, #ffffff, #edeff2) !important;
+}
+
+/* Translucent white decorations that vanish on white cards */
+html.theme-light .bg-white\/\[0\.09\],
+html.theme-light .bg-white\/\[0\.1\],
+html.theme-light .bg-white\/\[0\.12\],
+html.theme-light .bg-white\/\[0\.16\] {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Indigo copy in the HD-enhance engine card is unreadable on white */
+html.theme-light .text-indigo-200 {
+  color: #4338ca !important;
+}
+html.theme-light .text-indigo-200\/80 {
+  color: rgba(67, 56, 202, 0.8) !important;
+}
+
+/* Homepage dot lattice: white dots -> soft dark dots (the generic
+   radial-gradient blanking rule would otherwise remove it entirely, which is
+   also acceptable — this keeps the texture). */
+html.theme-light .bg-\[radial-gradient\(rgba\(255\2c 255\2c 255\2c 0\.05\)_1px\2c transparent_1px\)\] {
+  background: radial-gradient(rgba(0, 0, 0, 0.07) 1px, transparent 1px) !important;
+}
+
+/* Edge delete button border (border-white/30 wasn't in the border list) */
+html.theme-light .border-white\/30 {
+  border-color: rgba(0, 0, 0, 0.18) !important;
+}
+
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+   Light theme 鈥?second sweep (2026-07-02): minimap / ruler / node bodies /
+   agent panel / homepage avatar menu / admin modals & drawers & previews.
+   Appended LAST on purpose: several rules re-override earlier !important
+   rules (same specificity 鈫?source order wins).
+   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+/* 鈹€鈹€鈹€ Agent panel (鏅鸿兘浣? now follows the theme 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The --agent-* tokens in theme.css are dark-only by design; light mode
+   re-tokens the whole drawer (shell, borders, popovers) in one block. */
+html.theme-light {
+  --agent-bg: #ffffff;
+  --agent-surface: #ffffff;
+  --agent-surface-soft: rgba(0, 0, 0, 0.04);
+  --agent-border: rgba(0, 0, 0, 0.08);
+  --agent-border-strong: rgba(0, 0, 0, 0.14);
+  --agent-text: #1c1f24;
+  --agent-text-muted: #5a6270;
+  --agent-text-dim: #98a0ad;
+}
+
+/* 鈹€鈹€鈹€ Hover / focus variants (distinct class names 鈥?the base overrides
+   never match them, so hovers used to flash dark or go white-on-white) 鈹€鈹€鈹€ */
+html.theme-light .hover\:text-white:hover,
+html.theme-light .hover\:text-neutral-100:hover,
+html.theme-light .hover\:text-neutral-200:hover {
+  color: #1c1f24 !important;
+}
+html.theme-light .hover\:bg-black\/70:hover,
+html.theme-light .hover\:bg-black\/80:hover {
+  background-color: #ffffff !important;
+}
+html.theme-light .hover\:bg-white\/8:hover,
+html.theme-light .hover\:bg-white\/\[0\.07\]:hover,
+html.theme-light .hover\:bg-white\/\[0\.075\]:hover,
+html.theme-light .hover\:bg-white\/\[0\.08\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .hover\:bg-white\/\[0\.045\]:hover {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+html.theme-light .hover\:bg-white\/\[0\.12\]:hover {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .hover\:border-white\/20:hover,
+html.theme-light .hover\:border-white\/25:hover,
+html.theme-light .hover\:border-white\/\[0\.16\]:hover {
+  border-color: rgba(0, 0, 0, 0.16) !important;
+}
+html.theme-light .hover\:border-white\/\[0\.18\]:hover {
+  border-color: rgba(0, 0, 0, 0.2) !important;
+}
+html.theme-light .focus\:border-white\/30:focus,
+html.theme-light .focus-within\:border-white\/25:focus-within {
+  border-color: rgba(0, 0, 0, 0.22) !important;
+}
+
+/* 鈹€鈹€鈹€ Canvas chrome 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Ruler 100% anchor: amber-500 is faint on the white pill */
+html.theme-light .bg-amber-500\/90 {
+  background-color: rgba(217, 119, 6, 0.95) !important;
+}
+/* Active toggle chip in the bottom-left strip (also AssetLibraryModal) */
+html.theme-light .bg-white\/12 {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Multi-select bounding box: white dashed outline on white ground */
+html.theme-light .react-flow__nodesselection-rect {
+  outline-color: rgba(0, 0, 0, 0.35);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* 鈹€鈹€鈹€ Node action pills (鍏ㄦ櫙/澶氳搴?鈥?+ 瑙嗛宸ュ叿鏉? 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* text-neutral-100/88 is its own class 鈥?the /88-less override misses it */
+html.theme-light .text-neutral-100\/88 {
+  color: rgba(28, 31, 36, 0.88) !important;
+}
+html.theme-light .border-white\/12 {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Annotate color-popover swatch rim */
+html.theme-light .border-white\/40 {
+  border-color: rgba(0, 0, 0, 0.2) !important;
+}
+
+/* 鈹€鈹€鈹€ Node card bodies / dialogs (CustomNodes) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* THE node empty-state surface (鐢熸垚鍥惧儚/瑙嗛/闊抽/鍏ㄦ櫙鈥? */
+html.theme-light .bg-\[\#23242a\] {
+  background-color: #f2f3f5 !important;
+}
+/* 鐢熸垚涓?center badge */
+html.theme-light .bg-\[\#0e1116\]\/78 {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+}
+/* MediaParamsPopover (鏃堕暱/鍒嗚鲸鐜? 鈥?/85 opacity missing from the panel group */
+html.theme-light .bg-\[\#15181d\]\/85 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  color: var(--ccy-fg);
+}
+/* 浜屾鍒涗綔 / 瀵规瘮 dialogs */
+html.theme-light .bg-\[\#111318\] {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+/* 720掳 panorama preview chrome + sweep strip backing */
+html.theme-light .bg-\[\#0d1015\] {
+  background-color: #ffffff !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#0c1118\] {
+  background-color: #eef0f3 !important;
+}
+
+/* 鈹€鈹€鈹€ Prompt mirror textarea (transparent-overlay trick) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The generic `html.theme-light textarea` rule paints these white and
+   un-hides the raw text; restore the mirror and keep only a dark caret. */
+html.theme-light textarea.bg-transparent {
+  background-color: transparent !important;
+}
+html.theme-light textarea.text-transparent {
+  background-color: transparent !important;
+  color: transparent !important;
+  caret-color: #1c1f24 !important;
+}
+
+/* 鈹€鈹€鈹€ Agent panel odds and ends 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Slash-command menu (#1a1d23 鈮?#1a1d22 covered above) + agent picker */
+html.theme-light .bg-\[\#1a1d23\]\/98,
+html.theme-light .bg-\[\#171a20\]\/98 {
+  background-color: rgba(255, 255, 255, 0.98) !important;
+  color: var(--ccy-fg);
+}
+/* Assistant bubble / avatar rings vanish on white */
+html.theme-light .ring-white\/8,
+html.theme-light .ring-white\/10 {
+  --tw-ring-color: rgba(0, 0, 0, 0.08) !important;
+}
+/* Near-white accent text on light tinted cards */
+html.theme-light .text-cyan-50,
+html.theme-light .text-cyan-100 {
+  color: #0e7490 !important;
+}
+html.theme-light .text-amber-100,
+html.theme-light .text-amber-200 {
+  color: #b45309 !important;
+}
+html.theme-light .text-emerald-200 {
+  color: #047857 !important;
+}
+html.theme-light .text-rose-200 {
+  color: #be123c !important;
+}
+
+/* 鈹€鈹€鈹€ Primary "white pill" buttons (send / 鍒涘缓 / 纭畾 / 淇濆瓨) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* bg-white + text-black is the primary-button pair across the app; a white
+   button on a white surface has no affordance, flip it to dark ink. */
+html.theme-light .bg-white.text-black {
+  background-color: #1c1f24 !important;
+  color: #ffffff !important;
+}
+html.theme-light .bg-white.text-black:hover {
+  background-color: #343a44 !important;
+}
+html.theme-light .bg-white.text-black:disabled {
+  background-color: rgba(0, 0, 0, 0.16) !important;
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+html.theme-light .disabled\:bg-white\/15:disabled {
+  background-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 鈹€鈹€鈹€ Homepage leftovers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Avatar dropdown: /95 opacity variant of the already-covered #16171b */
+html.theme-light .bg-\[\#16171b\]\/95 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+/* Project-card busy overlay (澶勭悊涓€? 鈥?/50 was missing from the scrim group */
+html.theme-light .bg-black\/50 {
+  background-color: rgba(255, 255, 255, 0.78) !important;
+}
+
+/* 鈹€鈹€鈹€ Modal scrims: keep them scrims, not white sheets 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* The tooltip-pill group turns bg-black/60|70|80 into opaque white cards;
+   fullscreen fixed scrims must stay dark-translucent (precedent: /90 above). */
+html.theme-light .fixed.inset-0.bg-black\/60 {
+  background-color: rgba(0, 0, 0, 0.35) !important;
+  backdrop-filter: blur(4px);
+}
+html.theme-light .fixed.inset-0.bg-black\/70 {
+  background-color: rgba(0, 0, 0, 0.4) !important;
+  backdrop-filter: blur(4px);
+}
+html.theme-light .fixed.inset-0.bg-black\/80 {
+  background-color: rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(6px);
+}
+
+/* 鈹€鈹€鈹€ Admin: CenterModal warm-dark palette (缂栬緫妯″瀷 / 鎻愮ず璇?/ Skill 缂栬緫) 鈹€ */
+html.theme-light .bg-\[\#171716\] {
+  background-color: #ffffff !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-\[\#181817\],
+html.theme-light .bg-\[\#1b1a18\],
+html.theme-light .bg-\[\#161615\] {
+  background-color: #f6f7f9 !important;
+}
+html.theme-light .bg-\[\#1d1d1b\] {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .bg-\[\#121211\] {
+  background-color: #fbfbfc !important;
+  color: #1c1f24 !important;
+}
+html.theme-light .bg-\[\#2f2b23\] {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .bg-\[\#111110\] {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+html.theme-light .border-\[\#303030\],
+html.theme-light .border-\[\#2d2b28\],
+html.theme-light .border-\[\#2c2925\] {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+html.theme-light .hover\:bg-\[\#2a2926\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .hover\:text-\[\#f2eadf\]:hover {
+  color: #1c1f24 !important;
+}
+
+/* Warm near-white editor/preview text (MarkdownPreview + modal chrome).
+   These sit after the `.bg-black/70 *` force-dark rule so they win ties. */
+html.theme-light .text-\[\#d8d1c7\],
+html.theme-light .text-\[\#e7e0d6\],
+html.theme-light .text-\[\#e8e2d8\],
+html.theme-light .text-\[\#eee7dc\] {
+  color: #3b4250 !important;
+}
+html.theme-light .text-\[\#f2eadf\],
+html.theme-light .text-\[\#f5eee4\],
+html.theme-light .text-\[\#f6efe5\],
+html.theme-light .text-\[\#f4ede3\] {
+  color: #1c1f24 !important;
+}
+html.theme-light .text-\[\#928b82\],
+html.theme-light .text-\[\#a8a19a\],
+html.theme-light .text-\[\#8d867d\] {
+  color: #717a89 !important;
+}
+
+/* 鈹€鈹€鈹€ Admin: alerts drawer + skills preview + fraction fills 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+html.theme-light .bg-\[\#101014\]\/95 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .bg-white\/\[0\.025\] {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+html.theme-light .bg-white\/\[0\.045\] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+html.theme-light .bg-white\/\[0\.075\] {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+html.theme-light .bg-white\/\[0\.10\] {
+  background-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .border-white\/\[0\.07\] {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+html.theme-light .border-white\/\[0\.10\],
+html.theme-light .border-white\/\[0\.14\],
+html.theme-light .border-white\/\[0\.18\] {
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 鈹€鈹€鈹€ Native form controls the old rules missed 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* Attribute-less <input> (admin 鏄剧ず鍚嶇О/妯″瀷 ID, homepage rename鈥? never
+   matches input[type="text"] 鈥?cover it explicitly. */
+html.theme-light input:not([type]) {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+html.theme-light select {
+  background-color: #ffffff !important;
+  color: #1c1f24 !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+  color-scheme: light;
+}
+html.theme-light select option {
+  background-color: #ffffff;
+  color: #1c1f24;
+}
+html.theme-light input[type="checkbox"] {
+  accent-color: #3b4250;
+}
+
+
+/* 提示面板的石墨底（参考风格换色）+ 中性发送钮的悬停态 */
+html.theme-light .bg-\[\#26272b\]\/97 {
+  background-color: rgba(255, 255, 255, 0.97) !important;
+  color: var(--ccy-fg);
+}
+html.theme-light .hover\:bg-white\/25:hover {
+  background-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+/* ─── 生成中水面动画 ─────────────────────────────────────────────────────
+   drift：宽 200% 的双拼波形平移半宽 = 无缝循环，方向从左往右；
+   bob：水体整体轻微浮沉（容器底部外扩了 8px，浮起不露缝）。 */
+@keyframes ccy-water-drift {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+@keyframes ccy-water-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}

@@ -1,0 +1,44 @@
+.worktrees/
+node_modules/
+.env
+.gocache/
+
+# build artifacts
+dist/
+bin/
+*.exe
+
+# dev / live logs
+*-dev.log
+*-dev.err.log
+*-dev.out.log
+*-live.log
+*-live.err.log
+*.pid
+backend/*.log
+backend/*.pid
+backend/uploads/
+uploads/
+
+# local raw/source assets
+assets/mannequins/raw/
+
+# generated / exported artifacts (not product source)
+outputs/
+
+# root scratch images (debug frames, masks)
+/tmp_*.png
+/*_mask.png
+
+# runtime
+run/*
+!run/.gitignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 代理媒体磁盘缓存(运行时生成，勿提交)
+backend/media-cache/
