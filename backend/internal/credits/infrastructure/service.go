@@ -60,6 +60,26 @@ func (s Service) CreateInitialAccount(ctx context.Context, userID string, dailyQ
 	})
 }
 
+// applyDailyReset lazily tops the account back up to its daily_quota floor the
+// first time it's touched on a new calendar day (account timezone). It's a
+// single atomic UPDATE guarded on last_reset_on, so concurrent callers can't
+// double-credit; only the winning row writes a daily_reset ledger entry.
+// Silent on any error — a reset hiccup must never block a read or a generation.
+func (s Service) applyDailyReset(ctx context.Context, queries *sqlc.Queries, uid pgtype.UUID) {
+	acct, err := queries.ApplyDailyResetIfDue(ctx, uid)
+	if err != nil {
+		return // pgx.ErrNoRows = already reset today; other errors are non-fatal
+	}
+	_ = queries.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
+		UserID:       uid,
+		AccountID:    acct.ID,
+		Type:         "daily_reset",
+		Amount:       acct.CurrentBalance,
+		BalanceAfter: acct.CurrentBalance,
+		Reason:       "每日额度重置",
+	})
+}
+
 // Reserve atomically deducts amount from the user's balance at generation
 // submit. Returns creditapp.ErrInsufficientCredits when the balance can't
 // cover it (guarded UPDATE — safe under concurrent submits, never negative).
@@ -76,6 +96,9 @@ func (s Service) Reserve(ctx context.Context, userID string, amount int32, reaso
 		return err
 	}
 	uid := pgtype.UUID{Bytes: userUUID, Valid: true}
+	// Top up the free daily floor before checking affordability, so a user who
+	// ran dry yesterday can generate again today without hitting a 402 wall.
+	s.applyDailyReset(ctx, queries, uid)
 	row, err := queries.DeductCreditBalanceIfEnough(ctx, uid, amount)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -138,8 +161,12 @@ func (s Service) GetSummary(ctx context.Context, userID string) (creditapp.Credi
 	if err != nil {
 		return creditapp.CreditSummary{}, err
 	}
+	uid := pgtype.UUID{Bytes: userUUID, Valid: true}
+	// Reading the balance is a "touch" too — apply any due daily reset first so
+	// the number the user sees on load already reflects today's refill.
+	s.applyDailyReset(ctx, queries, uid)
 
-	account, err := queries.GetCreditAccountByUserID(ctx, pgtype.UUID{Bytes: userUUID, Valid: true})
+	account, err := queries.GetCreditAccountByUserID(ctx, uid)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return creditapp.CreditSummary{}, nil
@@ -147,9 +174,19 @@ func (s Service) GetSummary(ctx context.Context, userID string) (creditapp.Credi
 		return creditapp.CreditSummary{}, err
 	}
 
+	// "Consumed today" comes from today's debit ledger, not daily_quota minus
+	// balance — the latter goes negative once a user tops up past the free quota.
+	consumed, err := queries.SumUserCreditsConsumedToday(ctx, uid)
+	if err != nil {
+		consumed = account.DailyQuota - account.CurrentBalance // fallback
+		if consumed < 0 {
+			consumed = 0
+		}
+	}
+
 	return creditapp.CreditSummary{
 		DailyQuota:     account.DailyQuota,
 		CurrentBalance: account.CurrentBalance,
-		ConsumedToday:  account.DailyQuota - account.CurrentBalance,
+		ConsumedToday:  consumed,
 	}, nil
 }

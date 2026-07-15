@@ -290,6 +290,50 @@ func (q *Queries) GetCreditAccountByUserID(ctx context.Context, userID pgtype.UU
 	return i, err
 }
 
+const applyDailyResetIfDue = `-- name: ApplyDailyResetIfDue :one
+UPDATE credit_accounts
+SET current_balance = GREATEST(current_balance, daily_quota),
+    last_reset_on = (now() AT TIME ZONE reset_timezone)::date,
+    updated_at = now()
+WHERE user_id = $1
+  AND last_reset_on < (now() AT TIME ZONE reset_timezone)::date
+RETURNING id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on, status, updated_at
+`
+
+// ApplyDailyResetIfDue returns pgx.ErrNoRows when the account was already reset
+// today (no row matched the WHERE date guard).
+func (q *Queries) ApplyDailyResetIfDue(ctx context.Context, userID pgtype.UUID) (CreditAccount, error) {
+	row := q.db.QueryRow(ctx, applyDailyResetIfDue, userID)
+	var i CreditAccount
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.DailyQuota,
+		&i.CurrentBalance,
+		&i.ResetTimezone,
+		&i.LastResetOn,
+		&i.Status,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const sumUserCreditsConsumedToday = `-- name: SumUserCreditsConsumedToday :one
+SELECT COALESCE(SUM(ABS(l.amount)), 0)::int AS total
+FROM credit_ledger_entries l
+JOIN credit_accounts a ON a.user_id = l.user_id
+WHERE l.user_id = $1
+  AND l.type IN ('charge', 'reserve')
+  AND l.created_at >= (date_trunc('day', now() AT TIME ZONE a.reset_timezone) AT TIME ZONE a.reset_timezone)
+`
+
+func (q *Queries) SumUserCreditsConsumedToday(ctx context.Context, userID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, sumUserCreditsConsumedToday, userID)
+	var total int32
+	err := row.Scan(&total)
+	return total, err
+}
+
 const getInvitationByCodeHashForUpdate = `-- name: GetInvitationByCodeHashForUpdate :one
 SELECT id, code_hash, role, initial_daily_quota, max_uses, used_count, expires_at, created_by, note, created_at, revoked_at
 FROM invitations

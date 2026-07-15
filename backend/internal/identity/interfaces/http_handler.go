@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -59,9 +60,15 @@ func NewHandler(service identityapp.Service, credits creditapp.AccountCreator, s
 }
 
 func (h Handler) Routes(r chi.Router) {
-	r.Post("/api/auth/register", h.Register)
-	r.Post("/api/auth/register-by-invite", h.RegisterByInvite)
-	r.Post("/api/auth/login", h.Login)
+	trustProxy := os.Getenv("TRUST_PROXY_IP") == "1"
+	// Registration mints a credited account, so throttle it hard per IP to blunt
+	// scripted credit-farming; login is looser but still rate-limited to slow
+	// credential stuffing.
+	signupLimit := httpx.RateLimitMiddleware(5, 5, trustProxy)  // 5/min per IP
+	loginLimit := httpx.RateLimitMiddleware(10, 10, trustProxy) // 10/min per IP
+	r.With(signupLimit).Post("/api/auth/register", h.Register)
+	r.With(signupLimit).Post("/api/auth/register-by-invite", h.RegisterByInvite)
+	r.With(loginLimit).Post("/api/auth/login", h.Login)
 	r.Get("/api/auth/google/start", h.GoogleStart)
 	r.Get("/api/auth/google/callback", h.GoogleCallback)
 	r.Post("/api/auth/logout", h.Logout)

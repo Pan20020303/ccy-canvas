@@ -48,6 +48,29 @@ SELECT id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on,
 FROM credit_accounts
 WHERE user_id = $1;
 
+-- name: ApplyDailyResetIfDue :one
+-- 懒重置:仅当上次重置日期早于账户时区的「今天」时,把余额抬到至少 daily_quota
+-- (GREATEST 保留管理员额外加分/未来充值,不冲掉),并把 last_reset_on 推到今天。
+-- WHERE 里的日期条件保证并发下只有第一个请求真正更新并拿到行(其余 0 行),
+-- 因此账本不会重复记 daily_reset。0 行(pgx.ErrNoRows)= 今日已重置,无需处理。
+UPDATE credit_accounts
+SET current_balance = GREATEST(current_balance, daily_quota),
+    last_reset_on = (now() AT TIME ZONE reset_timezone)::date,
+    updated_at = now()
+WHERE user_id = $1
+  AND last_reset_on < (now() AT TIME ZONE reset_timezone)::date
+RETURNING id, user_id, daily_quota, current_balance, reset_timezone, last_reset_on, status, updated_at;
+
+-- name: SumUserCreditsConsumedToday :one
+-- 单用户「今日已用」,按账户时区的今天零点起算(与重置口径一致);
+-- 只统计真实扣费(reserve/charge),退款不抵消展示值。
+SELECT COALESCE(SUM(ABS(l.amount)), 0)::int AS total
+FROM credit_ledger_entries l
+JOIN credit_accounts a ON a.user_id = l.user_id
+WHERE l.user_id = $1
+  AND l.type IN ('charge', 'reserve')
+  AND l.created_at >= (date_trunc('day', now() AT TIME ZONE a.reset_timezone) AT TIME ZONE a.reset_timezone);
+
 -- name: CreateCreditLedgerEntry :exec
 INSERT INTO credit_ledger_entries (user_id, account_id, type, amount, balance_after, reason, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7);

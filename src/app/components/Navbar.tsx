@@ -152,7 +152,14 @@ export const Navbar = () => {
           // credit summary hasn't loaded yet — falling back to `—` so the
           // pill doesn't visually disappear on transient backend errors
           // or before the first /auth/me response lands.
-          <div className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200`}>
+          <div
+            title={
+              language === "en"
+                ? "Balance / daily quota — refills to at least your daily quota each day"
+                : "余额 / 每日额度 — 每天自动补满到不低于每日额度,充值/额外积分不会被清空"
+            }
+            className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200`}
+          >
             <Zap className="h-3 w-3 text-amber-400" />
             <span className="tabular-nums">{creditSummary ? creditSummary.current_balance : "—"}</span>
             <span className="text-neutral-500">/</span>
