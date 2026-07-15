@@ -17,6 +17,15 @@ type Project struct {
 	UpdatedAt time.Time
 }
 
+// CanvasVersion is a saved restore point of a project's canvas (metadata only;
+// the heavy nodes/edges live in the row but aren't loaded for the list view).
+type CanvasVersion struct {
+	ID         string
+	Label      string
+	AuthorName string
+	CreatedAt  time.Time
+}
+
 // Comment is a canvas comment anchored to a node (NodeID empty = project-level),
 // optionally a reply (ParentID set) in a thread.
 type Comment struct {

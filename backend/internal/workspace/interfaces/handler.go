@@ -219,6 +219,34 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.deleteComment)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "list-versions",
+		Method:      http.MethodGet,
+		Path:        "/api/app/projects/{id}/versions",
+		Summary:     "List saved canvas versions (restore points)",
+		Tags:        []string{"App", "Versions"},
+		Security:    userSecurity,
+	}, h.listVersions)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "save-version",
+		Method:        http.MethodPost,
+		Path:          "/api/app/projects/{id}/versions",
+		Summary:       "Save the current canvas as a version",
+		Tags:          []string{"App", "Versions"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusCreated,
+	}, h.saveVersion)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "restore-version",
+		Method:      http.MethodPost,
+		Path:        "/api/app/versions/{id}/restore",
+		Summary:     "Restore a canvas version (auto-backs up current first)",
+		Tags:        []string{"App", "Versions"},
+		Security:    userSecurity,
+	}, h.restoreVersion)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "list-folders",
 		Method:      http.MethodGet,
 		Path:        "/api/app/folders",
@@ -842,6 +870,97 @@ func (h *Handler) deleteComment(ctx context.Context, input *deleteCommentInput) 
 	}
 	if err := h.repo.DeleteComment(ctx, input.ID); err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to delete comment", err)
+	}
+	return nil, nil
+}
+
+// ─── Versions(画布版本历史)──────────────────────────────────────────────
+
+type VersionItem struct {
+	ID         string    `json:"id"`
+	Label      string    `json:"label"`
+	AuthorName string    `json:"author_name"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type listVersionsInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type listVersionsOutput struct {
+	Body struct {
+		Data      []VersionItem `json:"data"`
+		RequestID string        `json:"request_id"`
+	}
+}
+
+func (h *Handler) listVersions(ctx context.Context, input *listVersionsInput) (*listVersionsOutput, error) {
+	if _, err := h.requireProjectAccess(ctx, input.ID); err != nil {
+		return nil, err
+	}
+	versions, err := h.repo.ListVersions(ctx, input.ID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list versions", err)
+	}
+	out := &listVersionsOutput{}
+	out.Body.Data = make([]VersionItem, 0, len(versions))
+	for _, v := range versions {
+		out.Body.Data = append(out.Body.Data, VersionItem{ID: v.ID, Label: v.Label, AuthorName: v.AuthorName, CreatedAt: v.CreatedAt})
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type saveVersionInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		Label string `json:"label" maxLength:"120"`
+	}
+}
+
+type SaveVersionResult struct {
+	ID string `json:"id"`
+}
+
+type saveVersionOutput struct {
+	Body struct {
+		Data      SaveVersionResult `json:"data"`
+		RequestID string            `json:"request_id"`
+	}
+}
+
+func (h *Handler) saveVersion(ctx context.Context, input *saveVersionInput) (*saveVersionOutput, error) {
+	userID, err := h.requireProjectAccess(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	id, err := h.repo.SaveVersion(ctx, input.ID, strings.TrimSpace(input.Body.Label), userID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to save version", err)
+	}
+	out := &saveVersionOutput{}
+	out.Body.Data.ID = id
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type restoreVersionInput struct {
+	ID string `path:"id" doc:"Version UUID"`
+}
+
+func (h *Handler) restoreVersion(ctx context.Context, input *restoreVersionInput) (*struct{}, error) {
+	projectID, nodes, edges, groups, ok := h.repo.GetVersionCanvas(ctx, input.ID)
+	if !ok {
+		return nil, huma.Error404NotFound("Version not found")
+	}
+	userID, err := h.requireProjectAccess(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	// Auto-backup the current canvas first, so a restore is itself undoable.
+	_, _ = h.repo.SaveVersion(ctx, projectID, "恢复前自动备份", userID)
+	if _, err := h.repo.UpsertCanvasSnapshot(ctx, projectID, userID, nodes, edges, groups); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to restore version", err)
 	}
 	return nil, nil
 }

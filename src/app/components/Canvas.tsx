@@ -21,6 +21,7 @@ import {
   Download,
   FolderHeart,
   HelpCircle,
+  History,
   MessageSquare,
   Image as ImageIcon,
   Layers,
@@ -72,6 +73,7 @@ import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
 import { OnboardingTour } from './OnboardingTour';
 import { CommentsPanel } from './CommentsPanel';
+import { VersionsPanel } from './VersionsPanel';
 import { useAuth } from '../auth/AuthProvider';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
 import { RemotePresenceLayer } from './RemotePresenceLayer';
@@ -455,6 +457,9 @@ const InnerCanvas = () => {
   const [tourReplay, setTourReplay] = useState(0);
   // 评论批注面板。
   const [commentsOpen, setCommentsOpen] = useState(false);
+  // 版本历史面板。
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const reloadActiveCanvas = useStore((state) => state.reloadActiveCanvas);
   const { user } = useAuth();
   const backendProjects = useStore((state) => state.backendProjects);
   const activeProjectMeta = backendProjects.find((p) => p.id === activeBackendProjectId);
@@ -2369,7 +2374,7 @@ const InnerCanvas = () => {
       {activeBackendProjectId ? (
         <button
           type="button"
-          onClick={() => setCommentsOpen((v) => !v)}
+          onClick={() => { setCommentsOpen((v) => !v); setVersionsOpen(false); }}
           title={language === 'zh' ? '评论' : 'Comments'}
           data-testid="comments-toggle"
           className={clsx(
@@ -2381,6 +2386,35 @@ const InnerCanvas = () => {
         >
           <MessageSquare className="h-4 w-4" />
         </button>
+      ) : null}
+
+      {/* 版本历史开关。 */}
+      {activeBackendProjectId ? (
+        <button
+          type="button"
+          onClick={() => { setVersionsOpen((v) => !v); setCommentsOpen(false); }}
+          title={language === 'zh' ? '版本历史' : 'Version history'}
+          data-testid="versions-toggle"
+          className={clsx(
+            'absolute bottom-6 left-[234px] z-40 flex h-[34px] w-[34px] items-center justify-center rounded-full border shadow-2xl backdrop-blur-xl transition',
+            versionsOpen
+              ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200'
+              : 'border-white/10 bg-black/45 text-neutral-400 hover:bg-black/70 hover:text-neutral-100',
+          )}
+        >
+          <History className="h-4 w-4" />
+        </button>
+      ) : null}
+
+      {activeBackendProjectId ? (
+        <VersionsPanel
+          open={versionsOpen}
+          projectId={activeBackendProjectId}
+          language={language}
+          onClose={() => setVersionsOpen(false)}
+          onFlushCanvas={async () => { await saveCanvasToBackend(); }}
+          onReloadCanvas={async () => { await reloadActiveCanvas(); }}
+        />
       ) : null}
 
       {activeBackendProjectId ? (

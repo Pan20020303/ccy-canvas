@@ -304,6 +304,10 @@ type AppState = {
   refreshBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
   switchBackendProject: (id: string) => Promise<void>;
+  /** Re-fetch the active project's canvas from the backend WITHOUT saving the
+   *  current (stale) state first — used after a version restore so the restored
+   *  snapshot isn't clobbered by the outgoing nodes. */
+  reloadActiveCanvas: () => Promise<void>;
   saveCanvasToBackend: (options?: { keepalive?: boolean; force?: boolean }) => Promise<void>;
   canvasSaveStatus: 'idle' | 'saving' | 'saved' | 'error';
   canvasSaveError: string | null;
@@ -2483,6 +2487,42 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       // auto-save OFF (canvasHydrated stays false) so we don't overwrite the
       // un-fetched backend snapshot.
       set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
+    } finally {
+      set({ backendSyncing: false });
+    }
+  },
+
+  reloadActiveCanvas: async () => {
+    const id = get().activeBackendProjectId;
+    if (!id) return;
+    // Freeze auto-save while re-fetching so the debounce can't write stale nodes.
+    set({ canvasHydrated: false, backendSyncing: true });
+    try {
+      const canvas = await getCanvas(id);
+      const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
+      const nodes = rawNodes.map((n) => {
+        const d = n.data as Record<string, unknown> | undefined;
+        if (d?.status === 'running' || d?.status === 'generating') {
+          return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
+        }
+        return n;
+      });
+      const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
+      const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
+      // Reset the saved signature so the reloaded canvas is treated as clean and
+      // the next real edit (not this reload) is what triggers the next save.
+      // Empty never equals a real signature (which always embeds project id + JSON).
+      lastSavedCanvasSignature = '';
+      set((state) => {
+        const projectStateById = { ...state.projectStateById, [id]: createCanvasSnapshot(nodes, edges, groups) };
+        return {
+          nodes, edges, groups, undoStack: [], copiedCanvasSelection: null,
+          canvasHydrated: true, projectStateById,
+          ...syncActiveSpaceSnapshot(state, { projectStateById }),
+        };
+      });
+    } catch {
+      set({ canvasHydrated: true });
     } finally {
       set({ backendSyncing: false });
     }

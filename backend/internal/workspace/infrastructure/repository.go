@@ -136,6 +136,79 @@ func (r *Repository) GetProjectByID(ctx context.Context, projectID string) (*dom
 	return &proj, nil
 }
 
+const maxCanvasVersions = 30
+
+// ListVersions returns a project's saved canvas versions (newest first, metadata only).
+func (r *Repository) ListVersions(ctx context.Context, projectID string) ([]domain.CanvasVersion, error) {
+	pgID, err := parsePgUUID(projectID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q.ListCanvasVersions(ctx, pgID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.CanvasVersion, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.CanvasVersion{
+			ID: uuidStr(row.ID), Label: row.Label, AuthorName: row.AuthorName, CreatedAt: row.CreatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// SaveVersion snapshots the project's CURRENT canvas into a new version, then
+// prunes to the newest maxCanvasVersions to cap storage.
+func (r *Repository) SaveVersion(ctx context.Context, projectID, label, createdBy string) (string, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return "", err
+	}
+	var pgBy pgtype.UUID
+	if createdBy != "" {
+		if pgBy, err = parsePgUUID(createdBy); err != nil {
+			return "", err
+		}
+	}
+	// Snapshot whatever is persisted now (last saved canvas). Empty is fine.
+	snap, err := r.q.GetCanvasSnapshot(ctx, pgProj)
+	nodes, edges, groups := []byte("[]"), []byte("[]"), []byte("[]")
+	if err == nil {
+		if len(snap.Nodes) > 0 {
+			nodes = snap.Nodes
+		}
+		if len(snap.Edges) > 0 {
+			edges = snap.Edges
+		}
+		if len(snap.Groups) > 0 {
+			groups = snap.Groups
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	row, err := r.q.InsertCanvasVersion(ctx, sqlc.InsertCanvasVersionParams{
+		ProjectID: pgProj, Nodes: nodes, Edges: edges, Groups: groups, Label: label, CreatedBy: pgBy,
+	})
+	if err != nil {
+		return "", err
+	}
+	_ = r.q.PruneCanvasVersions(ctx, pgProj, maxCanvasVersions) // best-effort cap
+	return uuidStr(row.ID), nil
+}
+
+// GetVersionCanvas returns a version's owning project and canvas payload (for restore).
+func (r *Repository) GetVersionCanvas(ctx context.Context, versionID string) (projectID string, nodes, edges, groups json.RawMessage, ok bool) {
+	pgID, err := parsePgUUID(versionID)
+	if err != nil {
+		return "", nil, nil, nil, false
+	}
+	v, err := r.q.GetCanvasVersion(ctx, pgID)
+	if err != nil {
+		return "", nil, nil, nil, false
+	}
+	return uuidStr(v.ProjectID), json.RawMessage(v.Nodes), json.RawMessage(v.Edges), json.RawMessage(v.Groups), true
+}
+
 // HasProjectAccess reports whether the user can read/comment on the project:
 // they are the owner OR an invited member of any role (visitors included — a
 // review reviewer must be able to leave comments).
