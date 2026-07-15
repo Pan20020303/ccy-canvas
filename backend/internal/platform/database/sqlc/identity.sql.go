@@ -318,6 +318,59 @@ func (q *Queries) ApplyDailyResetIfDue(ctx context.Context, userID pgtype.UUID) 
 	return i, err
 }
 
+const listUserCreditLedger = `-- name: ListUserCreditLedger :many
+SELECT id, type, amount, balance_after, reason, created_at
+FROM credit_ledger_entries
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListUserCreditLedgerParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Limit  int32       `json:"limit"`
+	Offset int32       `json:"offset"`
+}
+
+type ListUserCreditLedgerRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Type         string             `json:"type"`
+	Amount       int32              `json:"amount"`
+	BalanceAfter int32              `json:"balance_after"`
+	Reason       string             `json:"reason"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListUserCreditLedger(ctx context.Context, arg ListUserCreditLedgerParams) ([]ListUserCreditLedgerRow, error) {
+	rows, err := q.db.Query(ctx, listUserCreditLedger, arg.UserID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserCreditLedgerRow{}
+	for rows.Next() {
+		var i ListUserCreditLedgerRow
+		if err := rows.Scan(&i.ID, &i.Type, &i.Amount, &i.BalanceAfter, &i.Reason, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
+const countUserCreditLedger = `-- name: CountUserCreditLedger :one
+SELECT COUNT(*)::bigint AS total
+FROM credit_ledger_entries
+WHERE user_id = $1
+`
+
+func (q *Queries) CountUserCreditLedger(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserCreditLedger, userID)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}
+
 const sumUserCreditsConsumedToday = `-- name: SumUserCreditsConsumedToday :one
 SELECT COALESCE(SUM(ABS(l.amount)), 0)::int AS total
 FROM credit_ledger_entries l

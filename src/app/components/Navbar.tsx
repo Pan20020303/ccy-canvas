@@ -9,6 +9,7 @@ import { useStore } from "../store";
 import logoUrl from "../../imports/logo.png";
 import { TaskQueue } from "./TaskQueue";
 import { CollaborationControls } from "./CollaborationControls";
+import { CreditLedgerModal } from "./CreditLedgerModal";
 
 export const Navbar = () => {
   const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
@@ -22,6 +23,7 @@ export const Navbar = () => {
   const dict = t[language];
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -152,19 +154,21 @@ export const Navbar = () => {
           // credit summary hasn't loaded yet — falling back to `—` so the
           // pill doesn't visually disappear on transient backend errors
           // or before the first /auth/me response lands.
-          <div
+          <button
+            type="button"
+            onClick={() => setLedgerOpen(true)}
             title={
               language === "en"
-                ? "Balance / daily quota — refills to at least your daily quota each day"
-                : "余额 / 每日额度 — 每天自动补满到不低于每日额度,充值/额外积分不会被清空"
+                ? "Balance / daily quota — refills to at least your daily quota each day. Click for details."
+                : "余额 / 每日额度 — 每天自动补满到不低于每日额度,充值/额外积分不会被清空。点击查看明细"
             }
-            className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200`}
+            className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
           >
             <Zap className="h-3 w-3 text-amber-400" />
             <span className="tabular-nums">{creditSummary ? creditSummary.current_balance : "—"}</span>
             <span className="text-neutral-500">/</span>
             <span className="tabular-nums text-neutral-400">{creditSummary ? creditSummary.daily_quota : "—"}</span>
-          </div>
+          </button>
         ) : null}
 
         {user ? <TaskQueue /> : null}
@@ -221,6 +225,7 @@ export const Navbar = () => {
           </div>
         )}
       </div>
+      <CreditLedgerModal open={ledgerOpen} onClose={() => setLedgerOpen(false)} language={language} />
     </div>
   );
 };

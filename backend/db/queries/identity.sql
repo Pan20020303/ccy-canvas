@@ -71,6 +71,19 @@ WHERE l.user_id = $1
   AND l.type IN ('charge', 'reserve')
   AND l.created_at >= (date_trunc('day', now() AT TIME ZONE a.reset_timezone) AT TIME ZONE a.reset_timezone);
 
+-- name: ListUserCreditLedger :many
+-- 用户侧「我的积分明细」:仅本人流水,不含他人信息(邮箱/姓名),按时间倒序分页。
+SELECT id, type, amount, balance_after, reason, created_at
+FROM credit_ledger_entries
+WHERE user_id = $1
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: CountUserCreditLedger :one
+SELECT COUNT(*)::bigint AS total
+FROM credit_ledger_entries
+WHERE user_id = $1;
+
 -- name: CreateCreditLedgerEntry :exec
 INSERT INTO credit_ledger_entries (user_id, account_id, type, amount, balance_after, reason, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7);

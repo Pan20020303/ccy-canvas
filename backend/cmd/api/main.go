@@ -246,6 +246,9 @@ func main() {
 	announcementsHandler := announcementshttp.NewHandler(queries)
 	announcementsHandler.RegisterRoutes(api)
 
+	// User-facing credit ledger ("我的积分明细"), scoped to the caller.
+	identityhttp.NewCreditsAppHandler(queries).RegisterRoutes(api)
+
 	// Agent SSE run endpoint sits on chi directly (huma envelopes JSON,
 	// which would break Server-Sent Events).
 	agentRunRouter := skillshttp.NewAgentRunRouter(queries, skillsExecutor, catalogService, sessionManager)
