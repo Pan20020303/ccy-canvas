@@ -61,7 +61,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <div className="mb-3 mt-7 text-[13px] font-semibold text-neutral-100 first:mt-0">{children}</div>;
 }
 
-export function CanvasGuideModal({ onClose }: { onClose: () => void }) {
+export function CanvasGuideModal({ onClose, onReplayTour }: { onClose: () => void; onReplayTour?: () => void }) {
   const language = useStore((state) => state.language);
   const zh = language === 'zh';
 
@@ -176,13 +176,25 @@ export function CanvasGuideModal({ onClose }: { onClose: () => void }) {
       >
         <div className="flex items-center justify-between border-b border-white/[0.06] px-7 py-4">
           <div className="text-[15px] font-semibold text-neutral-100">{zh ? '画布使用指南' : 'Canvas Guide'}</div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-neutral-400 transition hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onReplayTour ? (
+              <button
+                type="button"
+                onClick={onReplayTour}
+                data-testid="replay-tour"
+                className="rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-[12px] text-cyan-200 transition hover:bg-cyan-400/20"
+              >
+                {zh ? '重看新手引导' : 'Replay tour'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-neutral-400 transition hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-7 pb-8 pt-5">

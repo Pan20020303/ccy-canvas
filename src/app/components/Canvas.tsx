@@ -69,6 +69,7 @@ import { nodeTypes, PositionStudioHost } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
+import { OnboardingTour } from './OnboardingTour';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
 import { RemotePresenceLayer } from './RemotePresenceLayer';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
@@ -447,6 +448,8 @@ const InnerCanvas = () => {
   // Bottom-right canvas index — the "所有节点 / 分组" jump panel.
   const [indexPanel, setIndexPanel] = useState<'nodes' | 'groups' | null>(null);
   const [guideOpen, setGuideOpen] = useState(false);
+  // 新手引导重看信号:递增即重新打开引导(首次进入由 OnboardingTour 自管)。
+  const [tourReplay, setTourReplay] = useState(0);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
@@ -2336,7 +2339,16 @@ const InnerCanvas = () => {
       >
         <HelpCircle className="h-4 w-4" />
       </button>
-      {guideOpen ? <CanvasGuideModal onClose={() => setGuideOpen(false)} /> : null}
+      {guideOpen ? (
+        <CanvasGuideModal
+          onClose={() => setGuideOpen(false)}
+          onReplayTour={() => { setGuideOpen(false); setTourReplay((n) => n + 1); }}
+        />
+      ) : null}
+
+      {/* 新手分步引导:首次进画布自动弹出(localStorage 记只弹一次);
+          「使用指南」里可点「重看新手引导」重新触发。 */}
+      <OnboardingTour language={language} replaySignal={tourReplay} />
 
       {/* Zoom ruler — 参考样式：裸刻度（无胶囊底），只在缩放时浮现，静止后
           淡出。琥珀色刻度段 = 100% 锚点到当前缩放之间；百分比标签跟随游标。
