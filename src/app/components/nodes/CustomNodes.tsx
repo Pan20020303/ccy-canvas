@@ -1441,6 +1441,8 @@ const PromptPanel = ({
     scheduleRefHoverClear();
   }, [showRefHover, scheduleRefHoverClear]);
   const [expanded, setExpanded] = useState(false);
+  // 出图张数选择器:平时收成一个「×N」按钮,点开才展开 1/2/4。
+  const [outputMenuOpen, setOutputMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const compactOverlayRef = useRef<HTMLDivElement>(null);
   const expandedOverlayRef = useRef<HTMLDivElement>(null);
@@ -2676,32 +2678,59 @@ const PromptPanel = ({
           />
         ) : null}
         {serviceType === 'image' ? (
-          <div
-            className="nodrag nopan flex items-center overflow-hidden rounded-lg border border-white/10 bg-black/20 text-[11px]"
-            title={language === 'zh' ? '出图张数:一次生成多张挑选(按张计费)' : 'Images per run (billed per image)'}
-          >
-            {[1, 2, 4].map((n) => (
-              <button
-                key={n}
-                type="button"
-                data-testid={`output-count-${n}`}
-                onPointerDown={(event) => event.stopPropagation()}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  updateNodeGenerationParams(nodeId, { outputCount: n });
-                }}
-                className={clsx(
-                  'h-7 w-7 tabular-nums transition',
-                  currentOutputCount === n
-                    ? 'bg-white/20 text-white'
-                    : 'text-neutral-400 hover:bg-white/8 hover:text-neutral-200',
-                )}
-              >
-                {n === 1 ? '×1' : `×${n}`}
-              </button>
-            ))}
+          <div className="nodrag nopan relative">
+            {/* 收起态:一个「×N」按钮显示当前张数;点开才展开 1/2/4。 */}
+            <button
+              type="button"
+              data-testid="output-count-toggle"
+              onPointerDown={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setOutputMenuOpen((v) => !v);
+              }}
+              title={language === 'zh' ? '出图张数:一次生成多张挑选(按张计费)' : 'Images per run (billed per image)'}
+              className={clsx(
+                'flex h-7 items-center gap-0.5 rounded-lg border px-2 text-[11px] tabular-nums transition',
+                outputMenuOpen || currentOutputCount > 1
+                  ? 'border-white/20 bg-white/12 text-white'
+                  : 'border-white/10 bg-black/20 text-neutral-300 hover:bg-white/8',
+              )}
+            >
+              ×{currentOutputCount}
+              <ChevronDown className={clsx('h-3 w-3 opacity-60 transition', outputMenuOpen && 'rotate-180')} />
+            </button>
+            {outputMenuOpen ? (
+              <>
+                {/* 点外部关闭 */}
+                <div className="fixed inset-0 z-[59]" onClick={() => setOutputMenuOpen(false)} onPointerDown={(e) => e.stopPropagation()} />
+                {/* 向上弹出(面板在底部) */}
+                <div className="absolute bottom-full left-0 z-[60] mb-1 flex overflow-hidden rounded-lg border border-white/12 bg-[#1b1d22] shadow-xl">
+                  {[1, 2, 4].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      data-testid={`output-count-${n}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        updateNodeGenerationParams(nodeId, { outputCount: n });
+                        setOutputMenuOpen(false);
+                      }}
+                      className={clsx(
+                        'h-7 w-8 text-[11px] tabular-nums transition',
+                        currentOutputCount === n ? 'bg-white/20 text-white' : 'text-neutral-300 hover:bg-white/10',
+                      )}
+                    >
+                      ×{n}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
