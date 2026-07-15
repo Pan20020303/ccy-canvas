@@ -997,6 +997,23 @@ const InnerCanvas = () => {
     };
   }, [activeBackendProjectId, saveCanvasToBackend]);
 
+  /** Warn before leaving ONLY when the last save actually failed or we're
+   *  offline — so the keepalive flush above stays the silent happy path, and
+   *  the prompt fires exactly when work is at real risk of being lost. */
+  useEffect(() => {
+    if (!activeBackendProjectId) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const status = useStore.getState().canvasSaveStatus;
+      const offline = typeof navigator !== 'undefined' && !navigator.onLine;
+      if (status === 'error' || status === 'saving' || offline) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [activeBackendProjectId]);
+
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!snapToGrid) {
       onNodesChange(changes);

@@ -304,7 +304,10 @@ type AppState = {
   refreshBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
   switchBackendProject: (id: string) => Promise<void>;
-  saveCanvasToBackend: (options?: { keepalive?: boolean }) => Promise<void>;
+  saveCanvasToBackend: (options?: { keepalive?: boolean; force?: boolean }) => Promise<void>;
+  canvasSaveStatus: 'idle' | 'saving' | 'saved' | 'error';
+  canvasSaveError: string | null;
+  retryCanvasSave: () => void;
   spaceMembers: SpaceMember[];
   invitations: AdminInvitation[];
   groups: Group[];
@@ -2337,6 +2340,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   activeBackendProjectId: null,
   backendSyncing: false,
   canvasHydrated: false,
+  canvasSaveStatus: 'idle',
+  canvasSaveError: null,
 
   refreshBackendProjects: async () => {
     try {
@@ -2503,13 +2508,24 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // and backend writes. (The payload deliberately stays FULL fidelity —
     // the backend snapshot is the un-stripped source of truth.)
     const payloadSignature = `${activeBackendProjectId}:${JSON.stringify(cleanNodes)}:${JSON.stringify(edges)}:${JSON.stringify(groups)}`;
-    if (payloadSignature === lastSavedCanvasSignature) return;
+    // force=true (manual retry) bypasses the identical-payload skip so a
+    // previously FAILED save can be re-attempted even though nothing changed.
+    if (!options?.force && payloadSignature === lastSavedCanvasSignature) return;
+    set({ canvasSaveStatus: 'saving' });
     try {
       await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
       lastSavedCanvasSignature = payloadSignature;
-    } catch {
-      // Silent — save errors should not interrupt the user.
+      set({ canvasSaveStatus: 'saved', canvasSaveError: null });
+    } catch (err) {
+      // No longer silent: surface the failure so the user knows their work
+      // isn't persisted. The signature is intentionally NOT updated, so the
+      // next edit (or a manual retry) re-attempts the save.
+      set({ canvasSaveStatus: 'error', canvasSaveError: err instanceof Error ? err.message : String(err) });
     }
+  },
+
+  retryCanvasSave: () => {
+    void get().saveCanvasToBackend({ force: true });
   },
 
   spaceMembers: seedSpaceMembers,

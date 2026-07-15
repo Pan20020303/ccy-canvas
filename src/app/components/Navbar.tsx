@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { ArrowLeft, Languages, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, CloudOff, Languages, Loader2, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
 import { gsap } from "gsap";
 
 import { useAuth } from "../auth/AuthProvider";
@@ -147,6 +147,8 @@ export const Navbar = () => {
         </button>
 
         {/* 协作控件:私有→「协作」按钮;协作中→创建者/积分下拉 + 协作中状态。 */}
+        {user ? <SaveStatusIndicator language={language} /> : null}
+
         {user ? <CollaborationControls /> : null}
 
         {user ? (
@@ -228,6 +230,77 @@ export const Navbar = () => {
       <CreditLedgerModal open={ledgerOpen} onClose={() => setLedgerOpen(false)} language={language} />
     </div>
   );
+};
+
+/** 画布保存状态指示器:让静默的保存失败可见,断网时告警,恢复后自动重试。
+ *  只在画布项目激活时出现;正常「已保存」态短暂显示后隐去,不占视觉。 */
+const SaveStatusIndicator = ({ language }: { language: "zh" | "en" }) => {
+  const status = useStore((s) => s.canvasSaveStatus);
+  const retry = useStore((s) => s.retryCanvasSave);
+  const activeProject = useStore((s) => s.activeBackendProjectId);
+  const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
+  const [showSaved, setShowSaved] = useState(false);
+  const zh = language === "zh";
+
+  useEffect(() => {
+    const goOnline = () => {
+      setOnline(true);
+      // 恢复网络后自动重试上次失败的保存,不必等用户下一次编辑。
+      if (useStore.getState().canvasSaveStatus === "error") useStore.getState().retryCanvasSave();
+    };
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status === "saved") {
+      setShowSaved(true);
+      const t = setTimeout(() => setShowSaved(false), 2500);
+      return () => clearTimeout(t);
+    }
+  }, [status]);
+
+  if (!activeProject) return null;
+  const base = "flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] transition";
+
+  if (!online) {
+    return (
+      <div data-testid="save-status" data-status="offline" className={`${base} bg-amber-500/15 text-amber-300`} title={zh ? "网络已断开,你的修改暂未保存;恢复后会自动重试" : "Offline — changes not saved yet; will retry when back online"}>
+        <CloudOff className="h-3 w-3" />
+        <span>{zh ? "离线 · 未保存" : "Offline · unsaved"}</span>
+      </div>
+    );
+  }
+  if (status === "saving") {
+    return (
+      <div data-testid="save-status" data-status="saving" className={`${base} bg-white/[0.04] text-neutral-400`}>
+        <Loader2 className="h-3 w-3 animate-spin" />
+        <span>{zh ? "保存中…" : "Saving…"}</span>
+      </div>
+    );
+  }
+  if (status === "error") {
+    return (
+      <button type="button" data-testid="save-status" data-status="error" onClick={() => retry()} className={`${base} bg-rose-500/15 text-rose-300 hover:bg-rose-500/25`} title={zh ? "保存失败,点击重试" : "Save failed — click to retry"}>
+        <AlertTriangle className="h-3 w-3" />
+        <span>{zh ? "保存失败 · 重试" : "Save failed · retry"}</span>
+      </button>
+    );
+  }
+  if (status === "saved" && showSaved) {
+    return (
+      <div data-testid="save-status" data-status="saved" className={`${base} text-neutral-500`}>
+        <Check className="h-3 w-3" />
+        <span>{zh ? "已保存" : "Saved"}</span>
+      </div>
+    );
+  }
+  return null;
 };
 
 const MenuItem = ({
