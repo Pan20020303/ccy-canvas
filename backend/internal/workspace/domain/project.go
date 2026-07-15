@@ -17,6 +17,20 @@ type Project struct {
 	UpdatedAt time.Time
 }
 
+// Comment is a canvas comment anchored to a node (NodeID empty = project-level),
+// optionally a reply (ParentID set) in a thread.
+type Comment struct {
+	ID         string
+	ProjectID  string
+	NodeID     string
+	AuthorID   string
+	AuthorName string
+	ParentID   string // empty = thread root
+	Body       string
+	Resolved   bool
+	CreatedAt  time.Time
+}
+
 // TemplateProject is a lightweight view of a project marked as a template,
 // shown on the homepage "start from a template" wall.
 type TemplateProject struct {

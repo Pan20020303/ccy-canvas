@@ -136,6 +136,131 @@ func (r *Repository) GetProjectByID(ctx context.Context, projectID string) (*dom
 	return &proj, nil
 }
 
+// HasProjectAccess reports whether the user can read/comment on the project:
+// they are the owner OR an invited member of any role (visitors included — a
+// review reviewer must be able to leave comments).
+func (r *Repository) HasProjectAccess(ctx context.Context, projectID, userID string) (bool, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return false, err
+	}
+	oc, err := r.q.GetProjectOwnerCollab(ctx, pgProj)
+	if err != nil {
+		return false, nil // project not found → no access
+	}
+	if uuidStr(oc.OwnerID) == userID {
+		return true, nil
+	}
+	pgUser, err := parsePgUUID(userID)
+	if err != nil {
+		return false, err
+	}
+	role, err := r.q.GetProjectMemberRole(ctx, pgProj, pgUser)
+	if err != nil {
+		return false, nil // not a member
+	}
+	return role != "", nil
+}
+
+func toComment(c sqlc.ListProjectCommentsRow) domain.Comment {
+	parent := ""
+	if c.ParentID.Valid {
+		parent = uuidStr(c.ParentID)
+	}
+	return domain.Comment{
+		ID:         uuidStr(c.ID),
+		ProjectID:  uuidStr(c.ProjectID),
+		NodeID:     c.NodeID,
+		AuthorID:   uuidStr(c.AuthorID),
+		AuthorName: c.AuthorName,
+		ParentID:   parent,
+		Body:       c.Body,
+		Resolved:   c.Resolved,
+		CreatedAt:  c.CreatedAt.Time,
+	}
+}
+
+// ListComments returns all comments for a project (author names joined).
+func (r *Repository) ListComments(ctx context.Context, projectID string) ([]domain.Comment, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.q.ListProjectComments(ctx, pgProj)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Comment, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toComment(row))
+	}
+	return out, nil
+}
+
+// CreateComment inserts a comment (or reply when parentID is non-empty).
+func (r *Repository) CreateComment(ctx context.Context, projectID, nodeID, authorID, parentID, body string) (*domain.Comment, error) {
+	pgProj, err := parsePgUUID(projectID)
+	if err != nil {
+		return nil, err
+	}
+	pgAuthor, err := parsePgUUID(authorID)
+	if err != nil {
+		return nil, err
+	}
+	var pgParent pgtype.UUID
+	if parentID != "" {
+		if pgParent, err = parsePgUUID(parentID); err != nil {
+			return nil, err
+		}
+	}
+	row, err := r.q.InsertComment(ctx, sqlc.InsertCommentParams{
+		ProjectID: pgProj, NodeID: nodeID, AuthorID: pgAuthor, ParentID: pgParent, Body: body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	parent := ""
+	if row.ParentID.Valid {
+		parent = uuidStr(row.ParentID)
+	}
+	return &domain.Comment{
+		ID: uuidStr(row.ID), ProjectID: uuidStr(row.ProjectID), NodeID: row.NodeID,
+		AuthorID: uuidStr(row.AuthorID), ParentID: parent, Body: row.Body,
+		Resolved: row.Resolved, CreatedAt: row.CreatedAt.Time,
+	}, nil
+}
+
+// GetCommentMeta returns a comment's owning project and author (for auth checks).
+func (r *Repository) GetCommentMeta(ctx context.Context, commentID string) (projectID, authorID string, ok bool) {
+	pgID, err := parsePgUUID(commentID)
+	if err != nil {
+		return "", "", false
+	}
+	row, err := r.q.GetCommentByID(ctx, pgID)
+	if err != nil {
+		return "", "", false
+	}
+	return uuidStr(row.ProjectID), uuidStr(row.AuthorID), true
+}
+
+// SetCommentResolved toggles a comment's resolved flag.
+func (r *Repository) SetCommentResolved(ctx context.Context, commentID string, resolved bool) error {
+	pgID, err := parsePgUUID(commentID)
+	if err != nil {
+		return err
+	}
+	return r.q.SetCommentResolved(ctx, sqlc.SetCommentResolvedParams{ID: pgID, Resolved: resolved})
+}
+
+// DeleteComment removes a comment (author/owner check done in the handler).
+func (r *Repository) DeleteComment(ctx context.Context, commentID string) error {
+	pgID, err := parsePgUUID(commentID)
+	if err != nil {
+		return err
+	}
+	return r.q.DeleteComment(ctx, pgID)
+}
+
 // ListTemplates returns all projects marked as templates (any user can see them).
 func (r *Repository) ListTemplates(ctx context.Context) ([]domain.TemplateProject, error) {
 	rows, err := r.q.ListTemplateProjects(ctx)

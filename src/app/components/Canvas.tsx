@@ -21,6 +21,7 @@ import {
   Download,
   FolderHeart,
   HelpCircle,
+  MessageSquare,
   Image as ImageIcon,
   Layers,
   Layers3,
@@ -70,6 +71,8 @@ import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
 import { OnboardingTour } from './OnboardingTour';
+import { CommentsPanel } from './CommentsPanel';
+import { useAuth } from '../auth/AuthProvider';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
 import { RemotePresenceLayer } from './RemotePresenceLayer';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
@@ -450,6 +453,22 @@ const InnerCanvas = () => {
   const [guideOpen, setGuideOpen] = useState(false);
   // 新手引导重看信号:递增即重新打开引导(首次进入由 OnboardingTour 自管)。
   const [tourReplay, setTourReplay] = useState(0);
+  // 评论批注面板。
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  const { user } = useAuth();
+  const backendProjects = useStore((state) => state.backendProjects);
+  const activeProjectMeta = backendProjects.find((p) => p.id === activeBackendProjectId);
+  const isProjectOwner = activeProjectMeta?.my_role === 'creator';
+  const selectedNode = nodes.find((n) => n.selected);
+  const jumpToNode = useCallback((nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    setCenter(node.position.x + 170, node.position.y + 130, { zoom: Math.max(viewport.zoom, 0.6), duration: 420 });
+    onNodesChange([
+      ...nodes.filter((n) => n.selected && n.id !== node.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
+      { id: node.id, type: 'select' as const, selected: true },
+    ]);
+  }, [nodes, onNodesChange, setCenter, viewport.zoom]);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
@@ -2343,6 +2362,38 @@ const InnerCanvas = () => {
         <CanvasGuideModal
           onClose={() => setGuideOpen(false)}
           onReplayTour={() => { setGuideOpen(false); setTourReplay((n) => n + 1); }}
+        />
+      ) : null}
+
+      {/* 评论批注开关(仅后端项目);打开右侧评论抽屉。 */}
+      {activeBackendProjectId ? (
+        <button
+          type="button"
+          onClick={() => setCommentsOpen((v) => !v)}
+          title={language === 'zh' ? '评论' : 'Comments'}
+          data-testid="comments-toggle"
+          className={clsx(
+            'absolute bottom-6 left-[192px] z-40 flex h-[34px] w-[34px] items-center justify-center rounded-full border shadow-2xl backdrop-blur-xl transition',
+            commentsOpen
+              ? 'border-cyan-400/40 bg-cyan-400/15 text-cyan-200'
+              : 'border-white/10 bg-black/45 text-neutral-400 hover:bg-black/70 hover:text-neutral-100',
+          )}
+        >
+          <MessageSquare className="h-4 w-4" />
+        </button>
+      ) : null}
+
+      {activeBackendProjectId ? (
+        <CommentsPanel
+          open={commentsOpen}
+          projectId={activeBackendProjectId}
+          currentUserId={user?.id ?? ''}
+          isOwner={isProjectOwner}
+          selectedNodeId={selectedNode?.id ?? ''}
+          selectedNodeLabel={typeof selectedNode?.data?.customTitle === 'string' ? selectedNode.data.customTitle : selectedNode?.type}
+          language={language}
+          onClose={() => setCommentsOpen(false)}
+          onJumpToNode={jumpToNode}
         />
       ) : null}
 

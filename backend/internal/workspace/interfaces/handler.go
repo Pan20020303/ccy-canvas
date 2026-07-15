@@ -181,6 +181,44 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.setProjectTemplate)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "list-comments",
+		Method:      http.MethodGet,
+		Path:        "/api/app/projects/{id}/comments",
+		Summary:     "List canvas comments for a project",
+		Tags:        []string{"App", "Comments"},
+		Security:    userSecurity,
+	}, h.listComments)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "create-comment",
+		Method:        http.MethodPost,
+		Path:          "/api/app/projects/{id}/comments",
+		Summary:       "Add a canvas comment (or reply)",
+		Tags:          []string{"App", "Comments"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusCreated,
+	}, h.createComment)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "resolve-comment",
+		Method:      http.MethodPatch,
+		Path:        "/api/app/comments/{id}/resolve",
+		Summary:     "Toggle a comment's resolved state",
+		Tags:        []string{"App", "Comments"},
+		Security:    userSecurity,
+	}, h.resolveComment)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-comment",
+		Method:        http.MethodDelete,
+		Path:          "/api/app/comments/{id}",
+		Summary:       "Delete a comment (author or project owner)",
+		Tags:          []string{"App", "Comments"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusNoContent,
+	}, h.deleteComment)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "list-folders",
 		Method:      http.MethodGet,
 		Path:        "/api/app/folders",
@@ -658,6 +696,154 @@ func (h *Handler) setProjectTemplate(ctx context.Context, input *setProjectTempl
 	out.Body.Data.IsTemplate = input.Body.IsTemplate
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
+}
+
+// ─── Comments(画布评论批注)────────────────────────────────────────────
+
+type CommentItem struct {
+	ID         string    `json:"id"`
+	NodeID     string    `json:"node_id"`
+	AuthorID   string    `json:"author_id"`
+	AuthorName string    `json:"author_name"`
+	ParentID   string    `json:"parent_id"`
+	Body       string    `json:"body"`
+	Resolved   bool      `json:"resolved"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func toCommentItem(c domain.Comment) CommentItem {
+	return CommentItem{
+		ID: c.ID, NodeID: c.NodeID, AuthorID: c.AuthorID, AuthorName: c.AuthorName,
+		ParentID: c.ParentID, Body: c.Body, Resolved: c.Resolved, CreatedAt: c.CreatedAt,
+	}
+}
+
+// requireProjectAccess resolves the caller and confirms they can access the
+// project; returns the user id or a huma error.
+func (h *Handler) requireProjectAccess(ctx context.Context, projectID string) (string, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return "", huma.Error401Unauthorized("Authentication required")
+	}
+	allowed, err := h.repo.HasProjectAccess(ctx, projectID, claims.UserID)
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeInternal, "Failed to check access", err)
+	}
+	if !allowed {
+		return "", huma.Error403Forbidden("No access to this project")
+	}
+	return claims.UserID, nil
+}
+
+type listCommentsInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type listCommentsOutput struct {
+	Body struct {
+		Data      []CommentItem `json:"data"`
+		RequestID string        `json:"request_id"`
+	}
+}
+
+func (h *Handler) listComments(ctx context.Context, input *listCommentsInput) (*listCommentsOutput, error) {
+	if _, err := h.requireProjectAccess(ctx, input.ID); err != nil {
+		return nil, err
+	}
+	comments, err := h.repo.ListComments(ctx, input.ID)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list comments", err)
+	}
+	out := &listCommentsOutput{}
+	out.Body.Data = make([]CommentItem, 0, len(comments))
+	for _, c := range comments {
+		out.Body.Data = append(out.Body.Data, toCommentItem(c))
+	}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type createCommentInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		NodeID   string `json:"node_id"`
+		Body     string `json:"body" minLength:"1" maxLength:"4000"`
+		ParentID string `json:"parent_id"`
+	}
+}
+
+type createCommentOutput struct {
+	Body struct {
+		Data      CommentItem `json:"data"`
+		RequestID string      `json:"request_id"`
+	}
+}
+
+func (h *Handler) createComment(ctx context.Context, input *createCommentInput) (*createCommentOutput, error) {
+	userID, err := h.requireProjectAccess(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	body := strings.TrimSpace(input.Body.Body)
+	if body == "" {
+		return nil, huma.Error422UnprocessableEntity("Comment body is required")
+	}
+	c, err := h.repo.CreateComment(ctx, input.ID, input.Body.NodeID, userID, input.Body.ParentID, body)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to create comment", err)
+	}
+	out := &createCommentOutput{}
+	out.Body.Data = toCommentItem(*c)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type resolveCommentInput struct {
+	ID   string `path:"id" doc:"Comment UUID"`
+	Body struct {
+		Resolved bool `json:"resolved"`
+	}
+}
+
+func (h *Handler) resolveComment(ctx context.Context, input *resolveCommentInput) (*struct{}, error) {
+	projectID, _, ok := h.repo.GetCommentMeta(ctx, input.ID)
+	if !ok {
+		return nil, huma.Error404NotFound("Comment not found")
+	}
+	if _, err := h.requireProjectAccess(ctx, projectID); err != nil {
+		return nil, err
+	}
+	if err := h.repo.SetCommentResolved(ctx, input.ID, input.Body.Resolved); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to update comment", err)
+	}
+	return nil, nil
+}
+
+type deleteCommentInput struct {
+	ID string `path:"id" doc:"Comment UUID"`
+}
+
+func (h *Handler) deleteComment(ctx context.Context, input *deleteCommentInput) (*struct{}, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	projectID, authorID, found := h.repo.GetCommentMeta(ctx, input.ID)
+	if !found {
+		return nil, huma.Error404NotFound("Comment not found")
+	}
+	// Author can delete their own; the project owner can moderate any.
+	owner := false
+	if source, err := h.repo.GetProjectByID(ctx, projectID); err == nil && source != nil {
+		owner = source.OwnerID == claims.UserID
+	}
+	if authorID != claims.UserID && !owner {
+		return nil, huma.Error403Forbidden("Only the author or project owner can delete this comment")
+	}
+	if err := h.repo.DeleteComment(ctx, input.ID); err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to delete comment", err)
+	}
+	return nil, nil
 }
 
 type listFoldersOutput struct {
