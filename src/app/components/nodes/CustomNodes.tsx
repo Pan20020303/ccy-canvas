@@ -1608,6 +1608,9 @@ const PromptPanel = ({
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
   const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';
   const currentSeed = typeof params.seed === 'number' ? params.seed : undefined;
+  // 出图张数(一图多变体):仅图片服务可选 1/2/4,后端按张计费并把多出的结果
+  // 扇出成兄弟节点(buildExtraImageNodes);网关不支持 n 时自动回落单图。
+  const currentOutputCount = typeof params.outputCount === 'number' && params.outputCount > 0 ? params.outputCount : 1;
 
   useEffect(() => {
     if (!template) {
@@ -2671,14 +2674,49 @@ const PromptPanel = ({
             onSeed={(value) => updateNodeGenerationParams(nodeId, { seed: value })}
           />
         ) : null}
+        {serviceType === 'image' ? (
+          <div
+            className="nodrag nopan flex items-center overflow-hidden rounded-lg border border-white/10 bg-black/20 text-[11px]"
+            title={language === 'zh' ? '出图张数:一次生成多张挑选(按张计费)' : 'Images per run (billed per image)'}
+          >
+            {[1, 2, 4].map((n) => (
+              <button
+                key={n}
+                type="button"
+                data-testid={`output-count-${n}`}
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  updateNodeGenerationParams(nodeId, { outputCount: n });
+                }}
+                className={clsx(
+                  'h-7 w-7 tabular-nums transition',
+                  currentOutputCount === n
+                    ? 'bg-white/20 text-white'
+                    : 'text-neutral-400 hover:bg-white/8 hover:text-neutral-200',
+                )}
+              >
+                {n === 1 ? '×1' : `×${n}`}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <div
           className="nodrag nopan flex items-center gap-0.5 text-[11px] font-medium text-amber-300/90"
-          title={language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost'}
+          title={
+            currentOutputCount > 1
+              ? (language === 'zh'
+                  ? `本次生成预计消耗:${creditCost} × ${currentOutputCount} 张 = ${creditCost * currentOutputCount} 积分`
+                  : `This run: ${creditCost} × ${currentOutputCount} = ${creditCost * currentOutputCount} credits`)
+              : (language === 'zh' ? '本次生成预计消耗的积分' : 'Credits this generation will cost')
+          }
         >
           <Zap className="h-3 w-3" />
-          <span className="tabular-nums">{creditCost}</span>
+          <span className="tabular-nums">{creditCost * currentOutputCount}</span>
         </div>
         <button
           type="button"
