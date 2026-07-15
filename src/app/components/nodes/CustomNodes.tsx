@@ -90,6 +90,7 @@ import {
 import { getGenerationProgressPercent } from './loading-progress';
 import { PrecisionStudio } from './PrecisionStudio';
 import { PromptTemplateLibrary } from './PromptTemplateLibrary';
+import { MaskEditor } from './MaskEditor';
 import {
   ANGLE_STUDIO_PRESETS,
   LIGHT_RIG_PRESETS,
@@ -4326,6 +4327,8 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [hdOpen, setHdOpen] = useState(false);
+  // 局部重绘蒙版编辑器开关(仅 edit 动作用)。
+  const [maskEditorOpen, setMaskEditorOpen] = useState(false);
   // Nano Pro 高清引擎：优先基础名；只配了 " 4K" 变体时也能兜底使用。
   const nanoProModel = useMemo(() => {
     const models = imageModelOptions;
@@ -4494,7 +4497,11 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           outputCount: 1,
         });
       } else if (session.action === 'edit') {
-        const maskImage = await buildSelectionMask(sourceUrl, { x: 0, y: 0, width: 0, height: 0 });
+        // 真·局部重绘:优先用用户在蒙版编辑器涂抹出的选区(透明=重绘);
+        // 未涂抹时退回整图蒙版(兼容旧行为),但 UI 会引导先框选。
+        const maskImage = draft.maskImage
+          ? draft.maskImage
+          : await buildSelectionMask(sourceUrl, { x: 0, y: 0, width: 0, height: 0 });
         await spawnDerivedNode({
           prompt: draft.prompt,
           referenceImages: [sourceUrl],
@@ -4755,6 +4762,26 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
                   <div className="text-xs text-neutral-400">
                     {language === 'zh' ? '将保留原图并生成派生新节点。' : 'The original image will stay; a derived node will be created.'}
                   </div>
+                  {session.action === 'edit' ? (
+                    <div className="space-y-1.5">
+                      <Button
+                        variant="outline"
+                        onClick={() => setMaskEditorOpen(true)}
+                        data-testid="open-mask-editor"
+                        className="w-full border-cyan-400/30 bg-cyan-400/[0.06] text-xs text-cyan-200 hover:bg-cyan-400/12"
+                      >
+                        <Brush className="mr-1.5 h-3.5 w-3.5" />
+                        {session.draft.maskImage
+                          ? (language === 'zh' ? '重新涂抹区域' : 'Repaint area')
+                          : (language === 'zh' ? '涂抹要修改的区域' : 'Paint area to edit')}
+                      </Button>
+                      <div className={clsx('text-[11px]', session.draft.maskImage ? 'text-cyan-300/80' : 'text-amber-300/70')}>
+                        {session.draft.maskImage
+                          ? (language === 'zh' ? '✓ 已框选局部区域,仅重绘该处' : '✓ Region selected — only that area is regenerated')
+                          : (language === 'zh' ? '未框选则整图重绘,建议先涂抹局部' : 'Without a region the whole image regenerates')}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )
@@ -4803,6 +4830,17 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         </DialogContent>
         )}
       </Dialog>
+
+      <MaskEditor
+        open={maskEditorOpen}
+        sourceUrl={sourceUrl}
+        language={language}
+        onCancel={() => setMaskEditorOpen(false)}
+        onConfirm={(mask) => {
+          setSession((prev) => (prev ? { ...prev, draft: { ...prev.draft, maskImage: mask } } : prev));
+          setMaskEditorOpen(false);
+        }}
+      />
 
       <Dialog open={Boolean(session?.compareOpen)} onOpenChange={(open) => {
         if (!open && session) setSession({ ...session, compareOpen: false });
