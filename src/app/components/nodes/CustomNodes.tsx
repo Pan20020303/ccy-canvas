@@ -54,6 +54,7 @@ import {
   Code,
   Link as LinkIcon,
   BookMarked,
+  Check,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
@@ -1407,6 +1408,8 @@ const PromptPanel = ({
   }, [nodeId]);
 
   const [mentionOpen, setMentionOpen] = useState(false);
+  // 点击某个「图片N」提及时弹出的切换下拉:提及是原子整体,点它切换指向的参考图。
+  const [mentionPicker, setMentionPicker] = useState<{ tag: string; id: string; kind: string; left: number; top: number } | null>(null);
 
   // 引用悬停预览:strip 缩略图或行内 @提及 chip 悬停时浮出(屏幕坐标)。
   // 关闭走 220ms 延时,让指针能从 chip 移进浮层里点音频播放。
@@ -1832,6 +1835,47 @@ const PromptPanel = ({
     }, 0);
   };
 
+  /** 点击 textarea:若落在某个「图片N」提及镜像 span 上,把光标吸附到提及边界
+   *  (原子整体,不落在中间),并在该处弹出切换下拉。命中返回 true 已处理。 */
+  const handleEditorClick = (event: React.MouseEvent<HTMLTextAreaElement>, overlayEl: HTMLElement | null) => {
+    if (!overlayEl) return;
+    const ta = event.currentTarget;
+    const spans = overlayEl.querySelectorAll<HTMLElement>('[data-mention-id]');
+    for (const s of Array.from(spans)) {
+      const r = s.getBoundingClientRect();
+      if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
+        const id = s.dataset.mentionId ?? '';
+        const m = mentions.find((mm) => mm.id === id);
+        if (!m) return;
+        // 吸附光标到被点提及的末尾(原子化)。
+        const pos = ta.selectionStart;
+        const val = ta.value;
+        let idx = val.indexOf(m.tag);
+        while (idx >= 0) {
+          if (pos > idx && pos <= idx + m.tag.length) { ta.setSelectionRange(idx + m.tag.length, idx + m.tag.length); break; }
+          idx = val.indexOf(m.tag, idx + 1);
+        }
+        setMentionPicker({ tag: m.tag, id: m.id, kind: m.kind ?? '', left: r.left, top: r.bottom + 4 });
+        setMentionOpen(false);
+        return;
+      }
+    }
+    setMentionPicker(null);
+  };
+
+  /** 把某个提及切换到另一张参考图:替换文本里的标签 + 更新 mentions 表。 */
+  const switchMention = (currentTag: string, next: typeof upstreamNodes[0]) => {
+    const newTag = wrapMentionTag(next.label);
+    if (newTag !== currentTag) {
+      setText(text.split(currentTag).join(newTag));
+      setMentions((prev) => [
+        ...prev.filter((m) => m.tag !== currentTag && m.id !== next.id),
+        { tag: newTag, id: next.id, thumb: next.thumb, kind: next.kind },
+      ]);
+    }
+    setMentionPicker(null);
+  };
+
   /** 插入选中的提示词模板正文。若是输入 "/xxx" 触发,先去掉那段触发文本;点胶囊
    *  触发时没有 "/" 前缀,则直接在光标处插入。插入后还原滚动与光标,同步镜像层。 */
   const insertShortcut = (skill: Skill) => {
@@ -1948,10 +1992,11 @@ const PromptPanel = ({
     if (mod && !event.shiftKey && event.key.toLowerCase() === 'z') { event.preventDefault(); undoPrompt(); return; }
     if (mod && (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z'))) { event.preventDefault(); redoPrompt(); return; }
     // Esc 先关闭 @提及 / 快捷提示词 浮层(优先于提交/字符编辑)。
-    if (event.key === 'Escape' && (mentionOpen || slashOpen)) {
+    if (event.key === 'Escape' && (mentionOpen || slashOpen || mentionPicker)) {
       event.preventDefault();
       setMentionOpen(false);
       setSlashOpen(false);
+      setMentionPicker(null);
       return;
     }
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -2572,6 +2617,7 @@ const PromptPanel = ({
           }}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={onKeyDown}
+          onClick={(event) => handleEditorClick(event, overlayRef.current)}
           onMouseMove={(event) => hitTestMentionHover(event, overlayRef.current)}
           onMouseLeave={scheduleRefHoverClear}
           onScroll={(event) => syncOverlayScroll(event.currentTarget, overlayRef.current)}
@@ -2881,6 +2927,53 @@ const PromptPanel = ({
                 </button>
               ))}
             </div>,
+            document.body,
+          )
+        : null}
+      {/* 「图片N」切换下拉:点提及弹出,列出同类参考图,点选即把该提及切换过去。 */}
+      {mentionPicker
+        ? createPortal(
+            (() => {
+              const options = upstreamNodes.filter((u) => (u.kind ?? '') === mentionPicker.kind);
+              const list = options.length > 0 ? options : upstreamNodes;
+              return (
+                <>
+                  <div className="fixed inset-0 z-[145]" onClick={() => setMentionPicker(null)} />
+                  <div
+                    data-testid="mention-switch-picker"
+                    className="fixed z-[146] max-h-[300px] w-[220px] overflow-auto rounded-xl border border-white/10 bg-[#1a1d22]/97 py-1.5 shadow-2xl backdrop-blur-xl"
+                    style={{
+                      left: Math.max(8, Math.min(mentionPicker.left, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 232)),
+                      top: Math.max(8, Math.min(mentionPicker.top, (typeof window !== 'undefined' ? window.innerHeight : 720) - 308)),
+                    }}
+                  >
+                    <div className="px-3 pb-1 pt-0.5 text-[10.5px] text-neutral-500">{language === 'zh' ? '切换引用的图片' : 'Switch reference'}</div>
+                    {list.map((up) => {
+                      const isCurrent = wrapMentionTag(up.label) === mentionPicker.tag;
+                      return (
+                        <button
+                          key={up.id}
+                          data-testid="mention-switch-option"
+                          onClick={() => switchMention(mentionPicker.tag, up)}
+                          className={clsx(
+                            'flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition hover:bg-white/5',
+                            isCurrent ? 'text-cyan-300' : 'text-neutral-300',
+                          )}
+                        >
+                          {up.thumb ? (
+                            <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="h-8 w-8 flex-shrink-0 rounded-md border border-white/10 object-cover" />
+                          ) : (
+                            <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-sm">{up.icon}</span>
+                          )}
+                          <span className="text-neutral-200">{up.label}</span>
+                          {isCurrent ? <Check className="ml-auto h-3.5 w-3.5 text-cyan-300" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              );
+            })(),
             document.body,
           )
         : null}
