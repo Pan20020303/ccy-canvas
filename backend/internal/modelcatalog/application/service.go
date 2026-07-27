@@ -48,6 +48,8 @@ import (
 
 const (
 	imageGenerationTimeoutSeconds = 600
+	defaultTextProviderTimeout    = 12 * time.Minute
+	defaultTextTaskMaxRuntime     = 15 * time.Minute
 	// videoPollSafetyMargin keeps the async poll budget a beat under the video
 	// task's hard runtime ceiling (maxRuntimeForType/asynq timeout) so polling
 	// reports its own clean "timed out after polling" instead of being cut
@@ -1069,6 +1071,10 @@ type GenerateRequest struct {
 	// on TaskEvent so SSE clients can correlate the push back to the
 	// right node without an extra DB lookup.
 	NodeID string
+	// ProjectID persists a user-scoped canvas project hint in request_payload
+	// for reconnect/history display. Authorization must continue to rely on
+	// the authenticated task owner, not on this client-supplied value.
+	ProjectID string `json:"project_id,omitempty"`
 	// RequestID is the client-supplied idempotency key (F6). When set, the
 	// enqueue path uses it as both the generation_logs.request_id unique key
 	// and the Asynq TaskID, so a duplicate submit dedupes to one task.
@@ -1269,17 +1275,20 @@ func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest
 // maxRuntimeForType returns the maximum wall-clock time a detached task
 // goroutine is allowed to run for a given service type. Env overrides:
 //
+//	TEXT_TASK_MAX_RUNTIME_SECONDS
 //	IMAGE_TASK_MAX_RUNTIME_SECONDS
 //	VIDEO_TASK_MAX_RUNTIME_SECONDS
 //	AUDIO_TASK_MAX_RUNTIME_SECONDS
 //
-// Defaults: image 15 min, video 30 min, audio 10 min. This is the *hard*
+// Defaults: text 15 min, image 15 min, video 30 min, audio 10 min. This is the *hard*
 // upper bound — well past every provider's typical worst case, so a task
 // hitting it almost always means the upstream is truly stuck.
 func maxRuntimeForType(serviceType string) time.Duration {
 	envKey := ""
-	def := 5 * time.Minute
+	def := defaultTextTaskMaxRuntime
 	switch serviceType {
+	case "text":
+		envKey = "TEXT_TASK_MAX_RUNTIME_SECONDS"
 	case "image":
 		envKey = "IMAGE_TASK_MAX_RUNTIME_SECONDS"
 		def = 15 * time.Minute
@@ -1677,6 +1686,21 @@ func (s *Service) PromoteStagedAssetForLog(ctx context.Context, p AssetPersistPa
 // pre-filter uses it so we never scan rows that can't possibly be stale.
 const reaperFloor = 5 * time.Minute
 
+// textTaskReaperGrace gives the worker enough time to persist its terminal
+// state after the absolute text-task deadline and covers the one-minute reaper
+// tick. Unlike media jobs, text retries share one total runtime budget, so the
+// stale window must not multiply the per-attempt timeout by the retry count.
+const textTaskReaperGrace = 2 * time.Minute
+
+func staleGenerationBudget(serviceType string) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(serviceType), "text") {
+		return maxRuntimeForType("text") + textTaskReaperGrace
+	}
+	// Media retries are intentionally conservative because an upstream paid
+	// task may still be running. Preserve the existing generous window.
+	return 2*maxRuntimeForType(serviceType) + 30*time.Minute
+}
+
 // ReapStaleGenerations is the final backstop (F3) for tasks whose executor
 // vanished without writing an outcome — an OOM-killed Asynq worker, a
 // crashed legacy inline goroutine, or a persist write that failed twice.
@@ -1695,10 +1719,7 @@ func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
 	}
 	reaped := 0
 	for _, row := range rows {
-		// Generous budget so a task legitimately mid-retry (Asynq retries
-		// up to 5x with backoff) isn't reaped early: 2x the single-attempt
-		// runtime cap plus a 30-minute grace.
-		budget := 2*maxRuntimeForType(row.ServiceType) + 30*time.Minute
+		budget := staleGenerationBudget(row.ServiceType)
 		age := time.Since(row.CreatedAt)
 		if age < budget {
 			continue
@@ -2231,6 +2252,25 @@ func imageGenerationTimeout() time.Duration {
 	return time.Duration(imageGenerationTimeoutSeconds) * time.Second
 }
 
+// textProviderTimeout is the maximum duration of one synchronous provider
+// request. Storyboard and asset-extraction prompts can legitimately take
+// several minutes before the first response byte, so the old hard-coded 60s
+// timeout produced false failures while the upstream was still working.
+//
+// Keep this below the text task's wall-clock ceiling so the worker still has
+// time to persist a clean terminal state. TEXT_GENERATION_TIMEOUT_SECONDS is
+// accepted as a backward-compatible alias for early deployments.
+func textProviderTimeout() time.Duration {
+	for _, key := range []string{"TEXT_PROVIDER_TIMEOUT_SECONDS", "TEXT_GENERATION_TIMEOUT_SECONDS"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				return time.Duration(n) * time.Second
+			}
+		}
+	}
+	return defaultTextProviderTimeout
+}
+
 func newProviderHTTPClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{
@@ -2371,9 +2411,36 @@ func isRetryableProviderNetworkError(err error) bool {
 		strings.Contains(msg, "unexpected eof")
 }
 
+// isDialFailureError reports whether err is a TCP dial-level failure (DNS
+// resolved but connect() failed, or DNS itself failed). These indicate the
+// upstream host is unreachable from this server — firewall, security group,
+// GFW, or the provider being down — and are NOT transient application bugs.
+func isDialFailureError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "connectex") ||
+		strings.Contains(msg, "dial tcp")
+}
+
 func providerRequestErrorMessage(err error) string {
 	if err == nil {
 		return "Provider request failed"
+	}
+	if isDialFailureError(err) {
+		return fmt.Sprintf(
+			"Provider request failed: cannot reach upstream server (%v). "+
+				"Check: 1) firewall/security-group allows outbound HTTPS, "+
+				"2) no proxy or GFW blocking the host, "+
+				"3) the provider service is operational",
+			err,
+		)
 	}
 	if isRetryableProviderNetworkError(err) {
 		return fmt.Sprintf("Provider request failed after %d attempts: upstream connection was closed or timed out (%v)", providerRequestMaxAttempts, err)
@@ -2489,7 +2556,7 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2577,7 +2644,7 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2645,7 +2712,7 @@ func (s *Service) generateImageMidjourneyApimart(ctx context.Context, pc *domain
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2726,7 +2793,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -2860,7 +2927,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, body.Bytes())
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -2924,7 +2991,7 @@ func isQwenThinkingModel(model string) bool {
 
 // applyQwenThinkingDefaults 对 qwen3.7 混合思考模型显式关闭默认思考模式。
 // 百炼 qwen3.7-max/plus 默认 enable_thinking=true:先长时间产出推理内容再出答案,
-// 同步路径有 60s 硬超时(max 档复杂提示极易超时)、且多烧 token,而我们只取最终
+// 且会多烧 token,而我们只取最终
 // content 看不到推理。故退化为快速指令模式。enable_thinking 是非 OpenAI 标准参数,
 // DashScope 兼容端点从请求体读取(等价 OpenAI SDK 的 extra_body)。严格按模型名
 // gate,避免发给 OpenAI/DeepSeek 等报「未知参数」。
@@ -2976,10 +3043,10 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(httpReq)
+	client := newProviderHTTPClient(textProviderTimeout())
+	resp, err := doProviderRequestWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, "Provider request failed", err)
 	}
 	defer resp.Body.Close()
 
@@ -3105,7 +3172,7 @@ func arkReferenceMediaURL(ctx context.Context, rawURL string) (string, error) {
 		}
 		return raw, nil
 	}
-	return "", fmt.Errorf("参考素材无公网可访问地址(疑似本地存储),请配置对象存储(COS)或重新上传")
+	return "", fmt.Errorf("参考素材无公网可访问地址(疑似本地存储),请确认对象存储(OSS/COS)已在后端进程中生效并重新上传")
 }
 
 // Ark/Seedance reference images must be between 300px and 6000px on each side.

@@ -122,7 +122,7 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -312,7 +312,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -466,7 +466,7 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 
@@ -1098,7 +1098,7 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 	client := newProviderHTTPClient(60 * time.Second)
 	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1282,7 +1282,7 @@ func (s *Service) generateVideoApimart(ctx context.Context, pc *domain.ProviderC
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 

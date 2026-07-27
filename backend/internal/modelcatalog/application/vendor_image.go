@@ -75,7 +75,7 @@ func (s *Service) generateImageDashScope(ctx context.Context, pc *domain.Provide
 	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
 	defer resp.Body.Close()
 

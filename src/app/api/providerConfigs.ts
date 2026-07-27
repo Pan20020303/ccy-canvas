@@ -682,6 +682,10 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       label: "apimart · 全系生图 (GPT-Image / Gemini / Seedream / Qwen …)",
       baseURL: "https://api.apimart.ai/v1",
       apiSpec: "openai",
+      // 网关侧下载参考图(image_urls)，必须公网 http(s) URL 或 data URI。
+      // 标记后前端 normalizeReferenceMediaForProvider 会把本地路径拼成完整 URL
+      // 并过滤掉非公网地址，避免后端 generateImageApimart 报 INVALID_INPUT。
+      parameterSchema: { reference_request_format: "chat_completions_image" },
       models: [
         "gpt-image-2",
         "gpt-image-1.5-official",
@@ -1267,7 +1271,14 @@ export function generate(
  *  POST a body). Frames: `data: {"type":"token"|"done"|"error", ...}\n\n`.
  *  Cookies (ccy_session) go via credentials:'include'. */
 export function generateStream(
-  body: { model: string; prompt: string; node_id?: string; project_id?: string; image_urls?: string[] },
+  body: {
+    model: string;
+    prompt: string;
+    provider_config_id?: string;
+    node_id?: string;
+    project_id?: string;
+    image_urls?: string[];
+  },
   signal?: AbortSignal,
 ): Promise<Response> {
   return fetch(resolveApiUrl("/api/app/text/stream"), {

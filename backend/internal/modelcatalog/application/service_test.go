@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1796,14 +1797,14 @@ func TestGenerateTextQwenThinkingGate(t *testing.T) {
 func TestTextMaxTokensForModel(t *testing.T) {
 	t.Setenv("TEXT_MAX_TOKENS", "") // 确保不受环境覆盖
 	cases := map[string]int{
-		"qwen3.7-max":            65536,
-		"qwen3.7-max-2026-06-08": 65536,
-		"qwen3.7-plus":           32768,
+		"qwen3.7-max":             65536,
+		"qwen3.7-max-2026-06-08":  65536,
+		"qwen3.7-plus":            32768,
 		"qwen3.7-plus-2026-05-26": 32768,
-		"qwen-plus":              8192, // 非 3.7 保守
-		"deepseek-v4-pro":        8192,
-		"gpt-4.1-mini":           8192,
-		"":                       8192,
+		"qwen-plus":               8192, // 非 3.7 保守
+		"deepseek-v4-pro":         8192,
+		"gpt-4.1-mini":            8192,
+		"":                        8192,
 	}
 	for model, want := range cases {
 		if got := textMaxTokensForModel(model); got != want {
@@ -1814,6 +1815,52 @@ func TestTextMaxTokensForModel(t *testing.T) {
 	t.Setenv("TEXT_MAX_TOKENS", "4000")
 	if got := textMaxTokensForModel("qwen3.7-max"); got != 4000 {
 		t.Fatalf("with TEXT_MAX_TOKENS=4000, qwen3.7-max = %d, want 4000 (env wins)", got)
+	}
+}
+
+func TestTextProviderTimeout(t *testing.T) {
+	t.Setenv("TEXT_PROVIDER_TIMEOUT_SECONDS", "")
+	t.Setenv("TEXT_GENERATION_TIMEOUT_SECONDS", "")
+	if got := textProviderTimeout(); got != 12*time.Minute {
+		t.Fatalf("textProviderTimeout() = %s, want 12m", got)
+	}
+
+	t.Setenv("TEXT_PROVIDER_TIMEOUT_SECONDS", "37")
+	if got := textProviderTimeout(); got != 37*time.Second {
+		t.Fatalf("TEXT_PROVIDER_TIMEOUT_SECONDS override = %s, want 37s", got)
+	}
+
+	t.Setenv("TEXT_PROVIDER_TIMEOUT_SECONDS", "")
+	t.Setenv("TEXT_GENERATION_TIMEOUT_SECONDS", "41")
+	if got := textProviderTimeout(); got != 41*time.Second {
+		t.Fatalf("legacy timeout override = %s, want 41s", got)
+	}
+}
+
+func TestTextTaskMaxRuntime(t *testing.T) {
+	t.Setenv("TEXT_TASK_MAX_RUNTIME_SECONDS", "")
+	if got := maxRuntimeForType("text"); got != 15*time.Minute {
+		t.Fatalf("maxRuntimeForType(text) = %s, want 15m", got)
+	}
+	t.Setenv("TEXT_TASK_MAX_RUNTIME_SECONDS", "73")
+	if got := maxRuntimeForType("text"); got != 73*time.Second {
+		t.Fatalf("text task override = %s, want 73s", got)
+	}
+}
+
+func TestTextStaleBudgetTracksOneAbsoluteRuntime(t *testing.T) {
+	t.Setenv("TEXT_TASK_MAX_RUNTIME_SECONDS", "")
+	if got := staleGenerationBudget("text"); got != 17*time.Minute {
+		t.Fatalf("staleGenerationBudget(text) = %s, want 17m", got)
+	}
+
+	t.Setenv("TEXT_TASK_MAX_RUNTIME_SECONDS", "73")
+	if got := staleGenerationBudget(" TEXT "); got != 73*time.Second+textTaskReaperGrace {
+		t.Fatalf("text stale budget override = %s, want %s", got, 73*time.Second+textTaskReaperGrace)
+	}
+
+	if got := staleGenerationBudget("image"); got != 60*time.Minute {
+		t.Fatalf("staleGenerationBudget(image) = %s, want existing 60m safety window", got)
 	}
 }
 
@@ -2627,5 +2674,40 @@ func TestApplyGeminiProImageResolution(t *testing.T) {
 	applyGeminiProImageResolution(body, nil, GenerateRequest{Model: "gpt-image-2", Resolution: "4k"})
 	if _, ok := body["output_resolution"]; ok {
 		t.Fatalf("expected no output_resolution for non-gemini model")
+	}
+}
+
+func TestIsDialFailureError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"plain error", fmt.Errorf("something broke"), false},
+		{"dial op error", &net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("connectex: connection refused")}, true},
+		{"read op error", &net.OpError{Op: "read", Net: "tcp", Err: fmt.Errorf("connection reset")}, false},
+		{"no such host", fmt.Errorf("dial tcp: lookup api.example.com: no such host"), true},
+		{"connectex", fmt.Errorf("dial tcp 1.2.3.4:443: connectex: A connection attempt failed"), true},
+		{"dial tcp", fmt.Errorf("Post \"https://api.example.com\": dial tcp 1.2.3.4:443: i/o timeout"), true},
+		{"connection reset (not dial)", fmt.Errorf("read tcp 1.2.3.4:443: connection reset by peer"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDialFailureError(tc.err); got != tc.want {
+				t.Errorf("isDialFailureError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProviderRequestErrorMessage_DialFailure(t *testing.T) {
+	err := fmt.Errorf("Post \"https://api.apimart.ai/v1/images/generations\": dial tcp 108.160.166.61:443: connectex: A connection attempt failed")
+	msg := providerRequestErrorMessage(err)
+	if !strings.Contains(msg, "cannot reach upstream server") {
+		t.Errorf("expected dial hint in message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "firewall") {
+		t.Errorf("expected firewall hint in message, got: %s", msg)
 	}
 }
