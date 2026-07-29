@@ -1,4 +1,5 @@
 import { apiClient } from "./client";
+import { publishRuntimeInvalidation } from "../runtimeInvalidation";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,11 +53,13 @@ export function getRelayProvider(): Promise<ProviderStatus> {
   return apiClient.get<ProviderStatus>("/api/admin/relay-provider");
 }
 
-export function putRelayProvider(payload: {
+export async function putRelayProvider(payload: {
   base_url: string;
   api_key?: string;
 }): Promise<ProviderStatus> {
-  return apiClient.put<ProviderStatus>("/api/admin/relay-provider", payload);
+  const provider = await apiClient.put<ProviderStatus>("/api/admin/relay-provider", payload);
+  publishRuntimeInvalidation(["models"]);
+  return provider;
 }
 
 export function testRelayProvider(payload?: {
@@ -74,11 +77,13 @@ export function listAdminModels(): Promise<AdminModel[]> {
   return apiClient.get<AdminModel[]>("/api/admin/models");
 }
 
-export function syncModels(): Promise<{ inserted: number }> {
-  return apiClient.post<{ inserted: number }>("/api/admin/models/sync");
+export async function syncModels(): Promise<{ inserted: number }> {
+  const result = await apiClient.post<{ inserted: number }>("/api/admin/models/sync");
+  publishRuntimeInvalidation(["models"]);
+  return result;
 }
 
-export function patchModel(
+export async function patchModel(
   id: string,
   payload: Partial<{
     display_name: string;
@@ -89,15 +94,21 @@ export function patchModel(
     sort_order: number;
   }>,
 ): Promise<AdminModel> {
-  return apiClient.patch<AdminModel>(`/api/admin/models/${id}`, payload);
+  const model = await apiClient.patch<AdminModel>(`/api/admin/models/${id}`, payload);
+  publishRuntimeInvalidation(["models"]);
+  return model;
 }
 
-export function enableModel(id: string): Promise<AdminModel> {
-  return apiClient.post<AdminModel>(`/api/admin/models/${id}/enable`);
+export async function enableModel(id: string): Promise<AdminModel> {
+  const model = await apiClient.post<AdminModel>(`/api/admin/models/${id}/enable`);
+  publishRuntimeInvalidation(["models"]);
+  return model;
 }
 
-export function disableModel(id: string): Promise<AdminModel> {
-  return apiClient.post<AdminModel>(`/api/admin/models/${id}/disable`);
+export async function disableModel(id: string): Promise<AdminModel> {
+  const model = await apiClient.post<AdminModel>(`/api/admin/models/${id}/disable`);
+  publishRuntimeInvalidation(["models"]);
+  return model;
 }
 
 // ---------------------------------------------------------------------------

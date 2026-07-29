@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"ccy-canvas/backend/internal/shared/apperror"
 )
 
 // Runner is the agent loop. Conceptually:
@@ -144,7 +146,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			Thinking: in.Thinking,
 		}, r.Health)
 		if err != nil {
-			emit(EventError, map[string]string{"message": err.Error()})
+			emit(EventError, map[string]string{"message": apperror.PublicMessage(err)})
 			return stats, err
 		}
 
@@ -224,9 +226,10 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 
 			emitResult := map[string]any{"id": tc.ID, "name": tc.Function.Name}
 			if toolErr != nil {
-				result = fmt.Sprintf(`{"error":%q}`, toolErr.Error())
+				publicMessage := apperror.PublicMessage(toolErr)
+				result = fmt.Sprintf(`{"error":%q}`, publicMessage)
 				emitResult["ok"] = false
-				emitResult["error"] = toolErr.Error()
+				emitResult["error"] = publicMessage
 			} else {
 				emitResult["ok"] = true
 				emitResult["result"] = result

@@ -27,18 +27,22 @@ if ($status -ne "healthy") {
 }
 
 $envMap = @{}
-Get-Content ".env" | ForEach-Object {
-  if ($_ -match "^\s*#" -or $_ -match "^\s*$") { return }
-  $parts = $_ -split "=", 2
-  if ($parts.Length -eq 2) {
-    $envMap[$parts[0]] = $parts[1]
+$reader = New-Object System.IO.StreamReader((Resolve-Path ".env").Path, [System.Text.Encoding]::UTF8, $true)
+while (-not $reader.EndOfStream) {
+  $line = $reader.ReadLine()
+  if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$') {
+    $envMap[$matches[1]] = $matches[2].Trim().Trim('"').Trim("'")
   }
 }
+$reader.Close()
 
-$env:DATABASE_URL = $envMap["DATABASE_URL"]
-$env:SESSION_SECRET = $envMap["SESSION_SECRET"]
-$env:HTTP_ADDR = $envMap["HTTP_ADDR"]
-$env:COOKIE_SECURE = $envMap["COOKIE_SECURE"]
+# The backend reads configuration from its process environment; it does not
+# parse .env itself. Forward every entry so storage/Redis/encryption/provider
+# settings are not silently lost (previously only four basic values were set,
+# which made STORAGE_BACKEND fall back to local even when .env said "oss").
+foreach ($key in $envMap.Keys) {
+  Set-Item -Path "Env:$key" -Value $envMap[$key]
+}
 
 if (-not $SkipBuild) {
   Write-Host "Running frontend build precheck..."

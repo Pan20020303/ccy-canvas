@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, X } from "lucide-react";
+import { ChevronDown, Loader2, X } from "lucide-react";
 
 import { listMyCreditLedger, type CreditLedgerEntry, type CreditLedgerType } from "../api/credits";
+import { presentCreditReason } from "../credit-ledger-display";
 
 // ─── 我的积分明细弹窗 ─────────────────────────────────────────────────────
 // 顶栏积分胶囊点开:看每笔积分怎么来怎么去,扣费透明化(付费信任的前提)。
@@ -25,6 +26,7 @@ export function CreditLedgerModal({ open, onClose, language }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [hasMore, setHasMore] = useState(false);
+  const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
 
   const loadPage = useCallback(async (offset: number) => {
     setLoading(true);
@@ -43,6 +45,7 @@ export function CreditLedgerModal({ open, onClose, language }: Props) {
   useEffect(() => {
     if (open) {
       setEntries([]);
+      setExpandedEntryId(null);
       void loadPage(0);
     }
   }, [open, loadPage]);
@@ -94,17 +97,44 @@ export function CreditLedgerModal({ open, onClose, language }: Props) {
               <tbody>
                 {entries.map((e) => {
                   const meta = TYPE_LABEL[e.type] ?? { zh: e.type, en: e.type, tone: "text-neutral-300" };
+                  const reason = presentCreditReason(e, language);
+                  const expanded = expandedEntryId === e.id;
                   // reserve/charge 是扣减(展示为负),其余为增加。
                   const isDebit = e.type === "reserve" || e.type === "charge";
                   const sign = isDebit ? "−" : "+";
                   return (
-                    <tr key={e.id} className="border-t border-white/[0.05] text-neutral-300">
-                      <td className="py-1.5 text-neutral-500 tabular-nums">{new Date(e.created_at).toLocaleString(zh ? "zh-CN" : undefined)}</td>
-                      <td className={`py-1.5 ${meta.tone}`}>{zh ? meta.zh : meta.en}</td>
-                      <td className={`py-1.5 text-right tabular-nums ${isDebit ? "text-neutral-400" : "text-emerald-300"}`}>{sign}{Math.abs(e.amount)}</td>
-                      <td className="py-1.5 text-right tabular-nums text-neutral-400">{e.balance_after}</td>
-                      <td className="max-w-[220px] truncate py-1.5 pl-3 text-neutral-500" title={e.reason}>{e.reason || "—"}</td>
-                    </tr>
+                    <Fragment key={e.id}>
+                      <tr className="border-t border-white/[0.05] text-neutral-300">
+                        <td className="py-1.5 text-neutral-500 tabular-nums">{new Date(e.created_at).toLocaleString(zh ? "zh-CN" : undefined)}</td>
+                        <td className={`py-1.5 ${meta.tone}`}>{zh ? meta.zh : meta.en}</td>
+                        <td className={`py-1.5 text-right tabular-nums ${isDebit ? "text-neutral-400" : "text-emerald-300"}`}>{sign}{Math.abs(e.amount)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-neutral-400">{e.balance_after}</td>
+                        <td className="max-w-[220px] py-1.5 pl-3 text-neutral-400">
+                          {reason.technicalDetail ? (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedEntryId(expanded ? null : e.id)}
+                              className="flex w-full min-w-0 items-center gap-1 text-left transition hover:text-neutral-200"
+                              aria-expanded={expanded}
+                              title={zh ? "查看技术详情" : "View technical details"}
+                            >
+                              <span className="truncate">{reason.summary}</span>
+                              <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
+                            </button>
+                          ) : reason.summary}
+                        </td>
+                      </tr>
+                      {expanded && reason.technicalDetail ? (
+                        <tr className="bg-black/10">
+                          <td colSpan={5} className="px-2 py-2">
+                            <div className="mb-1 text-[10px] text-neutral-600">{zh ? "技术详情" : "Technical details"}</div>
+                            <code className="block break-all rounded-md border border-white/[0.06] bg-black/20 px-2 py-1.5 text-[10px] leading-relaxed text-neutral-500">
+                              {reason.technicalDetail}
+                            </code>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>

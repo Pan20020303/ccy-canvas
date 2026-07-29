@@ -25,6 +25,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -36,6 +39,7 @@ import (
 const (
 	TaskTypeGeneration   = "generation:run"
 	TaskTypeAssetPersist = "asset:persist"
+	TaskTypeAgentRun     = "agent:run"
 )
 
 // GenerationPayload is the JSON blob enqueued with each task. Worker
@@ -62,6 +66,15 @@ type AssetPersistPayload struct {
 	COSKey      string `json:"cos_key"`
 	ContentType string `json:"content_type"`
 	EnqueuedAt  int64  `json:"enqueued_at"`
+}
+
+// AgentRunPayload stays deliberately small: the durable request snapshot,
+// selected conversation and ownership all live in agent_runs.  This keeps
+// Redis free of canvas-sized payloads and makes the database the source of
+// truth for retries and recovery.
+type AgentRunPayload struct {
+	RunID      string `json:"run_id"`
+	EnqueuedAt int64  `json:"enqueued_at"`
 }
 
 // Queue is the producer-side helper. Wraps an *asynq.Client and exposes
@@ -122,15 +135,38 @@ func queueNameForServiceType(serviceType string) string {
 // retry-loop time on top via Asynq's built-in backoff.
 func timeoutForServiceType(serviceType string) time.Duration {
 	switch serviceType {
+	case "text":
+		return taskTimeoutFromEnv("TEXT_TASK_MAX_RUNTIME_SECONDS", 15*time.Minute)
 	case "image":
-		return 15 * time.Minute
+		return taskTimeoutFromEnv("IMAGE_TASK_MAX_RUNTIME_SECONDS", 15*time.Minute)
 	case "video":
-		return 30 * time.Minute
+		return taskTimeoutFromEnv("VIDEO_TASK_MAX_RUNTIME_SECONDS", 30*time.Minute)
 	case "audio":
-		return 10 * time.Minute
+		return taskTimeoutFromEnv("AUDIO_TASK_MAX_RUNTIME_SECONDS", 10*time.Minute)
 	default:
-		return 5 * time.Minute
+		return taskTimeoutFromEnv("TEXT_TASK_MAX_RUNTIME_SECONDS", 15*time.Minute)
 	}
+}
+
+// maxRetryForServiceType caps queue-level retries. Text generation is cheap
+// enough to retry after an early network failure, but the worker also enforces
+// an absolute deadline measured from EnqueuedAt. Two retries give short-lived
+// provider outages a chance to recover without turning a 15-minute text task
+// into MaxRetry(5) × 15 minutes of wall-clock work.
+func maxRetryForServiceType(serviceType string) int {
+	if serviceType == "text" {
+		return 2
+	}
+	return 5
+}
+
+func taskTimeoutFromEnv(key string, fallback time.Duration) time.Duration {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return fallback
 }
 
 // Enqueue submits a generation task. The asynq task id is set to the
@@ -156,7 +192,7 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 		// failure never flashes the node to 'error' and never double-bills
 		// a *successful* generation. Permanent failures short-circuit via
 		// asynq.SkipRetry, so they don't burn the retry budget.
-		asynq.MaxRetry(5),
+		asynq.MaxRetry(maxRetryForServiceType(p.ServiceType)),
 		asynq.Timeout(timeoutForServiceType(p.ServiceType)),
 		asynq.Retention(24*time.Hour),
 		// TaskID = RequestID: duplicate submits return ErrTaskIDConflict
@@ -197,6 +233,43 @@ func (q *Queue) EnqueueAssetPersist(ctx context.Context, p AssetPersistPayload) 
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
 			return "asset:" + p.LogID, nil
+		}
+		return "", err
+	}
+	return info.ID, nil
+}
+
+// EnqueueAgentRun hands an already-persisted agent_runs row to the worker.
+// The task id is stable, so a retried HTTP submit cannot create two agents
+// acting on the same canvas snapshot.
+func (q *Queue) EnqueueAgentRun(ctx context.Context, p AgentRunPayload) (string, error) {
+	if !q.Enabled() {
+		return "", fmt.Errorf("tasks queue not configured (REDIS_ADDR empty)")
+	}
+	if strings.TrimSpace(p.RunID) == "" {
+		return "", fmt.Errorf("agent run id is required")
+	}
+	p.EnqueuedAt = time.Now().Unix()
+	body, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("marshal agent task payload: %w", err)
+	}
+	taskID := "agent:" + p.RunID
+	task := asynq.NewTask(TaskTypeAgentRun, body,
+		asynq.Queue("agent"),
+		// A worker shutdown may return context.Canceled after Redis has leased
+		// the job. Allow two redeliveries so that lease can be recovered. The
+		// processor skips terminal rows, while ordinary model/tool errors are
+		// returned with asynq.SkipRetry by the worker.
+		asynq.MaxRetry(2),
+		asynq.Timeout(45*time.Minute),
+		asynq.Retention(24*time.Hour),
+		asynq.TaskID(taskID),
+	)
+	info, err := q.client.EnqueueContext(ctx, task)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
+			return taskID, nil
 		}
 		return "", err
 	}

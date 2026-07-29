@@ -4,10 +4,14 @@ package authn
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/session"
 )
@@ -17,6 +21,10 @@ const ScopeAdmin = "admin"
 
 type claimsKey struct{}
 
+type UserLookup interface {
+	GetUserByID(ctx context.Context, id pgtype.UUID) (sqlc.User, error)
+}
+
 // Middleware returns a huma middleware that enforces per-operation auth.
 //
 //   - Operations with no Security declaration are passed through unchanged.
@@ -24,7 +32,7 @@ type claimsKey struct{}
 //   - If the operation's scope list includes ScopeAdmin, the session role must be "admin" (403 otherwise).
 //   - On success, Claims are stored in the context via huma.WithValue and can be
 //     retrieved inside handlers with ClaimsFromContext.
-func Middleware(api huma.API, sessions session.Manager) func(huma.Context, func(huma.Context)) {
+func Middleware(api huma.API, sessions session.Manager, userLookups ...UserLookup) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		// Determine whether this operation requires auth and what scopes.
 		var requiredScopes []string
@@ -52,6 +60,36 @@ func Middleware(api huma.API, sessions session.Manager) func(huma.Context, func(
 		if err != nil {
 			huma.WriteErr(api, ctx, http.StatusUnauthorized, "Authentication required")
 			return
+		}
+
+		// A signed session stores a role snapshot, while administrator changes
+		// must take effect immediately. Resolve the current access state for
+		// protected routes and renew the cookie only when its role is stale.
+		if len(userLookups) > 0 && userLookups[0] != nil {
+			var userID pgtype.UUID
+			if err := userID.Scan(claims.UserID); err != nil {
+				huma.WriteErr(api, ctx, http.StatusUnauthorized, "Authentication required")
+				return
+			}
+			user, lookupErr := userLookups[0].GetUserByID(ctx.Context(), userID)
+			if lookupErr != nil {
+				if errors.Is(lookupErr, pgx.ErrNoRows) {
+					huma.WriteErr(api, ctx, http.StatusUnauthorized, "Authentication required")
+				} else {
+					huma.WriteErr(api, ctx, http.StatusInternalServerError, "Unable to verify current permissions")
+				}
+				return
+			}
+			if user.Status != "active" {
+				huma.WriteErr(api, ctx, http.StatusUnauthorized, "Account is disabled")
+				return
+			}
+			if claims.Role != user.Role {
+				claims.Role = user.Role
+				if renewed, renewErr := sessions.NewCookie(claims.UserID, claims.Role); renewErr == nil {
+					ctx.SetHeader("Set-Cookie", renewed.String())
+				}
+			}
 		}
 
 		// Enforce admin scope when declared.

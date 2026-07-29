@@ -28,7 +28,7 @@ type Config struct {
 	// Set NEWAPI_TOKEN to the sk-* admin token issued by NewAPI admin UI.
 	NewAPIBaseURL string
 	NewAPIToken   string
-	NewAPITimeout int // seconds; default 60
+	NewAPITimeout int // seconds; default 720
 	ChannelPolicy string
 
 	// Auth / registration.
@@ -63,9 +63,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	newAPITimeout, err := strconv.Atoi(getenv("NEWAPI_TIMEOUT_SECONDS", "60"))
+	newAPITimeout, err := strconv.Atoi(getenv("NEWAPI_TIMEOUT_SECONDS", "720"))
 	if err != nil || newAPITimeout <= 0 {
-		newAPITimeout = 60
+		newAPITimeout = 720
 	}
 
 	defaultDailyQuota, err := strconv.Atoi(getenv("DEFAULT_DAILY_QUOTA", "100"))

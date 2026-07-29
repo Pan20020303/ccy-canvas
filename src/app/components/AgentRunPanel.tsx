@@ -7,7 +7,7 @@ import { useMountFadeIn } from "./motion/use-motion";
 
 import type { Edge, Node } from "@xyflow/react";
 
-import { runAgent, type AgentSSEEvent } from "../api/agent-run";
+import { getActiveAgentJob, resumeAgentJob, runAgent, type AgentEventMeta, type AgentSSEEvent } from "../api/agent-run";
 import {
   createAgentConversation,
   deleteAgentConversation,
@@ -24,6 +24,7 @@ import {
   appendConversationTurn,
   conversationTurnsFromHistoryItems,
   getAgentConversationHistory,
+  presentAgentUserInput,
   type AgentConversationStore,
 } from "./agent-conversation";
 import { buildAgentRunMessage, getAllInvokableSlashSkills } from "./agent-skill-commands";
@@ -31,10 +32,15 @@ import { getSkillCommandName } from "./settings/skill-agent-presenters";
 import { displayNameOf, getCurrentUser } from "../api/me";
 import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
+import { SkillLibraryDialog, SkillQuickPicker } from "./SkillLibrary";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { getRotatingSkillBatch, getSkillDisplayName } from "../skill-display";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/AgentAssistantThread";
 import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
 import { pickVisionModel } from "./nodes/director-blocking";
+import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
 const HISTORY_FETCH_LIMIT = 50;
@@ -158,6 +164,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Per-message model override (composer "+" → 模型). null = use agent's model.
   const [overrideModel, setOverrideModel] = useState<string | null>(null);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [showSkillMenu, setShowSkillMenu] = useState(false);
+  const [showSkillLibrary, setShowSkillLibrary] = useState(false);
+  const [skillBatchIndex, setSkillBatchIndex] = useState(0);
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [message, setMessage] = useState("");
   const [running, setRunning] = useState(false);
@@ -184,12 +194,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       return "manual";
     }
   });
-  const toggleExecutionMode = useCallback(() => {
-    setExecutionMode((mode) => {
-      const next = mode === "manual" ? "auto" : "manual";
-      try { localStorage.setItem("agentExecutionMode", next); } catch { /* ignore */ }
-      return next;
-    });
+  const changeExecutionMode = useCallback((next: "manual" | "auto") => {
+    setExecutionMode(next);
+    try { localStorage.setItem("agentExecutionMode", next); } catch { /* ignore */ }
   }, []);
   // Left history sidebar collapse (persisted).
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -213,6 +220,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedMs, setRunFinishedMs] = useState<number | null>(null);
+  const [connectionState, setConnectionState] = useState<"reconnecting" | null>(null);
   // 当前 run 所属的会话 key:运行状态(思考中/步骤/流式文本)只渲染在这个会话
   // 下面 —— 新建/切换会话时不再"串台"到别的会话。
   const [runConvKey, setRunConvKey] = useState<string | null>(null);
@@ -226,6 +234,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Claude / Cursor behavior where typing `/` reveals bound skill templates.
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const skillButtonRef = useRef<HTMLButtonElement>(null);
 
   // composer 自适应高度(DeepSeek 式):随内容自动长高,到 40vh 封顶后
   // 才在框内出滚动条;清空(发送后)自动缩回两行。
@@ -307,6 +316,15 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       })
       .catch(() => {});
   }, [open, selectedId]);
+
+  const refreshSkills = useCallback(async () => {
+    try {
+      const rows = await listSkills();
+      setSkills(rows ?? []);
+    } catch {
+      // Keep the current skill library visible when refresh fails.
+    }
+  }, []);
 
   // Greeting needs a display name — fetch the current user once.
   useEffect(() => {
@@ -401,6 +419,14 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // been typed yet. Discovery spans ALL invokable skills (not just bound) so
   // a freshly-imported skill is reachable immediately.
   const allInvokableSkills = useMemo(() => getAllInvokableSlashSkills(skills), [skills]);
+  const modelPresentation = useMemo(
+    () => getProviderModelPresentation(backendModels),
+    [backendModels],
+  );
+  const modelDisplayName = useCallback(
+    (modelID: string) => getProviderModelDisplayName(modelID, modelPresentation),
+    [modelPresentation],
+  );
   // Flattened, de-duped list of every configured model name — powers the
   // composer "+" → 模型 per-message override picker.
   const allModels = useMemo(() => {
@@ -431,6 +457,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   const applySlashCompletion = (skill: Skill) => {
     setMessage(getSkillCommandName(skill) + " ");
+    setSelectedSkillId(skill.id);
     setSlashIndex(0);
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -571,7 +598,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (!selectedId || !source.trim() || running || !selectedAgent) return;
 
     const rawMessage = source.trim();
-    const outbound = buildAgentRunMessage(selectedAgent, skills, source);
+    const outbound = buildAgentRunMessage(selectedAgent, skills, source, selectedSkillId);
     // Prepend any canvas-node references the user attached via "从画布添加".
     const refPreamble = referencedNodes.length
       ? `（参考画布节点：${referencedNodes.map((n) => `${n.label}#${n.id.slice(0, 6)}`).join("，")}）\n`
@@ -598,6 +625,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       }));
     }
     setMessage("");
+    setSelectedSkillId(null);
     setReferencedNodes([]);
     setActiveSkillName(outbound.invokedSkillName);
     setStreamingReply("");
@@ -606,6 +634,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     const startedAt = performance.now();
     setRunStartedAt(startedAt);
     setRunFinishedMs(null);
+    setConnectionState(null);
     setRunning(true);
 
     const priorHistory = conversationHistory;
@@ -618,6 +647,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       targetAgentId,
       {
         message: refPreamble + outbound.message,
+        displayMessage: rawMessage,
         nodes: nodes as unknown[],
         edges: edges as unknown[],
         groups: useStore.getState().groups as unknown[],
@@ -762,6 +792,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               total: event.data.total_tokens,
             });
             break;
+          case "connection_status":
+            setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
+            break;
           case "error":
             setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "error",
@@ -770,18 +803,203 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             }]);
             setRunning(false);
             setRunFinishedMs(performance.now() - startedAt);
+            setConnectionState(null);
             abortRef.current = null;
             break;
           case "done":
             setRunSteps(sealStreamingThought);
             setRunning(false);
             setRunFinishedMs(performance.now() - startedAt);
+            setConnectionState(null);
             abortRef.current = null;
             break;
         }
       },
     );
   };
+
+  // Re-attach to a durable run after a reload, route change, or panel close.
+  // Closing this observer never cancels the backend job; the persisted event
+  // cursor lets the next mount continue without replaying applied patches.
+  useEffect(() => {
+    if (!open || !selectedId || abortRef.current) return;
+    const job = getActiveAgentJob(selectedId);
+    if (!job) return;
+
+    const targetAgentId = selectedId;
+    let currentKey = job.conversationId
+      ? CONVERSATIONS_KEY(targetAgentId, job.conversationId)
+      : null;
+    const startedAt = performance.now();
+    let disposed = false;
+
+    if (job.conversationId) {
+      setActiveConversationId((prev) => ({ ...prev, [targetAgentId]: job.conversationId }));
+      setLoadedHistoryIds((prev) => ({ ...prev, [currentKey!]: true }));
+      setRunConvKey(currentKey);
+      if (job.message) {
+        const displayJobMessage = presentAgentUserInput(job.message);
+        setConversationStore((prev) => {
+          const turns = prev[currentKey!] ?? [];
+          const alreadyPresent = turns.some((turn) => turn.role === "user" && turn.content === displayJobMessage);
+          if (alreadyPresent) return prev;
+          return {
+            ...prev,
+            [currentKey!]: appendConversationTurn(turns, "user", displayJobMessage, HISTORY_LIMIT),
+          };
+        });
+      }
+    }
+    setStreamingReply("");
+    setRunSteps([]);
+    setRunStartedAt(startedAt);
+    setRunFinishedMs(null);
+    setConnectionState(null);
+    setRunning(true);
+
+    void resumeAgentJob(job, (event, meta?: AgentEventMeta) => {
+      switch (event.type) {
+        case "conversation": {
+          const newID = event.data.id;
+          currentKey = CONVERSATIONS_KEY(targetAgentId, newID);
+          setActiveConversationId((prev) => ({ ...prev, [targetAgentId]: newID }));
+          setLoadedHistoryIds((prev) => ({ ...prev, [currentKey!]: true }));
+          setRunConvKey(currentKey);
+          break;
+        }
+        case "thought_delta":
+          setRunSteps((prev) => {
+            for (let index = prev.length - 1; index >= 0; index--) {
+              const step = prev[index];
+              if (step.kind === "thought" && step.streaming) {
+                const next = prev.slice();
+                next[index] = { ...step, content: step.content + event.data.delta };
+                return next;
+              }
+            }
+            return [...prev, { kind: "thought", id: `thought-${prev.length}`, content: event.data.delta, streaming: true }];
+          });
+          break;
+        case "message_delta":
+          setRunSteps(sealStreamingThought);
+          setStreamingReply((prev) => prev + event.data.delta);
+          break;
+        case "message":
+          setRunSteps(sealStreamingThought);
+          setStreamingReply("");
+          if (currentKey) {
+            setConversationStore((prev) => {
+              const turns = prev[currentKey!] ?? [];
+              const duplicate = turns.some((turn) => turn.role === "assistant" && turn.content === event.data.content.trim());
+              if (duplicate) return prev;
+              return {
+                ...prev,
+                [currentKey!]: appendConversationTurn(turns, "assistant", event.data.content, HISTORY_LIMIT),
+              };
+            });
+          }
+          void listAgentConversations(targetAgentId)
+            .then((rows) => setConversationsByAgent((prev) => ({ ...prev, [targetAgentId]: rows ?? [] })))
+            .catch(() => {});
+          break;
+        case "thought":
+          setRunSteps((prev) => [...sealStreamingThought(prev), {
+            kind: "thought",
+            id: `thought-${prev.length}`,
+            content: event.data.content,
+          }]);
+          break;
+        case "ask_user":
+          setRunSteps((prev) => [...prev, {
+            kind: "ask_user",
+            id: `ask-${prev.length}`,
+            question: event.data.question,
+            options: Array.isArray(event.data.options) ? event.data.options : [],
+            allowCustom: event.data.allow_custom !== false,
+          }]);
+          break;
+        case "tool_call":
+          setRunSteps((prev) => [...sealStreamingThought(prev), {
+            kind: "tool",
+            id: `tool-${prev.length}`,
+            invocation: {
+              id: event.data.id || `tool-${prev.length}`,
+              name: event.data.name,
+              args: event.data.arguments,
+              startedAt: performance.now(),
+              status: "running",
+            },
+          }]);
+          break;
+        case "tool_result":
+          setRunSteps((prev) => {
+            for (let index = prev.length - 1; index >= 0; index--) {
+              const step = prev[index];
+              if (step.kind === "tool" && step.invocation.status === "running") {
+                const next = prev.slice();
+                next[index] = {
+                  ...step,
+                  invocation: {
+                    ...step.invocation,
+                    status: event.data.ok ? "success" : "error",
+                    durationMs: performance.now() - step.invocation.startedAt,
+                    output: event.data.ok ? (event.data.result ?? "") : (event.data.error ?? ""),
+                  },
+                };
+                return next;
+              }
+            }
+            return prev;
+          });
+          break;
+        case "canvas_patch":
+          setRunSteps((prev) => [...prev, {
+            kind: "canvas",
+            id: `canvas-${prev.length}`,
+            op: event.data.op,
+          }]);
+          if (!meta?.replayed) applyPatch(event);
+          break;
+        case "usage":
+          setCtxUsage({
+            prompt: event.data.prompt_tokens,
+            completion: event.data.completion_tokens,
+            total: event.data.total_tokens,
+          });
+          break;
+        case "connection_status":
+          setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
+          break;
+        case "error":
+          setRunSteps((prev) => [...sealStreamingThought(prev), {
+            kind: "error",
+            id: `err-${prev.length}`,
+            message: event.data.message,
+          }]);
+          setRunning(false);
+          setRunFinishedMs(performance.now() - startedAt);
+          setConnectionState(null);
+          abortRef.current = null;
+          break;
+        case "done":
+          setRunSteps(sealStreamingThought);
+          setRunning(false);
+          setRunFinishedMs(performance.now() - startedAt);
+          setConnectionState(null);
+          abortRef.current = null;
+          break;
+      }
+    }).then((stopObserving) => {
+      if (disposed) stopObserving();
+      else abortRef.current = stopObserving;
+    });
+
+    return () => {
+      disposed = true;
+      abortRef.current?.();
+      abortRef.current = null;
+    };
+  }, [applyPatch, open, selectedId]);
 
   const submitWithMotion = () => {
     if (sendButtonRef.current && !shouldReduceMotion()) {
@@ -935,10 +1153,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const interactiveSteps = (runHere ? runSteps : []).filter(
     (s) => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
   );
-  const quickChips = allInvokableSkills.slice(0, 8);
+  const skillBatchCount = Math.max(1, Math.ceil(allInvokableSkills.length / 5));
+  const quickChips = getRotatingSkillBatch(allInvokableSkills, skillBatchIndex, 5);
   const applyQuickChip = (skill: Skill) => {
     setMessage(getSkillCommandName(skill) + " ");
+    setSelectedSkillId(skill.id);
+    setShowSkillMenu(false);
+    setShowSkillLibrary(false);
     requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const showNextSkillBatch = () => {
+    setSkillBatchIndex((current) => (current + 1) % skillBatchCount);
   };
   const currentModel = overrideModel ?? selectedAgent?.model ?? "";
   // 模型默认选中已有的:agent 没配置默认模型时,自动选第一个可用文本模型,
@@ -1046,6 +1271,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           {zh ? `本次已触发技能 ${activeSkillName}` : `Triggered skill ${activeSkillName}`}
         </div>
       ) : null}
+      {connectionState === "reconnecting" && running && runHere ? (
+        <div className="mx-4 mt-3 flex items-center gap-2 rounded-md border border-amber-400/20 bg-amber-500/[0.07] px-3 py-2 text-[11px] text-amber-100">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+          {zh ? "实时连接正在恢复，后台任务仍在运行，过程记录不会丢失。" : "Reconnecting to live updates. The background job is still running and progress is preserved."}
+        </div>
+      ) : null}
       <AgentThread
         zh={zh}
         runSteps={runHere ? runSteps : []}
@@ -1066,6 +1297,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   onSkipRun={skipPendingRun}
                   onPickModel={updatePendingModel}
                   onChoice={(text) => void start(text)}
+                  modelDisplayName={modelDisplayName}
                 />
               ))}
             </div>
@@ -1082,15 +1314,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             activeIndex={slashIndex}
             onPick={(skill) => applySlashCompletion(skill)}
             zh={zh}
-          />
-        ) : null}
-        {showAttachMenu ? (
-          <AttachMenu
-            zh={zh}
-            skills={allInvokableSkills}
-            onPickFromCanvas={() => { startAgentNodePick(); setShowAttachMenu(false); }}
-            onPickSkill={(s) => { applyQuickChip(s); setShowAttachMenu(false); }}
-            onClose={() => setShowAttachMenu(false)}
           />
         ) : null}
         {referencedNodes.length > 0 ? (
@@ -1121,19 +1344,50 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               {zh ? "今天一起创作点什么？" : "What shall we create today?"}
             </div>
             {quickChips.length > 0 ? (
-              <div className="flex flex-wrap gap-2 pt-0.5">
-                {quickChips.map((skill) => (
+              <div className="pt-0.5">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-neutral-300">
+                    <Wrench className="h-3.5 w-3.5 shrink-0 text-cyan-300/80" />
+                    <span className="truncate">{zh ? "让 Skill 帮你迈出第一步" : "Start with a Skill"}</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setShowSkillLibrary(true)}
+                      className="rounded-md px-1.5 py-1 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
+                    >
+                      {zh ? "全部" : "All"}
+                    </button>
+                    {allInvokableSkills.length > 5 ? (
+                      <button
+                        type="button"
+                        onClick={showNextSkillBatch}
+                        className="rounded-md px-1.5 py-1 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
+                      >
+                        {zh ? "换一批" : "Refresh"}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                {quickChips.map((skill, index) => (
                   <button
                     key={skill.id}
                     type="button"
                     onClick={() => applyQuickChip(skill)}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-[var(--agent-border)] bg-white/[0.03] px-3 py-1.5 text-[11px] text-neutral-300 transition hover:border-white/20 hover:bg-white/[0.07] hover:text-white"
+                    className={`group flex min-w-0 items-center gap-2 rounded-xl border border-[var(--agent-border)] bg-white/[0.025] px-2.5 py-2 text-left transition hover:border-cyan-300/25 hover:bg-white/[0.06] hover:text-white ${index === 4 ? "col-span-2" : ""}`}
                     title={skill.description || skill.name}
                   >
-                    <Sparkles className="h-3 w-3 text-neutral-400" />
-                    <span className="max-w-[180px] truncate">{skill.name}</span>
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/[0.07] bg-white/[0.04] text-neutral-500 transition group-hover:text-cyan-200">
+                      <Sparkles className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-[11px] font-medium text-neutral-300 group-hover:text-white">{getSkillDisplayName(skill)}</span>
+                      <span className="block truncate font-mono text-[9px] text-neutral-600">{getSkillCommandName(skill)}</span>
+                    </span>
                   </button>
                 ))}
+                </div>
               </div>
             ) : null}
           </div>
@@ -1145,7 +1399,18 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             ref={inputRef}
             value={message}
             onChange={(event) => {
-              setMessage(event.target.value);
+              const nextMessage = event.target.value;
+              setMessage(nextMessage);
+              setSelectedSkillId((currentSkillId) => {
+                if (!currentSkillId) return null;
+                const selectedSkill = skills.find((skill) => skill.id === currentSkillId);
+                if (!selectedSkill) return null;
+                return nextMessage.trimStart().toLowerCase().startsWith(
+                  getSkillCommandName(selectedSkill).toLowerCase(),
+                )
+                  ? currentSkillId
+                  : null;
+              });
               setSlashIndex(0);
             }}
             onKeyDown={(event) => {
@@ -1183,41 +1448,117 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             className="prompt-editor-scroll w-full resize-none bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
             disabled={running}
           />
-          <div className="mt-1.5 flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setShowAttachMenu((v) => !v)}
-              disabled={running}
-              title={zh ? "添加：画布节点 / 技能" : "Add: canvas node / skill"}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--agent-border)] text-neutral-400 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
+          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+            <Popover
+              open={showAttachMenu}
+              onOpenChange={(nextOpen) => {
+                if (nextOpen) setShowSkillMenu(false);
+                setShowAttachMenu(nextOpen);
+              }}
             >
-              <Plus className="h-4 w-4" />
-            </button>
-            <ExecutionModeToggle mode={executionMode} onToggle={toggleExecutionMode} zh={zh} />
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  disabled={running}
+                  title={zh ? "添加画布素材" : "Add from canvas"}
+                  aria-label={zh ? "添加画布素材" : "Add from canvas"}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                    showAttachMenu
+                      ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
+                      : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
+                  }`}
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </PopoverTrigger>
+              <AttachMenu
+                zh={zh}
+                onPickFromCanvas={() => {
+                  startAgentNodePick();
+                  setShowAttachMenu(false);
+                }}
+              />
+            </Popover>
+            <div className="relative shrink-0">
+              {showSkillMenu ? (
+                <SkillQuickPicker
+                  anchorRef={skillButtonRef}
+                  zh={zh}
+                  skills={quickChips}
+                  onPick={applyQuickChip}
+                  onOpenAll={() => {
+                    setShowSkillMenu(false);
+                    setShowSkillLibrary(true);
+                  }}
+                  onClose={() => setShowSkillMenu(false)}
+                />
+              ) : null}
+              <button
+                ref={skillButtonRef}
+                type="button"
+                onClick={() => {
+                  setShowAttachMenu(false);
+                  setShowSkillMenu((value) => !value);
+                }}
+                disabled={running}
+                title={zh ? "选择 Skill" : "Choose a Skill"}
+                aria-label={zh ? "选择 Skill" : "Choose a Skill"}
+                aria-expanded={showSkillMenu}
+                className={`flex h-8 w-8 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                  showSkillMenu
+                    ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
+                    : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                <Wrench className="h-4 w-4" />
+              </button>
+            </div>
+            <ExecutionModeToggle
+              mode={executionMode}
+              onChange={changeExecutionMode}
+              disabled={running}
+              zh={zh}
+            />
             {/* 深度思考开关:仅思考类模型(deepseek / qwen3.7 / *-thinking…)显示。
                 开=模型输出 reasoning 流(思考块实时可见);关=直接回答,更快。 */}
             {thinkingSupported ? (
-              <button
-                type="button"
-                onClick={() => setDeepThinking(!thinkingOn)}
-                disabled={running}
-                title={thinkingOn
-                  ? (zh ? "深度思考已开启：先推理再回答（点击关闭）" : "Deep thinking ON (click to disable)")
-                  : (zh ? "深度思考已关闭：直接回答更快（点击开启）" : "Deep thinking OFF (click to enable)")}
-                className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[10px] transition disabled:opacity-40 ${
-                  thinkingOn
-                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                    : "border-[var(--agent-border)] text-neutral-500 hover:bg-white/5 hover:text-neutral-300"
-                }`}
-              >
-                <BrainCircuit className="h-3 w-3" />
-                {zh ? "深度思考" : "Think"}
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setDeepThinking(!thinkingOn)}
+                    disabled={running}
+                    title={thinkingOn
+                      ? (zh ? "深度思考已开启：点击关闭" : "Deep thinking is on; click to disable")
+                      : (zh ? "深度思考已关闭：点击开启" : "Deep thinking is off; click to enable")}
+                    aria-label={thinkingOn
+                      ? (zh ? "深度思考已开启，点击关闭" : "Deep thinking on, click to disable")
+                      : (zh ? "深度思考已关闭，点击开启" : "Deep thinking off, click to enable")}
+                    aria-pressed={thinkingOn}
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                      thinkingOn
+                        ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                        : "border-[var(--agent-border)] text-neutral-500 hover:bg-white/5 hover:text-neutral-300"
+                    }`}
+                  >
+                    <BrainCircuit className="h-4 w-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  sideOffset={8}
+                  className="border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
+                >
+                  {thinkingOn
+                    ? (zh ? "深度思考 · 已开启" : "Deep thinking · On")
+                    : (zh ? "深度思考 · 已关闭" : "Deep thinking · Off")}
+                </TooltipContent>
+              </Tooltip>
             ) : null}
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex min-w-[140px] basis-[140px] flex-1 items-center justify-end gap-1.5">
               {/* Standalone model selector, pinned right. Always visible. */}
               {(
-                <div className="relative">
+                <div className="relative min-w-0 max-w-[148px] flex-1">
                   {showModelMenu ? (
                     <>
                       <div className="fixed inset-0 z-30" onClick={() => setShowModelMenu(false)} />
@@ -1231,13 +1572,15 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                           onClick={() => { setOverrideModel(null); setShowModelMenu(false); }}
                           className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5"
                         >
-                          <span className="flex items-center gap-2 truncate">
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
                             {selectedAgent?.model ? (
                               <ModelBrandIcon model={selectedAgent.model} vendor={modelConfig(selectedAgent.model)?.vendor} providerName={modelConfig(selectedAgent.model)?.name} iconKey={modelConfig(selectedAgent.model)?.icon_key} iconUrl={modelConfig(selectedAgent.model)?.icon_url} size={14} />
                             ) : (
                               <Cpu className="h-3.5 w-3.5 text-neutral-500" />
                             )}
-                            {zh ? "跟随智能体默认" : "Agent default"}{selectedAgent?.model ? ` · ${selectedAgent.model}` : ""}
+                            <span className="min-w-0 truncate">
+                              {zh ? "跟随智能体默认" : "Agent default"}{selectedAgent?.model ? ` · ${modelDisplayName(selectedAgent.model)}` : ""}
+                            </span>
                           </span>
                           {!overrideModel ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
                         </button>
@@ -1248,9 +1591,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                             onClick={() => { setOverrideModel(m); setShowModelMenu(false); }}
                             className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5"
                           >
-                            <span className="flex items-center gap-2 truncate">
+                            <span className="flex min-w-0 flex-1 items-center gap-2">
                               <ModelBrandIcon model={m} vendor={modelConfig(m)?.vendor} providerName={modelConfig(m)?.name} iconKey={modelConfig(m)?.icon_key} iconUrl={modelConfig(m)?.icon_url} size={14} />
-                              <span className="truncate">{m}</span>
+                              <span className="truncate">{modelDisplayName(m)}</span>
                             </span>
                             {overrideModel === m ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
                           </button>
@@ -1264,15 +1607,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   <button
                     type="button"
                     onClick={() => setShowModelMenu((v) => !v)}
-                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
-                    title={zh ? "选择本次模型" : "Model for this message"}
+                    className="flex w-full min-w-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+                    title={currentModel
+                      ? `${zh ? "本次模型" : "Model"}: ${modelDisplayName(currentModel)}`
+                      : (zh ? "选择本次模型" : "Model for this message")}
                   >
                     {currentModel ? (
                       <ModelBrandIcon model={currentModel} vendor={modelConfig(currentModel)?.vendor} providerName={modelConfig(currentModel)?.name} iconKey={modelConfig(currentModel)?.icon_key} iconUrl={modelConfig(currentModel)?.icon_url} size={13} />
                     ) : (
                       <Cpu className="h-3 w-3 shrink-0" />
                     )}
-                    <span className="max-w-[120px] truncate">{currentModel || (zh ? "选择模型" : "Model")}</span>
+                    <span className="min-w-0 flex-1 truncate">{currentModel ? modelDisplayName(currentModel) : (zh ? "选择模型" : "Model")}</span>
                     {overrideModel ? <span className="shrink-0 text-cyan-300">●</span> : null}
                     <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
                   </button>
@@ -1283,13 +1628,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   type="button"
                   onClick={toggleMic}
                   title={zh ? "语音输入" : "Voice input"}
-                  className={`flex h-8 w-8 items-center justify-center rounded-full transition ${listening ? "bg-rose-500/20 text-rose-300" : "text-neutral-400 hover:bg-white/5 hover:text-white"}`}
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${listening ? "bg-rose-500/20 text-rose-300" : "text-neutral-400 hover:bg-white/5 hover:text-white"}`}
                 >
                   <Mic className="h-4 w-4" />
                 </button>
               ) : null}
               {running ? (
-                <button onClick={stop} className="flex h-8 w-8 items-center justify-center rounded-full bg-rose-500/20 text-rose-300 transition hover:bg-rose-500/30" title={zh ? "停止" : "Stop"}>
+                <button onClick={stop} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-500/20 text-rose-300 transition hover:bg-rose-500/30" title={zh ? "停止" : "Stop"}>
                   <Square className="h-3.5 w-3.5" />
                 </button>
               ) : (
@@ -1297,7 +1642,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   ref={sendButtonRef}
                   onClick={submitWithMotion}
                   disabled={!message.trim() || !selectedId}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:bg-white/15 disabled:text-neutral-500"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:bg-white/15 disabled:text-neutral-500"
                   title={zh ? "发送" : "Send"}
                 >
                   <ArrowUp className="h-4 w-4" />
@@ -1315,6 +1660,14 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         </div>
       </div>
       </AssistantRuntimeProvider>
+      <SkillLibraryDialog
+        open={showSkillLibrary}
+        zh={zh}
+        skills={skills.filter((skill) => skill.enabled)}
+        onClose={() => setShowSkillLibrary(false)}
+        onPick={applyQuickChip}
+        onSkillsChanged={() => void refreshSkills()}
+      />
     </div>
   );
 }
@@ -1393,61 +1746,148 @@ function ContextWindowMeter({
   );
 }
 
-/** Composer "+" attach menu: insert a skill command, or @-reference a canvas
- *  node. (Model selection is a separate, pinned control on the right.) */
+/** Composer "+" attach menu, anchored directly to its trigger button. */
 function AttachMenu({
-  zh, skills, onPickFromCanvas, onPickSkill, onClose,
+  zh, onPickFromCanvas,
 }: {
   zh: boolean;
-  skills: Skill[];
   onPickFromCanvas: () => void;
-  onPickSkill: (skill: Skill) => void;
-  onClose: () => void;
 }) {
   return (
-    <>
-      <div className="fixed inset-0 z-30" onClick={onClose} />
-      <div
-        className="prompt-editor-scroll absolute bottom-full left-3 z-40 mb-2 max-h-[320px] w-[300px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 shadow-2xl backdrop-blur-xl"
-        onWheel={(e) => e.stopPropagation()}
-      >
-        {skills.length > 0 ? (
-          <>
-            <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{zh ? "技能" : "Skill"}</div>
-            {skills.slice(0, 30).map((s) => (
-              <button key={s.id} type="button" onClick={() => onPickSkill(s)} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5">
-                <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-300/70" />
-                <span className="truncate">{s.name}</span>
-              </button>
-            ))}
-          </>
-        ) : null}
-        <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{zh ? "画布" : "Canvas"}</div>
-        <button type="button" onClick={onPickFromCanvas} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5">
-          <ImageIcon className="h-3.5 w-3.5 shrink-0 text-neutral-600" />
-          <span className="truncate">{zh ? "从画布添加（点选节点）" : "Add from canvas (pick a node)"}</span>
-        </button>
+    <PopoverContent
+      side="top"
+      align="start"
+      sideOffset={8}
+      collisionPadding={12}
+      role="menu"
+      aria-label={zh ? "画布素材" : "Canvas assets"}
+      className="prompt-editor-scroll z-[130] max-h-[320px] w-[300px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
+      onWheel={(event) => event.stopPropagation()}
+    >
+      <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+        {zh ? "画布" : "Canvas"}
       </div>
-    </>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onPickFromCanvas}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5"
+      >
+        <ImageIcon className="h-3.5 w-3.5 shrink-0 text-neutral-600" />
+        <span className="truncate">{zh ? "从画布添加（点选节点）" : "Add from canvas (pick a node)"}</span>
+      </button>
+    </PopoverContent>
   );
 }
 
-/** Execution-mode toggle: manual (confirm每次生成) vs auto (autonomous). */
-function ExecutionModeToggle({ mode, onToggle, zh }: { mode: "manual" | "auto"; onToggle: () => void; zh: boolean }) {
+/** Compact execution-mode picker: icon-only in the toolbar, labels in the popup. */
+function ExecutionModeToggle({
+  mode,
+  onChange,
+  disabled,
+  zh,
+}: {
+  mode: "manual" | "auto";
+  onChange: (mode: "manual" | "auto") => void;
+  disabled?: boolean;
+  zh: boolean;
+}) {
+  const [open, setOpen] = useState(false);
   const manual = mode === "manual";
+  const currentLabel = manual
+    ? (zh ? "手动确认" : "Manual confirmation")
+    : (zh ? "自动生成" : "Automatic generation");
+
+  const selectMode = (next: "manual" | "auto") => {
+    onChange(next);
+    setOpen(false);
+  };
+
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      title={manual
-        ? (zh ? "手动确认：执行生成前都会寻求你的确认（点击切换为自动）" : "Manual: confirm before each generation (click to switch to Auto)")
-        : (zh ? "自动生成：自主规划并自动执行生成（点击切换为手动）" : "Auto: plan and run generations autonomously (click for Manual)")}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-300 transition hover:bg-white/5"
-    >
-      {manual ? <Hand className="h-3 w-3" /> : <Zap className="h-3 w-3 text-cyan-300" />}
-      {manual ? (zh ? "手动确认" : "Manual") : (zh ? "自动生成" : "Auto")}
-      <ChevronDown className="h-3 w-3 opacity-50" />
-    </button>
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              disabled={disabled}
+              title={currentLabel}
+              aria-label={currentLabel}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                open
+                  ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
+                  : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              {manual ? <Hand className="h-4 w-4" /> : <Zap className="h-4 w-4 text-cyan-300" />}
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        {!open ? (
+          <TooltipContent
+            side="top"
+            sideOffset={8}
+            className="border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
+          >
+            {currentLabel}
+          </TooltipContent>
+        ) : null}
+      </Tooltip>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        role="menu"
+        aria-label={zh ? "执行方式" : "Execution mode"}
+        className="z-[130] w-[228px] rounded-xl border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
+      >
+        <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
+          {zh ? "执行方式" : "Execution mode"}
+        </div>
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={manual}
+          onClick={() => selectMode("manual")}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition hover:bg-white/5"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-neutral-300">
+            <Hand className="h-3.5 w-3.5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11px] font-medium text-neutral-200">
+              {zh ? "手动确认" : "Manual confirmation"}
+            </span>
+            <span className="mt-0.5 block text-[9px] text-neutral-500">
+              {zh ? "生成前逐项确认" : "Confirm each generation"}
+            </span>
+          </span>
+          {manual ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
+        </button>
+        <button
+          type="button"
+          role="menuitemradio"
+          aria-checked={!manual}
+          onClick={() => selectMode("auto")}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition hover:bg-white/5"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-cyan-300">
+            <Zap className="h-3.5 w-3.5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11px] font-medium text-neutral-200">
+              {zh ? "自动生成" : "Automatic generation"}
+            </span>
+            <span className="mt-0.5 block text-[9px] text-neutral-500">
+              {zh ? "自动规划并执行" : "Plan and run automatically"}
+            </span>
+          </span>
+          {!manual ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -1597,6 +2037,7 @@ function RunStepRow({
   onSkipRun,
   onPickModel,
   onChoice,
+  modelDisplayName,
 }: {
   step: RunStep;
   tick: number;
@@ -1605,6 +2046,7 @@ function RunStepRow({
   onSkipRun: (stepId: string) => void;
   onPickModel: (stepId: string, model: string) => void;
   onChoice: (text: string) => void;
+  modelDisplayName: (modelID: string) => string;
 }) {
   void tick;
   if (step.kind === "ask_user") {
@@ -1662,6 +2104,7 @@ function RunStepRow({
         onConfirm={() => onConfirmRun(step.id)}
         onSkip={() => onSkipRun(step.id)}
         onPickModel={(model) => onPickModel(step.id, model)}
+        modelDisplayName={modelDisplayName}
       />
     );
   }
@@ -1678,12 +2121,14 @@ function PendingRunCard({
   onConfirm,
   onSkip,
   onPickModel,
+  modelDisplayName,
 }: {
   step: Extract<RunStep, { kind: "pending_run" }>;
   zh: boolean;
   onConfirm: () => void;
   onSkip: () => void;
   onPickModel: (model: string) => void;
+  modelDisplayName: (modelID: string) => string;
 }) {
   // 完整服务类型映射(旧版只认 video/audio,图像会被误标成「音频生成」)。
   const Icon = step.serviceType === "video" ? Film
@@ -1707,7 +2152,7 @@ function PendingRunCard({
     return (
       <div className="flex items-center gap-2 rounded-md border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2 text-[11px] text-emerald-200">
         <Icon className="h-3.5 w-3.5" />
-        {zh ? `已运行 · ${typeLabel} · ${step.chosenModel}` : `Started · ${typeLabel} · ${step.chosenModel}`}
+        {zh ? `已运行 · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}` : `Started · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}`}
       </div>
     );
   }
@@ -1733,7 +2178,7 @@ function PendingRunCard({
           title={zh ? "可以选择任意已配置的模型" : "Pick any configured model"}
         >
           {step.availableModels.map((m, idx) => (
-            <option key={`${m}-${idx}`} value={m}>{m}</option>
+            <option key={`${m}-${idx}`} value={m}>{modelDisplayName(m)}</option>
           ))}
         </select>
       </div>

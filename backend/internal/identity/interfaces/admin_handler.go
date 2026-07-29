@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -137,6 +138,18 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		Tags:        []string{"Admin", "Logs"},
 		Security:    adminSec,
 	}, h.listLogs)
+
+	// Privileged management-operation audit trail. Kept separate from
+	// generation logs, which represent user generation tasks rather than
+	// administrator actions.
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-audit-logs",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/audit-logs",
+		Summary:     "List management operation audit logs",
+		Tags:        []string{"Admin", "Logs"},
+		Security:    adminSec,
+	}, h.listAuditLogs)
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -630,6 +643,118 @@ func (h *AdminHandler) listLogs(ctx context.Context, input *listLogsInput) (*lis
 	out := &listLogsOutput{}
 	out.Body.Data = items
 	out.Body.Total = int32(total)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type AuditLogItem struct {
+	ID          string            `json:"id"`
+	RequestID   string            `json:"request_id"`
+	ActorUserID string            `json:"actor_user_id"`
+	ActorName   string            `json:"actor_name"`
+	ActorEmail  string            `json:"actor_email"`
+	Action      string            `json:"action"`
+	TargetType  string            `json:"target_type"`
+	TargetID    string            `json:"target_id"`
+	TargetLabel string            `json:"target_label"`
+	Method      string            `json:"method"`
+	Route       string            `json:"route"`
+	Status      string            `json:"status"`
+	HTTPStatus  int32             `json:"http_status"`
+	ErrorCode   string            `json:"error_code"`
+	Summary     string            `json:"summary"`
+	Metadata    map[string]string `json:"metadata"`
+	DurationMs  int32             `json:"duration_ms"`
+	CreatedAt   string            `json:"created_at"`
+	CompletedAt string            `json:"completed_at"`
+}
+
+type listAuditLogsInput struct {
+	Limit      int32  `query:"limit" minimum:"1" maximum:"100" default:"50"`
+	Offset     int32  `query:"offset" minimum:"0" default:"0"`
+	Actor      string `query:"actor"`
+	Action     string `query:"action"`
+	TargetType string `query:"target_type"`
+	Status     string `query:"status" enum:"started,success,error"`
+	RequestID  string `query:"request_id"`
+	From       string `query:"from" doc:"RFC3339 start time"`
+	To         string `query:"to" doc:"RFC3339 end time"`
+}
+
+type listAuditLogsOutput struct {
+	Body struct {
+		Data      []AuditLogItem `json:"data"`
+		Total     int32          `json:"total"`
+		RequestID string         `json:"request_id"`
+	}
+}
+
+func auditTime(raw string) (pgtype.Timestamptz, error) {
+	if raw == "" {
+		return pgtype.Timestamptz{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return pgtype.Timestamptz{}, err
+	}
+	return pgtype.Timestamptz{Time: parsed, Valid: true}, nil
+}
+
+func (h *AdminHandler) listAuditLogs(ctx context.Context, input *listAuditLogsInput) (*listAuditLogsOutput, error) {
+	from, err := auditTime(input.From)
+	if err != nil {
+		return nil, huma.Error400BadRequest("Invalid from timestamp; use RFC3339")
+	}
+	to, err := auditTime(input.To)
+	if err != nil {
+		return nil, huma.Error400BadRequest("Invalid to timestamp; use RFC3339")
+	}
+	params := sqlc.ListAdminAuditLogsParams{
+		Actor: input.Actor, Action: input.Action, TargetType: input.TargetType,
+		Status: input.Status, RequestID: input.RequestID, From: from, To: to,
+		Limit: input.Limit, Offset: input.Offset,
+	}
+	rows, err := h.q.ListAdminAuditLogs(ctx, params)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list audit logs")
+	}
+	total, err := h.q.CountAdminAuditLogs(ctx, sqlc.CountAdminAuditLogsParams{
+		Actor: input.Actor, Action: input.Action, TargetType: input.TargetType,
+		Status: input.Status, RequestID: input.RequestID, From: from, To: to,
+	})
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to count audit logs")
+	}
+	out := &listAuditLogsOutput{}
+	out.Body.Data = make([]AuditLogItem, 0, len(rows))
+	for _, row := range rows {
+		metadata := map[string]string{}
+		// Metadata is created by the audit middleware. Keep a small allowlist at
+		// the response boundary to prevent accidentally exposing future fields.
+		var stored map[string]string
+		if json.Unmarshal(row.Metadata, &stored) == nil && stored["operation_id"] != "" {
+			metadata["operation_id"] = stored["operation_id"]
+		}
+		item := AuditLogItem{
+			ID: formatUUID(row.ID.Bytes), RequestID: row.RequestID,
+			ActorUserID: pgUUIDStr(row.ActorUserID), ActorName: row.ActorName, ActorEmail: row.ActorEmail,
+			Action: row.Action, TargetType: row.TargetType, TargetID: row.TargetID, TargetLabel: row.TargetLabel,
+			Method: row.Method, Route: row.Route, Status: row.Status, ErrorCode: row.ErrorCode,
+			Summary: row.Summary, Metadata: metadata,
+			CreatedAt: row.CreatedAt.Time.UTC().Format(time.RFC3339),
+		}
+		if row.HTTPStatus.Valid {
+			item.HTTPStatus = row.HTTPStatus.Int32
+		}
+		if row.DurationMs.Valid {
+			item.DurationMs = row.DurationMs.Int32
+		}
+		if row.CompletedAt.Valid {
+			item.CompletedAt = row.CompletedAt.Time.UTC().Format(time.RFC3339)
+		}
+		out.Body.Data = append(out.Body.Data, item)
+	}
+	out.Body.Total = total
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }

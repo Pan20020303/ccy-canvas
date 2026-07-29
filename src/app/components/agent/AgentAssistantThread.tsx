@@ -70,6 +70,14 @@ function buildMessages(
     content: [
       // 附图(引用的画布节点等)在文本之前显示。
       ...(turn.images ?? []).map((url) => ({ type: "image" as const, image: url })),
+      ...(turn.toolCalls ?? []).map((tool, toolIndex) => ({
+        type: "tool-call" as const,
+        toolCallId: `h-${index}-tool-${toolIndex}`,
+        toolName: tool.name,
+        argsText: tool.args || "{}",
+        result: tool.output,
+        isError: tool.status === "error",
+      })),
       { type: "text" as const, text: turn.content },
     ],
   }));

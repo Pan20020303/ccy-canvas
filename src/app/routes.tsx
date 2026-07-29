@@ -14,6 +14,7 @@ import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
 import { AdminPromptTemplatesPage } from "./components/admin/AdminPromptTemplatesPage";
 import { AgentRunPanel } from "./components/AgentRunPanel";
+import { AutomationWorkspace } from "./components/AutomationWorkspace";
 import { Canvas } from "./components/Canvas";
 import { CanvasLoader } from "./components/CanvasLoader";
 import { HomePage } from "./components/HomePage";
@@ -93,6 +94,16 @@ const HomeRedirect = () => {
 };
 
 export const router = createBrowserRouter([
+  ...(import.meta.env.DEV ? [
+    {
+      path: "/__preview/home",
+      Component: HomePage,
+    },
+    {
+      path: "/__preview/automation",
+      Component: AutomationWorkspace,
+    },
+  ] : []),
   {
     path: "/",
     Component: HomeRedirect,
@@ -118,6 +129,14 @@ export const router = createBrowserRouter([
     Component: () => (
       <ProtectedRoute>
         <Workspace />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/automation",
+    Component: () => (
+      <ProtectedRoute>
+        <AutomationWorkspace />
       </ProtectedRoute>
     ),
   },

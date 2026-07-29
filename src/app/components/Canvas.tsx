@@ -11,6 +11,7 @@ import {
   useViewport,
   type Connection,
   type ConnectionLineComponentProps,
+  type Edge,
   type Node,
   type NodeChange,
 } from '@xyflow/react';
@@ -58,7 +59,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, useActiveProjectReadOnly, eventMatchesShortcut, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
+import { useStore, useActiveProjectReadOnly, eventMatchesShortcut, sanitizeCanvasEdges, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -904,6 +905,28 @@ const InnerCanvas = () => {
     connectingFrom.current = null;
   }, [connectEdge, setConnectionDragging]);
 
+  const isValidConnection = useCallback((connection: Connection | Edge) => (
+    Boolean(connection.source)
+    && Boolean(connection.target)
+    && connection.source !== connection.target
+    && !edges.some((edge) => (
+      edge.source === connection.source
+      && edge.target === connection.target
+      && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
+      && (edge.targetHandle ?? null) === (connection.targetHandle ?? null)
+    ))
+  ), [edges]);
+
+  // Repair canvases created before the validation existed. This removes the
+  // invalid edges from state (not only from rendering), so the next autosave
+  // also cleans the persisted project and duplicate prompt references.
+  useEffect(() => {
+    const validIds = new Set(sanitizeCanvasEdges(edges).map((edge) => edge.id));
+    const invalid = edges.filter((edge) => !validIds.has(edge.id));
+    if (invalid.length === 0) return;
+    onEdgesChange(invalid.map((edge) => ({ type: 'remove' as const, id: edge.id })));
+  }, [edges, onEdgesChange]);
+
   /** Global mouse tracking for bulk-routing (selection +-handle drag). */
   useEffect(() => {
     if (!bulkRouting) return;
@@ -1388,7 +1411,7 @@ const InnerCanvas = () => {
   }, [nodeTypeSignature]);
   const normalizedEdges = useMemo(() => {
     const typeById = nodeTypeById;
-    return edges.map((edge) => {
+    return sanitizeCanvasEdges(edges).map((edge) => {
       const sourceHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.source] ?? '');
       const targetHasPorts = !NON_PORT_NODE_TYPES.has(typeById[edge.target] ?? '');
       return {
@@ -1690,6 +1713,7 @@ const InnerCanvas = () => {
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onPaneContextMenu={onPaneContextMenu}

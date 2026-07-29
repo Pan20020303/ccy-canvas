@@ -1,4 +1,5 @@
 import { apiClient } from "./client";
+import { publishRuntimeInvalidation } from "../runtimeInvalidation";
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 
@@ -18,16 +19,21 @@ export function listUsers(): Promise<AdminUser[]> {
   return apiClient.get<AdminUser[]>("/api/admin/users");
 }
 
-export function updateUserRole(id: string, role: "admin" | "member"): Promise<AdminUser> {
-  return apiClient.patch<AdminUser>(`/api/admin/users/${id}/role`, { role });
+export async function updateUserRole(id: string, role: "admin" | "member"): Promise<AdminUser> {
+  const user = await apiClient.patch<AdminUser>(`/api/admin/users/${id}/role`, { role });
+  publishRuntimeInvalidation(["identity", "models"], id);
+  return user;
 }
 
-export function updateUserStatus(id: string, status: "active" | "disabled"): Promise<AdminUser> {
-  return apiClient.patch<AdminUser>(`/api/admin/users/${id}/status`, { status });
+export async function updateUserStatus(id: string, status: "active" | "disabled"): Promise<AdminUser> {
+  const user = await apiClient.patch<AdminUser>(`/api/admin/users/${id}/status`, { status });
+  publishRuntimeInvalidation(["identity"], id);
+  return user;
 }
 
-export function deleteUser(id: string): Promise<void> {
-  return apiClient.delete(`/api/admin/users/${id}`);
+export async function deleteUser(id: string): Promise<void> {
+  await apiClient.delete(`/api/admin/users/${id}`);
+  publishRuntimeInvalidation(["identity"], id);
 }
 
 export function resetUserPassword(id: string, password: string): Promise<{ user_id: string }> {
@@ -46,8 +52,10 @@ export type CreditResult = {
   current_balance: number;
 };
 
-export function adjustCredits(id: string, payload: AdjustCreditsPayload): Promise<CreditResult> {
-  return apiClient.post<CreditResult>(`/api/admin/users/${id}/credits`, payload);
+export async function adjustCredits(id: string, payload: AdjustCreditsPayload): Promise<CreditResult> {
+  const result = await apiClient.post<CreditResult>(`/api/admin/users/${id}/credits`, payload);
+  publishRuntimeInvalidation(["credits"], id);
+  return result;
 }
 
 // ─── Invitations ────────────────────────────────────────────────────────────
@@ -161,7 +169,7 @@ export type GenerationLog = {
   service_type: string;
   model: string;
   prompt: string;
-  status: "pending" | "success" | "error";
+  status: "pending" | "queued" | "running" | "persisting" | "retrying" | "success" | "error" | "cancelled" | "dead";
   result_url: string;
   error_msg: string;
   duration_ms: number;
@@ -174,18 +182,10 @@ export type LogsResponse = {
 };
 
 export type AdminLogFilters = {
-  status?: "" | "pending" | "success" | "error";
+  status?: "" | GenerationLog["status"];
   user?: string;
   model?: string;
 };
-
-function resolveAdminUrl(input: string) {
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
-  if (/^https?:\/\//.test(input) || !apiBaseUrl) {
-    return input;
-  }
-  return `${apiBaseUrl}${input.startsWith("/") ? input : `/${input}`}`;
-}
 
 export async function listLogs(limit = 50, offset = 0, filters: AdminLogFilters = {}): Promise<LogsResponse> {
   const params = new URLSearchParams({
@@ -203,18 +203,60 @@ export async function listLogs(limit = 50, offset = 0, filters: AdminLogFilters 
     params.set("model", filters.model.trim());
   }
 
-  const response = await fetch(resolveAdminUrl(`/api/admin/logs?${params.toString()}`), {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
-  const body = await response.json() as Partial<LogsResponse> & { error?: { message?: string } };
-  if (!response.ok) {
-    throw new Error(body.error?.message ?? "加载任务日志失败");
-  }
+  const body = await apiClient.getEnvelope<GenerationLog[]>(`/api/admin/logs?${params.toString()}`);
   return {
     data: Array.isArray(body.data) ? body.data : [],
     total: typeof body.total === "number" ? body.total : Array.isArray(body.data) ? body.data.length : 0,
   };
+}
+
+export type AdminAuditLog = {
+  id: string;
+  request_id: string;
+  actor_user_id: string;
+  actor_name: string;
+  actor_email: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_label: string;
+  method: string;
+  route: string;
+  status: "started" | "success" | "error";
+  http_status: number;
+  error_code: string;
+  summary: string;
+  metadata: Record<string, string>;
+  duration_ms: number;
+  created_at: string;
+  completed_at: string;
+};
+
+export type AdminAuditLogFilters = {
+  actor?: string;
+  action?: string;
+  targetType?: string;
+  status?: "" | AdminAuditLog["status"];
+  requestId?: string;
+  from?: string;
+  to?: string;
+};
+
+export async function listAdminAuditLogs(
+  limit = 50,
+  offset = 0,
+  filters: AdminAuditLogFilters = {},
+): Promise<{ data: AdminAuditLog[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (filters.actor?.trim()) params.set("actor", filters.actor.trim());
+  if (filters.action?.trim()) params.set("action", filters.action.trim());
+  if (filters.targetType?.trim()) params.set("target_type", filters.targetType.trim());
+  if (filters.status) params.set("status", filters.status);
+  if (filters.requestId?.trim()) params.set("request_id", filters.requestId.trim());
+  if (filters.from) params.set("from", filters.from);
+  if (filters.to) params.set("to", filters.to);
+  const body = await apiClient.getEnvelope<AdminAuditLog[]>(`/api/admin/audit-logs?${params.toString()}`);
+  return { data: Array.isArray(body.data) ? body.data : [], total: body.total ?? 0 };
 }
 
 // ─── Credit ledger (扣费流水) ─────────────────────────────────────────
@@ -242,17 +284,7 @@ export async function listCreditLedger(
   if (filters.user?.trim()) params.set("user", filters.user.trim());
   if (filters.type?.trim()) params.set("type", filters.type.trim());
 
-  const response = await fetch(resolveAdminUrl(`/api/admin/credits/ledger?${params.toString()}`), {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
-  const body = (await response.json()) as Partial<CreditLedgerResponse> & {
-    error?: { message?: string };
-    detail?: string;
-  };
-  if (!response.ok) {
-    throw new Error(body.error?.message ?? body.detail ?? "加载积分流水失败");
-  }
+  const body = await apiClient.getEnvelope<CreditLedgerEntry[]>(`/api/admin/credits/ledger?${params.toString()}`);
   return {
     data: Array.isArray(body.data) ? body.data : [],
     total: typeof body.total === "number" ? body.total : 0,

@@ -21,6 +21,7 @@ import (
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/session"
+	"ccy-canvas/backend/internal/shared/apperror"
 	"ccy-canvas/backend/internal/shared/httpx"
 	skillsapp "ccy-canvas/backend/internal/skills/application"
 )
@@ -33,6 +34,7 @@ type AgentRunRouter struct {
 	executor   *skillsapp.Executor
 	catalogSvc *modelapp.Service
 	sessions   session.Manager
+	taskQueue  AgentTaskEnqueuer
 }
 
 func NewAgentRunRouter(q *sqlc.Queries, executor *skillsapp.Executor, catalog *modelapp.Service, sessions session.Manager) *AgentRunRouter {
@@ -45,9 +47,25 @@ func NewAgentRunRouter(q *sqlc.Queries, executor *skillsapp.Executor, catalog *m
 	}
 }
 
+// AgentTaskEnqueuer is the narrow queue boundary used by the durable job
+// endpoint. The concrete Redis/Asynq adapter lives in cmd/api so this package
+// does not depend on infrastructure details.
+type AgentTaskEnqueuer interface {
+	Enabled() bool
+	EnqueueAgentRun(ctx context.Context, runID string) (string, error)
+}
+
+func (rt *AgentRunRouter) WithTasks(queue AgentTaskEnqueuer) *AgentRunRouter {
+	rt.taskQueue = queue
+	return rt
+}
+
 // RegisterChi attaches /api/app/agents/{id}/run to the supplied router.
 func (rt *AgentRunRouter) RegisterChi(r chi.Router) {
 	r.Post("/api/app/agents/{id}/run", rt.runAgent)
+	r.Post("/api/app/agents/{id}/jobs", rt.createAgentJob)
+	r.Get("/api/app/agent-jobs/{id}", rt.getAgentJob)
+	r.Get("/api/app/agent-jobs/{id}/events", rt.streamAgentJobEvents)
 }
 
 type agentRunRequest struct {
@@ -144,7 +162,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	resolved, err := rt.catalogSvc.ResolveModelEndpoints(r.Context(), catalogModel)
 	if err != nil {
-		httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		httpx.WriteError(w, r, apperror.New(apperror.CodeInvalidInput, "所选模型暂不可用，请更换后重试"))
 		return
 	}
 	endpoints := make([]skillsapp.Endpoint, 0, len(resolved))
@@ -298,7 +316,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	errMsg := ""
 	if runErr != nil {
 		status = "error"
-		errMsg = runErr.Error()
+		errMsg = apperror.PublicMessage(runErr)
 	}
 	_ = rt.q.UpdateAgentRunResult(r.Context(), sqlc.UpdateAgentRunResultParams{
 		ID:         runRow.ID,

@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { apiClient } from "../api/client";
 import { listAppProviderConfigs } from "../api/providerConfigs";
+import { subscribeRuntimeInvalidation } from "../runtimeInvalidation";
 import { useStore, bindStorageToUser } from "../store";
 
 export type AuthUser = {
@@ -59,16 +60,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setBackendModels = useStore((s) => s.setBackendModels);
   const loadBackendProjects = useStore((s) => s.loadBackendProjects);
 
-  // After successful auth, load backend data (models + projects/canvas).
-  const loadBackendData = async () => {
+  const loadBackendModels = useCallback(async () => {
     try {
       const configs = await listAppProviderConfigs();
       setBackendModels(configs);
     } catch { /* not authenticated or unavailable */ }
-    await loadBackendProjects();
-  };
+  }, [setBackendModels]);
 
-  const refresh = async () => {
+  // After successful auth, load backend data (models + projects/canvas).
+  const loadBackendData = useCallback(async () => {
+    await loadBackendModels();
+    await loadBackendProjects();
+  }, [loadBackendModels, loadBackendProjects]);
+
+  const refresh = useCallback(async () => {
     try {
       const data = await apiClient.get<AuthPayload>("/api/auth/me");
       bindStorageToUser(data.user.id);
@@ -83,10 +88,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [loadBackendData]);
 
   // Credits-only sync for polling paths: never touches models/projects/canvas.
-  const refreshCredits = async () => {
+  const refreshCredits = useCallback(async () => {
     try {
       const data = await apiClient.get<AuthPayload>("/api/auth/me");
       setUser(data.user);
@@ -94,12 +99,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Transient failure — keep the last known balance; the next tick retries.
     }
-  };
+  }, []);
 
   useEffect(() => {
     void refresh();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
+
+  const activeUserId = user?.id;
+  useEffect(() => {
+    if (!activeUserId) return;
+
+    const syncVisibleState = () => {
+      if (document.visibilityState !== "visible") return;
+      void refreshCredits();
+      void loadBackendModels();
+    };
+
+    syncVisibleState();
+    window.addEventListener("focus", syncVisibleState);
+    window.addEventListener("pageshow", syncVisibleState);
+    document.addEventListener("visibilitychange", syncVisibleState);
+
+    const creditTimer = window.setInterval(() => { void refreshCredits(); }, 30_000);
+    const modelTimer = window.setInterval(() => { void loadBackendModels(); }, 30_000);
+    const unsubscribeInvalidation = subscribeRuntimeInvalidation((message) => {
+      if (message.targetUserId && message.targetUserId !== activeUserId) return;
+      if (message.scopes.includes("credits") || message.scopes.includes("identity")) {
+        void refreshCredits();
+      }
+      if (message.scopes.includes("models")) {
+        void loadBackendModels();
+      }
+    });
+
+    return () => {
+      window.removeEventListener("focus", syncVisibleState);
+      window.removeEventListener("pageshow", syncVisibleState);
+      document.removeEventListener("visibilitychange", syncVisibleState);
+      window.clearInterval(creditTimer);
+      window.clearInterval(modelTimer);
+      unsubscribeInvalidation();
+    };
+  }, [activeUserId, loadBackendModels, refreshCredits]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -135,7 +176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       refresh,
       refreshCredits,
     }),
-    [creditSummary, loading, user],
+    [creditSummary, loadBackendData, loading, refresh, refreshCredits, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

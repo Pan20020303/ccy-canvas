@@ -46,9 +46,9 @@ func TestToConversationItems(t *testing.T) {
 	}
 }
 
-// 一轮 run 会写 user / tool_log / assistant 三行:tool_log 是内部记录,
-// 不能进 UI 历史,更不能让后续轮次的 user↔assistant 配对错位。
-func TestToConversationItemsSkipsToolLog(t *testing.T) {
+// 一轮 run 会写 user / tool_log / assistant 三行。tool_log 要归属到同一轮,
+// 同时不能让后续轮次的 user↔assistant 配对错位。
+func TestToConversationItemsAttachesToolLogToItsTurn(t *testing.T) {
 	messages := []sqlc.AgentConversationMessage{
 		{Role: "user", Content: "你好"},
 		{Role: "tool_log", Content: "✓ create_node({...}) → {id:...}"},
@@ -70,6 +70,12 @@ func TestToConversationItemsSkipsToolLog(t *testing.T) {
 		if item.UserInput != expected[index].userInput || item.FinalReply != expected[index].finalReply {
 			t.Fatalf("item %d mismatch: got %#v want user=%q reply=%q", index, item, expected[index].userInput, expected[index].finalReply)
 		}
+	}
+	if items[0].ToolLog != messages[1].Content {
+		t.Fatalf("item 0 tool log mismatch: %#v", items[0])
+	}
+	if items[1].ToolLog != messages[4].Content {
+		t.Fatalf("item 1 tool log mismatch: %#v", items[1])
 	}
 }
 

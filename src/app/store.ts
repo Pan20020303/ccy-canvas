@@ -521,13 +521,32 @@ const initialNodes: Node[] = [
 
 const initialEdges: Edge[] = [{ id: 'e1-2', source: '1', target: '2', type: 'flow' }];
 
+/** Remove graph connections that cannot represent a valid dependency.
+ *  A node can never depend on itself, regardless of which quick-connect
+ *  handles were used. Exact duplicate edges are collapsed as well. */
+export function sanitizeCanvasEdges(edges: Edge[] = []): Edge[] {
+  const seen = new Set<string>();
+  return edges.filter((edge) => {
+    if (!edge.source || !edge.target || edge.source === edge.target) return false;
+    const key = [
+      edge.source,
+      edge.sourceHandle ?? '',
+      edge.target,
+      edge.targetHandle ?? '',
+    ].join('\u0000');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 const createCanvasSnapshot = (
   nodes: Node[] = [],
   edges: Edge[] = [],
   groups: Group[] = [],
 ): ProjectCanvasState => ({
   nodes: nodes.map((node) => ({ ...node, position: { ...node.position }, data: { ...(node.data ?? {}) } })),
-  edges: edges.map((edge) => ({ ...edge, style: edge.style ? { ...edge.style } : edge.style })),
+  edges: sanitizeCanvasEdges(edges).map((edge) => ({ ...edge, style: edge.style ? { ...edge.style } : edge.style })),
   groups: groups.map((group) => ({
     ...group,
     nodeIds: [...group.nodeIds],
@@ -1537,7 +1556,11 @@ function stripHeavyFromProjectStateById(projectStateById: Record<string, Project
   if (!projectStateById || typeof projectStateById !== 'object') return {};
   const out: Record<string, ProjectCanvasState> = {};
   for (const [key, snapshot] of Object.entries(projectStateById)) {
-    out[key] = { ...snapshot, nodes: stripHeavyFromNodes(snapshot.nodes) };
+    out[key] = {
+      ...snapshot,
+      nodes: stripHeavyFromNodes(snapshot.nodes),
+      edges: sanitizeCanvasEdges(snapshot.edges),
+    };
   }
   return out;
 }
@@ -1571,6 +1594,7 @@ function stripHeavyFromSavedAssets(savedAssets: unknown): SavedAsset[] {
 
 function sanitizePersistedAppState<T extends {
   nodes?: Node[];
+  edges?: Edge[];
   history?: HistoryItem[];
   projectStateById?: Record<string, ProjectCanvasState>;
   spaceSnapshotsById?: Record<string, SpaceSnapshot>;
@@ -1579,6 +1603,7 @@ function sanitizePersistedAppState<T extends {
   return {
     ...persistedState,
     nodes: Array.isArray(persistedState.nodes) ? stripHeavyFromNodes(persistedState.nodes) : persistedState.nodes,
+    edges: Array.isArray(persistedState.edges) ? sanitizeCanvasEdges(persistedState.edges) : persistedState.edges,
     history: Array.isArray(persistedState.history) ? stripHeavyFromHistory(persistedState.history) : persistedState.history,
     projectStateById: persistedState.projectStateById
       ? stripHeavyFromProjectStateById(persistedState.projectStateById)
@@ -2141,6 +2166,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   onConnect: (connection: Connection) => {
     set((state) => {
       if (computeActiveProjectReadOnly(state)) return {};
+      if (!connection.source || !connection.target || connection.source === connection.target) return {};
+      const duplicate = state.edges.some((edge) => (
+        edge.source === connection.source
+        && edge.target === connection.target
+        && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
+        && (edge.targetHandle ?? null) === (connection.targetHandle ?? null)
+      ));
+      if (duplicate) return {};
       const decoratedConnection = { ...connection, type: 'flow' };
       const edges = addEdge(decoratedConnection, state.edges);
       const undoStack = pushUndoState(state);
@@ -2384,7 +2417,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             }
             return n;
           });
-          const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : state.edges;
+          const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : state.edges);
           // Older snapshots have no groups field — keep whatever is local then.
           const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : state.groups;
           const projectStateById = {
@@ -2462,7 +2495,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         }
         return n;
       });
-      const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
+      const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : []);
       const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
       set((state) => {
         const projectStateById = {
@@ -2507,7 +2540,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         }
         return n;
       });
-      const edges = Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : [];
+      const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : []);
       const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
       // Reset the saved signature so the reloaded canvas is treated as clean and
       // the next real edit (not this reload) is what triggers the next save.
@@ -3551,8 +3584,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     ) {
       const language = get().language;
       const error = language === 'zh'
-        ? '当前模型需要公网可访问的参考图。请重新上传图片到 COS，或移除本地/旧上传引用后再生成。'
-        : 'This model needs public reference image URLs. Re-upload the image to COS, or remove local/stale references before generating.';
+        ? '当前模型需要公网可访问的参考图。请确认后端已启用 OSS/COS 并重新上传图片，或移除本地/旧上传引用后再生成。'
+        : 'This model needs public reference image URLs. Ensure OSS/COS is enabled in the backend, then re-upload the image or remove local/stale references before generating.';
       set((snapshot) => {
       const nodes = snapshot.nodes.map((node) => node.id === nodeId
           ? { ...node, data: { ...node.data, status: 'error', error } }

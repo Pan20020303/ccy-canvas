@@ -13,11 +13,20 @@ export function getAllInvokableSlashSkills(skills: Skill[]) {
   return skills.filter((skill) => skill.enabled && isPromptTemplateSkill(skill));
 }
 
-export function buildAgentRunMessage(agent: Agent, skills: Skill[], rawMessage: string) {
+export function buildAgentRunMessage(
+  agent: Agent,
+  skills: Skill[],
+  rawMessage: string,
+  selectedSkillId?: string | null,
+) {
   const trimmed = rawMessage.trim();
   const [firstToken, ...rest] = trimmed.split(/\s+/);
 
-  if (!firstToken.startsWith("/")) {
+  const explicitlySelectedSkill = selectedSkillId
+    ? skills.find((skill) => skill.id === selectedSkillId && skill.enabled)
+    : undefined;
+
+  if (!firstToken.startsWith("/") && !explicitlySelectedSkill) {
     return {
       message: trimmed,
       invokedSkillName: null,
@@ -28,7 +37,8 @@ export function buildAgentRunMessage(agent: Agent, skills: Skill[], rawMessage: 
   // so a freshly-imported skill is callable immediately without an extra
   // "bind to agent" step.
   const invokable = getAllInvokableSlashSkills(skills);
-  const matchedSkill = invokable.find((skill) => getSkillCommandName(skill).toLowerCase() === firstToken.toLowerCase());
+  const matchedSkill = explicitlySelectedSkill
+    ?? invokable.find((skill) => getSkillCommandName(skill).toLowerCase() === firstToken.toLowerCase());
 
   if (!matchedSkill) {
     return {
@@ -37,20 +47,23 @@ export function buildAgentRunMessage(agent: Agent, skills: Skill[], rawMessage: 
     };
   }
 
-  const requestText = rest.join(" ").trim();
+  const selectedCommand = getSkillCommandName(matchedSkill);
+  const requestText = firstToken.toLowerCase() === selectedCommand.toLowerCase()
+    ? rest.join(" ").trim()
+    : trimmed;
   const template = getSkillTemplateBody(matchedSkill);
 
   return {
     message: [
       "Use the following bound skill template while answering.",
       "",
-      `Skill: ${getSkillCommandName(matchedSkill)}`,
+      `Skill: ${selectedCommand}`,
       "Template:",
       template,
       "",
       "User request:",
       requestText,
     ].join("\n"),
-    invokedSkillName: getSkillCommandName(matchedSkill),
+    invokedSkillName: selectedCommand,
   };
 }

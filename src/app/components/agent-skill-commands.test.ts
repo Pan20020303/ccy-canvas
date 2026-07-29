@@ -121,4 +121,37 @@ describe("agent slash-skill commands", () => {
       invokedSkillName: null,
     });
   });
+
+  it("runs an explicitly selected markdown skill even when it is stored as code", () => {
+    const creatorSuiteSkill: Skill = {
+      ...skills[0],
+      id: "skill-code",
+      name: "director_storyboard",
+      kind: "code",
+      spec: {
+        content_md: "Use the selected creator-suite storyboard methodology.",
+      },
+    };
+
+    expect(
+      buildAgentRunMessage(
+        agent,
+        [...skills, creatorSuiteSkill],
+        "/director_storyboard Split this scene.",
+        creatorSuiteSkill.id,
+      ),
+    ).toEqual({
+      message: [
+        "Use the following bound skill template while answering.",
+        "",
+        "Skill: /director_storyboard",
+        "Template:",
+        "Use the selected creator-suite storyboard methodology.",
+        "",
+        "User request:",
+        "Split this scene.",
+      ].join("\n"),
+      invokedSkillName: "/director_storyboard",
+    });
+  });
 });

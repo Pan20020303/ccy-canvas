@@ -20,6 +20,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
+	"ccy-canvas/backend/internal/platform/adminaudit"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/cache"
 	"ccy-canvas/backend/internal/platform/config"
@@ -146,19 +147,13 @@ func main() {
 	// worker server runs in a background goroutine. Empty REDIS_ADDR
 	// keeps the legacy detached-goroutine path (no behavior change).
 	var taskWorker *tasks.Worker
+	var durableTaskQueue *tasks.Queue
 	if cfg.RedisAddr != "" {
-		taskQueue := tasks.NewQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		durableTaskQueue = tasks.NewQueue(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		taskWorker = tasks.NewWorker(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, catalogService, queries)
-		queueAdapter := taskQueueAdapter{q: taskQueue}
+		queueAdapter := taskQueueAdapter{q: durableTaskQueue}
 		catalogService = catalogService.WithAssetPersistQueue(queueAdapter)
 		catalogHandler = catalogHandler.WithTasks(queueAdapter)
-		go func() {
-			log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
-			if err := taskWorker.Start(); err != nil {
-				log.Printf("[tasks] Asynq worker exited: %v", err)
-			}
-		}()
-		log.Printf("[tasks] Asynq queue enabled: %s db=%d", cfg.RedisAddr, cfg.RedisDB)
 	} else {
 		// F5: without Redis the generation path falls back to a detached
 		// in-process goroutine. It does NOT survive a backend crash/restart
@@ -183,9 +178,11 @@ func main() {
 	router := chi.NewMux()
 	router.Use(middleware.RealIP)
 	router.Use(httpx.RequestIDMiddleware)
+	router.Use(httpx.Recoverer)
+	router.Use(httpx.AccessLogger)
+	router.Use(adminaudit.ChiMiddleware(queries, sessionManager))
 	router.Use(httpx.CORSMiddleware(allowedOrigins))
 	router.Use(httpx.MaxBodyMiddleware(50 * 1024 * 1024)) // 50 MB cap for JSON endpoints; uploads use their own cap
-	router.Use(middleware.Logger)
 	router.Options("/*", func(w http.ResponseWriter, r *http.Request) {
 		httpx.ApplyCORSHeaders(w, r, allowedOriginSet)
 		w.WriteHeader(http.StatusNoContent)
@@ -216,7 +213,8 @@ func main() {
 
 	// Huma API: OpenAPI 3.1 at /api/openapi.json + per-operation auth middleware.
 	api := httpapi.New(router)
-	api.UseMiddleware(authn.Middleware(api, sessionManager))
+	api.UseMiddleware(authn.Middleware(api, sessionManager, queries))
+	api.UseMiddleware(adminaudit.Middleware(api, queries))
 
 	// Admin management routes (users, invitations, stats, logs).
 	adminHandler := identityhttp.NewAdminHandler(queries, passwordService)
@@ -252,6 +250,17 @@ func main() {
 	// Agent SSE run endpoint sits on chi directly (huma envelopes JSON,
 	// which would break Server-Sent Events).
 	agentRunRouter := skillshttp.NewAgentRunRouter(queries, skillsExecutor, catalogService, sessionManager)
+	if durableTaskQueue != nil {
+		agentRunRouter.WithTasks(taskQueueAdapter{q: durableTaskQueue})
+		taskWorker.WithAgentRunProcessor(agentRunRouter)
+		go func() {
+			log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
+			if err := taskWorker.Start(); err != nil {
+				log.Printf("[tasks] Asynq worker exited: %v", err)
+			}
+		}()
+		log.Printf("[tasks] Asynq queue enabled: %s db=%d", cfg.RedisAddr, cfg.RedisDB)
+	}
 	agentRunRouter.RegisterChi(router)
 
 	// Task-completion SSE stream — same chi-direct rationale as above.
@@ -374,4 +383,8 @@ func (a taskQueueAdapter) EnqueueAssetPersist(ctx context.Context, p application
 		ContentType: p.ContentType,
 		EnqueuedAt:  p.EnqueuedAt,
 	})
+}
+
+func (a taskQueueAdapter) EnqueueAgentRun(ctx context.Context, runID string) (string, error) {
+	return a.q.EnqueueAgentRun(ctx, tasks.AgentRunPayload{RunID: runID})
 }

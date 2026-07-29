@@ -227,6 +227,7 @@ type AgentUpsertBody struct {
 type AgentConversationItem struct {
 	UserInput  string `json:"user_input"`
 	FinalReply string `json:"final_reply"`
+	ToolLog    string `json:"tool_log,omitempty"`
 	CreatedAt  string `json:"created_at"`
 }
 
@@ -318,6 +319,9 @@ type skillOutput struct {
 }
 
 func (h *Handler) createPersonalSkill(ctx context.Context, input *createSkillInput) (*skillOutput, error) {
+	if err := validatePersonalSkillKind(input.Body.Kind); err != nil {
+		return nil, err
+	}
 	uid := mustUserID(ctx)
 	row, err := h.q.InsertSkill(ctx, sqlc.InsertSkillParams{
 		Scope:        "personal",
@@ -344,6 +348,9 @@ type updateSkillInput struct {
 }
 
 func (h *Handler) updatePersonalSkill(ctx context.Context, input *updateSkillInput) (*skillOutput, error) {
+	if err := validatePersonalSkillKind(input.Body.Kind); err != nil {
+		return nil, err
+	}
 	pgID, err := parseUUID(input.ID)
 	if err != nil {
 		return nil, err
@@ -371,6 +378,13 @@ func (h *Handler) updatePersonalSkill(ctx context.Context, input *updateSkillInp
 		return nil, huma.Error500InternalServerError("Failed to update skill")
 	}
 	return wrapSkill(ctx, row), nil
+}
+
+func validatePersonalSkillKind(kind string) error {
+	if kind != "prompt" {
+		return huma.Error400BadRequest("Personal skills only support prompt kind")
+	}
+	return nil
 }
 
 type deleteSkillInput struct {
@@ -935,8 +949,14 @@ func toConversationItems(messages []sqlc.AgentConversationMessage) []AgentConver
 				})
 			}
 			open = -1
+		case "tool_log":
+			// Attach the compact transcript to the same visible turn so the UI
+			// can rebuild tool cards after a reload.
+			if open >= 0 {
+				items[open].ToolLog = m.Content
+			}
 		default:
-			// tool_log 等内部记录:仅供下一轮 system prompt 注入,不进 UI。
+			// Ignore unknown internal roles.
 		}
 	}
 	return items

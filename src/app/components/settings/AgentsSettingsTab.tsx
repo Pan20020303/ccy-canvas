@@ -13,6 +13,7 @@ import {
   type Skill,
 } from "../../api/skills";
 import { useStore } from "../../store";
+import { getProviderModelDisplayName, getProviderModelPresentation } from "../../api/providerConfigs";
 import { applyAgentSettingsLoadResults, canSaveAgentEditor } from "./agent-settings-state";
 import {
   getAgentAvailableModels,
@@ -63,6 +64,14 @@ export function AgentsSettingsTab() {
   const availableModels = useMemo(
     () => getAgentAvailableModels(backendModels, editing?.model),
     [backendModels, editing?.model],
+  );
+  const modelPresentation = useMemo(
+    () => getProviderModelPresentation(backendModels),
+    [backendModels],
+  );
+  const modelDisplayName = useCallback(
+    (modelID: string) => getProviderModelDisplayName(modelID, modelPresentation),
+    [modelPresentation],
   );
 
   const load = useCallback(async () => {
@@ -241,7 +250,7 @@ export function AgentsSettingsTab() {
                     {agent.scope === "global" ? <Lock className="h-3 w-3 text-neutral-500" /> : null}
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-[10px] text-neutral-500">
-                    <span>{agent.model}</span>
+                    <span>{modelDisplayName(agent.model)}</span>
                     <span>·</span>
                     <span>{agent.skill_ids.length} {zh ? "个技能" : "skills"}</span>
                   </div>
@@ -270,6 +279,7 @@ export function AgentsSettingsTab() {
             }}
             allSkills={availableSkills}
             allModels={availableModels}
+            modelDisplayName={modelDisplayName}
             zh={zh}
             saving={saving}
           />
@@ -279,6 +289,7 @@ export function AgentsSettingsTab() {
             onEdit={() => startEdit(selected)}
             onDelete={() => void remove(selected)}
             allSkills={availableSkills}
+            modelDisplayName={modelDisplayName}
             zh={zh}
           />
         ) : (
@@ -296,12 +307,14 @@ function AgentDetail({
   onEdit,
   onDelete,
   allSkills,
+  modelDisplayName,
   zh,
 }: {
   agent: Agent;
   onEdit: () => void;
   onDelete: () => void;
   allSkills: Skill[];
+  modelDisplayName: (modelID: string) => string;
   zh: boolean;
 }) {
   const skillNames = agent.skill_ids
@@ -352,7 +365,7 @@ function AgentDetail({
 
       {/* Stats — small inline meta row, no rigid sidebar. */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5 text-xs">
-        <MetaInline label={zh ? "模型" : "Model"} value={agent.model} />
+        <MetaInline label={zh ? "模型" : "Model"} value={modelDisplayName(agent.model)} />
         <MetaInline label={zh ? "技能数" : "Skills"} value={`${skillNames.length}`} />
         <MetaInline label={zh ? "画布" : "Canvas"} value={agent.canvas_tools ? (zh ? "已开启" : "On") : (zh ? "关闭" : "Off")} />
       </div>
@@ -412,6 +425,7 @@ function AgentEditor({
   onCancel,
   allSkills,
   allModels,
+  modelDisplayName,
   zh,
   saving,
 }: {
@@ -421,6 +435,7 @@ function AgentEditor({
   onCancel: () => void;
   allSkills: Skill[];
   allModels: string[];
+  modelDisplayName: (modelID: string) => string;
   zh: boolean;
   saving: boolean;
 }) {
@@ -476,7 +491,7 @@ function AgentEditor({
           >
             {allModels.map((model) => (
               <option key={model} value={model}>
-                {model}
+                {modelDisplayName(model)}
               </option>
             ))}
           </select>

@@ -1,10 +1,9 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import {
   Bold,
   Bot,
   BrainCircuit,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -12,7 +11,6 @@ import {
   Clapperboard,
   Eye,
   FileCode2,
-  File,
   FileText,
   FolderOpen,
   Italic,
@@ -69,9 +67,11 @@ import {
   type AgentMemorySettings,
   type AgentUpsert,
   type AgentUseMode,
+  type AdminSkill,
   type Skill,
   type SkillUpsert,
 } from "../../api/skills";
+import { getSkillCategoryLabel, getSkillDisplayName } from "../../skill-display";
 import { getSkillCommandName, getSkillTemplateBody, isPromptTemplateSkill } from "../settings/skill-agent-presenters";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -131,7 +131,7 @@ type SettingsPanelKey = "model-service" | "agent-config" | "prompt-manage" | "sk
 const SETTINGS_PAGE_META: Record<SettingsPanelKey, { title: string; description: string }> = {
   "model-service": {
     title: "模型服务",
-    description: "管理 AI 服务供应商、模型列表、TS 适配器和默认路由。失败只报警，不会自动切换或锁定渠道。",
+    description: "按服务渠道管理模型、凭据与路由。同一厂商可配置多个相互独立的渠道。",
   },
   "agent-config": {
     title: "Agent配置",
@@ -142,7 +142,7 @@ const SETTINGS_PAGE_META: Record<SettingsPanelKey, { title: string; description:
     description: "维护可复用提示词模板，统一沉淀画布工作流里的常用生成指令和结构化输入。",
   },
   "skill-management": {
-    title: "Skills技能管理",
+    title: "技能管理",
     description: "管理可启用的 Skills 能力，支持为 Agent 和用户侧工作流提供统一的工具描述。",
   },
   "memory-config": {
@@ -202,6 +202,14 @@ const MODEL_TYPE_OPTIONS: Array<{ value: ServiceType; label: string }> = [
   { value: "image", label: "图片模型" },
   { value: "video", label: "视频模型" },
   { value: "audio", label: "音频模型" },
+];
+
+const CHANNEL_FILTERS: Array<{ value: ServiceType | "all"; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "text", label: "文本" },
+  { value: "image", label: "图片" },
+  { value: "video", label: "视频" },
+  { value: "audio", label: "音频" },
 ];
 
 const IMAGE_MODE_OPTIONS = [
@@ -355,7 +363,26 @@ function getVendorModels(config: ProviderConfig): VendorModelDefinition[] {
   return models;
 }
 
+function getConfigServiceTypes(config: ProviderConfig): ServiceType[] {
+  const types = new Set<ServiceType>([config.service_type]);
+  config.capabilities?.forEach((capability) => {
+    if (capability === "text" || capability === "image" || capability === "video" || capability === "audio") {
+      types.add(capability);
+    }
+  });
+  getVendorModels(config).forEach((model) => types.add(model.type));
+  return SERVICE_TYPE_ORDER.filter((type) => types.has(type));
+}
+
 const SERVICE_TYPE_ORDER: ServiceType[] = ["image", "video", "text", "audio"];
+
+function getChannelDisplayName(config: ProviderConfig, configs: ProviderConfig[]) {
+  const normalizedName = config.name.trim().toLowerCase();
+  const duplicates = configs.filter((item) => item.name.trim().toLowerCase() === normalizedName);
+  if (duplicates.length <= 1) return config.name;
+  const ordinal = duplicates.findIndex((item) => item.id === config.id) + 1;
+  return `${config.name} · 渠道 ${Math.max(ordinal, 1)}`;
+}
 
 // 模型文本框的分组表头(# 图片生成 / # 视频 / # image …)反解析成 ServiceType。
 function parseModelGroupHeader(line: string): ServiceType | null {
@@ -746,70 +773,6 @@ function skillToMarkdown(skill: Skill) {
     JSON.stringify(skill.spec ?? {}, null, 2),
     "```",
   ].join("\n");
-}
-
-function skillFilePath(skill: Skill) {
-  const category = (skill.category || (isPromptTemplateSkill(skill) ? "prompt_skills" : "agent_skills"))
-    .trim()
-    .replace(/^\/+|\/+$/g, "")
-    .replace(/\s+/g, "_");
-  const safeName = skill.name.trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_") || skill.id;
-  return `${category}/${safeName}.md`;
-}
-
-type SkillTreeEntry = {
-  skill: Skill;
-  path: string;
-  content: string;
-};
-
-type SkillTreeNode = {
-  label: string;
-  path: string;
-  children: SkillTreeNode[];
-  entry?: SkillTreeEntry;
-};
-
-function buildSkillTree(entries: SkillTreeEntry[]) {
-  const roots: SkillTreeNode[] = [];
-  const nodeByPath = new Map<string, SkillTreeNode>();
-
-  const ensureNode = (label: string, nodePath: string, siblings: SkillTreeNode[]) => {
-    const existing = nodeByPath.get(nodePath);
-    if (existing) return existing;
-    const next: SkillTreeNode = { label, path: nodePath, children: [] };
-    nodeByPath.set(nodePath, next);
-    siblings.push(next);
-    siblings.sort((a, b) => a.label.localeCompare(b.label));
-    return next;
-  };
-
-  entries.forEach((entry) => {
-    const parts = entry.path.split("/").filter(Boolean);
-    let siblings = roots;
-    let currentPath = "";
-    parts.forEach((part, index) => {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const node = ensureNode(part, currentPath, siblings);
-      if (index === parts.length - 1) node.entry = entry;
-      siblings = node.children;
-    });
-  });
-
-  return roots;
-}
-
-function collectSkillFolderPaths(paths: string[]) {
-  const folderPaths = new Set<string>();
-  paths.forEach((filePath) => {
-    const parts = filePath.split("/").filter(Boolean);
-    let currentPath = "";
-    parts.slice(0, -1).forEach((part) => {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      folderPaths.add(currentPath);
-    });
-  });
-  return Array.from(folderPaths);
 }
 
 function applyPromptToolbar(content: string, selectionStart: number, selectionEnd: number, action: (typeof PROMPT_TOOLBAR)[number]["key"]) {
@@ -1422,6 +1385,7 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  const [channelType, setChannelType] = useState<ServiceType | "all">("all");
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [editing, setEditing] = useState<ProviderConfig | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -1458,16 +1422,22 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return configs;
-    return configs.filter((config) =>
-      [config.name, config.vendor, config.base_url, config.default_model, config.protocol]
+    return configs.filter((config) => {
+      const matchesType = channelType === "all" || getConfigServiceTypes(config).includes(channelType);
+      if (!matchesType) return false;
+      if (!q) return true;
+      return [config.name, config.vendor, config.base_url, config.default_model, config.protocol, ...config.model_list]
         .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(q)),
-    );
-  }, [configs, query]);
+        .some((value) => value.toLowerCase().includes(q));
+    });
+  }, [channelType, configs, query]);
 
   const enabledCount = configs.filter((item) => item.status === "enabled").length;
+  const enabledModelCount = configs
+    .filter((item) => item.status === "enabled")
+    .reduce((total, item) => total + getVendorModels(item).length, 0);
   const selectedConfig = filtered.find((config) => config.id === selectedId) ?? filtered[0] ?? null;
+  const selectedConfigDisplayName = selectedConfig ? getChannelDisplayName(selectedConfig, configs) : "";
   const selectedConfigModels = selectedConfig ? getVendorModels(selectedConfig) : [];
   // 该配置实际含有的服务类型(混合中转站会有多个),用于「模型设置」的类型切换标签。
   const configModelTypes = SERVICE_TYPE_ORDER.filter((t) => selectedConfigModels.some((m) => m.type === t));
@@ -1576,7 +1546,7 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
   };
 
   const handleDelete = async (config: ProviderConfig) => {
-    if (!confirm(`确认删除「${config.name}」？`)) return;
+    if (!confirm(`确认删除服务渠道「${getChannelDisplayName(config, configs)}」？`)) return;
     await deleteProviderConfig(config.id);
     setConfigs((prev) => prev.filter((item) => item.id !== config.id));
   };
@@ -1751,20 +1721,21 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
     <AdminShell
       title={pageMeta.title}
       description={pageMeta.description}
-      action={activePanel === "model-service" ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新增模型配置</Button> : null}
+      action={activePanel === "model-service" ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新增服务渠道</Button> : null}
     >
       <div className="space-y-5">
         {activePanel === "model-service" ? <section className="rounded-[28px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-2xl shadow-black/30">
           <div className="flex flex-wrap items-center gap-4">
-            <StatCard label="配置总数" value={configs.length} />
-            <StatCard label="在线模型" value={enabledCount} />
+            <StatCard label="服务渠道" value={configs.length} />
+            <StatCard label="已启用渠道" value={enabledCount} />
+            <StatCard label="可用模型" value={enabledModelCount} />
             <div className="relative min-w-[280px] flex-1">
               <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-600" />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="h-11 w-full rounded-full border border-white/[0.08] bg-black/20 pl-11 pr-4 text-sm text-white outline-none transition focus:border-white/[0.18] focus:ring-2 focus:ring-white/[0.04]"
-                placeholder="搜索名称、厂商、Base URL、协议或模型"
+                placeholder="搜索渠道名称、厂商、模型 ID 或地址"
               />
             </div>
             <Button variant="secondary" onClick={loadConfigs} disabled={loading}>
@@ -1775,42 +1746,89 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
         </section> : null}
 
         {activePanel === "model-service" ? (
-          <section data-testid="settings-panel-model-service" className="grid min-h-[680px] grid-cols-[260px_1fr] overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
-            <aside className="border-r border-white/[0.06] bg-white/[0.025] p-4">
-              <Button onClick={openCreate} className={`mb-3 h-10 w-full rounded-full ${SETTINGS_PRIMARY_BUTTON}`}>
-                <Plus className="mr-2 h-4 w-4" />
-                添加供应商
-              </Button>
-              <div className="space-y-1">
+          <section data-testid="settings-panel-model-service" className="grid min-h-[680px] grid-cols-[330px_1fr] overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
+            <aside className="flex min-h-0 flex-col border-r border-white/[0.06] bg-white/[0.025] p-4">
+              <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                <div>
+                  <h3 className="text-sm font-semibold text-neutral-100">服务渠道</h3>
+                  <p className="mt-1 text-xs text-neutral-500">一个厂商可以有多个独立渠道</p>
+                </div>
+                <Button onClick={openCreate} size="sm" className={`h-8 rounded-full px-3 ${SETTINGS_PRIMARY_BUTTON}`}>
+                  <Plus className="mr-1 h-3.5 w-3.5" />
+                  新增
+                </Button>
+              </div>
+              <div className="mb-3 grid grid-cols-5 gap-1 rounded-xl border border-white/[0.06] bg-black/20 p-1">
+                {CHANNEL_FILTERS.map((filter) => (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    data-testid={`channel-filter-${filter.value}`}
+                    onClick={() => setChannelType(filter.value)}
+                    className={[
+                      "rounded-lg px-1.5 py-1.5 text-[11px] transition",
+                      channelType === filter.value
+                        ? "bg-white/[0.10] text-white shadow-sm"
+                        : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-300",
+                    ].join(" ")}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+              <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
                 {loading ? (
                   <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">加载中...</div>
                 ) : filtered.length === 0 ? (
-                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">暂无供应商</div>
+                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-6 text-center text-sm text-neutral-500">没有匹配的服务渠道</div>
                 ) : (
-                  filtered.map((config) => (
-                    <div
-                      key={config.id}
-                      role="button"
-                      tabIndex={0}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => setSelectedId(config.id)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") setSelectedId(config.id);
-                      }}
-                      className={[
-                        "flex w-full cursor-pointer select-none items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition",
-                        selectedConfig?.id === config.id ? "border-white/[0.14] bg-white/[0.08] text-white shadow-sm" : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
-                      ].join(" ")}
-                    >
-                      <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
-                      <span className="min-w-0 flex-1 truncate">{config.vendor || config.name}</span>
-                      <AnimatedProviderSwitch
-                        checked={config.status === "enabled"}
-                        label={`${config.vendor || config.name} ${config.status === "enabled" ? "禁用" : "启用"}`}
-                        onToggle={() => void handleToggle(config)}
-                      />
-                    </div>
-                  ))
+                  filtered.map((config) => {
+                    const serviceTypes = getConfigServiceTypes(config);
+                    const modelCount = getVendorModels(config).length;
+                    const displayName = getChannelDisplayName(config, configs);
+                    return (
+                      <div
+                        key={config.id}
+                        data-testid={`provider-channel-${config.id}`}
+                        role="button"
+                        tabIndex={0}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => setSelectedId(config.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") setSelectedId(config.id);
+                        }}
+                        className={[
+                          "group w-full cursor-pointer select-none rounded-xl border px-3 py-3 text-left transition",
+                          selectedConfig?.id === config.id
+                            ? "border-white/[0.14] bg-white/[0.08] text-white shadow-sm"
+                            : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.07] bg-black/20">
+                            <ModelBrandIcon model={config.default_model || config.model_list?.[0]} vendor={config.vendor} providerName={config.name} iconKey={config.icon_key} iconUrl={config.icon_url} size={18} />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-neutral-100">{displayName}</span>
+                            <span className="mt-1 block truncate text-xs text-neutral-500">
+                              {config.vendor || "自定义"} · {serviceTypes.map((type) => SERVICE_LABELS[type].replace("生成", "")).join("/")} · {modelCount} 个模型
+                            </span>
+                          </span>
+                          <AnimatedProviderSwitch
+                            checked={config.status === "enabled"}
+                            label={`${displayName} ${config.status === "enabled" ? "禁用" : "启用"}`}
+                            onToggle={() => void handleToggle(config)}
+                          />
+                        </div>
+                        <div className="mt-2 flex items-center gap-2 pl-11 text-[11px]">
+                          <span className={config.status === "enabled" ? "text-emerald-400" : "text-neutral-600"}>
+                            ● {config.status === "enabled" ? "运行中" : "已停用"}
+                          </span>
+                          {config.is_default ? <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-amber-300">默认路由</span> : null}
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </aside>
@@ -1818,38 +1836,45 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
             <div className="flex min-w-0 flex-col bg-[#111111] p-5">
               {selectedConfig ? (
                 <>
-                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/[0.08] pb-5">
                     <div className="min-w-0">
+                      <p className="mb-3 text-[11px] font-medium tracking-[0.16em] text-neutral-600">渠道概览</p>
                       <div className="flex items-center gap-3">
-                        <ModelBrandIcon model={selectedConfig.default_model || selectedConfig.model_list?.[0]} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={28} />
+                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.04]">
+                          <ModelBrandIcon model={selectedConfig.default_model || selectedConfig.model_list?.[0]} vendor={selectedConfig.vendor} providerName={selectedConfig.name} iconKey={selectedConfig.icon_key} iconUrl={selectedConfig.icon_url} size={28} />
+                        </span>
                         <div className="min-w-0">
-                          <h3 className="truncate text-lg font-semibold text-neutral-100">{selectedConfig.name}</h3>
-                          <p className="mt-1 truncate text-xs text-neutral-500">{selectedConfig.vendor} · {selectedConfig.base_url || "TS 供应商脚本"}</p>
+                          <h3 className="truncate text-lg font-semibold text-neutral-100">{selectedConfigDisplayName}</h3>
+                          <p className="mt-1 truncate text-xs text-neutral-500">{selectedConfig.vendor || "自定义渠道"} · {selectedConfig.base_url || "TypeScript 适配器"}</p>
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <span className={SETTINGS_BADGE}>{SERVICE_LABELS[selectedConfig.service_type]}</span>
+                        {getConfigServiceTypes(selectedConfig).map((type) => <span key={type} className={SETTINGS_BADGE}>{SERVICE_LABELS[type]}</span>)}
                         <span className={SETTINGS_BADGE}>{selectedConfig.protocol || "openai_compatible"}</span>
                         {selectedConfig.adapter_runtime === "ts" ? <span className={SETTINGS_BADGE}>TS 脚本</span> : null}
-                        <span className={SETTINGS_BADGE}>模型 ×{selectedConfig.model_list.length}</span>
+                        <span className={SETTINGS_BADGE}>{selectedConfigModels.length} 个模型</span>
+                        {selectedConfig.default_model ? <span className={SETTINGS_BADGE}>默认：{selectedConfig.default_model}</span> : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Button variant="secondary" onClick={() => handleToggle(selectedConfig)}>
+                      <Button variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => handleToggle(selectedConfig)}>
                         <Power className="mr-2 h-4 w-4" />
-                        {STATUS_LABEL[selectedConfig.status]}
+                        {selectedConfig.status === "enabled" ? "停用渠道" : "启用渠道"}
                       </Button>
-                      <Button variant="secondary" onClick={() => openEdit(selectedConfig)}>
+                      <Button variant="secondary" className={SETTINGS_PRIMARY_BUTTON} onClick={() => openEdit(selectedConfig)}>
                         <Pencil className="mr-2 h-4 w-4" />
-                        编辑配置
+                        渠道配置
                       </Button>
                     </div>
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-y-auto py-4">
-                    <div className="mb-4 flex items-center justify-between gap-3">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-3">
-                        <h4 className="shrink-0 text-sm font-semibold text-neutral-100">模型设置</h4>
+                        <div className="shrink-0">
+                          <h4 className="text-sm font-semibold text-neutral-100">模型列表</h4>
+                          <p className="mt-1 text-xs text-neutral-500">只管理该渠道可调用的模型与计费规则</p>
+                        </div>
                         {/* 多类型中转站:按服务类型切换查看/管理，各类型模型分开、参数各配各的。 */}
                         {configModelTypes.length > 1 ? (
                           <div className="flex items-center gap-0.5 overflow-x-auto rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5">
@@ -1886,33 +1911,43 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
                     </div>
                     <div className="space-y-3">
                       {shownConfigModels.length === 0 ? (
-                        <div className="rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] px-4 py-10 text-center text-sm text-neutral-500">该供应商还没有模型</div>
+                        <div className="rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] px-4 py-10 text-center text-sm text-neutral-500">该服务渠道还没有模型</div>
                       ) : (
                         shownConfigModels.map((model) => (
-                          <div key={model.modelName} className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.055]">
+                          <div key={model.modelName} className="rounded-xl border border-white/[0.08] bg-white/[0.025] px-5 py-4 shadow-sm transition hover:border-white/[0.16] hover:bg-white/[0.045]">
                             <div className="flex items-start justify-between gap-4">
                               <div className="min-w-0">
                                 <div className="flex items-center gap-3">
                                   {/* 每个模型按其自身厂商解析图标(中转站聚合多家)，不套用
                                       provider 级 iconKey/iconUrl，否则会被网关图标统一盖过。 */}
                                   <ModelBrandIcon model={model.modelName} size={22} />
-                                  <h4 className="truncate text-base font-semibold text-neutral-100">{model.name || model.modelName}</h4>
+                                  <div className="min-w-0">
+                                    <h4 className="truncate text-sm font-semibold text-neutral-100">{model.name || model.modelName}</h4>
+                                    <p className="mt-1 truncate font-mono text-xs text-neutral-500">{model.modelName}</p>
+                                  </div>
                                 </div>
                                 <div className="mt-3 flex flex-wrap gap-2">
-                                  {modelTags(model, selectedConfig).map((tag) => <span key={tag} className={SETTINGS_BADGE}>{tag}</span>)}
+                                  {modelTags(model, selectedConfig).map((tag) => (
+                                    <span
+                                      key={tag}
+                                      className={tag === "默认模型" ? "rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-xs text-amber-300" : SETTINGS_BADGE}
+                                    >
+                                      {tag}
+                                    </span>
+                                  ))}
                                 </div>
                               </div>
-                              <div className="flex shrink-0 items-center gap-3 text-xs">
+                              <div className="flex shrink-0 items-center gap-1 text-xs">
                                 <button
                                   type="button"
                                   onClick={() => handleTestConnectivity(selectedConfig, model)}
                                   disabled={testingModelKey === `${selectedConfig.id}:${model.modelName}`}
-                                  className="font-medium text-neutral-400 transition hover:text-white disabled:cursor-wait disabled:opacity-60"
+                                  className="rounded-lg px-2.5 py-1.5 font-medium text-neutral-400 transition hover:bg-white/[0.06] hover:text-white disabled:cursor-wait disabled:opacity-60"
                                 >
                                   {testingModelKey === `${selectedConfig.id}:${model.modelName}` ? "测试中" : "测试"}
                                 </button>
-                                <button type="button" onClick={() => openEditModel(selectedConfig, model)} className="font-medium text-neutral-400 transition hover:text-white">编辑</button>
-                                <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="font-medium text-red-500 transition hover:text-red-400">删除</button>
+                                <button type="button" onClick={() => openEditModel(selectedConfig, model)} className="rounded-lg px-2.5 py-1.5 font-medium text-neutral-400 transition hover:bg-white/[0.06] hover:text-white">编辑</button>
+                                <button type="button" onClick={() => handleDeleteModel(selectedConfig, model)} className="rounded-lg px-2.5 py-1.5 font-medium text-red-500 transition hover:bg-red-500/10 hover:text-red-400">删除</button>
                               </div>
                             </div>
                           </div>
@@ -1921,28 +1956,35 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-3 border-t border-white/[0.08] pt-4">
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(selectedConfig)}
-                      className="h-10 rounded bg-red-500 px-5 text-sm font-medium text-white transition hover:bg-red-600"
-                    >
-                      删除供应商
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCodeError("");
-                        setCodeEditingConfig(selectedConfig);
-                      }}
-                      className="h-10 rounded-full border border-white/[0.10] bg-white/[0.035] px-5 text-sm font-medium text-neutral-200 transition hover:border-white/[0.18] hover:bg-white/[0.075] hover:text-white"
-                    >
-                      编辑代码
-                    </button>
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.08] pt-4">
+                    <div>
+                      <p className="text-xs font-medium text-neutral-400">高级设置</p>
+                      <p className="mt-1 text-[11px] text-neutral-600">仅在自定义协议或适配器时需要编辑代码</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCodeError("");
+                          setCodeEditingConfig(selectedConfig);
+                        }}
+                        className="h-9 rounded-full border border-white/[0.10] bg-white/[0.035] px-4 text-xs font-medium text-neutral-300 transition hover:border-white/[0.18] hover:bg-white/[0.075] hover:text-white"
+                      >
+                        <FileCode2 className="mr-1.5 inline h-3.5 w-3.5" />
+                        编辑适配器
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(selectedConfig)}
+                        className="h-9 rounded-full border border-red-500/20 bg-transparent px-4 text-xs font-medium text-red-400 transition hover:bg-red-500/10"
+                      >
+                        删除渠道
+                      </button>
+                    </div>
                   </div>
                 </>
               ) : (
-                <div className="grid h-full place-items-center rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] text-sm text-neutral-500">选择或新增一个供应商</div>
+                <div className="grid h-full place-items-center rounded-xl border border-dashed border-white/[0.12] bg-white/[0.035] text-sm text-neutral-500">选择或新增一个服务渠道</div>
               )}
             </div>
           </section>
@@ -2840,36 +2882,59 @@ function PromptManagePanel() {
   );
 }
 
+type SkillSourceFilter = "official" | "personal" | "all";
+
+const SKILL_SOURCE_FILTERS: Array<{ value: SkillSourceFilter; label: string }> = [
+  { value: "official", label: "官方 Skills" },
+  { value: "personal", label: "个人上传 Skills" },
+  { value: "all", label: "全部 Skills" },
+];
+
+function formatSkillUpdatedAt(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "更新时间未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function getSkillSourceLabel(skill: AdminSkill) {
+  if (skill.scope === "global") return "官方";
+  if (skill.scope === "team") return "团队上传";
+  return "个人上传";
+}
+
+function getSkillUploader(skill: AdminSkill) {
+  if (skill.scope === "global") return "CCY Canvas 官方";
+  if (skill.uploader_name && skill.uploader_email) {
+    return `${skill.uploader_name}（${skill.uploader_email}）`;
+  }
+  return skill.uploader_name || skill.uploader_email || skill.owner_id || "未知用户";
+}
+
 function SkillManagementPanel() {
-  const [skills, setSkills] = useState<Skill[]>([]);
+  const [skills, setSkills] = useState<AdminSkill[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
-  const [activePath, setActivePath] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [sourceFilter, setSourceFilter] = useState<SkillSourceFilter>("official");
+  const [categoryFilter, setCategoryFilter] = useState("全部分类");
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
-  // Reset the pager whenever the search keyword changes.
-  useEffect(() => { setPage(0); }, [keyword]);
+  useEffect(() => {
+    setPage(0);
+  }, [keyword, sourceFilter, categoryFilter]);
 
   const load = async () => {
     setLoading(true);
     setError("");
     try {
-      const next = await adminListSkills();
-      setSkills(next);
-      const nextSkillPaths = next.filter((skill) => !isPromptTemplateSkill(skill)).map(skillFilePath);
-      const nextFolderPaths = collectSkillFolderPaths(nextSkillPaths);
-      setActivePath((current) => {
-        return current && nextSkillPaths.includes(current) ? current : nextSkillPaths[0] ?? null;
-      });
-      setExpandedPaths((current) => {
-        if (current.size === 0) return new Set(nextFolderPaths);
-        const nextExpanded = new Set(Array.from(current).filter((path) => nextFolderPaths.includes(path)));
-        return nextExpanded.size === 0 ? new Set(nextFolderPaths) : nextExpanded;
-      });
+      setSkills(await adminListSkills());
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
     } finally {
@@ -2881,20 +2946,49 @@ function SkillManagementPanel() {
     void load();
   }, []);
 
-  const entries = skills
-    .filter((skill) => !isPromptTemplateSkill(skill))
-    .map((skill) => ({ skill, path: skillFilePath(skill), content: skillToMarkdown(skill) }));
-  const filtered = entries.filter((entry) => {
-    const q = keyword.trim().toLowerCase();
-    if (!q) return true;
-    return [entry.path, entry.skill.name, entry.skill.category, entry.skill.kind, entry.skill.description].some((value) => value.toLowerCase().includes(q));
-  });
-  const activeEntry = filtered.find((entry) => entry.path === activePath) ?? filtered[0] ?? null;
-  const active = activeEntry?.skill ?? null;
+  const sourceSkills = useMemo(() => {
+    if (sourceFilter === "all") return skills;
+    if (sourceFilter === "official") return skills.filter((skill) => skill.scope === "global");
+    return skills.filter((skill) => skill.scope === "personal");
+  }, [skills, sourceFilter]);
+
+  const categories = useMemo(() => {
+    return Array.from(new Set(sourceSkills.map((skill) => getSkillCategoryLabel(skill)).filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right, "zh-CN"));
+  }, [sourceSkills]);
+
+  const filtered = useMemo(() => {
+    const query = keyword.trim().toLocaleLowerCase("zh-CN");
+    return sourceSkills.filter((skill) => {
+      const categoryLabel = getSkillCategoryLabel(skill);
+      if (categoryFilter !== "全部分类" && categoryLabel !== categoryFilter) return false;
+      if (!query) return true;
+      return [
+        getSkillDisplayName(skill),
+        skill.name,
+        skill.description,
+        categoryLabel,
+        getSkillCommandName(skill),
+        getSkillUploader(skill),
+      ].some((value) => value.toLocaleLowerCase("zh-CN").includes(query));
+    });
+  }, [categoryFilter, keyword, sourceSkills]);
+
   const pageCount = Math.max(1, Math.ceil(filtered.length / PANEL_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
-  const pagedEntries = filtered.slice(currentPage * PANEL_PAGE_SIZE, (currentPage + 1) * PANEL_PAGE_SIZE);
-  const skillTree = buildSkillTree(pagedEntries);
+  const pagedSkills = filtered.slice(currentPage * PANEL_PAGE_SIZE, (currentPage + 1) * PANEL_PAGE_SIZE);
+  const active = skills.find((skill) => skill.id === editingSkillId) ?? null;
+
+  const openSkillEditor = (skill: AdminSkill) => {
+    setEditingSkillId(skill.id);
+    setDraft(skillToMarkdown(skill));
+  };
+
+  const closeSkillEditor = () => {
+    if (saving) return;
+    setDraft(null);
+    setEditingSkillId(null);
+  };
 
   const saveSkillContent = async () => {
     if (!active || draft === null) return;
@@ -2914,6 +3008,7 @@ function SkillManagementPanel() {
       const description = active.description || markdownLineToText(draft.split(/\r?\n/).find((line) => line.trim() && !line.startsWith("#")) || "");
       await adminUpdateSkill(active.id, skillToUpsert(active, { description, spec }));
       setDraft(null);
+      setEditingSkillId(null);
       await load();
     } catch (err) {
       setError(toAdminErrorSummary(err, "zh"));
@@ -2922,112 +3017,175 @@ function SkillManagementPanel() {
     }
   };
 
-  const renderSkillTree = (nodes: SkillTreeNode[], depth = 0): ReactElement[] => nodes.flatMap((node) => {
-    if (node.entry) {
-      return [
-        <button
-          key={node.path}
-          type="button"
-          onClick={() => setActivePath(node.entry!.path)}
-          className={[
-            "flex w-full items-center gap-2 rounded-lg border py-2 pr-3 text-left text-sm transition",
-            activeEntry?.path === node.entry.path
-              ? "border-white/[0.14] bg-white/[0.08] text-white"
-              : "border-transparent text-neutral-400 hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-100",
-          ].join(" ")}
-          style={{ paddingLeft: 12 + depth * 12 }}
-        >
-          <File className="h-4 w-4 shrink-0 text-rose-300/80" />
-          <span className="min-w-0 flex-1 truncate">{node.label}</span>
-        </button>,
-      ];
-    }
-
-    const forceExpanded = keyword.trim().length > 0;
-    const expanded = forceExpanded || expandedPaths.has(node.path);
-    return [
-      <button
-        key={node.path}
-        type="button"
-        aria-expanded={expanded}
-        onClick={() => {
-          setExpandedPaths((current) => {
-            const next = new Set(current);
-            if (next.has(node.path)) next.delete(node.path);
-            else next.add(node.path);
-            return next;
-          });
-        }}
-        className="mt-2 flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-1 text-left text-xs font-medium text-neutral-500 transition hover:border-white/[0.08] hover:bg-white/[0.045] hover:text-neutral-200"
-        style={{ marginLeft: depth * 12 }}
-      >
-        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
-        <FolderOpen className="h-4 w-4 shrink-0" />
-        <span className="truncate">{node.label}</span>
-      </button>,
-      ...(expanded ? renderSkillTree(node.children, depth + 1) : []),
-    ];
-  });
-
   return (
     <section data-testid="settings-panel-skill-management" className="flex h-full min-h-[620px] flex-col">
       <PanelHeader
         icon={<Sparkles className="h-5 w-5" />}
-        title="Skills技能管理"
-        description="按左侧列表和右侧预览方式查看技能，支持搜索和编辑 Skill spec。"
-        action={<Button variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => void load()} disabled={loading}>{loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}刷新</Button>}
+        title="技能管理"
+        description="用卡片浏览官方与用户上传的技能，支持中文分类、搜索和 Skill spec 编辑。"
+        action={(
+          <Button variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => void load()} disabled={loading}>
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+            刷新
+          </Button>
+        )}
       />
+
       {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
-      <div className="mt-4 grid min-h-0 flex-1 gap-3 lg:grid-cols-[300px_1fr]">
-        <aside className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025] p-3">
-          <input
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            placeholder="搜索文件名"
-            className={SETTINGS_INPUT}
-          />
-          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
-            {loading ? (
-              <div className="px-3 py-8 text-center text-sm text-neutral-500">加载中...</div>
-            ) : filtered.length === 0 ? (
-              <div className="px-3 py-8 text-center text-sm text-neutral-500">暂无 Skill</div>
-            ) : (
-              <div className="space-y-1">{renderSkillTree(skillTree)}</div>
-            )}
+
+      <div className="mt-4 flex min-h-0 flex-1 flex-col rounded-2xl border border-white/[0.08] bg-[#111211] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.22)] sm:p-5">
+        <div className="flex flex-col gap-4 border-b border-white/[0.07] pb-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="inline-flex w-fit max-w-full overflow-x-auto rounded-xl border border-white/[0.08] bg-black/20 p-1">
+              {SKILL_SOURCE_FILTERS.map((item) => {
+                const selected = sourceFilter === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      setSourceFilter(item.value);
+                      setCategoryFilter("全部分类");
+                    }}
+                    className={[
+                      "shrink-0 rounded-lg px-3.5 py-2 text-sm font-medium transition",
+                      selected
+                        ? "bg-[#f2eee8] text-[#171614] shadow-sm"
+                        : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-100",
+                    ].join(" ")}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="relative block w-full xl:w-[320px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
+              <input
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="搜索技能名称、描述或上传人"
+                className={`${SETTINGS_INPUT} pl-9`}
+              />
+            </label>
           </div>
-          {!loading ? <PanelPager page={currentPage} pageCount={pageCount} onChange={setPage} className="mt-2 border-t border-white/[0.06] pt-2" /> : null}
-        </aside>
-        <div className="flex min-h-0 flex-col rounded-lg border border-white/[0.08] bg-white/[0.025]">
-          {active && activeEntry ? (
-            <>
-              <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3">
-                <div>
-                  <h4 className="text-sm font-semibold text-neutral-100">{activeEntry.path}</h4>
-                  <p className="mt-1 text-xs text-neutral-500">{active.kind} · {active.category || "未分类"} · {active.enabled ? "已启用" : "未启用"}</p>
-                </div>
-                <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={() => setDraft(activeEntry.content)}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  编辑
-                </Button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto p-5">
-                <MarkdownPreview content={activeEntry.content} />
-              </div>
-            </>
+
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            {["全部分类", ...categories].map((category) => {
+              const selected = categoryFilter === category;
+              return (
+                <button
+                  key={category}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setCategoryFilter(category)}
+                  className={[
+                    "shrink-0 rounded-full border px-3 py-1.5 text-xs transition",
+                    selected
+                      ? "border-[#ff7849]/45 bg-[#ff6533]/15 text-[#ff9a75]"
+                      : "border-white/[0.08] bg-white/[0.025] text-neutral-400 hover:border-white/[0.15] hover:text-neutral-100",
+                  ].join(" ")}
+                >
+                  {category}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto py-4">
+          {loading ? (
+            <div className="grid min-h-[320px] place-items-center text-sm text-neutral-500">
+              <span className="inline-flex items-center"><Loader2 className="mr-2 h-4 w-4 animate-spin" />正在加载技能...</span>
+            </div>
+          ) : pagedSkills.length === 0 ? (
+            <div className="grid min-h-[320px] place-items-center rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.018] text-sm text-neutral-500">
+              没有找到符合条件的 Skill
+            </div>
           ) : (
-            <div className="grid h-full place-items-center text-sm text-neutral-500">选择左侧 Skill 查看内容</div>
+            <div className="grid gap-3 lg:grid-cols-2">
+              {pagedSkills.map((skill) => {
+                const displayName = getSkillDisplayName(skill);
+                const categoryLabel = getSkillCategoryLabel(skill);
+                const command = getSkillCommandName(skill);
+                const SkillIcon = skill.kind === "prompt"
+                  ? MessageSquareText
+                  : skill.kind === "code"
+                    ? FileCode2
+                    : Sparkles;
+                return (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    aria-label={`编辑 ${displayName}`}
+                    onClick={() => openSkillEditor(skill)}
+                    className="group flex min-h-[164px] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#181918] text-left transition hover:-translate-y-0.5 hover:border-[#ff7444]/35 hover:bg-[#1c1d1c] hover:shadow-[0_18px_36px_rgba(0,0,0,0.24)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff7444]/35"
+                  >
+                    <span className="relative hidden w-[148px] shrink-0 border-r border-white/[0.07] bg-white/[0.022] sm:grid sm:place-items-center">
+                      <span className="grid h-14 w-14 place-items-center rounded-2xl border border-white/[0.11] bg-white/[0.035] text-[#ff936d]">
+                        <SkillIcon className="h-7 w-7" />
+                      </span>
+                      <span className="absolute bottom-3 left-3 right-3 truncate rounded-full border border-white/[0.09] bg-black/25 px-2.5 py-1 text-center text-[10px] text-neutral-300">
+                        {categoryLabel}
+                      </span>
+                    </span>
+
+                    <span className="flex min-w-0 flex-1 flex-col p-4">
+                      <span className="flex items-start gap-3">
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-base font-semibold text-neutral-100">{displayName}</span>
+                          <span className="mt-1 block truncate text-xs text-neutral-500">{command || skill.name}</span>
+                        </span>
+                        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-neutral-500 transition group-hover:border-[#ff7444]/25 group-hover:text-[#ff936d]">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </span>
+                      </span>
+
+                      <span className="mt-3 min-h-10 overflow-hidden text-sm leading-5 text-neutral-400 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">
+                        {skill.description || "暂未填写技能说明"}
+                      </span>
+
+                      <span className="mt-auto flex flex-wrap items-center gap-1.5 pt-3 text-[11px] text-neutral-500">
+                        <span className={skill.scope === "global"
+                          ? "rounded-full border border-sky-400/20 bg-sky-500/10 px-2 py-1 text-sky-300"
+                          : "rounded-full border border-violet-400/20 bg-violet-500/10 px-2 py-1 text-violet-300"}
+                        >
+                          {getSkillSourceLabel(skill)}
+                        </span>
+                        <span className={skill.enabled
+                          ? "rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-emerald-300"
+                          : "rounded-full border border-white/[0.08] bg-white/[0.035] px-2 py-1 text-neutral-500"}
+                        >
+                          {skill.enabled ? "已启用" : "已停用"}
+                        </span>
+                        <span className="max-w-[150px] truncate" title={getSkillUploader(skill)}>上传人：{getSkillUploader(skill)}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{formatSkillUpdatedAt(skill.updated_at)}</span>
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
+
+        {!loading ? (
+          <div className="border-t border-white/[0.07] pt-3">
+            <PanelPager page={currentPage} pageCount={pageCount} onChange={setPage} />
+          </div>
+        ) : null}
       </div>
+
       {draft !== null && active ? (
         <SkillSpecEditorModal
-          title={`编辑 ${active.name}`}
+          title={`编辑 ${getSkillDisplayName(active)}`}
           draft={draft}
           saving={saving}
           onChange={setDraft}
-          onClose={() => {
-            if (!saving) setDraft(null);
-          }}
+          onClose={closeSkillEditor}
           onSave={() => void saveSkillContent()}
         />
       ) : null}

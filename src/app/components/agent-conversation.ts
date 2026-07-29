@@ -6,13 +6,67 @@ export type AgentConversationTurn = {
   /** 附图(如引用的画布节点缩略图):随消息显示为 image parts。
    *  仅本地会话内有效 —— 服务器持久化的是纯文本,历史重载后不带图。 */
   images?: string[];
+  toolCalls?: AgentConversationToolCall[];
+};
+
+export type AgentConversationToolCall = {
+  name: string;
+  args: string;
+  output: string;
+  status: "success" | "error";
 };
 
 export type AgentConversationStore = Record<string, AgentConversationTurn[]>;
 export type PersistedConversationHistoryItem = {
   user_input: string;
   final_reply: string;
+  tool_log?: string;
 };
+
+const CANVAS_REFERENCE_PREAMBLE = /^（参考画布节点：(.+?)）\s*\n?/u;
+
+/** Keep machine routing context out of the user-facing conversation bubble. */
+export function presentAgentUserInput(input: string): string {
+  const normalized = input.trim();
+  const match = normalized.match(CANVAS_REFERENCE_PREAMBLE);
+  if (!match) return normalized;
+
+  const references = match[1]
+    .split(/[，,]/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const content = normalized.slice(match[0].length).trim();
+  const compactReference = `📎 已引用 ${Math.max(1, references.length)} 个画布节点`;
+  return content ? `${compactReference}\n${content}` : compactReference;
+}
+
+export function parsePersistedToolLog(toolLog: string | undefined): AgentConversationToolCall[] {
+  const normalized = toolLog?.trim();
+  if (!normalized) return [];
+
+  return normalized.split(/\n(?=[✓✕]\s+)/u).map((block) => {
+    const mark = block.charAt(0);
+    const body = block.slice(1).trimStart();
+    const argsStart = body.indexOf("(");
+    const resultStart = body.lastIndexOf(") → ");
+
+    if (argsStart <= 0 || resultStart <= argsStart) {
+      return {
+        name: "工具调用记录",
+        args: "{}",
+        output: block,
+        status: mark === "✕" ? "error" : "success",
+      };
+    }
+
+    return {
+      name: body.slice(0, argsStart).trim() || "工具调用",
+      args: body.slice(argsStart + 1, resultStart).trim() || "{}",
+      output: body.slice(resultStart + 4).trim(),
+      status: mark === "✕" ? "error" : "success",
+    };
+  });
+}
 
 export function appendConversationTurn(
   history: AgentConversationTurn[],
@@ -92,10 +146,13 @@ export function conversationTurnsFromHistoryItems(
   const turns: AgentConversationTurn[] = [];
   for (const item of items) {
     if (item.user_input.trim()) {
-      turns.push({ role: "user", content: item.user_input.trim() });
+      turns.push({ role: "user", content: presentAgentUserInput(item.user_input) });
     }
     if (item.final_reply.trim()) {
-      turns.push({ role: "assistant", content: item.final_reply.trim() });
+      const toolCalls = parsePersistedToolLog(item.tool_log);
+      turns.push(toolCalls.length > 0
+        ? { role: "assistant", content: item.final_reply.trim(), toolCalls }
+        : { role: "assistant", content: item.final_reply.trim() });
     }
   }
   return turns;

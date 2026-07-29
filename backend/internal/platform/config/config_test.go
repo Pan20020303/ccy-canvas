@@ -32,3 +32,28 @@ func TestLoadAcceptsBase64EncryptionKey(t *testing.T) {
 		t.Fatalf("EncryptionKey = %q, want %q", string(cfg.EncryptionKey), string(rawKey))
 	}
 }
+
+func TestLoadUsesLongTextGatewayTimeout(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("SESSION_SECRET", "12345678901234567890123456789012")
+	t.Setenv("CCY_ENCRYPTION_KEY", "12345678901234567890123456789012")
+	t.Setenv("COOKIE_SECURE", "false")
+	t.Setenv("NEWAPI_TIMEOUT_SECONDS", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.NewAPITimeout != 720 {
+		t.Fatalf("NewAPITimeout = %d, want 720", cfg.NewAPITimeout)
+	}
+
+	t.Setenv("NEWAPI_TIMEOUT_SECONDS", "345")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load override returned error: %v", err)
+	}
+	if cfg.NewAPITimeout != 345 {
+		t.Fatalf("NewAPITimeout override = %d, want 345", cfg.NewAPITimeout)
+	}
+}

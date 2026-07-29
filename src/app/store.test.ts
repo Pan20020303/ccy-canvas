@@ -61,6 +61,49 @@ describe("workspace project state", () => {
     toastWarningMock.mockReset();
   });
 
+  it("rejects self-connections and exact duplicate edges", async () => {
+    const { useStore } = await loadStore();
+    const initialCount = useStore.getState().edges.length;
+
+    useStore.getState().onConnect({
+      source: "1",
+      sourceHandle: "qc-source-right",
+      target: "1",
+      targetHandle: "qc-target-left",
+    });
+    expect(useStore.getState().edges).toHaveLength(initialCount);
+
+    useStore.getState().addNode({
+      id: "edge-target",
+      type: "imageNode",
+      position: { x: 900, y: 150 },
+      data: {},
+    } as never);
+    const connection = {
+      source: "1",
+      sourceHandle: "qc-source-right",
+      target: "edge-target",
+      targetHandle: "qc-target-left",
+    };
+    useStore.getState().onConnect(connection);
+    useStore.getState().onConnect(connection);
+
+    expect(useStore.getState().edges.filter((edge) => (
+      edge.source === "1" && edge.target === "edge-target"
+    ))).toHaveLength(1);
+  });
+
+  it("removes invalid self-connections from persisted canvases", async () => {
+    const { sanitizeCanvasEdges } = await loadStore();
+    const cleaned = sanitizeCanvasEdges([
+      { id: "self-a", source: "node-a", target: "node-a", sourceHandle: "right", targetHandle: "left" },
+      { id: "valid-a", source: "node-a", target: "node-b", sourceHandle: "right", targetHandle: "left" },
+      { id: "valid-a-copy", source: "node-a", target: "node-b", sourceHandle: "right", targetHandle: "left" },
+    ] as never);
+
+    expect(cleaned.map((edge) => edge.id)).toEqual(["valid-a"]);
+  });
+
   it("creates a new project with its own empty canvas snapshot", async () => {
     const { useStore } = await loadStore();
 

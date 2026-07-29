@@ -66,7 +66,7 @@ import { renderMarkdown } from '../../markdown';
 import { copyTextToClipboard, copyWithToast } from '../../clipboard';
 import { AssetPickerModal, type PickedAsset } from '../AssetPickerModal';
 import type { AppProviderConfig } from '../../api/providerConfigs';
-import { providerServesType, modelServiceType } from '../../api/providerConfigs';
+import { getProviderModelPresentation, providerServesType, modelServiceType } from '../../api/providerConfigs';
 import type { ServiceType } from '../../model-config';
 import { getModelTemplate, type ModelTemplate } from '../../model-templates';
 import type { Skill } from '../../api/skills';
@@ -1340,7 +1340,16 @@ const PromptPanel = ({
   const [pickerOpen, setPickerOpen] = useState(false);
   // Keep the full edge so the strip can wire the disconnect button to a
   // specific edge id instead of guessing one from (source,target).
-  const upstreamEdges = edges.filter((edge) => edge.target === nodeId);
+  const upstreamEdges = edges.filter((edge, index, all) => (
+    edge.target === nodeId
+    && edge.source !== nodeId
+    && all.findIndex((candidate) => (
+      candidate.source === edge.source
+      && candidate.target === edge.target
+      && (candidate.sourceHandle ?? null) === (edge.sourceHandle ?? null)
+      && (candidate.targetHandle ?? null) === (edge.targetHandle ?? null)
+    )) === index
+  ));
   const upstreamIds = upstreamEdges.map((edge) => edge.source);
   const upstreamNodes = useMemo(() => upstreamEdges.map((edge, idx) => {
     const id = edge.source;
@@ -1527,28 +1536,10 @@ const PromptPanel = ({
   // 管理端「编辑模型」的元数据（parameter_schema.vendor_models）：
   //   hidden=true → 可被调用（如超分等内部功能）但不出现在选择列表；
   //   name       → 前端展示用显示名称（值仍存真实模型 id）。
-  const { hiddenModels, modelDisplayNames } = useMemo(() => {
-    const hidden = new Set<string>();
-    const names = new Map<string, string>();
-    for (const config of enabledConfigs) {
-      const schema = config.parameterSchema as { vendor_models?: unknown[]; vendor_all_models?: unknown[] } | undefined;
-      const rawModels = Array.isArray(schema?.vendor_models)
-        ? schema.vendor_models
-        : Array.isArray(schema?.vendor_all_models)
-          ? schema.vendor_all_models
-          : [];
-      for (const raw of rawModels) {
-        if (!raw || typeof raw !== 'object') continue;
-        const entry = raw as { modelName?: unknown; model_name?: unknown; name?: unknown; hidden?: unknown };
-        const modelName = String(entry.modelName ?? entry.model_name ?? '').trim();
-        if (!modelName) continue;
-        if (entry.hidden === true) hidden.add(modelName);
-        const display = typeof entry.name === 'string' ? entry.name.trim() : '';
-        if (display && display !== modelName && !names.has(modelName)) names.set(modelName, display);
-      }
-    }
-    return { hiddenModels: hidden, modelDisplayNames: names };
-  }, [enabledConfigs]);
+  const { hiddenModels, displayNames: modelDisplayNames } = useMemo(
+    () => getProviderModelPresentation(enabledConfigs.map((config) => config.raw)),
+    [enabledConfigs],
+  );
 
   const modelIsDisabled = Boolean(params.model) && !enabledConfigs.some((config) => config.modelList.includes(params.model));
   const activeModel = useMemo(() => {
@@ -8534,4 +8525,3 @@ export const nodeTypes = {
   compositionPreviewNode: memo(CompositionPreviewNode),
   layerEditorNode: memo(LayerEditorNode),
 };
-

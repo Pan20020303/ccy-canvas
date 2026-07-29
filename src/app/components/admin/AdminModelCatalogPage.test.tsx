@@ -249,6 +249,44 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(memoryRendered.host.querySelector("[data-testid='settings-panel-memory-config']")).not.toBeNull();
   });
 
+  it("organizes duplicate vendors as distinct service channels and filters them by capability", async () => {
+    stubAdminApis([
+      makeProviderConfig({
+        id: "provider-image",
+        name: "阿里云 · 通义万相图片",
+        vendor: "Alibaba",
+      }),
+      makeProviderConfig({
+        id: "provider-video",
+        name: "阿里云 · 通义万相视频",
+        vendor: "Alibaba",
+        service_type: "video",
+        capabilities: ["video"],
+        model_list: ["wan2.1-vace-plus"],
+        default_model: "wan2.1-vace-plus",
+        parameter_schema: {
+          vendor_models: [{ name: "Wan Video", modelName: "wan2.1-vace-plus", type: "video" }],
+        },
+      }),
+    ]);
+    const rendered = await renderPage();
+    root = rendered.root;
+
+    const imageChannel = rendered.host.querySelector("[data-testid='provider-channel-provider-image']");
+    const videoChannel = rendered.host.querySelector("[data-testid='provider-channel-provider-video']");
+    expect(imageChannel?.textContent).toContain("阿里云 · 通义万相图片");
+    expect(imageChannel?.textContent).toContain("2 个模型");
+    expect(videoChannel?.textContent).toContain("阿里云 · 通义万相视频");
+    expect(videoChannel?.textContent).toContain("视频");
+
+    await act(async () => {
+      rendered.host.querySelector("[data-testid='channel-filter-video']")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.host.querySelector("[data-testid='provider-channel-provider-image']")).toBeNull();
+    expect(rendered.host.querySelector("[data-testid='provider-channel-provider-video']")).not.toBeNull();
+  });
+
   it("seeds creator-suite agents through the admin Agent API", async () => {
     const requests = stubAdminApis([], { agents: [], skills: [] });
     const rendered = await renderPage("agent-config");
@@ -311,75 +349,76 @@ describe("AdminModelCatalogPage provider config editor", () => {
     });
   });
 
-  it("shows skills as a file tree and saves markdown skill content", async () => {
+  it("shows prompt and code skills as source-filtered cards and saves markdown content", async () => {
     const requests = stubAdminApis([], {
       skills: [
         makeSkill({
           id: "skill-decision",
-          name: "production_agent_decision",
-          category: "production_skills",
+          name: "官方分镜导演",
+          category: "storyboard",
           kind: "code",
-          spec: {},
-          description: "决策层 Agent 技能指令",
-        }),
-        makeSkill({
-          id: "skill-art-character",
-          name: "art_character",
-          category: "creator-suite/art_skills/2D_90s_japanese_anime/art_prompt",
-          kind: "code",
-          spec: { content_md: "# 角色绘制\n\n保持 90 年代日漫质感。" },
-          description: "90 年代日漫角色绘制技能",
+          spec: { content_md: "# 官方分镜导演\n\n负责拆分镜头。" },
+          description: "把剧本拆成可执行的分镜镜头。",
         }),
         makeSkill({
           id: "prompt-event-extraction",
-          name: "eventExtraction",
-          category: "creator-suite/prompts",
+          name: "官方事件提取",
+          category: "script_analysis",
           kind: "prompt",
-          spec: { content_md: "# eventExtraction\n\nPrompt template only." },
-          description: "Prompt template should stay out of skill tree.",
+          spec: { content_md: "# 官方事件提取\n\n只输出结构化事件。" },
+          description: "从剧本中提取关键事件。",
+        }),
+        makeSkill({
+          id: "skill-personal-character",
+          scope: "personal",
+          owner_id: "user-1",
+          uploader_name: "小蔡",
+          uploader_email: "xiaocai@example.com",
+          name: "我的角色导演",
+          category: "character",
+          kind: "code",
+          spec: { content_md: "# 我的角色导演\n\n保持人物表情连续。" },
+          description: "个人上传的角色表演技能。",
         }),
       ],
     });
     const rendered = await renderPage("skill-management");
     root = rendered.root;
 
-    expect(rendered.host.textContent).toContain("production_skills");
-    expect(rendered.host.textContent).toContain("2D_90s_japanese_anime");
-    expect(rendered.host.textContent).toContain("art_prompt");
-    expect(rendered.host.textContent).toContain("production_agent_decision.md");
-    expect(rendered.host.textContent).not.toContain("eventExtraction.md");
+    expect(rendered.host.textContent).toContain("官方 Skills");
+    expect(rendered.host.textContent).toContain("个人上传 Skills");
+    expect(rendered.host.textContent).toContain("全部 Skills");
+    expect(rendered.host.textContent).toContain("官方分镜导演");
+    expect(rendered.host.textContent).toContain("官方事件提取");
+    expect(rendered.host.textContent).not.toContain("我的角色导演");
 
-    const suiteFolder = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
-      item.textContent?.trim() === "creator-suite",
+    const personalTab = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.trim() === "个人上传 Skills",
     );
-    expect(suiteFolder).not.toBeNull();
+    expect(personalTab).not.toBeNull();
 
     await act(async () => {
-      suiteFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      personalTab!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(rendered.host.textContent).not.toContain("art_character.md");
+    expect(rendered.host.textContent).toContain("我的角色导演");
+    expect(rendered.host.textContent).toContain("上传人：小蔡");
+    expect(rendered.host.textContent).not.toContain("官方分镜导演");
 
-    await act(async () => {
-      suiteFolder!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(rendered.host.textContent).toContain("art_character.md");
-
-    const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
-      item.textContent?.trim() === "编辑",
+    const skillCard = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
+      item.textContent?.includes("我的角色导演"),
     );
-    expect(editButton).not.toBeNull();
+    expect(skillCard).not.toBeNull();
 
     await act(async () => {
-      editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      skillCard!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const textarea = document.body.querySelector("textarea") as HTMLTextAreaElement | null;
     expect(textarea).not.toBeNull();
 
     await act(async () => {
-      setTextAreaValue(textarea!, "# 决策层 Agent 技能指令\n\n只负责决策，不直接执行。");
+      setTextAreaValue(textarea!, "# 我的角色导演\n\n保持人物表情和形态连续。");
     });
 
     const saveButton = Array.from(document.body.querySelectorAll("button")).find((item) =>
@@ -392,10 +431,10 @@ describe("AdminModelCatalogPage provider config editor", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/skills/skill-decision"));
+    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/skills/skill-personal-character"));
     expect(update?.body).toMatchObject({
       spec: {
-        content_md: "# 决策层 Agent 技能指令\n\n只负责决策，不直接执行。",
+        content_md: "# 我的角色导演\n\n保持人物表情和形态连续。",
       },
     });
   });

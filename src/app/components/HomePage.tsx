@@ -39,6 +39,8 @@ import {
 import { useAuth } from '../auth/AuthProvider';
 import { MediaThumb } from './MediaThumb';
 import BorderGlow from './reactbits/BorderGlow';
+import { CreationModeDialog } from './CreationModeDialog';
+import { DestructiveConfirmDialog } from './ui/destructive-confirm-dialog';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
 
@@ -73,6 +75,7 @@ const formatDate = (timestamp: number, zh: boolean) =>
     .replaceAll('/', '-');
 
 type CardMenuState = { projectId: string; submenu: boolean } | null;
+type DeleteTarget = { kind: 'project' | 'folder'; id: string; name: string } | null;
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -96,9 +99,12 @@ export function HomePage() {
   const [openFolderId, setOpenFolderId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [cardMenu, setCardMenu] = useState<CardMenuState>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderName, setFolderName] = useState('');
+  const [creationModeOpen, setCreationModeOpen] = useState(false);
   // 个人 / 协作 画布切换 + 搜索(参考图五)。协作态来自后端 is_collaborative。
   const [collabTab, setCollabTab] = useState<'all' | 'personal' | 'collab'>('all');
   const [search, setSearch] = useState('');
@@ -175,7 +181,8 @@ export function HomePage() {
       } else if (projectId !== activeProjectId) {
         switchProject(projectId);
       }
-      navigate('/app');
+      const hasAutomationWorkflow = window.localStorage.getItem(`ccy-automation-workflow:${projectId}`);
+      navigate(hasAutomationWorkflow ? '/automation' : '/app');
     } finally {
       setBusyId(null);
     }
@@ -211,7 +218,12 @@ export function HomePage() {
     } catch { /* 忽略,UI 下次刷新自愈 */ }
   };
 
-  const startCreating = async () => {
+  const startCreating = () => {
+    if (busyId) return;
+    setCreationModeOpen(true);
+  };
+
+  const createInMode = async (mode: 'free' | 'automation') => {
     if (busyId) return;
     setBusyId('__create__');
     try {
@@ -226,7 +238,8 @@ export function HomePage() {
       } else {
         createProject(zh ? '未命名项目' : undefined);
       }
-      navigate('/app');
+      setCreationModeOpen(false);
+      navigate(mode === 'automation' ? '/automation' : '/app');
     } finally {
       setBusyId(null);
     }
@@ -261,8 +274,6 @@ export function HomePage() {
   };
 
   const handleDelete = async (projectId: string) => {
-    const ok = window.confirm(zh ? '删除该项目？画布内容将一并删除，不可恢复。' : 'Delete this project? Its canvas is removed permanently.');
-    if (!ok) return;
     setBusyId(projectId);
     try {
       await apiDeleteProject(projectId);
@@ -284,11 +295,22 @@ export function HomePage() {
   };
 
   const handleDeleteFolder = async (folderId: string) => {
-    const ok = window.confirm(zh ? '删除该文件夹？其中的项目会回到全部项目。' : 'Delete this folder? Its projects return to the root level.');
-    if (!ok) return;
     await apiDeleteFolder(folderId).catch(() => {});
     if (openFolderId === folderId) setOpenFolderId(null);
     await Promise.all([refreshFolders(), refreshBackendProjects()]);
+  };
+
+  const confirmDeleteTarget = async () => {
+    const target = deleteTarget;
+    if (!target || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      if (target.kind === 'project') await handleDelete(target.id);
+      else await handleDeleteFolder(target.id);
+      setDeleteTarget(null);
+    } finally {
+      setDeleteBusy(false);
+    }
   };
 
   const pickCover = (projectId: string) => {
@@ -513,7 +535,7 @@ export function HomePage() {
           <div>
             <button
               type="button"
-              onClick={() => void startCreating()}
+              onClick={startCreating}
               disabled={busyId !== null}
               className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] text-neutral-200 transition hover:border-white/40 hover:bg-white/[0.07] disabled:opacity-60"
             >
@@ -557,7 +579,7 @@ export function HomePage() {
                 <button
                   type="button"
                   title={zh ? '删除文件夹' : 'Delete folder'}
-                  onClick={() => void handleDeleteFolder(folder.id)}
+                  onClick={() => setDeleteTarget({ kind: 'folder', id: folder.id, name: folder.name })}
                   className="mt-0.5 rounded-md p-1 text-neutral-600 opacity-0 transition hover:bg-white/10 hover:text-rose-300 group-hover/folder:opacity-100"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -625,6 +647,7 @@ export function HomePage() {
                     <div className="relative">
                       <button
                         type="button"
+                        aria-label={zh ? `${project.name || '未命名项目'}更多操作` : `More actions for ${project.name || 'Untitled Project'}`}
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={() => setCardMenu(menuVisible ? null : { projectId: project.id, submenu: false })}
                         className={`mt-0.5 rounded-md p-1 transition hover:bg-white/10 hover:text-neutral-200 ${menuVisible ? 'text-neutral-200' : 'text-neutral-600 opacity-0 group-hover/card:opacity-100'}`}
@@ -708,7 +731,10 @@ export function HomePage() {
                           <button
                             type="button"
                             className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] text-rose-300/90 transition hover:bg-rose-500/10 hover:text-rose-300"
-                            onClick={() => { setCardMenu(null); void handleDelete(project.id); }}
+                            onClick={() => {
+                              setCardMenu(null);
+                              setDeleteTarget({ kind: 'project', id: project.id, name: project.name });
+                            }}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             {zh ? '删除项目' : 'Delete project'}
@@ -762,6 +788,38 @@ export function HomePage() {
         </div>
       </aside>
       </div>
+
+      <CreationModeDialog
+        open={creationModeOpen}
+        busy={busyId !== null}
+        zh={zh}
+        onClose={() => setCreationModeOpen(false)}
+        onSelect={(mode) => void createInMode(mode)}
+      />
+
+      <DestructiveConfirmDialog
+        open={deleteTarget !== null}
+        busy={deleteBusy}
+        title={deleteTarget?.kind === 'folder'
+          ? (zh ? '删除文件夹？' : 'Delete folder?')
+          : (zh ? '删除项目？' : 'Delete project?')}
+        description={deleteTarget?.kind === 'folder'
+          ? (zh
+            ? `「${deleteTarget.name}」将被删除，其中的项目会移回“全部项目”，项目内容不会被删除。`
+            : `“${deleteTarget.name}” will be deleted. Its projects will return to All Projects and their content will be kept.`)
+          : (zh
+            ? `「${deleteTarget?.name ?? ''}」和画布中的所有内容将被永久删除，且无法恢复。`
+            : `“${deleteTarget?.name ?? ''}” and all of its canvas content will be permanently deleted.`)}
+        confirmLabel={deleteTarget?.kind === 'folder'
+          ? (zh ? '删除文件夹' : 'Delete folder')
+          : (zh ? '删除项目' : 'Delete project')}
+        cancelLabel={zh ? '取消' : 'Cancel'}
+        busyLabel={zh ? '删除中…' : 'Deleting…'}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        onConfirm={() => void confirmDeleteTarget()}
+      />
 
       {/* 重命名弹层 */}
       {renameTarget ? (

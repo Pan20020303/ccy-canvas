@@ -1,4 +1,5 @@
 import { ApiClientError, apiClient, resolveApiUrl } from "./client";
+import { publishRuntimeInvalidation } from "../runtimeInvalidation";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -95,6 +96,58 @@ export type AppProviderConfig = {
   default_model: string;
   priority: number;
 };
+
+export type ProviderModelPresentation = {
+  displayNames: Map<string, string>;
+  hiddenModels: Set<string>;
+};
+
+/**
+ * Read the user-facing model name configured by the administrator while
+ * keeping the provider's real model id as the value sent to the API.
+ *
+ * Provider imports historically used several id fields, so this deliberately
+ * accepts all shapes already understood by the admin model editor.
+ */
+export function getProviderModelPresentation(
+  configs: readonly Pick<AppProviderConfig, "parameter_schema">[],
+): ProviderModelPresentation {
+  const displayNames = new Map<string, string>();
+  const hiddenModels = new Set<string>();
+
+  for (const config of configs) {
+    const schema = config.parameter_schema;
+    const rawModels = Array.isArray(schema?.vendor_models)
+      ? schema.vendor_models
+      : Array.isArray(schema?.vendor_all_models)
+        ? schema.vendor_all_models
+        : [];
+
+    for (const raw of rawModels) {
+      if (!raw || typeof raw !== "object") continue;
+      const entry = raw as Record<string, unknown>;
+      const modelID = String(
+        entry.modelName ?? entry.model_name ?? entry.model ?? entry.id ?? "",
+      ).trim();
+      if (!modelID) continue;
+      if (entry.hidden === true) hiddenModels.add(modelID);
+
+      const displayName = typeof entry.name === "string" ? entry.name.trim() : "";
+      if (displayName && !displayNames.has(modelID)) {
+        displayNames.set(modelID, displayName);
+      }
+    }
+  }
+
+  return { displayNames, hiddenModels };
+}
+
+export function getProviderModelDisplayName(
+  modelID: string,
+  presentation: Pick<ProviderModelPresentation, "displayNames">,
+): string {
+  return presentation.displayNames.get(modelID) ?? modelID;
+}
 
 /**
  * 一个供应商是否服务某服务类型。中转站可在一个配置里混挂多类型模型：其主
@@ -1124,10 +1177,12 @@ export function listProviderConfigs(): Promise<ProviderConfig[]> {
   return apiClient.get<ProviderConfig[]>("/api/admin/provider-configs");
 }
 
-export function createProviderConfig(
+export async function createProviderConfig(
   payload: ProviderConfigPayload,
 ): Promise<ProviderConfig> {
-  return apiClient.post<ProviderConfig>("/api/admin/provider-configs", payload);
+  const config = await apiClient.post<ProviderConfig>("/api/admin/provider-configs", payload);
+  publishRuntimeInvalidation(["models"]);
+  return config;
 }
 
 export function previewProviderConfigTSImport(
@@ -1140,18 +1195,21 @@ export function previewProviderConfigTSImport(
   );
 }
 
-export function updateProviderConfig(
+export async function updateProviderConfig(
   id: string,
   payload: ProviderConfigPayload,
 ): Promise<ProviderConfig> {
-  return apiClient.put<ProviderConfig>(
+  const config = await apiClient.put<ProviderConfig>(
     `/api/admin/provider-configs/${id}`,
     payload,
   );
+  publishRuntimeInvalidation(["models"]);
+  return config;
 }
 
-export function deleteProviderConfig(id: string): Promise<void> {
-  return apiClient.delete(`/api/admin/provider-configs/${id}`);
+export async function deleteProviderConfig(id: string): Promise<void> {
+  await apiClient.delete(`/api/admin/provider-configs/${id}`);
+  publishRuntimeInvalidation(["models"]);
 }
 
 /** POST /api/admin/provider-configs/:id/reset-health — clears failure
@@ -1184,12 +1242,14 @@ export async function testChannelConnectivity(
   }
 }
 
-export function toggleProviderConfigStatus(
+export async function toggleProviderConfigStatus(
   id: string,
 ): Promise<ProviderConfig> {
-  return apiClient.post<ProviderConfig>(
+  const config = await apiClient.post<ProviderConfig>(
     `/api/admin/provider-configs/${id}/toggle`,
   );
+  publishRuntimeInvalidation(["models"]);
+  return config;
 }
 
 // ---------------------------------------------------------------------------

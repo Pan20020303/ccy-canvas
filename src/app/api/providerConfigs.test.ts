@@ -1,11 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getProviderModelDisplayName,
+  getProviderModelPresentation,
   getEndpointPreview,
   previewProviderConfigTSImport,
   supportsCustomSubmitQueryEndpoints,
   testChannelConnectivity,
 } from "./providerConfigs";
+
+describe("provider model display names", () => {
+  it("uses the configured display name without replacing the real model id", () => {
+    const presentation = getProviderModelPresentation([
+      {
+        parameter_schema: {
+          vendor_models: [
+            { name: "qwen3.7-max", modelName: "qwen3.7-max-2026-06-08", type: "text" },
+            { name: "内部模型", model_name: "hidden-model", hidden: true },
+          ],
+        },
+      },
+    ]);
+
+    expect(getProviderModelDisplayName("qwen3.7-max-2026-06-08", presentation)).toBe("qwen3.7-max");
+    expect(getProviderModelDisplayName("unknown-model", presentation)).toBe("unknown-model");
+    expect(presentation.hiddenModels.has("hidden-model")).toBe(true);
+  });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();

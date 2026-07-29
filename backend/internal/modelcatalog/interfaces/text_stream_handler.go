@@ -20,12 +20,15 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/session"
+	"ccy-canvas/backend/internal/shared/apperror"
 	"ccy-canvas/backend/internal/shared/httpx"
 )
 
@@ -45,11 +48,12 @@ func (rt *TextStreamRouter) RegisterChi(r chi.Router) {
 }
 
 type textStreamBody struct {
-	Model     string   `json:"model"`
-	Prompt    string   `json:"prompt"`
-	NodeID    string   `json:"node_id"`
-	ProjectID string   `json:"project_id"`
-	ImageUrls []string `json:"image_urls"` // 视觉文本模型(qwen3.7-plus 等)的参考图
+	Model            string   `json:"model"`
+	ProviderConfigID string   `json:"provider_config_id"`
+	Prompt           string   `json:"prompt"`
+	NodeID           string   `json:"node_id"`
+	ProjectID        string   `json:"project_id"`
+	ImageUrls        []string `json:"image_urls"` // 视觉文本模型(qwen3.7-plus 等)的参考图
 }
 
 func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -87,10 +91,11 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	genReq := modelapp.GenerateRequest{
-		ServiceType:     "text",
-		Model:           body.Model,
-		Prompt:          body.Prompt,
-		ReferenceImages: body.ImageUrls,
+		ServiceType:      "text",
+		ProviderConfigID: body.ProviderConfigID,
+		Model:            body.Model,
+		Prompt:           body.Prompt,
+		ReferenceImages:  body.ImageUrls,
 	}
 
 	// Reserve credits up-front so we can hard-block (402) BEFORE any work and
@@ -132,11 +137,14 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	var writeMu sync.Mutex
 	writeFrame := func(v any) error {
 		payload, merr := json.Marshal(v)
 		if merr != nil {
 			return merr
 		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		if _, werr := fmt.Fprintf(w, "data: %s\n\n", payload); werr != nil {
 			return werr
 		}
@@ -144,12 +152,50 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 		return nil
 	}
 
-	fmt.Fprintf(w, ": connected\n\n")
-	flusher.Flush()
+	writeComment := func(comment string) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if _, err := fmt.Fprintf(w, ": %s\n\n", comment); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
 
-	full, serr := rt.svc.StreamText(r.Context(), genReq, func(delta string) error {
+	if err := writeComment("connected"); err != nil {
+		return
+	}
+
+	streamCtx, cancelStream := context.WithCancel(r.Context())
+	defer cancelStream()
+	heartbeatDone := make(chan struct{})
+	var stopHeartbeatOnce sync.Once
+	stopHeartbeat := func() {
+		stopHeartbeatOnce.Do(func() { close(heartbeatDone) })
+	}
+	defer stopHeartbeat()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-streamCtx.Done():
+				return
+			case <-ticker.C:
+				if err := writeComment("ping"); err != nil {
+					cancelStream()
+					return
+				}
+			}
+		}
+	}()
+
+	full, serr := rt.svc.StreamText(streamCtx, genReq, func(delta string) error {
 		return writeFrame(map[string]string{"type": "token", "content": delta})
 	})
+	stopHeartbeat()
 	settled = true
 	if serr != nil {
 		// 退款判定:
@@ -158,11 +204,11 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 		//     就会双扣。故只要是客户端取消,无论是否已产出部分 token,一律退款。
 		//  ② 真实的 provider/配置失败且零产出。
 		// 两者都退;只有「真实失败但已流出部分文本」才保留(用户确实拿到了内容)。
-		clientGone := r.Context().Err() != nil || errors.Is(serr, context.Canceled) || errors.Is(serr, context.DeadlineExceeded)
+		clientGone := r.Context().Err() != nil || streamCtx.Err() != nil || errors.Is(serr, context.Canceled) || errors.Is(serr, context.DeadlineExceeded)
 		if cost > 0 && (clientGone || strings.TrimSpace(full) == "") {
 			rt.svc.RefundCredits(context.Background(), claims.UserID, cost, "refund: text stream "+refundReasonForStream(clientGone)+" node="+body.NodeID)
 		}
-		_ = writeFrame(map[string]string{"type": "error", "message": serr.Error()})
+		_ = writeFrame(map[string]string{"type": "error", "message": apperror.PublicMessage(serr)})
 		return
 	}
 	_ = writeFrame(map[string]string{"type": "done", "content": full})

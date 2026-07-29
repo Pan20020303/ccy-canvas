@@ -46,6 +46,16 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+// publicTaskErrorMessage is the only error text persisted to generation_logs
+// or sent over task SSE. Wrapped provider, database and filesystem causes are
+// useful in server logs, but are not safe to expose to browser clients.
+func publicTaskErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return apperror.PublicMessage(err)
+}
+
 const (
 	imageGenerationTimeoutSeconds = 600
 	defaultTextProviderTimeout    = 12 * time.Minute
@@ -1458,7 +1468,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 	if err != nil {
 		// No provider → terminal before any work. Guard the transition so the
 		// reaper can't also refund this same (still-'pending') row later.
-		if s.persistTerminalFailure(req.GenerationLogID, err.Error(), 0) {
+		if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(err), 0) {
 			s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: no provider "+req.GenerationLogID)
 		}
 		return nil, err
@@ -1515,7 +1525,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		// refund fires exactly once (the reaper may also try if our write was
 		// lost); the success path keeps the unconditional outcome write.
 		if runErr != nil {
-			if s.persistTerminalFailure(req.GenerationLogID, runErr.Error(), duration) {
+			if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(runErr), duration) {
 				s.publishTaskEvent(req, nil, runErr, duration)
 				s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 			}
@@ -1613,7 +1623,7 @@ func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.
 	// this call actually performed the transition. If the reaper (or any other
 	// terminal path) already finalized this row, the guarded UPDATE is a no-op
 	// and we skip the refund — closing the worker-vs-reaper double-refund.
-	if s.persistTerminalFailure(req.GenerationLogID, err.Error(), duration) {
+	if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(err), duration) {
 		s.publishTaskEvent(req, nil, err, duration)
 		s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 	}
@@ -1789,7 +1799,7 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 	resultURL := ""
 	if err != nil {
 		status = "error"
-		errMsg = err.Error()
+		errMsg = publicTaskErrorMessage(err)
 	} else if result != nil {
 		resultURL = result.Content
 	}
@@ -1838,7 +1848,7 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 	var resultURLs []string
 	if err != nil {
 		status = "error"
-		errMsg = err.Error()
+		errMsg = publicTaskErrorMessage(err)
 	} else if result != nil {
 		resultURL = result.Content
 		assetTemporary = result.AssetTemporary
@@ -1881,7 +1891,7 @@ func (s *Service) recordChannelOutcome(
 	httpStatus := httpStatusFromError(err)
 	var errMsg string
 	if err != nil {
-		errMsg = err.Error()
+		errMsg = publicTaskErrorMessage(err)
 		cat := ClassifyError(httpStatus, errMsg)
 		// Timeouts get their own counter (Stage 4) and are NOT counted
 		// against the cooldown threshold. Everything else flows through

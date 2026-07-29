@@ -36,6 +36,15 @@ type TaskEnqueuer interface {
 	Enqueue(ctx context.Context, p TaskGenerationPayload) (asynqTaskID string, err error)
 }
 
+type terminalFailureFinalizer interface {
+	FinalizeFailure(req application.GenerateRequest, err error, duration time.Duration)
+}
+
+func finalizeQueuedEnqueueFailure(finalizer terminalFailureFinalizer, req application.GenerateRequest, logID string, cause error) {
+	req.GenerationLogID = logID
+	finalizer.FinalizeFailure(req, cause, 0)
+}
+
 type Cache interface {
 	Get(ctx context.Context, key string, dst any) bool
 	Set(ctx context.Context, key string, value any, ttl time.Duration)
@@ -228,11 +237,7 @@ func toHTTPError(err error) error {
 			// the user sees the real reason (missing migration, DB constraint,
 			// etc.) instead of a generic wrap. The risk of leaking internals
 			// is acceptable for these routes — they are admin-only.
-			msg := appErr.Message
-			if appErr.Err != nil {
-				msg = appErr.Message + ": " + appErr.Err.Error()
-			}
-			return huma.Error500InternalServerError(msg)
+			return huma.Error500InternalServerError(apperror.PublicMessage(appErr))
 		}
 	}
 	return err
@@ -502,6 +507,15 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:        []string{"App", "Generation"},
 		Security:    userSecurity,
 	}, h.listActiveTasks)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-recent-automation-tasks",
+		Method:      http.MethodGet,
+		Path:        "/api/app/tasks/recent-automation",
+		Summary:     "List the current user's recent automation tasks, including terminal tasks",
+		Tags:        []string{"App", "Generation"},
+		Security:    userSecurity,
+	}, h.listRecentAutomationTasks)
 }
 
 // --- Admin: Provider handlers ---
@@ -1342,6 +1356,7 @@ type generateOutput struct {
 type TaskItem struct {
 	ID          string `json:"id"`
 	NodeID      string `json:"node_id"`
+	ProjectID   string `json:"project_id,omitempty"`
 	ServiceType string `json:"service_type"`
 	Model       string `json:"model"`
 	Status      string `json:"status"`
@@ -1373,6 +1388,10 @@ type batchTasksOutput struct {
 		Data      []TaskItem `json:"data"`
 		RequestID string     `json:"request_id"`
 	}
+}
+
+type listRecentAutomationTasksInput struct {
+	Limit int `query:"limit" minimum:"1" maximum:"50" default:"20" doc:"Maximum recent automation tasks to return"`
 }
 
 func toTaskItem(row sqlc.GenerationLog) TaskItem {
@@ -1486,7 +1505,7 @@ func (h *Handler) listActiveTasks(ctx context.Context, _ *struct{}) (*batchTasks
 	}
 	rows, err := h.q.ListActiveGenerationsForUser(ctx, userID)
 	if err != nil {
-		return nil, huma.Error500InternalServerError(err.Error())
+		return nil, huma.Error500InternalServerError("Failed to list active tasks")
 	}
 	out.Body.Data = make([]TaskItem, 0, len(rows))
 	for _, row := range rows {
@@ -1502,6 +1521,66 @@ func (h *Handler) listActiveTasks(ctx context.Context, _ *struct{}) (*batchTasks
 			Status:      row.Status,
 			ResultURL:   row.ResultUrl,
 			ErrorMsg:    row.ErrorMsg,
+			CreatedAt:   createdAt,
+		})
+	}
+	return out, nil
+}
+
+// listRecentAutomationTasks supplies the small global task tray with durable
+// history. Unlike /active it intentionally includes success/error rows, so a
+// completed task remains visible after leaving and re-entering the workspace.
+// Result payloads are omitted here; project recovery fetches a single task by
+// id only when it actually needs to apply the generated text.
+func (h *Handler) listRecentAutomationTasks(
+	ctx context.Context,
+	input *listRecentAutomationTasksInput,
+) (*batchTasksOutput, error) {
+	out := &batchTasksOutput{}
+	out.Body.Data = []TaskItem{}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	if h.q == nil {
+		return out, nil
+	}
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	if !userID.Valid {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	rows, err := h.q.ListRecentAutomationGenerationsForUser(
+		ctx,
+		sqlc.ListRecentAutomationGenerationsForUserParams{
+			UserID: userID,
+			Limit:  int32(limit),
+		},
+	)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list recent automation tasks")
+	}
+	out.Body.Data = make([]TaskItem, 0, len(rows))
+	for _, row := range rows {
+		createdAt := ""
+		if row.CreatedAt.Valid {
+			createdAt = row.CreatedAt.Time.UTC().Format(time.RFC3339)
+		}
+		out.Body.Data = append(out.Body.Data, TaskItem{
+			ID:          formatPgUUID(row.ID),
+			NodeID:      row.NodeID,
+			ProjectID:   row.ProjectID,
+			ServiceType: row.ServiceType,
+			Model:       row.Model,
+			Status:      row.Status,
+			ErrorMsg:    row.ErrorMsg,
+			DurationMs:  int(row.DurationMs),
 			CreatedAt:   createdAt,
 		})
 	}
@@ -1596,6 +1675,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ThinkingMode:     input.Body.ThinkingMode,
 		UserID:           userIDStr,
 		NodeID:           input.Body.NodeId,
+		ProjectID:        strings.TrimSpace(input.Body.ProjectID),
 		RequestID:        input.Body.RequestID,
 	}
 
@@ -1668,12 +1748,10 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	// returns 'queued' immediately; the worker picks up and writes
 	// the outcome. Survives backend restart.
 	if h.tasks != nil && h.tasks.Enabled() && h.q != nil {
-		out, eerr := h.enqueueGeneration(ctx, userID, userIDStr, req, input)
-		if eerr != nil {
-			// Enqueue failed → no worker will run → return the reserve.
-			h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: enqueue failed")
-		}
-		return out, eerr
+		// enqueueGeneration owns failure settlement. Once a queued row exists,
+		// it uses FinalizeFailure's guarded DB transition so concurrent retries
+		// can never refund the same reserve twice.
+		return h.enqueueGeneration(ctx, userID, userIDStr, req, input)
 	}
 
 	// ─── Legacy inline path ────────────────────────────────────────
@@ -1807,6 +1885,7 @@ func (h *Handler) enqueueGeneration(
 	// 2. Persist queued row with full request payload.
 	payload, err := json.Marshal(req)
 	if err != nil {
+		h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: failed to encode queued task")
 		return nil, huma.Error500InternalServerError("Failed to encode generation request: " + err.Error())
 	}
 	row, err := h.q.InsertGenerationLogQueued(ctx, sqlc.InsertGenerationLogQueuedParams{
@@ -1824,15 +1903,22 @@ func (h *Handler) enqueueGeneration(
 		// UUIDs collide ~never, so this is defense-in-depth for P6.)
 		if errors.Is(err, pgx.ErrNoRows) {
 			row, err = h.q.GetGenerationLogByRequestID(ctx, pgReqID)
-			// Idempotent replay: a task already exists for this request_id and
-			// no new work will run, but generate() already reserved credits
-			// up-front for this duplicate submit. Refund that reserve so a
-			// double-click / client retry is charged exactly once.
+			// Idempotent replay: the winner owns enqueueing this task. Refund
+			// only this duplicate call's reserve and return the existing task
+			// immediately instead of racing a second Redis enqueue.
 			if err == nil && req.CreditCost > 0 {
 				h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: idempotent replay (duplicate request_id)")
 			}
+			if err == nil {
+				out := &generateOutput{}
+				out.Body.Data.GenerateResult = application.GenerateResult{Type: "queued", Content: ""}
+				out.Body.Data.TaskID = formatPgUUID(row.ID)
+				out.Body.RequestID = httpx.RequestIDFrom(ctx)
+				return out, nil
+			}
 		}
 		if err != nil {
+			h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: failed to persist queued task")
 			return nil, huma.Error500InternalServerError("Failed to persist queued task: " + err.Error())
 		}
 	}
@@ -1848,6 +1934,12 @@ func (h *Handler) enqueueGeneration(
 		NodeID:      input.Body.NodeId,
 	})
 	if err != nil {
+		// The DB row already exists, so settle through the guarded terminal
+		// transition. This immediately removes it from active-task hydration and
+		// refunds exactly once; a later duplicate call sees the same failed row
+		// rather than an orphan that remains "queued" for an hour.
+		enqueueErr := errors.New("task enqueue failed: " + err.Error())
+		finalizeQueuedEnqueueFailure(h.svc, req, logIDStr, enqueueErr)
 		return nil, huma.Error500InternalServerError("Failed to enqueue task: " + err.Error())
 	}
 	// Best-effort: stash the asynq task id on the log row for later

@@ -8,10 +8,20 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/session"
 )
+
+type staticUserLookup struct {
+	user sqlc.User
+}
+
+func (lookup staticUserLookup) GetUserByID(context.Context, pgtype.UUID) (sqlc.User, error) {
+	return lookup.user, nil
+}
 
 type authCheckOutput struct {
 	Body struct {
@@ -19,13 +29,13 @@ type authCheckOutput struct {
 	}
 }
 
-func newTestServer(t *testing.T) (*httptest.Server, session.Manager) {
+func newTestServer(t *testing.T, lookups ...UserLookup) (*httptest.Server, session.Manager) {
 	t.Helper()
 
 	router := chi.NewMux()
 	api := httpapi.New(router)
 	manager := session.NewManager("01234567890123456789012345678901", false)
-	api.UseMiddleware(Middleware(api, manager))
+	api.UseMiddleware(Middleware(api, manager, lookups...))
 
 	huma.Register(api, huma.Operation{
 		OperationID: "public-check",
@@ -130,5 +140,59 @@ func TestMiddlewareAllowsAdminSession(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestMiddlewareUsesCurrentDatabaseRoleAndRenewsStaleCookie(t *testing.T) {
+	lookup := staticUserLookup{user: sqlc.User{Role: "admin", Status: "active"}}
+	server, manager := newTestServer(t, lookup)
+	defer server.Close()
+
+	const userID = "019f8dc4-dfac-7493-a2e8-9e48686e01a1"
+	cookie, err := manager.NewCookie(userID, "member")
+	if err != nil {
+		t.Fatalf("NewCookie: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/admin", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.AddCookie(cookie)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /admin: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if len(resp.Cookies()) == 0 {
+		t.Fatal("expected stale role cookie to be renewed")
+	}
+}
+
+func TestMiddlewareRejectsSessionForDisabledUser(t *testing.T) {
+	lookup := staticUserLookup{user: sqlc.User{Role: "admin", Status: "disabled"}}
+	server, manager := newTestServer(t, lookup)
+	defer server.Close()
+
+	cookie, err := manager.NewCookie("019f8dc4-dfac-7493-a2e8-9e48686e01a1", "admin")
+	if err != nil {
+		t.Fatalf("NewCookie: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/admin", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.AddCookie(cookie)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /admin: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }

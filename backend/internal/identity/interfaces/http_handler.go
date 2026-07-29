@@ -228,6 +228,14 @@ func (h Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	if claims.Role != string(user.Role) {
+		cookie, cookieErr := h.sessions.NewCookie(user.ID, string(user.Role))
+		if cookieErr != nil {
+			httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Failed to refresh session permissions", cookieErr))
+			return
+		}
+		http.SetCookie(w, cookie)
+	}
 
 	summary, err := h.credits.GetSummary(r.Context(), claims.UserID)
 	if err != nil {

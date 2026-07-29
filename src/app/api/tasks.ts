@@ -3,6 +3,7 @@ import { apiClient } from "./client";
 export type TaskItem = {
   id: string;
   node_id: string;
+  project_id?: string;
   service_type: string;
   model: string;
   status: "pending" | "success" | "error" | string;
@@ -36,4 +37,13 @@ export function batchTasksByNodeIds(nodeIds: string[]): Promise<TaskItem[]> {
  *  a localStorage wipe or a switch to a different browser (F10). */
 export function listActiveTasks(): Promise<TaskItem[]> {
   return apiClient.get<TaskItem[]>("/api/app/tasks/active");
+}
+
+/** Recent automation-only task history, including completed/failed rows.
+ *  Payload text is intentionally omitted by the server; use getTask(id) when
+ *  a recovered project needs to apply a completed result. */
+export function listRecentAutomationTasks(limit = 20): Promise<TaskItem[]> {
+  return apiClient.get<TaskItem[]>(
+    `/api/app/tasks/recent-automation?limit=${Math.max(1, Math.min(50, Math.trunc(limit)))}`,
+  );
 }

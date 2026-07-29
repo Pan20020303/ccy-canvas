@@ -39,7 +39,7 @@ type NewAPIClient struct {
 // configured rather than constructing an empty client.
 func NewNewAPIClient(baseURL, token string, timeoutSeconds int) *NewAPIClient {
 	if timeoutSeconds <= 0 {
-		timeoutSeconds = 60
+		timeoutSeconds = int(defaultTextProviderTimeout / time.Second)
 	}
 	return &NewAPIClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -114,7 +114,7 @@ func (c *NewAPIClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("NewAPI chat request failed: %v", err), err)
+		return nil, apperror.Wrap(apperror.CodeInternal, "NewAPI chat request failed", err)
 	}
 	defer resp.Body.Close()
 
@@ -171,14 +171,33 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 
 	resp, err := streamHTTPClient.Do(httpReq)
 	if err != nil {
-		return "", apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("Provider stream request failed: %v", err), err)
+		return "", apperror.Wrap(apperror.CodeInternal, "Provider stream request failed", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return "", readNewAPIError(resp, "chat stream")
 	}
 
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "text/event-stream") {
+		var out ChatResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return "", apperror.Wrap(apperror.CodeInternal, "Provider returned a non-stream response that could not be parsed", err)
+		}
+		if len(out.Choices) == 0 || strings.TrimSpace(out.Choices[0].Message.Content) == "" {
+			return "", apperror.New(apperror.CodeInternal, "Provider returned an empty non-stream response")
+		}
+		content := out.Choices[0].Message.Content
+		if onDelta != nil {
+			if err := onDelta(content); err != nil {
+				return content, err
+			}
+		}
+		return content, nil
+	}
+
 	var full strings.Builder
+	completed := false
 	scanner := bufio.NewScanner(resp.Body)
 	// A single SSE line can be large; grow past the default 64 KB line cap.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -189,6 +208,7 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			completed = true
 			break
 		}
 		var chunk struct {
@@ -196,6 +216,11 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 				Delta struct {
 					Content string `json:"content"`
 				} `json:"delta"`
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+				Text         string `json:"text"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -204,7 +229,17 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		delta := chunk.Choices[0].Delta.Content
+		choice := chunk.Choices[0]
+		delta := choice.Delta.Content
+		if delta == "" {
+			delta = choice.Message.Content
+		}
+		if delta == "" {
+			delta = choice.Text
+		}
+		if choice.FinishReason != "" {
+			completed = true
+		}
 		if delta == "" {
 			continue
 		}
@@ -220,6 +255,9 @@ func streamChatCompletions(ctx context.Context, baseURL, token, model, prompt st
 			return full.String(), ctx.Err()
 		}
 		return full.String(), apperror.Wrap(apperror.CodeInternal, "Stream read failed", err)
+	}
+	if !completed {
+		return full.String(), apperror.New(apperror.CodeInternal, "Provider stream ended before completion")
 	}
 	return full.String(), nil
 }

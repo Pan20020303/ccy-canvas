@@ -12,7 +12,7 @@ const items = [
   { to: "/admin", label: "模型服务", icon: Monitor },
   { to: "/admin/agents", label: "Agent配置", icon: UserCog },
   { to: "/admin/prompts", label: "提示词管理", icon: FileText },
-  { to: "/admin/skills", label: "Skills技能管理", icon: Sparkles },
+  { to: "/admin/skills", label: "技能管理", icon: Sparkles },
   { to: "/admin/memory", label: "Agent记忆配置", icon: BrainCircuit },
   { to: "/admin/agent-runs", label: "智能体记录", icon: Bot },
   { to: "/admin/prompt-templates", label: "提示词模板", icon: BookMarked },

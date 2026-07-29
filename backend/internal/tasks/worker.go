@@ -29,9 +29,17 @@ import (
 // it in a goroutine; Shutdown() drains gracefully (waits for in-flight
 // tasks up to ShutdownTimeout before killing).
 type Worker struct {
-	server  *asynq.Server
-	svc     *modelapp.Service
-	queries *sqlc.Queries
+	server         *asynq.Server
+	svc            *modelapp.Service
+	queries        *sqlc.Queries
+	agentProcessor AgentRunProcessor
+}
+
+// AgentRunProcessor is implemented by the skills runtime. Keeping the
+// boundary here avoids a tasks -> skills import cycle and lets the existing
+// Redis worker host both media and agent jobs.
+type AgentRunProcessor interface {
+	ProcessAgentRun(ctx context.Context, runID string) error
 }
 
 // NewWorker builds the Asynq server with sane concurrency/priority
@@ -59,6 +67,7 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 				"video":   4,
 				"audio":   2,
 				"asset":   4,
+				"agent":   4,
 				"default": 2,
 			},
 			// Asynq's default retry delay is fine (1s, 2s, 4s, 8s, ...).
@@ -72,6 +81,14 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 		svc:     svc,
 		queries: queries,
 	}
+}
+
+// WithAgentRunProcessor attaches the skills runtime before Start is called.
+func (w *Worker) WithAgentRunProcessor(processor AgentRunProcessor) *Worker {
+	if w != nil {
+		w.agentProcessor = processor
+	}
+	return w
 }
 
 // Enabled reports whether the worker is configured.
@@ -88,6 +105,9 @@ func (w *Worker) Start() error {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(TaskTypeGeneration, w.handleGeneration)
 	mux.HandleFunc(TaskTypeAssetPersist, w.handleAssetPersist)
+	if w.agentProcessor != nil {
+		mux.HandleFunc(TaskTypeAgentRun, w.handleAgentRun)
+	}
 	return w.server.Run(mux)
 }
 
@@ -98,6 +118,29 @@ func (w *Worker) Shutdown() {
 		return
 	}
 	w.server.Shutdown()
+}
+
+func (w *Worker) handleAgentRun(ctx context.Context, t *asynq.Task) error {
+	if w.agentProcessor == nil {
+		return fmt.Errorf("agent run processor unavailable: %w", asynq.SkipRetry)
+	}
+	var p AgentRunPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("decode agent payload: %w: %w", err, asynq.SkipRetry)
+	}
+	if strings.TrimSpace(p.RunID) == "" {
+		return fmt.Errorf("agent run id missing: %w", asynq.SkipRetry)
+	}
+	// ProcessAgentRun returns nil for both successful runs and user-visible
+	// terminal failures. A non-nil error means execution or terminal persistence
+	// did not complete, so Asynq must retain its retry budget.
+	if err := w.agentProcessor.ProcessAgentRun(ctx, p.RunID); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("agent run %s interrupted: %w", p.RunID, err)
+		}
+		return fmt.Errorf("agent run %s incomplete: %w", p.RunID, err)
+	}
+	return nil
 }
 
 // handleGeneration is the Asynq callback for a single TaskTypeGeneration
@@ -130,10 +173,11 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("load payload: %w", err)
 	}
 
-	// Skip if the user already cancelled while we were waiting in the
-	// queue. status='cancelled' means a /tasks/{id}/cancel call won the
-	// race; we should not call the upstream provider.
-	if strings.EqualFold(row.Status, "cancelled") {
+	// Asynq is at-least-once: a process may persist the terminal result and
+	// crash before acknowledging the Redis task. On redelivery, never call the
+	// provider again for a row that is already terminal (or whose generated
+	// asset has moved into the separate persistence stage).
+	if shouldSkipRedeliveredGeneration(row.Status) {
 		return nil
 	}
 
@@ -150,6 +194,23 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	req.UserID = p.UserID
 	req.NodeID = p.NodeID
 
+	// Text tasks have one absolute wall-clock budget measured from the first
+	// enqueue, not a fresh 15-minute allowance on every Asynq retry. Early
+	// network failures may still retry, but every attempt inherits the same
+	// deadline and the final attempt settles the DB row once that budget ends.
+	runCtx := ctx
+	cancelRun := func() {}
+	textDeadline, hasTextDeadline := absoluteTextTaskDeadline(p)
+	if hasTextDeadline {
+		if !time.Now().Before(textDeadline) {
+			runtimeErr := textTaskRuntimeExceededError(timeoutForServiceType("text"))
+			w.svc.FinalizeFailure(req, runtimeErr, elapsedSinceEnqueue(p))
+			return fmt.Errorf("%w: %w", runtimeErr, asynq.SkipRetry)
+		}
+		runCtx, cancelRun = context.WithDeadline(ctx, textDeadline)
+	}
+	defer cancelRun()
+
 	// Flip queued → running so frontend sees movement before the call
 	// returns. Errors here are non-fatal; the final outcome write in
 	// GenerateInline still happens.
@@ -162,11 +223,20 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	// publishes the SSE event itself; on *failure* it persists nothing and
 	// returns the error, leaving the terminal-vs-retry decision to us.
 	startedAt := time.Now()
-	_, runErr := w.svc.GenerateInline(ctx, req)
+	_, runErr := w.svc.GenerateInline(runCtx, req)
 	if runErr == nil {
 		return nil
 	}
 	duration := time.Since(startedAt)
+
+	// The shared absolute text deadline won. Persist one terminal error and
+	// stop Asynq retries; otherwise MaxRetry would give the next delivery a new
+	// per-attempt timeout and the task could run far beyond 15 minutes.
+	if hasTextDeadline && (runCtx.Err() == context.DeadlineExceeded || !time.Now().Before(textDeadline)) {
+		runtimeErr := textTaskRuntimeExceededError(timeoutForServiceType("text"))
+		w.svc.FinalizeFailure(req, runtimeErr, elapsedSinceEnqueue(p))
+		return fmt.Errorf("%w: %w", runtimeErr, asynq.SkipRetry)
+	}
 
 	// Classify error: 4xx-ish "user fixed input wrong" errors are
 	// permanent — no point burning retries on them. Persist the terminal
@@ -203,6 +273,41 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	}
 	log.Printf("[tasks] transient failure for log %s (attempt %d/%d), will retry: %v", p.LogID, retried+1, maxRetry, runErr)
 	return runErr
+}
+
+// shouldSkipRedeliveredGeneration protects the at-least-once Redis delivery
+// boundary. "persisting" is not terminal to the UI, but generation itself is
+// complete and the separate asset:persist task owns the remaining work.
+func shouldSkipRedeliveredGeneration(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "succeeded", "completed", "error", "failed", "dead",
+		"cancelled", "canceled", "persisting":
+		return true
+	default:
+		return false
+	}
+}
+
+func absoluteTextTaskDeadline(p GenerationPayload) (time.Time, bool) {
+	if !strings.EqualFold(strings.TrimSpace(p.ServiceType), "text") || p.EnqueuedAt <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(p.EnqueuedAt, 0).Add(timeoutForServiceType("text")), true
+}
+
+func elapsedSinceEnqueue(p GenerationPayload) time.Duration {
+	if p.EnqueuedAt <= 0 {
+		return 0
+	}
+	elapsed := time.Since(time.Unix(p.EnqueuedAt, 0))
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
+func textTaskRuntimeExceededError(budget time.Duration) error {
+	return fmt.Errorf("文字任务超过总运行上限 %s，已停止重试", budget.Round(time.Second))
 }
 
 func (w *Worker) handleAssetPersist(ctx context.Context, t *asynq.Task) error {

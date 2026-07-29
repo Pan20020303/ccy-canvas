@@ -22,6 +22,11 @@ export type Skill = {
   updated_at: string;
 };
 
+export type AdminSkill = Skill & {
+  uploader_name?: string;
+  uploader_email?: string;
+};
+
 export type SkillUpsert = {
   name: string;
   description?: string;
@@ -62,8 +67,8 @@ export function invokeSkill(id: string, inputs: Record<string, unknown>): Promis
 
 // ─── Admin CRUD (any scope) ─────────────────────────────────────────────────
 
-export function adminListSkills(): Promise<Skill[]> {
-  return apiClient.get<Skill[]>("/api/admin/skills");
+export function adminListSkills(): Promise<AdminSkill[]> {
+  return apiClient.get<AdminSkill[]>("/api/admin/skills");
 }
 export function adminCreateSkill(payload: SkillUpsert): Promise<Skill> {
   return apiClient.post<Skill>("/api/admin/skills", payload);
@@ -216,6 +221,7 @@ export function adminListAgentRuns(limit = 100, offset = 0): Promise<AgentRun[]>
 export type AgentConversationHistoryItem = {
   user_input: string;
   final_reply: string;
+  tool_log?: string;
   created_at: string;
 };
 

@@ -9,8 +9,8 @@ import {
 } from "./text-node-modes";
 
 describe("text node modes", () => {
-  it("defaults text node mode to chooser", () => {
-    expect(getTextNodeMode(undefined)).toBe("chooser");
+  it("defaults text node mode to editor", () => {
+    expect(getTextNodeMode(undefined)).toBe("editor");
   });
 
   it("enables reverse prompt only when a reference image exists", () => {

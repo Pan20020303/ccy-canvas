@@ -59,28 +59,43 @@ if ($envVars.ContainsKey('REDIS_ADDR') -and $envVars['REDIS_ADDR']) {
 $migrationDir = Join-Path $root 'backend\db\migrations'
 if (Test-Path $migrationDir) {
   Get-ChildItem $migrationDir -Filter '*.sql' | Sort-Object Name | ForEach-Object {
+    # psql writes harmless NOTICE messages for idempotent migrations to stderr.
+    # Temporarily relax PowerShell's native stderr handling, then enforce the
+    # actual psql/docker exit code so real migration failures still stop startup.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     Get-Content $_.FullName -Raw | docker exec -i $postgresContainer psql -U postgres -d ccy_canvas 2>$null | Out-Null
+    $migrationExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousPreference
+    if ($migrationExitCode -ne 0) {
+      throw "Migration failed: $($_.Name) (psql exit $migrationExitCode)"
+    }
   }
 }
 
-# Use cmd /c with redirection to background-run the EXE and capture logs.
-$envPairs = ($envVars.GetEnumerator() | ForEach-Object { "set `"$($_.Key)=$($_.Value)`" && " }) -join ''
-$cmdLine = "$envPairs `"$bin`" >> `"$logFile`" 2>&1"
+# Put .env values in this launcher's environment so the child inherits them.
+# Do not concatenate secrets into a cmd.exe command line: command lines are
+# visible to local process inspection tools.
+foreach ($key in $envVars.Keys) {
+  Set-Item -Path "Env:$key" -Value $envVars[$key]
+}
 
-$process = Start-Process -FilePath "$env:ComSpec" `
-  -ArgumentList "/c $cmdLine" `
+$errLogFile = 'run\api.err.log'
+$process = Start-Process -FilePath $bin `
+  -WorkingDirectory $root `
   -WindowStyle Hidden `
-  -PassThru
+  -PassThru `
+  -RedirectStandardOutput $logFile `
+  -RedirectStandardError $errLogFile
 
-Start-Sleep -Seconds 1
-
-# Find the actual ccy-canvas-api.exe child (Start-Process returns cmd.exe pid).
-$apiProc = Get-Process -Name 'ccy-canvas-api' -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($apiProc) {
-  $apiProc.Id | Out-File $pidFile -Encoding ascii -NoNewline
-  Write-Host "Started (pid $($apiProc.Id)). Log: $logFile"
+Start-Sleep -Seconds 2
+$process.Refresh()
+if (-not $process.HasExited) {
+  $process.Id | Out-File $pidFile -Encoding ascii -NoNewline
+  Write-Host "Started (pid $($process.Id)). Logs: $logFile, $errLogFile"
 } else {
-  Write-Host 'Failed to start — see log:' -ForegroundColor Red
+  Write-Host "Failed to start (exit $($process.ExitCode)) — see logs:" -ForegroundColor Red
+  if (Test-Path $errLogFile) { Get-Content $errLogFile -Tail 30 }
   if (Test-Path $logFile) { Get-Content $logFile -Tail 30 }
   exit 1
 }

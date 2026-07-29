@@ -23,6 +23,22 @@ type AdminHandler struct {
 
 func NewAdminHandler(q *sqlc.Queries) *AdminHandler { return &AdminHandler{q: q} }
 
+// AdminSkillItem extends the public skill payload with uploader identity.
+// These fields intentionally live on the admin-only response so user-facing
+// skill listings never expose another user's name or email address.
+type AdminSkillItem struct {
+	SkillItem
+	UploaderName  string `json:"uploader_name,omitempty"`
+	UploaderEmail string `json:"uploader_email,omitempty"`
+}
+
+type listAdminSkillsOutput struct {
+	Body struct {
+		Data      []AdminSkillItem `json:"data"`
+		RequestID string           `json:"request_id"`
+	}
+}
+
 var adminSec = []map[string][]string{{httpapi.SecuritySchemeName: {authn.ScopeAdmin}}}
 
 func (h *AdminHandler) RegisterRoutes(api huma.API) {
@@ -186,18 +202,41 @@ func (h *AdminHandler) listAgentRuns(ctx context.Context, input *listAgentRunsIn
 	return out, nil
 }
 
-func (h *AdminHandler) listAllSkills(ctx context.Context, _ *struct{}) (*listSkillsOutput, error) {
+func (h *AdminHandler) listAllSkills(ctx context.Context, _ *struct{}) (*listAdminSkillsOutput, error) {
 	rows, err := h.q.ListAllSkills(ctx)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to list skills")
 	}
-	out := &listSkillsOutput{}
-	out.Body.Data = make([]SkillItem, 0, len(rows))
+	out := &listAdminSkillsOutput{}
+	out.Body.Data = make([]AdminSkillItem, 0, len(rows))
+	uploaders := make(map[string]sqlc.User)
 	for _, r := range rows {
-		out.Body.Data = append(out.Body.Data, toSkillItem(r))
+		var uploader *sqlc.User
+		if r.OwnerID.Valid {
+			ownerID := formatUUID(r.OwnerID)
+			user, ok := uploaders[ownerID]
+			if !ok {
+				user, err = h.q.GetUserByID(ctx, r.OwnerID)
+				if err != nil {
+					return nil, huma.Error500InternalServerError("Failed to resolve skill uploader")
+				}
+				uploaders[ownerID] = user
+			}
+			uploader = &user
+		}
+		out.Body.Data = append(out.Body.Data, toAdminSkillItem(r, uploader))
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
+}
+
+func toAdminSkillItem(skill sqlc.Skill, uploader *sqlc.User) AdminSkillItem {
+	item := AdminSkillItem{SkillItem: toSkillItem(skill)}
+	if uploader != nil {
+		item.UploaderName = uploader.Name
+		item.UploaderEmail = uploader.Email
+	}
+	return item
 }
 
 func (h *AdminHandler) createGlobalSkill(ctx context.Context, input *createSkillInput) (*skillOutput, error) {

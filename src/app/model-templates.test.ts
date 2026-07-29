@@ -114,17 +114,19 @@ describe("model templates", () => {
     });
   });
 
-  it("uses quality controls for gpt-image-2 instead of legacy resolution presets", () => {
+  it("keeps quality controls and exposes relay resolution tiers for gpt-image-2", () => {
     const template = getModelTemplate("gpt-image-2");
     expect(template?.supportsQuality).toBe(true);
     expect(template?.qualityOptions).toEqual(["Auto", "High", "Medium", "Low"]);
-    expect(template?.supportsResolution).not.toBe(true);
+    expect(template?.supportsResolution).toBe(true);
+    expect(template?.resolutionOptions).toEqual(["1k", "2k", "4k"]);
   });
 
-  it("exposes quality controls for volcengine seedream image models", () => {
+  it("exposes explicit resolution tiers for volcengine seedream image models", () => {
     const template = getModelTemplate("doubao-seedream-5-0-260128");
-    expect(template?.supportsQuality).toBe(true);
-    expect(template?.qualityOptions).toEqual(["Auto", "High", "Medium", "Low"]);
+    expect(template?.supportsResolution).toBe(true);
+    expect(template?.resolutionOptions).toEqual(["1k", "2k", "4k"]);
+    expect(template?.supportsQuality).not.toBe(true);
     expect(template?.supportsAspectRatio).toBe(true);
   });
 });

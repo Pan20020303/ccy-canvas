@@ -107,7 +107,7 @@ const getGenerationLogResultURLs = `
 SELECT COALESCE(result_urls, '') FROM generation_logs WHERE id = $1
 `
 
-// GetGenerationLogResultURLs returns the JSON-encoded result list ('' when the
+// GetGenerationLogResultURLs returns the JSON-encoded result list (” when the
 // generation produced a single asset).
 func (q *Queries) GetGenerationLogResultURLs(ctx context.Context, id pgtype.UUID) (string, error) {
 	var urls string
@@ -317,6 +317,23 @@ type ListActiveGenerationsForUserRow struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type ListRecentAutomationGenerationsForUserParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	Limit  int32       `json:"limit"`
+}
+
+type ListRecentAutomationGenerationsForUserRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	NodeID      string             `json:"node_id"`
+	ProjectID   string             `json:"project_id"`
+	ServiceType string             `json:"service_type"`
+	Model       string             `json:"model"`
+	Status      string             `json:"status"`
+	ErrorMsg    string             `json:"error_msg"`
+	DurationMs  int32              `json:"duration_ms"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 // ─── Reaper (F3): find + fail stale active tasks ──────────────────────
 
 type StaleActiveGenerationRow struct {
@@ -420,6 +437,59 @@ func (q *Queries) ListActiveGenerationsForUser(ctx context.Context, userID pgtyp
 	for rows.Next() {
 		var i ListActiveGenerationsForUserRow
 		if err := rows.Scan(&i.ID, &i.NodeID, &i.ServiceType, &i.Model, &i.Prompt, &i.Status, &i.ResultUrl, &i.ErrorMsg, &i.AsynqTaskID, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentAutomationGenerationsForUser = `
+SELECT id,
+       node_id,
+       COALESCE(request_payload->>'project_id', request_payload->>'ProjectID', '') AS project_id,
+       service_type,
+       model,
+       status,
+       error_msg,
+       duration_ms,
+       created_at
+FROM generation_logs
+WHERE user_id = $1
+  AND (
+    node_id LIKE 'automation-extract-%'
+    OR node_id LIKE 'automation-storyboard-split-%'
+  )
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+func (q *Queries) ListRecentAutomationGenerationsForUser(
+	ctx context.Context,
+	arg ListRecentAutomationGenerationsForUserParams,
+) ([]ListRecentAutomationGenerationsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listRecentAutomationGenerationsForUser, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentAutomationGenerationsForUserRow{}
+	for rows.Next() {
+		var i ListRecentAutomationGenerationsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.ProjectID,
+			&i.ServiceType,
+			&i.Model,
+			&i.Status,
+			&i.ErrorMsg,
+			&i.DurationMs,
+			&i.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -17,6 +17,7 @@ import {
 
 import type { GenerationLog } from "../../api/admin";
 import { listLogs } from "../../api/admin";
+import { toAdminErrorSummary } from "../../api/errors";
 import { toRenderableMediaUrl } from "../../reference-media";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -30,6 +31,7 @@ import {
   SheetTitle,
 } from "../ui/sheet";
 import { AdminShell } from "./AdminShell";
+import { AdminAuditLogsPanel } from "./AdminAuditLogsPanel";
 
 const LOG_PAGE_SIZE = 100;
 const CLIENT_PAGE_SIZE = 20;
@@ -42,10 +44,22 @@ const SERVICE_LABELS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<GenerationLog["status"], string> = {
-  pending: "生成中",
+  pending: "等待中",
+  queued: "已排队",
+  running: "执行中",
+  persisting: "保存素材中",
+  retrying: "重试中",
   success: "成功",
   error: "失败",
+  cancelled: "已取消",
+  dead: "已终止",
 };
+
+const ACTIVE_TASK_STATUSES: GenerationLog["status"][] = ["pending", "queued", "running", "persisting", "retrying"];
+
+function isActiveTask(status: GenerationLog["status"]) {
+  return ACTIVE_TASK_STATUSES.includes(status);
+}
 
 type ColumnKey = "user" | "type" | "model" | "prompt" | "status" | "duration" | "time";
 type ColumnDef = { key: ColumnKey; label: string };
@@ -125,11 +139,11 @@ function StatusCell({ log }: { log: GenerationLog }) {
     );
   }
 
-  if (log.status === "pending") {
+  if (isActiveTask(log.status)) {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-300">
         <Clock className="h-3.5 w-3.5 animate-pulse" />
-        {STATUS_LABELS.pending}
+        {STATUS_LABELS[log.status]}
       </span>
     );
   }
@@ -306,7 +320,8 @@ export function AdminLogsPage() {
   const [error, setError] = useState("");
   const [totalCount, setTotalCount] = useState(0);
   const [visible, setVisible] = useState<Record<ColumnKey, boolean>>(() => loadVisibility());
-  const [statusFilter, setStatusFilter] = useState<"" | "pending" | "success" | "error">("");
+  const [view, setView] = useState<"audit" | "tasks">("audit");
+  const [statusFilter, setStatusFilter] = useState<"" | GenerationLog["status"]>("");
   const [userFilter, setUserFilter] = useState("");
   const [modelFilter, setModelFilter] = useState("");
   const [selectedLog, setSelectedLog] = useState<GenerationLog | null>(null);
@@ -315,7 +330,7 @@ export function AdminLogsPage() {
   const deferredUserFilter = useDeferredValue(userFilter);
   const deferredModelFilter = useDeferredValue(modelFilter);
 
-  const load = useCallback(async (offset = 0) => {
+  const load = useCallback(async (offset = 0, preserveExisting = false) => {
     if (offset === 0) {
       setLoading(true);
     } else {
@@ -329,10 +344,15 @@ export function AdminLogsPage() {
         user: deferredUserFilter,
         model: deferredModelFilter,
       });
-      setLogs((current) => (offset === 0 ? result.data : [...current, ...result.data]));
+      setLogs((current) => {
+        if (offset !== 0) return [...current, ...result.data];
+        if (!preserveExisting) return result.data;
+        const refreshed = new Set(result.data.map((log) => log.id));
+        return [...result.data, ...current.filter((log) => !refreshed.has(log.id))];
+      });
       setTotalCount(result.total);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "加载任务日志失败");
+      setError(toAdminErrorSummary(loadError, "zh"));
     } finally {
       if (offset === 0) {
         setLoading(false);
@@ -355,12 +375,12 @@ export function AdminLogsPage() {
   }, [visible]);
 
   useEffect(() => {
-    if (!logs.some((log) => log.status === "pending")) {
+    if (!logs.some((log) => isActiveTask(log.status))) {
       return;
     }
 
     const timer = window.setInterval(() => {
-      void load(0);
+      void load(0, true);
     }, 8000);
 
     return () => window.clearInterval(timer);
@@ -395,7 +415,7 @@ export function AdminLogsPage() {
   const counts = useMemo(
     () => ({
       total: logs.length,
-      pending: logs.filter((log) => log.status === "pending").length,
+      pending: logs.filter((log) => isActiveTask(log.status)).length,
       success: logs.filter((log) => log.status === "success").length,
       error: logs.filter((log) => log.status === "error").length,
     }),
@@ -445,6 +465,11 @@ export function AdminLogsPage() {
       }
     >
       <div className="space-y-5">
+        <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1 text-xs">
+          <button type="button" onClick={() => setView("audit")} className={`rounded-lg px-3 py-1.5 transition ${view === "audit" ? "bg-white/10 text-white" : "text-neutral-400 hover:text-white"}`}>操作审计</button>
+          <button type="button" onClick={() => setView("tasks")} className={`rounded-lg px-3 py-1.5 transition ${view === "tasks" ? "bg-white/10 text-white" : "text-neutral-400 hover:text-white"}`}>任务日志</button>
+        </div>
+        {view === "audit" ? <AdminAuditLogsPanel /> : <>
         <div className="grid gap-4 md:grid-cols-4">
           <MetricCard label="日志总数" value={totalCount} />
           <MetricCard label="生成中" value={counts.pending} tone="pending" />
@@ -460,13 +485,19 @@ export function AdminLogsPage() {
             <span className="text-xs font-medium text-neutral-400">状态筛选</span>
             <select
               value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as "" | "pending" | "success" | "error")}
+              onChange={(event) => setStatusFilter(event.target.value as "" | GenerationLog["status"])}
               className="h-10 w-full rounded-xl border border-white/10 bg-[#141414] px-3 text-sm text-neutral-100 outline-none transition focus:border-cyan-300/50"
             >
               <option value="">全部状态</option>
-              <option value="pending">生成中</option>
+              <option value="pending">等待中</option>
+              <option value="queued">已排队</option>
+              <option value="running">执行中</option>
+              <option value="persisting">保存素材中</option>
+              <option value="retrying">重试中</option>
               <option value="success">成功</option>
               <option value="error">失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="dead">已终止</option>
             </select>
           </label>
 
@@ -647,6 +678,7 @@ export function AdminLogsPage() {
             </div>
           ) : null}
         </div>
+        </>}
       </div>
 
       <TaskDetailDrawer log={selectedLog} open={selectedLog !== null} onOpenChange={(open) => !open && setSelectedLog(null)} />

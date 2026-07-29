@@ -6,9 +6,19 @@ import {
   completeAgentConversationTurn,
   conversationTurnsFromHistoryItems,
   getAgentConversationHistory,
+  parsePersistedToolLog,
+  presentAgentUserInput,
   recordAgentConversationTurn,
   type AgentConversationTurn,
 } from "./agent-conversation";
+
+describe("presentAgentUserInput", () => {
+  it("replaces raw canvas filenames and node ids with a compact reference count", () => {
+    expect(presentAgentUserInput(
+      "（参考画布节点：2e09f8d05154dd0ebe91aae2eee18f79.jpg#node-1）\n这张图片的人名提取游戏",
+    )).toBe("📎 已引用 1 个画布节点\n这张图片的人名提取游戏");
+  });
+});
 
 describe("agent conversation history", () => {
   it("appends a single turn pair to the conversation history", () => {
@@ -79,6 +89,7 @@ describe("agent conversation history", () => {
       {
         user_input: "Draft a launch headline.",
         final_reply: "Launch brighter with our summer collection.",
+        tool_log: "✓ create_node({\"type\":\"textNode\"}) → {\"id\":\"n1\"}",
       },
       {
         user_input: "Make it warmer.",
@@ -86,9 +97,37 @@ describe("agent conversation history", () => {
       },
     ])).toEqual<AgentConversationTurn[]>([
       { role: "user", content: "Draft a launch headline." },
-      { role: "assistant", content: "Launch brighter with our summer collection." },
+      {
+        role: "assistant",
+        content: "Launch brighter with our summer collection.",
+        toolCalls: [{
+          name: "create_node",
+          args: "{\"type\":\"textNode\"}",
+          output: "{\"id\":\"n1\"}",
+          status: "success",
+        }],
+      },
       { role: "user", content: "Make it warmer." },
       { role: "assistant", content: "Here is a warmer launch headline." },
+    ]);
+  });
+
+  it("parses multiline persisted tool results without losing their details", () => {
+    expect(parsePersistedToolLog(
+      "✓ analyze_image({\"node_id\":\"n1\"}) → 第一行分析\n第二行分析\n✕ run_node({\"node_id\":\"n2\"}) → 模型不可用",
+    )).toEqual([
+      {
+        name: "analyze_image",
+        args: "{\"node_id\":\"n1\"}",
+        output: "第一行分析\n第二行分析",
+        status: "success",
+      },
+      {
+        name: "run_node",
+        args: "{\"node_id\":\"n2\"}",
+        output: "模型不可用",
+        status: "error",
+      },
     ]);
   });
 });
