@@ -110,6 +110,44 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	toolDefs := ToOpenAIDefs(in.Tools)
 	// "模拟执行"打回只做一次:二次仍嘴硬就放行,靠人看穿,不无限烧轮次。
 	phantomRetried := false
+	executeToolCall := func(tc ToolCall) (string, error) {
+		stats.ToolCalls++
+		emit(EventToolCall, map[string]any{
+			"id":        tc.ID,
+			"name":      tc.Function.Name,
+			"arguments": tc.Function.Arguments,
+		})
+
+		tool := findTool(in.Tools, tc.Function.Name)
+		var (
+			result  string
+			toolErr error
+		)
+		if tool == nil {
+			toolErr = fmt.Errorf("tool %q not available", tc.Function.Name)
+		} else {
+			result, toolErr = tool.Execute(ctx, json.RawMessage(tc.Function.Arguments))
+		}
+
+		emitResult := map[string]any{"id": tc.ID, "name": tc.Function.Name}
+		if toolErr != nil {
+			publicMessage := apperror.PublicMessage(toolErr)
+			result = fmt.Sprintf(`{"error":%q}`, publicMessage)
+			emitResult["ok"] = false
+			emitResult["error"] = publicMessage
+		} else {
+			emitResult["ok"] = true
+			emitResult["result"] = result
+		}
+		emit(EventToolResult, emitResult)
+		stats.ToolTranscript = append(stats.ToolTranscript, ToolTranscriptEntry{
+			Name:   tc.Function.Name,
+			Args:   truncateForTranscript(tc.Function.Arguments, 200),
+			OK:     toolErr == nil,
+			Result: truncateForTranscript(result, 300),
+		})
+		return result, toolErr
+	}
 
 	for step := 0; step < max; step++ {
 		select {
@@ -199,6 +237,44 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			emit(EventThought, map[string]string{"content": resp.Content})
 		}
 
+		// Clarifying questions are a hard execution boundary. A model may emit
+		// several ask_user calls in one response; the UI presents them as one
+		// paged questionnaire. No other tool may run until the answers arrive in
+		// the user's next turn.
+		askCalls := toolCallsNamed(resp.ToolCalls, "ask_user")
+		if len(askCalls) > 0 {
+			messages = append(messages, ChatMessage{
+				Role:      "assistant",
+				Content:   resp.Content,
+				ToolCalls: askCalls,
+			})
+
+			questions := make([]string, 0, len(askCalls))
+			for _, tc := range askCalls {
+				result, toolErr := executeToolCall(tc)
+				messages = append(messages, ChatMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    result,
+				})
+				if toolErr == nil {
+					if question := askUserQuestion(tc.Function.Arguments); question != "" {
+						questions = append(questions, question)
+					}
+				}
+			}
+
+			if len(questions) > 0 {
+				stats.FinalReply = formatQuestionnaireSummary(questions)
+				emit(EventDone, map[string]int{"steps": step + 1})
+				return stats, nil
+			}
+			// All question payloads were malformed. Retain the tool errors in the
+			// model context and let it correct the request in the next loop step.
+			continue
+		}
+
 		messages = append(messages, ChatMessage{
 			Role:      "assistant",
 			Content:   resp.Content,
@@ -206,41 +282,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		})
 
 		for _, tc := range resp.ToolCalls {
-			stats.ToolCalls++
-			emit(EventToolCall, map[string]any{
-				"id":        tc.ID,
-				"name":      tc.Function.Name,
-				"arguments": tc.Function.Arguments,
-			})
-
-			tool := findTool(in.Tools, tc.Function.Name)
-			var (
-				result  string
-				toolErr error
-			)
-			if tool == nil {
-				toolErr = fmt.Errorf("tool %q not available", tc.Function.Name)
-			} else {
-				result, toolErr = tool.Execute(ctx, json.RawMessage(tc.Function.Arguments))
-			}
-
-			emitResult := map[string]any{"id": tc.ID, "name": tc.Function.Name}
-			if toolErr != nil {
-				publicMessage := apperror.PublicMessage(toolErr)
-				result = fmt.Sprintf(`{"error":%q}`, publicMessage)
-				emitResult["ok"] = false
-				emitResult["error"] = publicMessage
-			} else {
-				emitResult["ok"] = true
-				emitResult["result"] = result
-			}
-			emit(EventToolResult, emitResult)
-			stats.ToolTranscript = append(stats.ToolTranscript, ToolTranscriptEntry{
-				Name:   tc.Function.Name,
-				Args:   truncateForTranscript(tc.Function.Arguments, 200),
-				OK:     toolErr == nil,
-				Result: truncateForTranscript(result, 300),
-			})
+			result, _ := executeToolCall(tc)
 
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
@@ -253,6 +295,38 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 
 	emit(EventError, map[string]string{"message": "Max steps exceeded"})
 	return stats, errors.New("max steps exceeded")
+}
+
+func toolCallsNamed(calls []ToolCall, name string) []ToolCall {
+	matched := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if call.Function.Name == name {
+			matched = append(matched, call)
+		}
+	}
+	return matched
+}
+
+func askUserQuestion(arguments string) string {
+	var payload struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Question)
+}
+
+func formatQuestionnaireSummary(questions []string) string {
+	if len(questions) == 1 {
+		return questions[0]
+	}
+	var summary strings.Builder
+	summary.WriteString("需要你依次确认以下问题：")
+	for index, question := range questions {
+		summary.WriteString(fmt.Sprintf("\n%d. %s", index+1, question))
+	}
+	return summary.String()
 }
 
 // ─── 防"模拟执行"幻觉 ─────────────────────────────────────────────────────────

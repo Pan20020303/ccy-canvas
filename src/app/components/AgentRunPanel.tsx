@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
+import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
@@ -28,6 +28,12 @@ import {
   type AgentConversationStore,
 } from "./agent-conversation";
 import { buildAgentRunMessage, getAllInvokableSlashSkills } from "./agent-skill-commands";
+import {
+  buildQuestionnaireReply,
+  firstUnansweredQuestionIndex,
+  selectQuestionAnswer,
+  type AgentQuestionPage,
+} from "./agent-questionnaire";
 import { getSkillCommandName } from "./settings/skill-agent-presenters";
 import { displayNameOf, getCurrentUser } from "../api/me";
 import { toRenderableMediaUrl } from "../reference-media";
@@ -85,7 +91,7 @@ type RunStep =
   | { kind: "thought"; id: string; content: string; streaming?: boolean }
   | { kind: "tool"; id: string; invocation: ToolInvocation }
   | { kind: "canvas"; id: string; op: string }
-  | { kind: "ask_user"; id: string; question: string; options: string[]; allowCustom: boolean }
+  | ({ kind: "ask_user" } & AgentQuestionPage)
   | { kind: "error"; id: string; message: string }
   | {
       kind: "pending_run";
@@ -101,6 +107,14 @@ type RunStep =
       status: "pending" | "confirmed" | "skipped";
       chosenModel?: string;
     };
+
+type NonQuestionRunStep = Exclude<RunStep, { kind: "ask_user" }>;
+type InteractiveRunStep =
+  | Extract<RunStep, { kind: "ask_user" }>
+  | Extract<RunStep, { kind: "pending_run" }>
+  | Extract<RunStep, { kind: "canvas" }>
+  | Extract<RunStep, { kind: "error" }>;
+type NonQuestionInteractiveStep = Exclude<InteractiveRunStep, { kind: "ask_user" }>;
 
 /**
  * Claude-style agent run panel.
@@ -218,6 +232,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Per-run streaming state.
   const [streamingReply, setStreamingReply] = useState("");
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
+  const [questionPage, setQuestionPage] = useState(0);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedMs, setRunFinishedMs] = useState<number | null>(null);
   const [connectionState, setConnectionState] = useState<"reconnecting" | null>(null);
@@ -456,7 +471,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [allInvokableSkills, message]);
 
   const applySlashCompletion = (skill: Skill) => {
-    setMessage(getSkillCommandName(skill) + " ");
+    // Skill selection is represented by its own full-width chip. Keeping the
+    // slash command out of the textarea avoids leaking internal identifiers
+    // into the user's prompt.
+    setMessage("");
     setSelectedSkillId(skill.id);
     setSlashIndex(0);
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -599,6 +617,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
     const rawMessage = source.trim();
     const outbound = buildAgentRunMessage(selectedAgent, skills, source, selectedSkillId);
+    const invokedSkill = selectedSkillId
+      ? skills.find((skill) => skill.id === selectedSkillId)
+      : undefined;
+    const invokedSkillDisplayName = invokedSkill
+      ? getSkillDisplayName(invokedSkill)
+      : outbound.invokedSkillName;
     // Prepend any canvas-node references the user attached via "从画布添加".
     const refPreamble = referencedNodes.length
       ? `（参考画布节点：${referencedNodes.map((n) => `${n.label}#${n.id.slice(0, 6)}`).join("，")}）\n`
@@ -627,7 +651,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setMessage("");
     setSelectedSkillId(null);
     setReferencedNodes([]);
-    setActiveSkillName(outbound.invokedSkillName);
+    setActiveSkillName(invokedSkillDisplayName);
     setStreamingReply("");
     setRunSteps([]);
     setRunConvKey(initialKey);
@@ -1151,12 +1175,57 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // 思考/工具步骤进 assistant-ui 消息流;交互与信息型卡片(提问/待确认生成/
   // 画布操作/错误)保留原有卡片组件,渲染在消息之后。仅在 run 所属会话显示。
   const interactiveSteps = (runHere ? runSteps : []).filter(
-    (s) => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
+    (s): s is InteractiveRunStep => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
   );
+  const questionSteps = interactiveSteps.filter(
+    (step): step is Extract<RunStep, { kind: "ask_user" }> => step.kind === "ask_user",
+  );
+  const nonQuestionInteractiveSteps = interactiveSteps.filter(
+    (step): step is NonQuestionInteractiveStep => step.kind !== "ask_user",
+  );
+  useEffect(() => {
+    setQuestionPage((current) => (
+      questionSteps.length === 0 ? 0 : Math.min(current, questionSteps.length - 1)
+    ));
+  }, [questionSteps.length]);
+
+  const updateQuestionSelection = (questionId: string, answer: string) => {
+    setRunSteps((previous) => previous.map((step) => (
+      step.kind === "ask_user" && step.id === questionId
+        ? { ...step, selectedAnswer: answer.trim() }
+        : step
+    )));
+  };
+
+  const continueQuestionnaire = (questionId: string, answer: string) => {
+    const answeredQuestions = selectQuestionAnswer(questionSteps, questionId, answer);
+    setRunSteps((previous) => previous.map((step) => {
+      if (step.kind !== "ask_user") return step;
+      return answeredQuestions.find((question) => question.id === step.id) ?? step;
+    }));
+
+    const currentIndex = answeredQuestions.findIndex((question) => question.id === questionId);
+    if (currentIndex >= 0 && currentIndex < answeredQuestions.length - 1) {
+      setQuestionPage(currentIndex + 1);
+      return;
+    }
+
+    const unansweredIndex = firstUnansweredQuestionIndex(answeredQuestions);
+    if (unansweredIndex >= 0) {
+      setQuestionPage(unansweredIndex);
+      return;
+    }
+
+    const reply = buildQuestionnaireReply(answeredQuestions, zh ? "zh" : "en");
+    if (reply) void start(reply);
+  };
+
   const skillBatchCount = Math.max(1, Math.ceil(allInvokableSkills.length / 5));
   const quickChips = getRotatingSkillBatch(allInvokableSkills, skillBatchIndex, 5);
+  const selectedComposerSkill = selectedSkillId
+    ? skills.find((skill) => skill.id === selectedSkillId) ?? null
+    : null;
   const applyQuickChip = (skill: Skill) => {
-    setMessage(getSkillCommandName(skill) + " ");
     setSelectedSkillId(skill.id);
     setShowSkillMenu(false);
     setShowSkillLibrary(false);
@@ -1287,7 +1356,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         footer={
           interactiveSteps.length > 0 ? (
             <div className="space-y-2">
-              {interactiveSteps.map((step) => (
+              {questionSteps.length > 0 ? (
+                <QuestionnaireCard
+                  questions={questionSteps}
+                  page={questionPage}
+                  zh={zh}
+                  disabled={running}
+                  onPageChange={setQuestionPage}
+                  onSelect={updateQuestionSelection}
+                  onContinue={continueQuestionnaire}
+                  onIgnore={(questionId) => continueQuestionnaire(
+                    questionId,
+                    zh ? "已忽略此问题" : "Skipped this question",
+                  )}
+                />
+              ) : null}
+              {nonQuestionInteractiveSteps.map((step) => (
                 <RunStepRow
                   key={step.id}
                   step={step}
@@ -1296,7 +1380,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   onConfirmRun={confirmPendingRun}
                   onSkipRun={skipPendingRun}
                   onPickModel={updatePendingModel}
-                  onChoice={(text) => void start(text)}
                   modelDisplayName={modelDisplayName}
                 />
               ))}
@@ -1395,22 +1478,30 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
         {/* Single rounded composer container. */}
         <div className="rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
+          {selectedComposerSkill ? (
+            <div className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-500/[0.08] px-2.5 py-2 text-cyan-50">
+              <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
+                {getSkillDisplayName(selectedComposerSkill)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedSkillId(null)}
+                disabled={running}
+                aria-label={zh ? "移除已选技能" : "Remove selected skill"}
+                title={zh ? "移除已选技能" : "Remove selected skill"}
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-cyan-100/60 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : null}
           <textarea
             ref={inputRef}
             value={message}
             onChange={(event) => {
               const nextMessage = event.target.value;
               setMessage(nextMessage);
-              setSelectedSkillId((currentSkillId) => {
-                if (!currentSkillId) return null;
-                const selectedSkill = skills.find((skill) => skill.id === currentSkillId);
-                if (!selectedSkill) return null;
-                return nextMessage.trimStart().toLowerCase().startsWith(
-                  getSkillCommandName(selectedSkill).toLowerCase(),
-                )
-                  ? currentSkillId
-                  : null;
-              });
               setSlashIndex(0);
             }}
             onKeyDown={(event) => {
@@ -2029,6 +2120,133 @@ function AgentPicker({
   );
 }
 
+function QuestionnaireCard({
+  questions,
+  page,
+  zh,
+  disabled,
+  onPageChange,
+  onSelect,
+  onContinue,
+  onIgnore,
+}: {
+  questions: Extract<RunStep, { kind: "ask_user" }>[];
+  page: number;
+  zh: boolean;
+  disabled: boolean;
+  onPageChange: (page: number) => void;
+  onSelect: (questionId: string, answer: string) => void;
+  onContinue: (questionId: string, answer: string) => void;
+  onIgnore: (questionId: string) => void;
+}) {
+  const safePage = Math.max(0, Math.min(page, questions.length - 1));
+  const question = questions[safePage];
+  if (!question) return null;
+
+  const selectedAnswer = question.selectedAnswer?.trim() ?? "";
+  const customAnswer = selectedAnswer && !question.options.includes(selectedAnswer)
+    ? selectedAnswer
+    : "";
+
+  return (
+    <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/[0.06] p-3 shadow-[0_12px_36px_rgba(0,0,0,0.2)]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2 text-[12px] font-medium text-neutral-100">
+          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" />
+          <span className="leading-relaxed">{question.question}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1 text-[10px] text-neutral-400">
+          <button
+            type="button"
+            onClick={() => onPageChange(Math.max(0, safePage - 1))}
+            disabled={disabled || safePage === 0}
+            aria-label={zh ? "上一题" : "Previous question"}
+            className="grid h-6 w-6 place-items-center rounded-md transition hover:bg-white/10 disabled:opacity-25"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <span className="min-w-9 text-center tabular-nums">{safePage + 1} / {questions.length}</span>
+          <button
+            type="button"
+            onClick={() => onPageChange(Math.min(questions.length - 1, safePage + 1))}
+            disabled={disabled || safePage >= questions.length - 1 || !selectedAnswer}
+            aria-label={zh ? "下一题" : "Next question"}
+            className="grid h-6 w-6 place-items-center rounded-md transition hover:bg-white/10 disabled:opacity-25"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        {question.options.map((option, index) => {
+          const selected = option === selectedAnswer;
+          return (
+            <button
+              key={`${question.id}-${option}`}
+              type="button"
+              onClick={() => onSelect(question.id, option)}
+              disabled={disabled}
+              className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[12px] transition disabled:opacity-50 ${
+                selected
+                  ? "border-cyan-300/50 bg-cyan-400/15 text-white"
+                  : "border-[var(--agent-border)] bg-white/[0.03] text-neutral-300 hover:border-cyan-400/35 hover:bg-white/[0.06] hover:text-white"
+              }`}
+            >
+              <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border text-[9px] ${
+                selected ? "border-cyan-300/70 bg-cyan-300 text-neutral-950" : "border-white/15 text-neutral-400"
+              }`}>
+                {selected ? <Check className="h-2.5 w-2.5" /> : index + 1}
+              </span>
+              <span className="min-w-0 flex-1">{option}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {question.allowCustom ? (
+        <input
+          type="text"
+          value={customAnswer}
+          onChange={(event) => onSelect(question.id, event.target.value)}
+          disabled={disabled}
+          placeholder={zh ? "其他，请直接输入" : "Other, type your answer"}
+          className="mt-2 w-full rounded-lg border border-[var(--agent-border)] bg-black/20 px-2.5 py-2 text-[12px] text-neutral-100 outline-none transition placeholder:text-neutral-600 focus:border-cyan-400/40 disabled:opacity-50"
+        />
+      ) : null}
+
+      {selectedAnswer ? (
+        <div className="mt-2 flex items-center gap-1.5 text-[10px] text-cyan-200/80">
+          <Check className="h-3 w-3" />
+          <span className="truncate">{zh ? "已选择" : "Selected"}：{selectedAnswer}</span>
+        </div>
+      ) : null}
+
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => onIgnore(question.id)}
+          disabled={disabled}
+          className="rounded-lg px-3 py-1.5 text-[11px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200 disabled:opacity-40"
+        >
+          {zh ? "忽略" : "Skip"}
+        </button>
+        <button
+          type="button"
+          onClick={() => onContinue(question.id, selectedAnswer)}
+          disabled={disabled || !selectedAnswer}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-300 px-3 py-1.5 text-[11px] font-medium text-neutral-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-35"
+        >
+          {safePage < questions.length - 1
+            ? (zh ? "下一题" : "Next")
+            : (zh ? "继续" : "Continue")}
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function RunStepRow({
   step,
   tick,
@@ -2036,47 +2254,17 @@ function RunStepRow({
   onConfirmRun,
   onSkipRun,
   onPickModel,
-  onChoice,
   modelDisplayName,
 }: {
-  step: RunStep;
+  step: NonQuestionRunStep;
   tick: number;
   zh: boolean;
   onConfirmRun: (stepId: string) => void;
   onSkipRun: (stepId: string) => void;
   onPickModel: (stepId: string, model: string) => void;
-  onChoice: (text: string) => void;
   modelDisplayName: (modelID: string) => string;
 }) {
   void tick;
-  if (step.kind === "ask_user") {
-    return (
-      <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/[0.06] p-3">
-        <div className="mb-2 flex items-start gap-1.5 text-[12px] text-neutral-100">
-          <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-300" />
-          <span className="leading-relaxed">{step.question}</span>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {step.options.map((opt, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onChoice(opt)}
-              className="flex items-center gap-2 rounded-lg border border-[var(--agent-border)] bg-white/[0.03] px-2.5 py-1.5 text-left text-[12px] text-neutral-200 transition hover:border-cyan-400/40 hover:bg-cyan-500/10 hover:text-white"
-            >
-              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/15 text-[9px] text-neutral-400">{String.fromCharCode(65 + i)}</span>
-              <span>{opt}</span>
-            </button>
-          ))}
-        </div>
-        {step.allowCustom ? (
-          <div className="mt-2 text-[10px] text-neutral-500">
-            {zh ? "或在下方输入框补充其他意见。" : "Or type your own answer below."}
-          </div>
-        ) : null}
-      </div>
-    );
-  }
   if (step.kind === "thought") {
     return (
       <div className="flex items-start gap-1.5 text-[11px] text-neutral-400">

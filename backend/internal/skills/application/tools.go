@@ -271,7 +271,33 @@ func (t *askUserTool) Execute(_ context.Context, args json.RawMessage) (string, 
 		Options     []string `json:"options"`
 		AllowCustom *bool    `json:"allow_custom"`
 	}
-	_ = json.Unmarshal(args, &p)
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid ask_user payload: %w", err)
+	}
+	p.Question = strings.TrimSpace(p.Question)
+	if p.Question == "" {
+		return "", fmt.Errorf("ask_user question is required")
+	}
+	normalizedOptions := make([]string, 0, len(p.Options))
+	seenOptions := make(map[string]struct{}, len(p.Options))
+	for _, option := range p.Options {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			continue
+		}
+		if _, exists := seenOptions[option]; exists {
+			continue
+		}
+		seenOptions[option] = struct{}{}
+		normalizedOptions = append(normalizedOptions, option)
+		if len(normalizedOptions) == 4 {
+			break
+		}
+	}
+	if len(normalizedOptions) < 2 {
+		return "", fmt.Errorf("ask_user requires at least two distinct options")
+	}
+	p.Options = normalizedOptions
 	allowCustom := p.AllowCustom == nil || *p.AllowCustom
 	if t.emit != nil {
 		t.emit("ask_user", map[string]any{
