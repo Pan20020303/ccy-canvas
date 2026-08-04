@@ -5863,10 +5863,12 @@ const VideoHoverControls = ({
 // a JPEG data URL and remember it by src. onlyRenderVisibleElements unmounts a
 // culled node's <video>, so re-entering the viewport used to show a blank box
 // while the <video> re-buffered — now it paints this cached cover INSTANTLY and
-// the (browser-cached) video only re-mounts on hover. Memory-only, never
-// persisted/broadcast. Bounded so a video-heavy session can't grow unbounded.
+// the (browser-cached) video only re-mounts on hover. The parent also uploads
+// the cover for refresh persistence. This memory layer stays bounded so a
+// video-heavy session cannot grow unbounded.
 const videoPosterCache = new Map<string, string>();
 const MAX_VIDEO_POSTERS = 60;
+const videoPosterUploadPromises = new Map<string, Promise<string>>();
 
 function rememberVideoPoster(src: string, dataUrl: string) {
   if (videoPosterCache.has(src)) videoPosterCache.delete(src); // refresh LRU order
@@ -5900,12 +5902,49 @@ function captureVideoPoster(video: HTMLVideoElement): string {
   }
 }
 
+/** Upload an automatically captured video cover once per source URL. The
+ * stable poster is written back to the node by the caller, so a full page
+ * refresh can paint an image immediately instead of decoding the MP4 again. */
+function persistVideoPoster(src: string, dataUrl: string): Promise<string> {
+  const existing = videoPosterUploadPromises.get(src);
+  if (existing) return existing;
+
+  const upload = (async () => {
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const form = new FormData();
+      form.append('file', blob, `video-poster-${Date.now()}.jpg`);
+      const response = await fetch(resolveApiUrl('/api/app/upload'), {
+        method: 'POST',
+        body: form,
+        credentials: 'include',
+      });
+      if (!response.ok) return '';
+      const json = await response.json();
+      const rawUrl = json?.data?.url as string | undefined;
+      if (!rawUrl) return '';
+      const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '') as string;
+      return apiBase && rawUrl.startsWith('/') ? `${apiBase.replace(/\/+$/, '')}${rawUrl}` : rawUrl;
+    } catch {
+      return '';
+    }
+  })();
+
+  videoPosterUploadPromises.set(src, upload);
+  void upload.then((url) => {
+    // A transient upload failure must remain retryable when the video is
+    // decoded again later in the session.
+    if (!url) videoPosterUploadPromises.delete(src);
+  });
+  return upload;
+}
+
 // SmartVideo — gallery-style hover preview for canvas video nodes (NeoWow-like).
 //   • out of view  → the <video> is UNMOUNTED (no decode, no buffering); the
 //                    poster is shown dimmed + grayscale, or a neutral grey box
 //                    when there is no poster yet.
 //   • in view, idle → first frame: a cheap poster <img> when available, else a
-//                    paused <video preload="metadata"> painting frame 0.
+//                    paused <video preload="auto"> decoding frame 0.
 //   • in view, hover → the <video> plays muted + looped.
 // An IntersectionObserver with a 300px rootMargin warms items just before they
 // scroll into view so hover-to-play feels instant; once fetched the browser's
@@ -5917,6 +5956,7 @@ function SmartVideo({
   hovered: controlledHovered,
   videoRef: externalVideoRef,
   onLoadedMetadata,
+  onPosterCaptured,
 }: {
   src: string;
   poster?: string;
@@ -5925,6 +5965,7 @@ function SmartVideo({
   hovered?: boolean;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   onLoadedMetadata?: (event: React.SyntheticEvent<HTMLVideoElement>) => void;
+  onPosterCaptured?: (dataUrl: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const internalVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -5938,7 +5979,9 @@ function SmartVideo({
   // poster, so re-entering the viewport shows a cover instantly instead of a
   // blank box while the <video> re-buffers.
   const [capturedPoster, setCapturedPoster] = useState<string>(() => videoPosterCache.get(src) ?? '');
+  const [videoReady, setVideoReady] = useState(false);
   useEffect(() => { setCapturedPoster(videoPosterCache.get(src) ?? ''); }, [src]);
+  useEffect(() => { setVideoReady(false); }, [src]);
   const posterSrc = poster ? toRenderableMediaUrl(poster, { thumbWidth: 720 }) : capturedPoster;
 
   useEffect(() => {
@@ -5960,6 +6003,16 @@ function SmartVideo({
   // the first frame can still paint). With a poster, idle-in-view stays a cheap
   // <img> and the decoder is only spun up on hover.
   const mountVideo = inView && (hovered || !posterSrc);
+
+  const captureFirstFrame = useCallback((video: HTMLVideoElement) => {
+    setVideoReady(true);
+    if (poster || videoPosterCache.has(src)) return;
+    const dataUrl = captureVideoPoster(video);
+    if (!dataUrl) return;
+    rememberVideoPoster(src, dataUrl);
+    setCapturedPoster(dataUrl);
+    onPosterCaptured?.(dataUrl);
+  }, [onPosterCaptured, poster, src]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -5986,22 +6039,34 @@ function SmartVideo({
           draggable={false}
           className={clsx(
             'absolute inset-0 h-full w-full object-cover select-none transition-opacity duration-200',
-            playing ? 'opacity-0' : inView ? 'opacity-100' : 'opacity-50 grayscale',
+            playing && videoReady ? 'opacity-0' : inView ? 'opacity-100' : 'opacity-50 grayscale',
           )}
         />
       ) : !inView ? (
         <div className="absolute inset-0 bg-white/[0.03]" />
-      ) : null}
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/[0.03]">
+          <Loader2 className="h-5 w-5 animate-spin text-white/25" />
+        </div>
+      )}
       {mountVideo ? (
         <video
           ref={videoRef}
           src={renderable}
+          crossOrigin="use-credentials"
           draggable={false}
-          className="absolute inset-0 h-full w-full object-cover select-none"
+          className={clsx(
+            'absolute inset-0 h-full w-full object-cover select-none transition-opacity duration-150',
+            videoReady ? 'opacity-100' : 'opacity-0',
+          )}
           muted
           loop
           playsInline
-          preload={playing ? 'auto' : 'metadata'}
+          // Metadata-only loading does not guarantee a decodable frame. That
+          // left refreshed nodes grey until hover/play forced the remaining
+          // ranges to download. Only visible nodes are mounted, so auto is
+          // bounded by the IntersectionObserver above.
+          preload="auto"
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             // Nudge the playhead a hair past zero so the browser paints exactly
@@ -6010,13 +6075,12 @@ function SmartVideo({
             if (playing) video.play().catch(() => {});
             onLoadedMetadata?.(event);
           }}
+          onLoadedData={(event) => captureFirstFrame(event.currentTarget)}
+          onCanPlay={(event) => captureFirstFrame(event.currentTarget)}
           onSeeked={(event) => {
             // First decode of an un-postered video → cache frame 0 as an instant
             // cover for the next time this node scrolls back into view.
-            if (!poster && !videoPosterCache.has(src)) {
-              const dataUrl = captureVideoPoster(event.currentTarget);
-              if (dataUrl) { rememberVideoPoster(src, dataUrl); setCapturedPoster(dataUrl); }
-            }
+            captureFirstFrame(event.currentTarget);
           }}
         />
       ) : null}
@@ -6037,6 +6101,20 @@ export const VideoNode = ({ id, data, selected }: any) => {
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
   const isGenerating = data.status === 'generating' || data.status === 'running';
   const hasCurrentTaskPreview = Boolean(data.url) && (data.assetSyncing === true || data.taskPhase === 'persisting');
+
+  const handlePosterCaptured = useCallback((dataUrl: string) => {
+    const sourceUrl = typeof data.url === 'string' ? data.url : '';
+    if (!sourceUrl || data.poster) return;
+    void persistVideoPoster(sourceUrl, dataUrl).then((stablePoster) => {
+      if (!stablePoster) return;
+      // The task may have been regenerated while the upload was in flight.
+      // Never attach an old video's cover to the new result.
+      const current = useStore.getState().nodes.find((node) => node.id === id);
+      const currentData = (current?.data ?? {}) as Record<string, unknown>;
+      if (currentData.url !== sourceUrl || currentData.poster) return;
+      updateNodeData(id, { poster: stablePoster });
+    });
+  }, [data.poster, data.url, id, updateNodeData]);
 
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleMouseEnter = () => {
@@ -6135,6 +6213,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
               poster={data.poster}
               hovered={hovered}
               videoRef={videoRef}
+              onPosterCaptured={handlePosterCaptured}
               onLoadedMetadata={(event) => {
                 const video = event.currentTarget;
                 const { videoWidth, videoHeight } = video;
@@ -6260,6 +6339,17 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
       : data.sourceKind === 'generated'
         ? (language === 'zh' ? '生成' : 'Generated')
         : '';
+  const handlePosterCaptured = useCallback((dataUrl: string) => {
+    const sourceUrl = typeof data.url === 'string' ? data.url : '';
+    if (!sourceUrl || data.poster) return;
+    void persistVideoPoster(sourceUrl, dataUrl).then((stablePoster) => {
+      if (!stablePoster) return;
+      const current = useStore.getState().nodes.find((node) => node.id === id);
+      const currentData = (current?.data ?? {}) as Record<string, unknown>;
+      if (currentData.url !== sourceUrl || currentData.poster) return;
+      updateNodeData(id, { poster: stablePoster });
+    });
+  }, [data.poster, data.url, id, updateNodeData]);
 
   return (
     <BaseNode
@@ -6287,6 +6377,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
           <SmartVideo
             src={data.url}
             poster={data.poster}
+            onPosterCaptured={handlePosterCaptured}
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
               const { videoWidth, videoHeight } = video;
