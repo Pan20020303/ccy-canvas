@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, LayoutGrid, X } from 'lucide-react';
+import { Check, LayoutGrid, Loader2, X } from 'lucide-react';
 import clsx from 'clsx';
 
 import { getHistoryItemAssetUrl } from '../history-assets';
 import { toRenderableMediaUrl } from '../reference-media';
 import { useStore, type HistoryItem } from '../store';
+import { savedAssetsToPickedAssets } from './asset-picker-items';
 
 /** Tabs match NeoWOW's 选择素材 modal. Tabs we can't back yet are
  *  disabled — they render but show an empty "敬请期待" state so the
@@ -22,7 +23,7 @@ const TAB_LABELS: Record<AssetTab, { label: string; tag?: string }> = {
 
 const TAB_AVAILABLE: Record<AssetTab, boolean> = {
   history: true,
-  library: false,
+  library: true,
   canvas: true,
   image_tools: false,
   video_tools: false,
@@ -40,7 +41,7 @@ const SUB_FILTER_LABELS: Record<SubFilter, string> = {
 /** Unified asset record fed to the grid regardless of source tab. */
 export type PickedAsset = {
   id: string;
-  source: 'history' | 'canvas';
+  source: 'history' | 'library' | 'canvas';
   kind: 'image' | 'video' | 'audio';
   url: string;            // resolved playable / displayable URL
   title?: string;
@@ -62,6 +63,8 @@ export function AssetPickerModal({
 }) {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
   const history = useStore((state) => state.history);
+  const savedAssets = useStore((state) => state.savedAssets);
+  const hydrateAssets = useStore((state) => state.hydrateAssets);
   const nodes = useStore((state) => state.nodes);
   const activeProjectId = useStore((state) => state.activeProjectId);
 
@@ -72,14 +75,26 @@ export function AssetPickerModal({
   // visual extremes of NeoWOW's slider (small ~120, large ~240).
   const [gridSize, setGridSize] = useState(168);
   const [livePreview, setLivePreview] = useState(false);
+  const [libraryLoading, setLibraryLoading] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
       setSelectedIds([]);
       setActiveTab('history');
       setSubFilter('current_canvas');
+      setLibraryLoading(false);
+      return;
     }
-  }, [isOpen]);
+
+    let cancelled = false;
+    setLibraryLoading(true);
+    Promise.resolve(hydrateAssets()).finally(() => {
+      if (!cancelled) setLibraryLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, hydrateAssets]);
 
   /** Pull items from the active tab + sub-filter. Sources:
    *  - history: store.history, filtered by mediaType + projectId
@@ -104,6 +119,9 @@ export function AssetPickerModal({
           historyItem: item,
         }))
         .filter((entry) => entry.url);
+    }
+    if (activeTab === 'library') {
+      return savedAssetsToPickedAssets(savedAssets, subFilter);
     }
     if (activeTab === 'canvas') {
       return nodes
@@ -130,7 +148,7 @@ export function AssetPickerModal({
         .filter((entry): entry is PickedAsset => entry !== null);
     }
     return [];
-  }, [activeTab, subFilter, history, nodes, activeProjectId, apiBaseUrl]);
+  }, [activeTab, subFilter, history, savedAssets, nodes, activeProjectId, apiBaseUrl]);
 
   const selectedItems = useMemo(
     () => items.filter((item) => selectedIds.includes(item.id)),
@@ -270,7 +288,12 @@ export function AssetPickerModal({
 
         {/* ── Grid body ────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {!tabAvailable ? (
+          {activeTab === 'library' && libraryLoading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-neutral-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>正在加载素材库</span>
+            </div>
+          ) : !tabAvailable ? (
             <div className="flex h-full items-center justify-center text-sm text-neutral-500">
               敬请期待
             </div>

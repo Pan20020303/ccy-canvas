@@ -196,13 +196,15 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 
 		client := safehttp.Client(60 * time.Second)
 		rangeHeader := r.Header.Get("Range")
-		// On a cache miss we fetch the FULL object (drop the client Range) so the
-		// cached file is complete; the client's Range is then served from the
-		// file by ServeContent.
-		upstreamRange := rangeHeader
-		if caching {
-			upstreamRange = ""
+		// A browser probes videos with Range requests so it can decode the first
+		// frame without downloading the whole file. Never turn that probe into a
+		// full-object cache fill: doing so is what kept completed video nodes grey
+		// until every byte had arrived. Full responses still populate the cache
+		// through the streaming tee below.
+		if caching && rangeHeader != "" {
+			caching = false
 		}
+		upstreamRange := rangeHeader
 
 		// fetch does the request with one retry on transport error / upstream
 		// 5xx (the provider link occasionally drops the first connection).
@@ -307,21 +309,6 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 			ct = "image/webp"
 		}
 
-		// ① On a cache miss for our own asset: persist the full object to disk,
-		// then serve it (Range handled by ServeContent). `body` still holds the
-		// peeked bytes, so nothing is lost.
-		if caching {
-			if bodyPath, cerr := cache.store(cacheKey, ct, io.LimitReader(body, maxProxySize)); cerr == nil {
-				w.Header().Set("X-Cache", "MISS")
-				serveCachedFile(w, r, bodyPath, ct)
-				return
-			}
-			// Store failed and the body is already (partly) consumed — we can't
-			// safely re-stream it. Report transient; the next load re-fetches.
-			http.Error(w, "Failed to cache media", http.StatusBadGateway)
-			return
-		}
-
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// SVG can carry <script>; served same-origin it is a stored-XSS vector
@@ -355,6 +342,16 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		}
 		if resp.StatusCode == http.StatusPartialContent {
 			w.WriteHeader(http.StatusPartialContent)
+		}
+		// Cache misses stream to the browser and cache simultaneously. This must
+		// happen after response headers are prepared so first paint is not held
+		// hostage by a multi-megabyte image or video download.
+		if caching {
+			w.Header().Set("X-Cache", "MISS")
+			if cerr := cache.storeWhileServing(cacheKey, ct, w, io.LimitReader(body, maxProxySize)); cerr != nil {
+				log.Printf("[proxy-media] streaming cache fill failed: %v", cerr)
+			}
+			return
 		}
 		io.Copy(w, io.LimitReader(body, maxProxySize))
 	}

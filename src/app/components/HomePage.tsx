@@ -79,8 +79,9 @@ type DeleteTarget = { kind: 'project' | 'folder'; id: string; name: string } | n
 
 export function HomePage() {
   const navigate = useNavigate();
-  const { user, creditSummary, logout } = useAuth();
+  const { user, creditSummary, logout, refreshCredits } = useAuth();
   const language = useStore((s) => s.language);
+  const theme = useStore((s) => s.theme);
   const localProjects = useStore((s) => s.projects);
   const backendProjects = useStore((s) => s.backendProjects);
   const activeProjectId = useStore((s) => s.activeProjectId);
@@ -92,6 +93,7 @@ export function HomePage() {
   const loadBackendProjects = useStore((s) => s.loadBackendProjects);
   const refreshBackendProjects = useStore((s) => s.refreshBackendProjects);
   const zh = language === 'zh';
+  const light = theme === 'light';
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -162,8 +164,9 @@ export function HomePage() {
   );
   const openFolder = openFolderId ? folders.find((f) => f.id === openFolderId) ?? null : null;
 
-  // 分页：项目卡 8 个/页（开始创作卡和文件夹卡不占页额）。
-  const PAGE_SIZE = 8;
+  // 分页：项目卡 6 个/页。根目录加上「开始创作」与文件夹卡后，
+  // 常见的四列桌面布局会稳定在两行内，不再把单个尾卡挤到第三行。
+  const PAGE_SIZE = 6;
   const totalPages = Math.max(1, Math.ceil(visibleProjects.length / PAGE_SIZE));
   useEffect(() => { setPage(1); }, [openFolderId, collabTab, search]);
   useEffect(() => { setPage((p) => Math.min(p, totalPages)); }, [totalPages]);
@@ -171,6 +174,18 @@ export function HomePage() {
     () => visibleProjects.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
     [visibleProjects, page],
   );
+  const paginationPages = useMemo(() => {
+    if (totalPages <= 5) return Array.from({ length: totalPages }, (_, index) => index + 1);
+    const start = Math.max(1, Math.min(page - 2, totalPages - 4));
+    return Array.from({ length: 5 }, (_, index) => start + index);
+  }, [page, totalPages]);
+
+  const changePage = (nextPage: number) => {
+    const safePage = Math.max(1, Math.min(totalPages, nextPage));
+    if (safePage === page) return;
+    setPage(safePage);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const openProject = async (projectId: string) => {
     if (busyId) return;
@@ -276,7 +291,8 @@ export function HomePage() {
   const handleDelete = async (projectId: string) => {
     setBusyId(projectId);
     try {
-      await apiDeleteProject(projectId);
+      const result = await apiDeleteProject(projectId);
+      if (result.refunded_credits > 0) await refreshCredits();
       if (projectId === activeBackendProjectId) {
         // Deleted the active project — do a full reload so the canvas
         // re-anchors onto the first remaining project.
@@ -337,15 +353,38 @@ export function HomePage() {
   const menuItemCls = 'flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] text-neutral-300 transition hover:bg-white/[0.06] hover:text-neutral-100';
 
   return (
-    <div className="relative min-h-screen bg-[#121316] text-neutral-100">
-      {/* NeoWow 同款黑灰背景：纯色炭灰 + 细点阵纹理，无渐变无光晕。 */}
-      <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(rgba(255,255,255,0.05)_1px,transparent_1px)] [background-size:24px_24px]" />
+    <div className={clsx(
+      'relative min-h-screen',
+      light
+        ? 'bg-[#f3f5f7] text-[#20242b] [&_.text-neutral-100]:text-[#20242b] [&_.text-neutral-200]:text-[#303640] [&_.text-neutral-300]:text-[#454c57] [&_.text-neutral-400]:text-[#5c6572] [&_.text-neutral-500]:text-[#747e8c] [&_.text-neutral-600]:text-[#8b94a1]'
+        : 'bg-[#181a1f] text-neutral-100',
+    )}>
+      {/* 深炭灰背景 + 细点阵纹理，并用极弱的顶部环境光拉开页面层次。 */}
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          backgroundImage: light
+            ? 'radial-gradient(circle at 50% -12%, rgba(255,255,255,0.98), transparent 44%)'
+            : 'radial-gradient(circle at 50% -12%, rgba(255,255,255,0.065), transparent 42%)',
+        }}
+      />
+      <div
+        className="pointer-events-none fixed inset-0 z-0 [background-size:24px_24px]"
+        style={{
+          backgroundImage: light
+            ? 'radial-gradient(rgba(35,43,55,0.075) 1px, transparent 1px)'
+            : 'radial-gradient(rgba(255,255,255,0.065) 1px, transparent 1px)',
+        }}
+      />
 
 
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onCoverFile(e)} />
 
-      {/* Full-bleed header — borderless (reference style). */}
-      <header className="relative z-20 w-full bg-white/[0.02] backdrop-blur-xl">
+      {/* Full-bleed header with a subtle divider from the project area. */}
+      <header className={clsx(
+        'relative z-20 w-full border-b backdrop-blur-xl',
+        light ? 'border-black/[0.06] bg-white/85' : 'border-white/[0.04] bg-[#1d1f24]/90',
+      )}>
         <div className="flex h-16 w-full items-center justify-between px-8">
           <div className="flex items-center gap-2.5">
             <img src={logoUrl} alt="CCY Canvas" className="h-7 w-7 rounded object-contain" />
@@ -378,7 +417,10 @@ export function HomePage() {
                 {menuOpen ? (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                    <div className="absolute right-0 top-full z-50 mt-2 w-52 rounded-xl border border-white/10 bg-[#16171b]/95 py-1.5 shadow-2xl backdrop-blur-xl">
+                    <div className={clsx(
+                      'absolute right-0 top-full z-50 mt-2 w-52 rounded-xl border py-1.5 shadow-2xl backdrop-blur-xl',
+                      light ? 'border-black/10 bg-white/95' : 'border-white/10 bg-[#16171b]/95',
+                    )}>
                       <div className="border-b border-white/5 px-3 py-2">
                         <div className="text-sm text-neutral-200">{user.name}</div>
                         <div className="text-[11px] text-neutral-500">{user.email}</div>
@@ -468,13 +510,21 @@ export function HomePage() {
         {/* 个人 / 协作 切换 + 搜索(参考图五) */}
         {!openFolder ? (
           <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-1 rounded-full border border-white/8 bg-white/[0.03] p-0.5">
+            <div className={clsx(
+              'flex items-center gap-1 rounded-full border p-0.5',
+              light ? 'border-black/10 bg-black/[0.035]' : 'border-white/10 bg-white/[0.045]',
+            )}>
               {([['all', zh ? '全部' : 'All'], ['personal', zh ? '个人' : 'Personal'], ['collab', zh ? '协作' : 'Collab']] as const).map(([key, label]) => (
                 <button
                   key={key}
                   type="button"
                   onClick={() => setCollabTab(key)}
-                  className={clsx('rounded-full px-4 py-1.5 text-[12.5px] transition', collabTab === key ? 'bg-white/12 text-white' : 'text-neutral-400 hover:text-neutral-200')}
+                  className={clsx(
+                    'rounded-full px-4 py-1.5 text-[12.5px] transition',
+                    collabTab === key
+                      ? (light ? 'bg-white text-[#1c1f24] shadow-sm' : 'bg-white/12 text-white')
+                      : 'text-neutral-400 hover:text-neutral-200',
+                  )}
                 >
                   {label}
                 </button>
@@ -486,7 +536,7 @@ export function HomePage() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={zh ? '搜索' : 'Search'}
-                className="w-56 rounded-full border border-white/10 bg-white/[0.03] py-1.5 pl-9 pr-3 text-[12.5px] text-neutral-100 outline-none transition placeholder:text-neutral-600 focus:border-white/25"
+                className="w-56 rounded-full border border-white/12 bg-white/[0.045] py-1.5 pl-9 pr-3 text-[12.5px] text-neutral-100 outline-none transition placeholder:text-neutral-500 focus:border-white/25"
               />
             </div>
           </div>
@@ -503,7 +553,10 @@ export function HomePage() {
             <div className="flex gap-4 overflow-x-auto pb-2">
               {templates.map((tpl) => (
                 <div key={tpl.id} className="group/tpl w-[220px] shrink-0" data-testid="template-card">
-                  <div className="relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-b from-[#26272d] to-[#191a1f]">
+                  <div className={clsx(
+                    'relative aspect-[16/10] w-full overflow-hidden rounded-2xl border bg-gradient-to-b',
+                    light ? 'border-black/10 from-white to-[#e9edf2]' : 'border-white/10 from-[#26272d] to-[#191a1f]',
+                  )}>
                     {tpl.cover_url ? (
                       <MediaThumb src={tpl.cover_url} alt={tpl.name} className="h-full w-full object-cover" />
                     ) : (
@@ -516,7 +569,10 @@ export function HomePage() {
                       onClick={() => void handleUseTemplate(tpl.id)}
                       disabled={busyId !== null}
                       data-testid="use-template"
-                      className="absolute inset-0 flex items-center justify-center bg-black/45 opacity-0 backdrop-blur-[1px] transition group-hover/tpl:opacity-100 disabled:opacity-60"
+                      className={clsx(
+                        'absolute inset-0 flex items-center justify-center opacity-0 backdrop-blur-[1px] transition group-hover/tpl:opacity-100 disabled:opacity-60',
+                        light ? 'bg-white/70' : 'bg-black/45',
+                      )}
                     >
                       <span className="rounded-full border border-cyan-400/40 bg-cyan-400/15 px-4 py-1.5 text-[12.5px] text-cyan-100">
                         {busyId === `tpl-${tpl.id}` ? (zh ? '创建中…' : 'Creating…') : (zh ? '使用此模板' : 'Use template')}
@@ -537,9 +593,17 @@ export function HomePage() {
               type="button"
               onClick={startCreating}
               disabled={busyId !== null}
-              className="group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed border-white/20 bg-white/[0.04] text-neutral-200 transition hover:border-white/40 hover:bg-white/[0.07] disabled:opacity-60"
+              className={clsx(
+                'group flex aspect-[16/10] w-full flex-col items-center justify-center gap-2.5 rounded-2xl border border-dashed text-neutral-200 transition disabled:opacity-60',
+                light
+                  ? 'border-black/15 bg-white/65 shadow-[0_8px_28px_rgba(31,41,55,0.04)] hover:border-black/25 hover:bg-white'
+                  : 'border-white/25 bg-white/[0.055] hover:border-white/45 hover:bg-white/[0.09]',
+              )}
             >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/[0.09] transition group-hover:bg-white/[0.16]">
+              <span className={clsx(
+                'flex h-10 w-10 items-center justify-center rounded-full transition',
+                light ? 'bg-black/[0.05] group-hover:bg-black/[0.09]' : 'bg-white/[0.09] group-hover:bg-white/[0.16]',
+              )}>
                 <Plus className="h-4.5 w-4.5" />
               </span>
               <span className="text-[13px] tracking-wide">{zh ? '开始创作' : 'Start creating'}</span>
@@ -554,15 +618,26 @@ export function HomePage() {
           {/* 文件夹卡片（仅根层级） */}
           {!openFolder ? folders.map((folder) => (
             <div key={folder.id} className="group/folder">
-              <BorderGlow {...CARD_GLOW} backgroundColor="#1d1e24" className="!border-transparent">
+              <BorderGlow {...CARD_GLOW} backgroundColor={light ? '#ffffff' : '#26282f'} className="!border-transparent">
                 <button
                   type="button"
                   onClick={() => setOpenFolderId(folder.id)}
-                  className="group relative block aspect-[16/10] w-full overflow-hidden bg-gradient-to-b from-[#26272d] to-[#191a1f] transition"
+                  className={clsx(
+                    'group relative block aspect-[16/10] w-full overflow-hidden bg-gradient-to-b transition',
+                    light ? 'from-white to-[#e9edf2]' : 'from-[#30323a] to-[#22242b]',
+                  )}
                 >
                   {/* 文件夹页签造型 */}
-                  <div className="absolute left-5 top-5 h-2.5 w-16 rounded-t-md bg-white/[0.12]" />
-                  <div className="absolute inset-x-5 bottom-5 top-7 rounded-xl bg-gradient-to-b from-white/[0.1] to-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]" />
+                  <div className={clsx(
+                    'absolute left-5 top-5 h-2.5 w-16 rounded-t-md',
+                    light ? 'bg-black/[0.07]' : 'bg-white/[0.12]',
+                  )} />
+                  <div className={clsx(
+                    'absolute inset-x-5 bottom-5 top-7 rounded-xl bg-gradient-to-b',
+                    light
+                      ? 'from-black/[0.06] to-black/[0.025] shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]'
+                      : 'from-white/[0.1] to-white/[0.03] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)]',
+                  )} />
                   <Folder className="absolute bottom-8 right-8 h-7 w-7 text-neutral-500 transition group-hover:text-neutral-300" />
                 </button>
               </BorderGlow>
@@ -595,8 +670,11 @@ export function HomePage() {
               <div key={project.id} className="group/card">
                 <BorderGlow
                   {...CARD_GLOW}
-                  backgroundColor="#1b1c21"
-                  className={isActive ? '!border-transparent ring-1 ring-white/30' : '!border-transparent'}
+                  backgroundColor={light ? '#ffffff' : '#24262d'}
+                  className={clsx(
+                    '!border-transparent',
+                    isActive && (light ? 'ring-1 ring-black/20' : 'ring-1 ring-white/30'),
+                  )}
                 >
                   <button
                     type="button"
@@ -608,8 +686,18 @@ export function HomePage() {
                       <MediaThumb src={project.coverUrl} alt={project.name} className="h-full w-full object-cover" />
                     ) : (
                       <>
-                        <div className="absolute inset-0 bg-gradient-to-b from-[#26272d] via-[#1b1c21] to-[#141519]" />
-                        <div className="absolute inset-0 bg-[radial-gradient(70%_55%_at_50%_12%,rgba(255,255,255,0.12),transparent_65%)] opacity-80 transition-opacity group-hover/card:opacity-100" />
+                        <div className={clsx(
+                          'absolute inset-0 bg-gradient-to-b',
+                          light ? 'from-white via-[#f4f6f8] to-[#e8ecf1]' : 'from-[#30323a] via-[#25272e] to-[#1f2127]',
+                        )} />
+                        <div
+                          className="absolute inset-0 opacity-80 transition-opacity group-hover/card:opacity-100"
+                          style={{
+                            backgroundImage: light
+                              ? 'radial-gradient(70% 55% at 50% 12%, rgba(255,255,255,0.85), transparent 65%)'
+                              : 'radial-gradient(70% 55% at 50% 12%, rgba(255,255,255,0.16), transparent 65%)',
+                          }}
+                        />
                         <div className="relative flex h-full w-full items-center justify-center text-neutral-600 transition group-hover/card:text-neutral-400">
                           <ImageIcon className="h-8 w-8" />
                         </div>
@@ -657,7 +745,12 @@ export function HomePage() {
                       {menuVisible ? (
                         <div
                           onMouseDown={(e) => e.stopPropagation()}
-                          className="absolute right-0 top-full z-50 mt-1 w-44 rounded-xl border border-white/10 bg-[#17181d]/97 py-1.5 shadow-[0_24px_60px_rgba(0,0,0,0.6)] backdrop-blur-xl"
+                          className={clsx(
+                            'absolute right-0 top-full z-50 mt-1 w-44 rounded-xl border py-1.5 backdrop-blur-xl',
+                            light
+                              ? 'border-black/10 bg-white/97 shadow-[0_24px_60px_rgba(31,41,55,0.16)]'
+                              : 'border-white/10 bg-[#17181d]/97 shadow-[0_24px_60px_rgba(0,0,0,0.6)]',
+                          )}
                         >
                           <button type="button" className={menuItemCls} onClick={() => { setCardMenu(null); void openProject(project.id); }}>
                             <ChevronRight className="h-3.5 w-3.5 text-neutral-500" />
@@ -699,7 +792,12 @@ export function HomePage() {
                               <ChevronRight className="h-3.5 w-3.5 text-neutral-600" />
                             </button>
                             {cardMenu?.submenu ? (
-                              <div className="absolute left-full top-0 z-50 ml-1 w-44 rounded-xl border border-white/10 bg-[#17181d]/97 py-1.5 shadow-[0_24px_60px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+                              <div className={clsx(
+                                'absolute left-full top-0 z-50 ml-1 w-44 rounded-xl border py-1.5 backdrop-blur-xl',
+                                light
+                                  ? 'border-black/10 bg-white/97 shadow-[0_24px_60px_rgba(31,41,55,0.16)]'
+                                  : 'border-white/10 bg-[#17181d]/97 shadow-[0_24px_60px_rgba(0,0,0,0.6)]',
+                              )}>
                                 {folders.length === 0 ? (
                                   <div className="px-3.5 py-2 text-[12px] text-neutral-600">{zh ? '还没有文件夹' : 'No folders yet'}</div>
                                 ) : folders.map((folder) => (
@@ -749,30 +847,58 @@ export function HomePage() {
           })}
         </div>
 
-        {totalPages > 1 ? (
-          <div className="mt-14 flex items-center justify-center gap-3">
+        {visibleProjects.length > 0 ? (
+          <nav
+            aria-label={zh ? '项目分页' : 'Project pagination'}
+            className="mt-12 flex flex-col items-center justify-center gap-3"
+          >
+            <div className="flex items-center justify-center gap-1.5">
             <button
               type="button"
               disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => changePage(page - 1)}
+              aria-label={zh ? '上一页' : 'Previous page'}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-neutral-300 transition hover:border-white/25 hover:text-white disabled:opacity-35 disabled:hover:border-white/10"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-            <span className="min-w-12 text-center text-[12px] tabular-nums text-neutral-400">
-              {page} / {totalPages}
-            </span>
+            {paginationPages.map((pageNumber) => (
+              <button
+                key={pageNumber}
+                type="button"
+                onClick={() => changePage(pageNumber)}
+                aria-label={zh ? `第 ${pageNumber} 页` : `Page ${pageNumber}`}
+                aria-current={pageNumber === page ? 'page' : undefined}
+                className={clsx(
+                  'flex h-8 min-w-8 items-center justify-center rounded-full border px-2 text-[12px] tabular-nums transition',
+                  pageNumber === page
+                    ? 'border-[#ff6b47]/45 bg-[#ff6b47]/15 text-[#ff9a80]'
+                    : 'border-white/10 bg-white/[0.04] text-neutral-400 hover:border-white/25 hover:text-white',
+                )}
+              >
+                {pageNumber}
+              </button>
+            ))}
             <button
               type="button"
               disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              onClick={() => changePage(page + 1)}
+              aria-label={zh ? '下一页' : 'Next page'}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-neutral-300 transition hover:border-white/25 hover:text-white disabled:opacity-35 disabled:hover:border-white/10"
             >
               <ChevronRight className="h-4 w-4" />
             </button>
-          </div>
+            </div>
+            <div className="text-[11px] tabular-nums text-neutral-500">
+              {zh
+                ? `第 ${page} / ${totalPages} 页 · 共 ${visibleProjects.length} 个项目`
+                : `Page ${page} of ${totalPages} · ${visibleProjects.length} projects`}
+            </div>
+          </nav>
         ) : (
-          <div className="mt-16 text-center text-[12px] text-neutral-600">{zh ? '没有更多了' : 'No more projects'}</div>
+          <div className="mt-16 text-center text-[12px] text-neutral-600">
+            {zh ? '暂无项目' : 'No projects yet'}
+          </div>
         )}
       </main>
 
@@ -808,8 +934,8 @@ export function HomePage() {
             ? `「${deleteTarget.name}」将被删除，其中的项目会移回“全部项目”，项目内容不会被删除。`
             : `“${deleteTarget.name}” will be deleted. Its projects will return to All Projects and their content will be kept.`)
           : (zh
-            ? `「${deleteTarget?.name ?? ''}」和画布中的所有内容将被永久删除，且无法恢复。`
-            : `“${deleteTarget?.name ?? ''}” and all of its canvas content will be permanently deleted.`)}
+            ? `「${deleteTarget?.name ?? ''}」和画布中的所有内容将被永久删除，且无法恢复。若项目中还有未使用积分，将先按出资比例自动退回各出资人的个人账户。`
+            : `“${deleteTarget?.name ?? ''}” and all of its canvas content will be permanently deleted. Any unused project points will first be returned to contributors in proportion to their funding.`)}
         confirmLabel={deleteTarget?.kind === 'folder'
           ? (zh ? '删除文件夹' : 'Delete folder')
           : (zh ? '删除项目' : 'Delete project')}

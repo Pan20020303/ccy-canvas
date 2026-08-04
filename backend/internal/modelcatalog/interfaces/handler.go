@@ -1733,13 +1733,24 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 	cost := h.svc.ResolveGenerationCost(req)
 	if cost > 0 {
 		reason := "reserve: " + input.Body.ServiceType + " " + input.Body.Model + " node=" + input.Body.NodeId
-		if rerr := h.svc.ReserveCredits(ctx, userIDStr, cost, reason); rerr != nil {
+		scope, rerr := h.svc.ReserveCredits(ctx, userIDStr, req.ProjectID, cost, reason)
+		if rerr != nil {
 			if errors.Is(rerr, application.ErrInsufficientCredits) {
 				return nil, huma.Error402PaymentRequired("积分不足，请充值或开通会员后重试")
+			}
+			if errors.Is(rerr, application.ErrInsufficientProjectCredits) {
+				return nil, huma.Error402PaymentRequired("项目积分不足，请联系画布管理员划转积分")
+			}
+			if errors.Is(rerr, application.ErrMemberQuotaExceeded) {
+				return nil, huma.Error402PaymentRequired("你的项目积分额度已用完，请联系画布管理员调整额度")
+			}
+			if errors.Is(rerr, application.ErrProjectCreditAccessDenied) {
+				return nil, huma.Error403Forbidden("无权使用该协作项目的积分")
 			}
 			return nil, huma.Error500InternalServerError("Failed to reserve credits: " + rerr.Error())
 		}
 		req.CreditCost = cost
+		req.CreditScope = scope
 	}
 
 	// ─── Asynq durable path ────────────────────────────────────────
@@ -1762,7 +1773,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		defer func() { <-h.generateLimiter }()
 	case <-ctx.Done():
 		// Never started → return the reserve.
-		h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: canceled before slot")
+		h.svc.RefundCredits(ctx, userIDStr, req.ProjectID, req.CreditScope, req.CreditCost, "refund: canceled before slot")
 		return nil, huma.Error408RequestTimeout("Request canceled while waiting for a generation slot")
 	}
 
@@ -1798,7 +1809,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 				// return the duplicate's reserve.
 				if existing, derr := h.q.GetGenerationLogByRequestID(ctx, pgReqID); derr == nil {
 					if req.CreditCost > 0 {
-						h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: idempotent replay (inline duplicate)")
+						h.svc.RefundCredits(ctx, userIDStr, req.ProjectID, req.CreditScope, req.CreditCost, "refund: idempotent replay (inline duplicate)")
 					}
 					out := &generateOutput{}
 					out.Body.Data.GenerateResult = application.GenerateResult{Type: "queued", Content: ""}
@@ -1885,7 +1896,7 @@ func (h *Handler) enqueueGeneration(
 	// 2. Persist queued row with full request payload.
 	payload, err := json.Marshal(req)
 	if err != nil {
-		h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: failed to encode queued task")
+		h.svc.RefundCredits(ctx, userIDStr, req.ProjectID, req.CreditScope, req.CreditCost, "refund: failed to encode queued task")
 		return nil, huma.Error500InternalServerError("Failed to encode generation request: " + err.Error())
 	}
 	row, err := h.q.InsertGenerationLogQueued(ctx, sqlc.InsertGenerationLogQueuedParams{
@@ -1907,7 +1918,7 @@ func (h *Handler) enqueueGeneration(
 			// only this duplicate call's reserve and return the existing task
 			// immediately instead of racing a second Redis enqueue.
 			if err == nil && req.CreditCost > 0 {
-				h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: idempotent replay (duplicate request_id)")
+				h.svc.RefundCredits(ctx, userIDStr, req.ProjectID, req.CreditScope, req.CreditCost, "refund: idempotent replay (duplicate request_id)")
 			}
 			if err == nil {
 				out := &generateOutput{}
@@ -1918,7 +1929,7 @@ func (h *Handler) enqueueGeneration(
 			}
 		}
 		if err != nil {
-			h.svc.RefundCredits(ctx, userIDStr, req.CreditCost, "refund: failed to persist queued task")
+			h.svc.RefundCredits(ctx, userIDStr, req.ProjectID, req.CreditScope, req.CreditCost, "refund: failed to persist queued task")
 			return nil, huma.Error500InternalServerError("Failed to persist queued task: " + err.Error())
 		}
 	}

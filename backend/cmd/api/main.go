@@ -71,7 +71,7 @@ func main() {
 	}
 
 	// Identity & Auth
-	creditService := creditinfra.NewService(queries)
+	creditService := creditinfra.NewService(queries, pool)
 	identityRepository := identityinfra.NewRepository(pool, queries)
 	identityService := identityapp.NewService(identityRepository, passwordService, creditService).
 		WithDefaultDailyQuota(cfg.DefaultDailyQuota)
@@ -225,7 +225,7 @@ func main() {
 
 	// Workspace routes (projects + canvas).
 	workspaceRepo := workspaceinfra.NewRepository(queries)
-	workspaceHandler := workspacehttp.NewHandler(workspaceRepo)
+	workspaceHandler := workspacehttp.NewHandler(workspaceRepo, creditService)
 	workspaceHandler.RegisterRoutes(api)
 	// Prompt template library (shared templates + votes; admin audit view).
 	workspacehttp.NewPromptTemplateHandler(queries).RegisterRoutes(api)
@@ -334,18 +334,28 @@ type creditChargerAdapter struct {
 	svc creditinfra.Service
 }
 
-func (a creditChargerAdapter) Reserve(ctx context.Context, userID string, amount int32, reason string) error {
-	if err := a.svc.Reserve(ctx, userID, amount, reason); err != nil {
+func (a creditChargerAdapter) Reserve(ctx context.Context, userID, projectID string, amount int32, reason string) (string, error) {
+	scope, err := a.svc.Reserve(ctx, userID, projectID, amount, reason)
+	if err != nil {
 		if errors.Is(err, creditapp.ErrInsufficientCredits) {
-			return application.ErrInsufficientCredits
+			return "", application.ErrInsufficientCredits
 		}
-		return err
+		if errors.Is(err, creditapp.ErrInsufficientProjectCredits) {
+			return "", application.ErrInsufficientProjectCredits
+		}
+		if errors.Is(err, creditapp.ErrMemberQuotaExceeded) {
+			return "", application.ErrMemberQuotaExceeded
+		}
+		if errors.Is(err, creditapp.ErrProjectCreditAccessDenied) {
+			return "", application.ErrProjectCreditAccessDenied
+		}
+		return "", err
 	}
-	return nil
+	return scope, nil
 }
 
-func (a creditChargerAdapter) Refund(ctx context.Context, userID string, amount int32, reason string) error {
-	return a.svc.Refund(ctx, userID, amount, reason)
+func (a creditChargerAdapter) Refund(ctx context.Context, userID, projectID, scope string, amount int32, reason string) error {
+	return a.svc.Refund(ctx, userID, projectID, scope, amount, reason)
 }
 
 // taskQueueAdapter bridges *tasks.Queue (concrete type, owns Redis

@@ -102,15 +102,30 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 	// before switching the response into SSE mode (after that we can't set a
 	// non-200 status). A stream that produces nothing is refunded below.
 	cost := rt.svc.ResolveGenerationCost(genReq)
+	creditScope := "personal"
 	if cost > 0 {
-		if rerr := rt.svc.ReserveCredits(r.Context(), claims.UserID, cost, "reserve: text stream node="+body.NodeID); rerr != nil {
+		scope, rerr := rt.svc.ReserveCredits(r.Context(), claims.UserID, body.ProjectID, cost, "reserve: text stream node="+body.NodeID)
+		if rerr != nil {
 			if errors.Is(rerr, modelapp.ErrInsufficientCredits) {
 				httpx.WriteJSON(w, r, http.StatusPaymentRequired, map[string]string{"error": "积分不足，请充值或开通会员后重试"})
+				return
+			}
+			if errors.Is(rerr, modelapp.ErrInsufficientProjectCredits) {
+				httpx.WriteJSON(w, r, http.StatusPaymentRequired, map[string]string{"error": "项目积分不足，请联系画布管理员划转积分"})
+				return
+			}
+			if errors.Is(rerr, modelapp.ErrMemberQuotaExceeded) {
+				httpx.WriteJSON(w, r, http.StatusPaymentRequired, map[string]string{"error": "你的项目积分额度已用完，请联系画布管理员调整额度"})
+				return
+			}
+			if errors.Is(rerr, modelapp.ErrProjectCreditAccessDenied) {
+				httpx.WriteJSON(w, r, http.StatusForbidden, map[string]string{"error": "无权使用该协作项目的积分"})
 				return
 			}
 			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to reserve credits"})
 			return
 		}
+		creditScope = scope
 	}
 
 	// Panic safety: a panic in StreamText (or a delta callback) would otherwise
@@ -119,7 +134,7 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 	defer func() {
 		if rec := recover(); rec != nil {
 			if cost > 0 && !settled {
-				rt.svc.RefundCredits(context.Background(), claims.UserID, cost, "refund: text stream panic node="+body.NodeID)
+				rt.svc.RefundCredits(context.Background(), claims.UserID, body.ProjectID, creditScope, cost, "refund: text stream panic node="+body.NodeID)
 			}
 			log.Printf("[text-stream] recovered panic for user %s node %s: %v", claims.UserID, body.NodeID, rec)
 		}
@@ -206,7 +221,7 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 		// 两者都退;只有「真实失败但已流出部分文本」才保留(用户确实拿到了内容)。
 		clientGone := r.Context().Err() != nil || streamCtx.Err() != nil || errors.Is(serr, context.Canceled) || errors.Is(serr, context.DeadlineExceeded)
 		if cost > 0 && (clientGone || strings.TrimSpace(full) == "") {
-			rt.svc.RefundCredits(context.Background(), claims.UserID, cost, "refund: text stream "+refundReasonForStream(clientGone)+" node="+body.NodeID)
+			rt.svc.RefundCredits(context.Background(), claims.UserID, body.ProjectID, creditScope, cost, "refund: text stream "+refundReasonForStream(clientGone)+" node="+body.NodeID)
 		}
 		_ = writeFrame(map[string]string{"type": "error", "message": apperror.PublicMessage(serr)})
 		return

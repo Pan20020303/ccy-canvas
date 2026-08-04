@@ -5581,6 +5581,11 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
   const isPanorama = isLikelyPanoramaData(data);
+  const isGenerating = data.status === 'generating' || data.status === 'running';
+  // The task API exposes result_url before the generated asset has finished
+  // being re-hosted. That URL is already renderable, so do not keep the opaque
+  // generation overlay on top of it during the much slower persistence step.
+  const hasCurrentTaskPreview = Boolean(data.url) && (data.assetSyncing === true || data.taskPhase === 'persisting');
 
   // Use the actual loaded image ratio if available, otherwise fall back to param.
   const effectiveAspect = naturalRatio ?? paramAspect;
@@ -5612,7 +5617,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       tone="image"
       title={language === 'zh' ? '生成图像' : 'Generate Image'}
       selected={selected}
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={isGenerating && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.error}
       width={genBox.width}
@@ -6030,6 +6035,8 @@ export const VideoNode = ({ id, data, selected }: any) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaAspectStyle = getMediaAspectRatioStyle(data);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
+  const isGenerating = data.status === 'generating' || data.status === 'running';
+  const hasCurrentTaskPreview = Boolean(data.url) && (data.assetSyncing === true || data.taskPhase === 'persisting');
 
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleMouseEnter = () => {
@@ -6102,7 +6109,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       tone="video"
       title={language === 'zh' ? '生成视频' : 'Generate Video'}
       selected={selected}
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={isGenerating && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
@@ -6671,6 +6678,7 @@ function ResilientImage({
 }) {
   const [failed, setFailed] = useState(false);
   const [useProxy, setUseProxy] = useState(Boolean(thumbWidth));
+  const [loaded, setLoaded] = useState(false);
   const [bust, setBust] = useState(0);
   const triedDirect = useRef(false);
   // 自动退避重试次数(across direct+proxy 之后的软重试)。刚生成成功的图常因
@@ -6678,6 +6686,7 @@ function ResilientImage({
   // 弹「点击重试」,用户手动点一下才成,体验割裂。
   const autoRetries = useRef(0);
   const retryTimer = useRef<number | null>(null);
+  const slowProxyTimer = useRef<number | null>(null);
   const MAX_AUTO_RETRIES = 4;
 
   // First load: try the raw asset directly. If that fails and it's a remote
@@ -6694,14 +6703,37 @@ function ResilientImage({
 
   useEffect(() => {
     setFailed(false);
+    setLoaded(false);
     setUseProxy(Boolean(thumbWidth)); // proxy-first when a thumbnail is wanted
     setBust(0);
     autoRetries.current = 0;
     triedDirect.current = false;
-    return () => { if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; } };
+    return () => {
+      if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
+      if (slowProxyTimer.current) { clearTimeout(slowProxyTimer.current); slowProxyTimer.current = null; }
+    };
   }, [src, thumbWidth]);
 
+  // A proxy request can remain pending (rather than erroring) while a cache
+  // miss is filled. onError never fires in that case, so fall back to the raw
+  // object after a short grace period. Direct <img> rendering does not require
+  // CORS permission; the proxy remains available for capture/edit operations.
+  useEffect(() => {
+    if (!isRemote || !useProxy || !thumbWidth || loaded || failed) return;
+    slowProxyTimer.current = window.setTimeout(() => {
+      triedDirect.current = true;
+      setUseProxy(false);
+    }, 3500);
+    return () => {
+      if (slowProxyTimer.current) {
+        clearTimeout(slowProxyTimer.current);
+        slowProxyTimer.current = null;
+      }
+    };
+  }, [failed, isRemote, loaded, thumbWidth, useProxy]);
+
   const handleError = () => {
+    setLoaded(false);
     // First failure on a remote URL → fall back to backend proxy silently.
     if (isRemote && !useProxy) {
       setUseProxy(true);
@@ -6727,6 +6759,7 @@ function ResilientImage({
   };
 
   const handleLoad = (event: React.SyntheticEvent<HTMLImageElement>) => {
+    setLoaded(true);
     autoRetries.current = 0;
     if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null; }
     onLoad?.(event);

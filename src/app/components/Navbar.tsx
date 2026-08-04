@@ -23,6 +23,9 @@ export const Navbar = () => {
   // 面板宽度可拖拽 —— 让位必须跟随实际宽度(硬编码 480 会在拖宽后被面板压住)。
   const agentPanelWidth = useStore((s) => s.agentPanelWidth);
   const agentPanelResizing = useStore((s) => s.agentPanelResizing);
+  const activeProjectId = useStore((s) => s.activeBackendProjectId);
+  const activeProject = useStore((s) => s.backendProjects.find((project) => project.id === s.activeBackendProjectId));
+  const isCollaborativeProject = Boolean(activeProjectId && activeProject?.is_collaborative);
   const { user, creditSummary, logout, refreshCredits } = useAuth();
   const dict = t[language];
   const navigate = useNavigate();
@@ -158,7 +161,7 @@ export const Navbar = () => {
 
         {user ? <CollaborationControls /> : null}
 
-        {user ? (
+        {user && !isCollaborativeProject ? (
           // Show the pill whenever the user is logged in, even if the
           // credit summary hasn't loaded yet — falling back to `—` so the
           // pill doesn't visually disappear on transient backend errors

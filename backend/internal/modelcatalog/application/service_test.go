@@ -1143,8 +1143,11 @@ type fakeCharger struct {
 	refundAmount int32
 }
 
-func (c *fakeCharger) Reserve(context.Context, string, int32, string) error { c.reserves++; return nil }
-func (c *fakeCharger) Refund(_ context.Context, _ string, amount int32, _ string) error {
+func (c *fakeCharger) Reserve(context.Context, string, string, int32, string) (string, error) {
+	c.reserves++
+	return "personal", nil
+}
+func (c *fakeCharger) Refund(_ context.Context, _, _, _ string, amount int32, _ string) error {
 	c.refunds++
 	c.refundAmount += amount
 	return nil

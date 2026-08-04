@@ -194,13 +194,16 @@ type Service struct {
 // creditcharger mirrors credits/application.Charger as a local interface so
 // this package stays free of a credits import. main wires the concrete one.
 type creditcharger interface {
-	Reserve(ctx context.Context, userID string, amount int32, reason string) error
-	Refund(ctx context.Context, userID string, amount int32, reason string) error
+	Reserve(ctx context.Context, userID, projectID string, amount int32, reason string) (string, error)
+	Refund(ctx context.Context, userID, projectID, scope string, amount int32, reason string) error
 }
 
 // ErrInsufficientCredits is re-exported so the HTTP handler can detect it
 // without importing the credits package.
 var ErrInsufficientCredits = errors.New("insufficient credits")
+var ErrInsufficientProjectCredits = errors.New("insufficient project credits")
+var ErrMemberQuotaExceeded = errors.New("project member quota exceeded")
+var ErrProjectCreditAccessDenied = errors.New("project credit access denied")
 
 // WithCredits attaches the per-generation credit charger. Returns the
 // service for chaining.
@@ -325,11 +328,11 @@ func (s *Service) ResolveGenerationCost(req GenerateRequest) int32 {
 
 // ReserveCredits deducts amount at submit. Returns ErrInsufficientCredits
 // when the balance can't cover it. No-op when charging isn't wired.
-func (s *Service) ReserveCredits(ctx context.Context, userID string, amount int32, reason string) error {
+func (s *Service) ReserveCredits(ctx context.Context, userID, projectID string, amount int32, reason string) (string, error) {
 	if s.credits == nil || amount <= 0 || userID == "" {
-		return nil
+		return "personal", nil
 	}
-	return s.credits.Reserve(ctx, userID, amount, reason)
+	return s.credits.Reserve(ctx, userID, projectID, amount, reason)
 }
 
 // RefundCredits returns amount after a terminal failure. Money-adjacent, so
@@ -337,14 +340,14 @@ func (s *Service) ReserveCredits(ctx context.Context, userID string, amount int3
 // background context (the caller's ctx is often already cancelled — a client
 // hang-up must never eat a refund). A refund that still fails after all
 // attempts is logged loudly as an invariant breach for manual reconciliation.
-func (s *Service) RefundCredits(ctx context.Context, userID string, amount int32, reason string) {
+func (s *Service) RefundCredits(ctx context.Context, userID, projectID, scope string, amount int32, reason string) {
 	if s.credits == nil || amount <= 0 || userID == "" {
 		return
 	}
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		lastErr = s.credits.Refund(rctx, userID, amount, reason)
+		lastErr = s.credits.Refund(rctx, userID, projectID, scope, amount, reason)
 		cancel()
 		if lastErr == nil {
 			return
@@ -1094,6 +1097,10 @@ type GenerateRequest struct {
 	// Persisted in request_payload so the worker/reaper can refund the exact
 	// amount on a terminal failure.
 	CreditCost int32
+	// CreditScope is the authoritative account selected at reserve time:
+	// "personal" or "project". Persisting it prevents refunds from changing
+	// destination when collaboration settings change while a task is running.
+	CreditScope string
 }
 
 // GenerateResult carries the generation result.
@@ -1469,7 +1476,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		// No provider → terminal before any work. Guard the transition so the
 		// reaper can't also refund this same (still-'pending') row later.
 		if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(err), 0) {
-			s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: no provider "+req.GenerationLogID)
+			s.RefundCredits(context.Background(), req.UserID, req.ProjectID, req.CreditScope, req.CreditCost, "refund: no provider "+req.GenerationLogID)
 		}
 		return nil, err
 	}
@@ -1527,7 +1534,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		if runErr != nil {
 			if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(runErr), duration) {
 				s.publishTaskEvent(req, nil, runErr, duration)
-				s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+				s.RefundCredits(context.Background(), req.UserID, req.ProjectID, req.CreditScope, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 			}
 		} else if perr := s.persistGenerationOutcome(req.GenerationLogID, result, nil, duration, cacheHit); perr == nil {
 			s.publishTaskEvent(req, result, nil, duration)
@@ -1625,7 +1632,7 @@ func (s *Service) FinalizeFailure(req GenerateRequest, err error, duration time.
 	// and we skip the refund — closing the worker-vs-reaper double-refund.
 	if s.persistTerminalFailure(req.GenerationLogID, publicTaskErrorMessage(err), duration) {
 		s.publishTaskEvent(req, nil, err, duration)
-		s.RefundCredits(context.Background(), req.UserID, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
+		s.RefundCredits(context.Background(), req.UserID, req.ProjectID, req.CreditScope, req.CreditCost, "refund: generation failed "+req.GenerationLogID)
 	}
 }
 
@@ -1755,7 +1762,7 @@ func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
 			ServiceType:     row.ServiceType,
 		}, nil, errors.New(msg), age)
 		// Refund the credits reserved for this abandoned task.
-		s.RefundCredits(ctx, row.UserID, row.CreditCost, "refund: task reaped "+row.ID)
+		s.RefundCredits(ctx, row.UserID, row.ProjectID, row.CreditScope, row.CreditCost, "refund: task reaped "+row.ID)
 	}
 	if reaped > 0 {
 		log.Printf("[modelcatalog] reaper marked %d stale generation(s) as error", reaped)

@@ -11,7 +11,8 @@ import { useAuth } from '../auth/AuthProvider';
 import { lookupUsers } from '../api/assets';
 import {
   setProjectCollaboration, listProjectMembers, inviteProjectMember,
-  updateProjectMemberRole, removeProjectMember,
+  updateProjectMemberRole, removeProjectMember, getProjectCredits,
+  type ProjectCreditSummary,
 } from '../api/projects';
 import {
   useStore, COLLAB_ROLE_OPTIONS, collabRoleLabel,
@@ -19,6 +20,7 @@ import {
 } from '../store';
 import { usePresenceStore } from '../collab/presence-store';
 import { colorForUid } from '../collab/color';
+import { ProjectCreditLogModal, ProjectCreditsModal } from './ProjectCreditsModal';
 
 /**
  * 协作控件 —— 画布顶栏右侧。私有:「协作」按钮 → 转为协作弹窗(仅创建者);协作中:
@@ -81,7 +83,7 @@ export function CollaborationControls() {
   const logCollabActivity = useStore((s) => s.logCollabActivity);
   // 只订阅节点数量,避免每次画布编辑都重渲染顶栏。
   const nodeCount = useStore((s) => s.nodes.length);
-  const { user, creditSummary } = useAuth();
+  const { user, refreshCredits } = useAuth();
   const zh = language === 'zh';
 
   const [convertOpen, setConvertOpen] = useState(false);
@@ -94,6 +96,8 @@ export function CollaborationControls() {
   const [pointsMenuOpen, setPointsMenuOpen] = useState(false);
   const [converting, setConverting] = useState(false);
   const [members, setMembers] = useState<CollabMember[]>([]);
+  const [projectCredits, setProjectCredits] = useState<ProjectCreditSummary | null>(null);
+  const [projectCreditsLoading, setProjectCreditsLoading] = useState(false);
 
   // 协作状态与我的身份来自后端项目(ListProjectsForUser 返回 is_collaborative + my_role)。
   const project = activeProjectId ? backendProjects.find((p) => p.id === activeProjectId) : undefined;
@@ -101,6 +105,42 @@ export function CollaborationControls() {
   const myRole: CollabRole = (project?.my_role as CollabRole | undefined) ?? 'creator';
   const isCreator = myRole === 'creator';
   const canManage = isCreator || myRole === 'admin';
+
+  const loadProjectCredits = useCallback(async () => {
+    if (!activeProjectId || !isCollab) {
+      setProjectCredits(null);
+      return;
+    }
+    setProjectCreditsLoading(true);
+    try {
+      setProjectCredits(await getProjectCredits(activeProjectId));
+    } catch {
+      setProjectCredits(null);
+    } finally {
+      setProjectCreditsLoading(false);
+    }
+  }, [activeProjectId, isCollab]);
+
+  useEffect(() => {
+    void loadProjectCredits();
+    if (!isCollab) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadProjectCredits();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const intervalId = window.setInterval(() => { void loadProjectCredits(); }, 60_000);
+    let previousRun = useStore.getState().activeRun;
+    const unsubscribe = useStore.subscribe((state) => {
+      const nextRun = state.activeRun;
+      if (previousRun && !nextRun) void loadProjectCredits();
+      previousRun = nextRun;
+    });
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.clearInterval(intervalId);
+      unsubscribe();
+    };
+  }, [isCollab, loadProjectCredits]);
 
   // 成员列表来自后端(owner 不入表,故创建者视角自行补一行 creator)。
   const loadMembers = useCallback(async () => {
@@ -231,8 +271,8 @@ export function CollaborationControls() {
             ) : null}
           </div>
 
-          {/* ⚡ points dropdown — 创建者管理项目积分 */}
-          {isCreator ? (
+          {/* 协作画布统一展示项目积分；仅管理员可以划转和分配额度。 */}
+          {isCollab ? (
             <div className="relative">
               <button
                 type="button"
@@ -241,13 +281,14 @@ export function CollaborationControls() {
                 title={zh ? '项目积分' : 'Project points'}
               >
                 <Zap className="h-3.5 w-3.5 text-amber-400" />
+                <span className="tabular-nums">{projectCreditsLoading && !projectCredits ? '—' : (projectCredits?.current_balance ?? 0)}</span>
                 {pointsMenuOpen ? <ChevronUp className="h-3 w-3 opacity-60" /> : <ChevronDown className="h-3 w-3 opacity-60" />}
               </button>
               {pointsMenuOpen ? (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setPointsMenuOpen(false)} />
                   <div className="absolute right-0 top-full z-50 mt-2 w-40 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
-                    <MenuRow icon={Coins} label={zh ? '积分管理' : 'Points'} onClick={() => { setPointsMenuOpen(false); setPointsManageOpen(true); }} />
+                    <MenuRow icon={Coins} label={canManage ? (zh ? '积分管理' : 'Manage points') : (zh ? '项目积分' : 'Project points')} onClick={() => { setPointsMenuOpen(false); setPointsManageOpen(true); }} />
                     <MenuRow icon={ScrollText} label={zh ? '积分记录' : 'Points log'} onClick={() => { setPointsMenuOpen(false); setPointsLogOpen(true); }} />
                   </div>
                 </>
@@ -310,16 +351,18 @@ export function CollaborationControls() {
       {logOpen ? <ActivityLogModal zh={zh} activity={activity} onClose={() => setLogOpen(false)} /> : null}
 
       {pointsManageOpen ? (
-        <PointsManageModal
+        <ProjectCreditsModal
           zh={zh}
-          members={members}
-          rechargeBalance={creditSummary?.current_balance ?? 0}
-          rechargeTotal={creditSummary?.daily_quota ?? 0}
+          projectId={activeProjectId}
+          summary={projectCredits}
+          loading={projectCreditsLoading}
+          onSummaryChange={setProjectCredits}
+          onRefreshPersonal={() => void refreshCredits()}
           onClose={() => setPointsManageOpen(false)}
         />
       ) : null}
 
-      {pointsLogOpen ? <PointsLogModal zh={zh} creatorName={user.name} avatar={user.avatar} onClose={() => setPointsLogOpen(false)} /> : null}
+      {pointsLogOpen ? <ProjectCreditLogModal zh={zh} projectId={activeProjectId} onClose={() => setPointsLogOpen(false)} /> : null}
     </>
   );
 }

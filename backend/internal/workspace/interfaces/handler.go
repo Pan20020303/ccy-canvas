@@ -4,12 +4,14 @@ package interfaces
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
+	creditapp "ccy-canvas/backend/internal/credits/application"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/shared/apperror"
@@ -20,12 +22,26 @@ import (
 
 // Handler provides workspace HTTP operations.
 type Handler struct {
-	repo *infrastructure.Repository
+	repo    *infrastructure.Repository
+	credits projectCreditService
+}
+
+type projectCreditService interface {
+	GetProjectSummary(context.Context, string, string) (creditapp.ProjectCreditSummary, error)
+	TransferToProject(context.Context, string, string, int64) error
+	RefundFromProject(context.Context, string, string, int64) error
+	SetMemberQuota(context.Context, string, string, string, *int64) error
+	ListProjectLedger(context.Context, string, string, int) ([]creditapp.ProjectCreditLedgerEntry, error)
+	DeleteProjectAndRefundCredits(context.Context, string, string) (bool, int64, error)
 }
 
 // NewHandler creates a new workspace Handler.
-func NewHandler(repo *infrastructure.Repository) *Handler {
-	return &Handler{repo: repo}
+func NewHandler(repo *infrastructure.Repository, credits ...projectCreditService) *Handler {
+	h := &Handler{repo: repo}
+	if len(credits) > 0 {
+		h.credits = credits[0]
+	}
+	return h
 }
 
 // --- response types ---
@@ -76,7 +92,9 @@ func toProjectItemAccess(p domain.ProjectAccess) ProjectItem {
 }
 
 func canManageMembers(role string) bool { return role == "creator" || role == "admin" }
-func canEditCanvas(role string) bool     { return role == "creator" || role == "admin" || role == "collaborator" }
+func canEditCanvas(role string) bool {
+	return role == "creator" || role == "admin" || role == "collaborator"
+}
 
 func toFolderItem(f domain.Folder) FolderItem {
 	return FolderItem{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedAt}
@@ -323,6 +341,51 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:      userSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.removeMember)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-project-credits",
+		Method:      http.MethodGet,
+		Path:        "/api/app/projects/{id}/credits",
+		Summary:     "Get collaborative project credit pool and member allocations",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.getProjectCredits)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "transfer-project-credits",
+		Method:      http.MethodPost,
+		Path:        "/api/app/projects/{id}/credits/transfer",
+		Summary:     "Transfer personal credits into a collaborative project",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.transferProjectCredits)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "refund-project-credits",
+		Method:      http.MethodPost,
+		Path:        "/api/app/projects/{id}/credits/refund",
+		Summary:     "Return the manager's unspent contribution",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.refundProjectCredits)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "set-project-member-credit-quota",
+		Method:      http.MethodPut,
+		Path:        "/api/app/projects/{id}/credits/members/{uid}",
+		Summary:     "Set a member credit quota (null means unlimited)",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.setProjectMemberCreditQuota)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-project-credit-ledger",
+		Method:      http.MethodGet,
+		Path:        "/api/app/projects/{id}/credits/ledger",
+		Summary:     "List collaborative project credit ledger",
+		Tags:        []string{"App", "Collaboration"},
+		Security:    userSecurity,
+	}, h.listProjectCreditLedger)
 }
 
 // --- handlers ---
@@ -571,11 +634,18 @@ type deleteProjectInput struct {
 	ID string `path:"id" doc:"Project UUID"`
 }
 
+type DeleteProjectData struct {
+	Deleted         bool  `json:"deleted"`
+	RefundedCredits int64 `json:"refunded_credits"`
+}
+
+type DeleteProjectResponseBody struct {
+	Data      DeleteProjectData `json:"data"`
+	RequestID string            `json:"request_id"`
+}
+
 type deleteProjectOutput struct {
-	Body struct {
-		Data      map[string]bool `json:"data"`
-		RequestID string          `json:"request_id"`
-	}
+	Body DeleteProjectResponseBody
 }
 
 func (h *Handler) deleteProject(ctx context.Context, input *deleteProjectInput) (*deleteProjectOutput, error) {
@@ -584,7 +654,14 @@ func (h *Handler) deleteProject(ctx context.Context, input *deleteProjectInput) 
 		return nil, huma.Error401Unauthorized("Authentication required")
 	}
 
-	deleted, err := h.repo.DeleteProject(ctx, input.ID, claims.UserID)
+	var deleted bool
+	var refundedCredits int64
+	var err error
+	if h.credits != nil {
+		deleted, refundedCredits, err = h.credits.DeleteProjectAndRefundCredits(ctx, claims.UserID, input.ID)
+	} else {
+		deleted, err = h.repo.DeleteProject(ctx, input.ID, claims.UserID)
+	}
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to delete project", err)
 	}
@@ -593,7 +670,8 @@ func (h *Handler) deleteProject(ctx context.Context, input *deleteProjectInput) 
 	}
 
 	out := &deleteProjectOutput{}
-	out.Body.Data = map[string]bool{"deleted": true}
+	out.Body.Data.Deleted = true
+	out.Body.Data.RefundedCredits = refundedCredits
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
@@ -1278,6 +1356,167 @@ func (h *Handler) removeMember(ctx context.Context, input *removeMemberInput) (*
 
 	out := &removeMemberOutput{}
 	out.Body.Data = map[string]bool{"removed": true}
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type projectCreditsInput struct {
+	ID string `path:"id" doc:"Project UUID"`
+}
+
+type projectCreditsOutput struct {
+	Body struct {
+		Data      creditapp.ProjectCreditSummary `json:"data"`
+		RequestID string                         `json:"request_id"`
+	}
+}
+
+type projectCreditAmountInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	Body struct {
+		Amount int64 `json:"amount" minimum:"1"`
+	}
+}
+
+type projectCreditMutationOutput struct {
+	Body struct {
+		Data      creditapp.ProjectCreditSummary `json:"data"`
+		RequestID string                         `json:"request_id"`
+	}
+}
+
+type projectMemberQuotaInput struct {
+	ID   string `path:"id" doc:"Project UUID"`
+	UID  string `path:"uid" doc:"Member user UUID"`
+	Body struct {
+		Quota *int64 `json:"quota" doc:"Lifetime project quota; null means unlimited"`
+	}
+}
+
+type projectCreditLedgerInput struct {
+	ID    string `path:"id" doc:"Project UUID"`
+	Limit int    `query:"limit" minimum:"1" maximum:"200" default:"100"`
+}
+
+type projectCreditLedgerOutput struct {
+	Body struct {
+		Data      []creditapp.ProjectCreditLedgerEntry `json:"data"`
+		RequestID string                               `json:"request_id"`
+	}
+}
+
+func projectCreditHTTPError(err error) error {
+	switch {
+	case errors.Is(err, creditapp.ErrInsufficientCredits):
+		return huma.Error402PaymentRequired("个人积分不足，无法划转到项目")
+	case errors.Is(err, creditapp.ErrInsufficientProjectCredits):
+		return huma.Error402PaymentRequired("项目积分不足")
+	case errors.Is(err, creditapp.ErrMemberQuotaExceeded):
+		return huma.Error402PaymentRequired("成员项目积分额度已用完")
+	case errors.Is(err, creditapp.ErrProjectCreditAccessDenied):
+		return huma.Error403Forbidden("无权管理该项目积分")
+	case errors.Is(err, creditapp.ErrInvalidProjectCreditAmount):
+		return huma.Error400BadRequest("积分数量无效，或超过可退回额度")
+	default:
+		return apperror.Wrap(apperror.CodeInternal, "Project credit operation failed", err)
+	}
+}
+
+func (h *Handler) getProjectCredits(ctx context.Context, input *projectCreditsInput) (*projectCreditsOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.credits == nil {
+		return nil, huma.Error503ServiceUnavailable("Project credits unavailable")
+	}
+	summary, err := h.credits.GetProjectSummary(ctx, claims.UserID, input.ID)
+	if err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	out := &projectCreditsOutput{}
+	out.Body.Data = summary
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) transferProjectCredits(ctx context.Context, input *projectCreditAmountInput) (*projectCreditMutationOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.credits == nil {
+		return nil, huma.Error503ServiceUnavailable("Project credits unavailable")
+	}
+	if err := h.credits.TransferToProject(ctx, claims.UserID, input.ID, input.Body.Amount); err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	summary, err := h.credits.GetProjectSummary(ctx, claims.UserID, input.ID)
+	if err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	out := &projectCreditMutationOutput{}
+	out.Body.Data = summary
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) refundProjectCredits(ctx context.Context, input *projectCreditAmountInput) (*projectCreditMutationOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.credits == nil {
+		return nil, huma.Error503ServiceUnavailable("Project credits unavailable")
+	}
+	if err := h.credits.RefundFromProject(ctx, claims.UserID, input.ID, input.Body.Amount); err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	summary, err := h.credits.GetProjectSummary(ctx, claims.UserID, input.ID)
+	if err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	out := &projectCreditMutationOutput{}
+	out.Body.Data = summary
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) setProjectMemberCreditQuota(ctx context.Context, input *projectMemberQuotaInput) (*projectCreditMutationOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.credits == nil {
+		return nil, huma.Error503ServiceUnavailable("Project credits unavailable")
+	}
+	if err := h.credits.SetMemberQuota(ctx, claims.UserID, input.ID, input.UID, input.Body.Quota); err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	summary, err := h.credits.GetProjectSummary(ctx, claims.UserID, input.ID)
+	if err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	out := &projectCreditMutationOutput{}
+	out.Body.Data = summary
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+func (h *Handler) listProjectCreditLedger(ctx context.Context, input *projectCreditLedgerInput) (*projectCreditLedgerOutput, error) {
+	claims, ok := authn.ClaimsFromContext(ctx)
+	if !ok {
+		return nil, huma.Error401Unauthorized("Authentication required")
+	}
+	if h.credits == nil {
+		return nil, huma.Error503ServiceUnavailable("Project credits unavailable")
+	}
+	items, err := h.credits.ListProjectLedger(ctx, claims.UserID, input.ID, input.Limit)
+	if err != nil {
+		return nil, projectCreditHTTPError(err)
+	}
+	out := &projectCreditLedgerOutput{}
+	out.Body.Data = items
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }

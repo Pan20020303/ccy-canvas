@@ -608,6 +608,8 @@ func (r *Repository) ListStaleActiveGenerations(ctx context.Context, olderThan t
 			ServiceType: row.ServiceType,
 			Status:      row.Status,
 			CreditCost:  row.CreditCost,
+			ProjectID:   row.ProjectID,
+			CreditScope: row.CreditScope,
 			CreatedAt:   row.CreatedAt.Time,
 		})
 	}

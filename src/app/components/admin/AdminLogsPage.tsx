@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -316,6 +316,7 @@ function TaskDetailDrawer({
 export function AdminLogsPage() {
   const [logs, setLogs] = useState<GenerationLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [totalCount, setTotalCount] = useState(0);
@@ -326,17 +327,23 @@ export function AdminLogsPage() {
   const [modelFilter, setModelFilter] = useState("");
   const [selectedLog, setSelectedLog] = useState<GenerationLog | null>(null);
   const [page, setPage] = useState(0);
+  const requestSequence = useRef(0);
 
   const deferredUserFilter = useDeferredValue(userFilter);
   const deferredModelFilter = useDeferredValue(modelFilter);
 
-  const load = useCallback(async (offset = 0, preserveExisting = false) => {
+  const load = useCallback(async (offset = 0, preserveExisting = false, silent = false) => {
+    const requestID = ++requestSequence.current;
     if (offset === 0) {
-      setLoading(true);
+      if (!preserveExisting) {
+        setLoading(true);
+      } else if (!silent) {
+        setRefreshing(true);
+      }
     } else {
       setLoadingMore(true);
     }
-    setError("");
+    if (!silent) setError("");
 
     try {
       const result = await listLogs(LOG_PAGE_SIZE, offset, {
@@ -344,6 +351,9 @@ export function AdminLogsPage() {
         user: deferredUserFilter,
         model: deferredModelFilter,
       });
+      // A slower response from an older filter/refresh must not replace newer
+      // rows and make the table appear to jump back and forth.
+      if (requestID !== requestSequence.current) return;
       setLogs((current) => {
         if (offset !== 0) return [...current, ...result.data];
         if (!preserveExisting) return result.data;
@@ -352,13 +362,16 @@ export function AdminLogsPage() {
       });
       setTotalCount(result.total);
     } catch (loadError) {
-      setError(toAdminErrorSummary(loadError, "zh"));
-    } finally {
-      if (offset === 0) {
-        setLoading(false);
-      } else {
-        setLoadingMore(false);
+      if (requestID === requestSequence.current && !silent) {
+        setError(toAdminErrorSummary(loadError, "zh"));
       }
+    } finally {
+      if (requestID !== requestSequence.current) return;
+      // Whichever request is newest owns the activity indicators. Clearing all
+      // three also handles an initial request superseded by a manual refresh.
+      setLoading(false);
+      setRefreshing(false);
+      setLoadingMore(false);
     }
   }, [deferredModelFilter, deferredUserFilter, statusFilter]);
 
@@ -374,28 +387,28 @@ export function AdminLogsPage() {
     }
   }, [visible]);
 
+  const hasActiveTasks = logs.some((log) => isActiveTask(log.status));
+
   useEffect(() => {
-    if (!logs.some((log) => isActiveTask(log.status))) {
+    if (view !== "tasks" || !hasActiveTasks) {
       return;
     }
 
     const timer = window.setInterval(() => {
-      void load(0, true);
+      if (document.visibilityState === "visible") {
+        void load(0, true, true);
+      }
     }, 8000);
 
     return () => window.clearInterval(timer);
-  }, [logs, load]);
+  }, [hasActiveTasks, load, view]);
 
   useEffect(() => {
-    if (!selectedLog) {
-      return;
-    }
-
-    const updatedSelection = logs.find((log) => log.id === selectedLog.id);
-    if (updatedSelection) {
-      setSelectedLog(updatedSelection);
-    }
-  }, [logs, selectedLog]);
+    setSelectedLog((current) => {
+      if (!current) return current;
+      return logs.find((log) => log.id === current.id) ?? current;
+    });
+  }, [logs]);
 
   // Reset the client pager whenever any filter/search state changes.
   useEffect(() => {
@@ -454,11 +467,11 @@ export function AdminLogsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void load()}
-            disabled={loading}
+            onClick={() => void load(0, true)}
+            disabled={loading || refreshing}
             className="gap-1.5 border-white/10 text-neutral-300 hover:bg-white/5"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading || refreshing ? "animate-spin" : ""}`} />
             刷新
           </Button>
         </div>

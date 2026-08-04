@@ -3,17 +3,29 @@ package interfaces
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"os"
 	"testing"
+	"time"
 
 	"ccy-canvas/backend/internal/platform/session"
 
 	"github.com/go-chi/chi/v5"
 )
+
+type notifyingWriter struct {
+	writes chan []byte
+}
+
+func (w *notifyingWriter) Write(p []byte) (int, error) {
+	chunk := append([]byte(nil), p...)
+	w.writes <- chunk
+	return len(p), nil
+}
 
 func TestUploadReturnsStandardEnvelopeShape(t *testing.T) {
 	tempDir := t.TempDir()
@@ -84,5 +96,47 @@ func TestUploadReturnsStandardEnvelopeShape(t *testing.T) {
 	}
 	if len(response.Data.URL) < len("/uploads/") || response.Data.URL[:9] != "/uploads/" {
 		t.Fatalf("url = %q, want /uploads/... path", response.Data.URL)
+	}
+}
+
+func TestMediaCacheStoreWhileServingDoesNotWaitForEOF(t *testing.T) {
+	cache := &mediaCache{dir: t.TempDir(), maxSize: 1 << 20}
+	reader, writer := io.Pipe()
+	dst := &notifyingWriter{writes: make(chan []byte, 2)}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- cache.storeWhileServing("generated-image", "image/png", dst, reader)
+	}()
+
+	first := []byte("first-frame")
+	if _, err := writer.Write(first); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	select {
+	case got := <-dst.writes:
+		if !bytes.Equal(got, first) {
+			t.Fatalf("first streamed chunk = %q, want %q", got, first)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first response bytes were blocked until the cache filled")
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close source: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("store while serving: %v", err)
+	}
+	bodyPath, contentType, ok := cache.lookup("generated-image")
+	if !ok || contentType != "image/png" {
+		t.Fatalf("cache lookup = (%q, %q, %v)", bodyPath, contentType, ok)
+	}
+	body, err := os.ReadFile(bodyPath)
+	if err != nil {
+		t.Fatalf("read cached body: %v", err)
+	}
+	if !bytes.Equal(body, first) {
+		t.Fatalf("cached body = %q, want %q", body, first)
 	}
 }

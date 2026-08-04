@@ -26,6 +26,39 @@ export type BackendMember = {
   role: BackendMemberRole;
 };
 
+export type ProjectCreditMember = {
+  uid: string;
+  name: string;
+  role: BackendMemberRole;
+  quota: number | null;
+  used: number;
+};
+
+export type ProjectCreditSummary = {
+  project_id: string;
+  current_balance: number;
+  total_funded: number;
+  total_consumed: number;
+  my_contribution: number;
+  can_manage: boolean;
+  can_transfer: boolean;
+  personal_balance: number;
+  personal_daily_quota: number;
+  members: ProjectCreditMember[];
+};
+
+export type ProjectCreditLedgerEntry = {
+  id: string;
+  uid?: string;
+  user_name?: string;
+  type: "transfer_in" | "refund_out" | "reserve" | "refund" | "quota_update";
+  amount: number;
+  balance_after: number;
+  member_used_after?: number;
+  reason: string;
+  created_at: string;
+};
+
 export type BackendFolder = {
   id: string;
   name: string;
@@ -68,8 +101,8 @@ export function updateProject(
   return apiClient.patch<BackendProject>(`/api/app/projects/${projectId}`, patch);
 }
 
-export function deleteProject(projectId: string): Promise<{ deleted: boolean }> {
-  return apiClient.delete<{ deleted: boolean }>(`/api/app/projects/${projectId}`);
+export function deleteProject(projectId: string): Promise<{ deleted: boolean; refunded_credits: number }> {
+  return apiClient.delete<{ deleted: boolean; refunded_credits: number }>(`/api/app/projects/${projectId}`);
 }
 
 export function duplicateProject(projectId: string): Promise<BackendProject> {
@@ -150,6 +183,30 @@ export function removeProjectMember(
   uid: string,
 ): Promise<{ removed: boolean }> {
   return apiClient.delete<{ removed: boolean }>(`/api/app/projects/${projectId}/members/${uid}`);
+}
+
+export function getProjectCredits(projectId: string): Promise<ProjectCreditSummary> {
+  return apiClient.get<ProjectCreditSummary>(`/api/app/projects/${projectId}/credits`);
+}
+
+export function transferProjectCredits(projectId: string, amount: number): Promise<ProjectCreditSummary> {
+  return apiClient.post<ProjectCreditSummary>(`/api/app/projects/${projectId}/credits/transfer`, { amount });
+}
+
+export function refundProjectCredits(projectId: string, amount: number): Promise<ProjectCreditSummary> {
+  return apiClient.post<ProjectCreditSummary>(`/api/app/projects/${projectId}/credits/refund`, { amount });
+}
+
+export function setProjectMemberCreditQuota(
+  projectId: string,
+  uid: string,
+  quota: number | null,
+): Promise<ProjectCreditSummary> {
+  return apiClient.put<ProjectCreditSummary>(`/api/app/projects/${projectId}/credits/members/${uid}`, { quota });
+}
+
+export function listProjectCreditLedger(projectId: string, limit = 100): Promise<ProjectCreditLedgerEntry[]> {
+  return apiClient.get<ProjectCreditLedgerEntry[]>(`/api/app/projects/${projectId}/credits/ledger?limit=${limit}`);
 }
 
 // ---------------------------------------------------------------------------

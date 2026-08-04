@@ -32,6 +32,26 @@ type mediaCache struct {
 	evictMu sync.Mutex
 }
 
+type bestEffortCacheWriter struct {
+	dst      io.Writer
+	cache    io.Writer
+	cacheErr error
+}
+
+func (w *bestEffortCacheWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if err != nil || n != len(p) {
+		return n, err
+	}
+	// A full cache disk must never interrupt playback. Remember the cache
+	// failure, keep forwarding later chunks to the client, and discard the
+	// incomplete temp file after the response finishes.
+	if w.cacheErr == nil {
+		_, w.cacheErr = w.cache.Write(p)
+	}
+	return n, nil
+}
+
 // newMediaCache returns nil (disabled) unless MEDIA_CACHE_DIR is set.
 // MEDIA_CACHE_MAX_BYTES caps total size (default 5 GiB).
 func newMediaCache() *mediaCache {
@@ -99,6 +119,51 @@ func (c *mediaCache) store(key, contentType string, r io.Reader) (string, error)
 	_ = os.WriteFile(meta, []byte(contentType), 0o644)
 	c.evictIfNeeded()
 	return body, nil
+}
+
+// storeWhileServing writes the upstream body to the browser and the on-disk
+// cache at the same time. The old miss path filled the entire cache file before
+// writing the first response byte. That is barely noticeable for a tiny icon,
+// but it leaves generated images blank and videos grey until the whole object
+// has downloaded. A tee keeps the cache benefit without blocking first paint.
+func (c *mediaCache) storeWhileServing(key, contentType string, dst io.Writer, src io.Reader) error {
+	body, meta := c.paths(key)
+	tmpFile, err := os.CreateTemp(c.dir, filepath.Base(body)+".*.tmp")
+	if err != nil {
+		// Cache availability is an optimisation, not a prerequisite for media
+		// playback. Stream the original response even if the cache cannot open.
+		_, streamErr := io.Copy(dst, src)
+		if streamErr != nil {
+			return streamErr
+		}
+		return err
+	}
+	tmp := tmpFile.Name()
+	committed := false
+	defer func() {
+		_ = tmpFile.Close()
+		if !committed {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	tee := &bestEffortCacheWriter{dst: dst, cache: tmpFile}
+	if _, err := io.Copy(tee, src); err != nil {
+		return err
+	}
+	if tee.cacheErr != nil {
+		return tee.cacheErr
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, body); err != nil {
+		return err
+	}
+	committed = true
+	_ = os.WriteFile(meta, []byte(contentType), 0o644)
+	c.evictIfNeeded()
+	return nil
 }
 
 func (c *mediaCache) evictIfNeeded() {
