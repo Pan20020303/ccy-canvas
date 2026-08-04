@@ -14,7 +14,7 @@ function currentRelease(): { version: string; date: string; notes: string[] } {
 
 // The dev proxy target must match the backend's actual port. Resolution order:
 //   1. shell env  (DEV_API_PROXY_TARGET=... npx vite)
-//   2. .env file  (DEV_API_PROXY_TARGET=http://127.0.0.1:9090) — loadEnv,
+//   2. .env file  (DEV_API_PROXY_TARGET=http://127.0.0.1:8080) — loadEnv,
 //      because vite.config.ts does NOT see .env through process.env on its own.
 //   3. fallback :8080 (the config.go default).
 //

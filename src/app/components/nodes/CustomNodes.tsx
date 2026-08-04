@@ -60,7 +60,7 @@ import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
-import { toRenderableMediaUrl, extractOriginalMediaUrl } from '../../reference-media';
+import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
 import { copyTextToClipboard, copyWithToast } from '../../clipboard';
@@ -5975,13 +5975,30 @@ function SmartVideo({
   const selfManageHover = controlledHovered === undefined;
   const hovered = controlledHovered ?? internalHovered;
   const renderable = toRenderableMediaUrl(src);
+  const original = extractOriginalMediaUrl(src);
+  // Prefer the stable object URL for ordinary playback. A media element can
+  // display cross-origin video without CORS as long as `crossOrigin` is not
+  // set, which also keeps the canvas usable when the authenticated proxy is
+  // temporarily unavailable. Private / legacy objects fall back to the proxy.
+  const playbackSources = useMemo(
+    () => Array.from(new Set([original, renderable].filter(Boolean))),
+    [original, renderable],
+  );
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const playbackSrc = playbackSources[Math.min(sourceIndex, Math.max(0, playbackSources.length - 1))] ?? '';
   // Fall back to the session-cached frame-0 cover when the node has no stored
   // poster, so re-entering the viewport shows a cover instantly instead of a
   // blank box while the <video> re-buffers.
   const [capturedPoster, setCapturedPoster] = useState<string>(() => videoPosterCache.get(src) ?? '');
   const [videoReady, setVideoReady] = useState(false);
   useEffect(() => { setCapturedPoster(videoPosterCache.get(src) ?? ''); }, [src]);
-  useEffect(() => { setVideoReady(false); }, [src]);
+  useEffect(() => {
+    setVideoReady(false);
+    setLoadFailed(false);
+    setSourceIndex(0);
+  }, [src]);
   const posterSrc = poster ? toRenderableMediaUrl(poster, { thumbWidth: 720 }) : capturedPoster;
 
   useEffect(() => {
@@ -6003,6 +6020,26 @@ function SmartVideo({
   // the first frame can still paint). With a poster, idle-in-view stays a cheap
   // <img> and the decoder is only spun up on hover.
   const mountVideo = inView && (hovered || !posterSrc);
+
+  const advancePlaybackSource = useCallback(() => {
+    setVideoReady(false);
+    setSourceIndex((current) => {
+      if (current < playbackSources.length - 1) {
+        return current + 1;
+      }
+      setLoadFailed(true);
+      return current;
+    });
+  }, [playbackSources.length]);
+
+  // A broken proxy connection can leave Chromium in NETWORK_LOADING without
+  // ever emitting `error`. Move to the fallback instead of showing a spinner
+  // forever. A successful metadata/data event clears this timer naturally.
+  useEffect(() => {
+    if (!mountVideo || videoReady || loadFailed || !playbackSrc) return;
+    const timeout = window.setTimeout(advancePlaybackSource, 15_000);
+    return () => window.clearTimeout(timeout);
+  }, [advancePlaybackSource, loadFailed, mountVideo, playbackSrc, retryNonce, videoReady]);
 
   const captureFirstFrame = useCallback((video: HTMLVideoElement) => {
     setVideoReady(true);
@@ -6044,16 +6081,33 @@ function SmartVideo({
         />
       ) : !inView ? (
         <div className="absolute inset-0 bg-white/[0.03]" />
+      ) : loadFailed ? (
+        <button
+          type="button"
+          className="nodrag nopan absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-white/[0.03] text-[11px] text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/70"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            setLoadFailed(false);
+            setVideoReady(false);
+            setSourceIndex(0);
+            setRetryNonce((value) => value + 1);
+          }}
+        >
+          <RotateCcw className="h-5 w-5" />
+          <span>视频加载失败，点击重试</span>
+        </button>
       ) : (
         <div className="absolute inset-0 flex items-center justify-center bg-white/[0.03]">
           <Loader2 className="h-5 w-5 animate-spin text-white/25" />
         </div>
       )}
-      {mountVideo ? (
+      {mountVideo && playbackSrc && !loadFailed ? (
         <video
+          key={`${playbackSrc}:${retryNonce}`}
           ref={videoRef}
-          src={renderable}
-          crossOrigin="use-credentials"
+          src={playbackSrc}
+          crossOrigin={isProxyMediaUrl(playbackSrc) ? 'use-credentials' : undefined}
           draggable={false}
           className={clsx(
             'absolute inset-0 h-full w-full object-cover select-none transition-opacity duration-150',
@@ -6067,6 +6121,7 @@ function SmartVideo({
           // ranges to download. Only visible nodes are mounted, so auto is
           // bounded by the IntersectionObserver above.
           preload="auto"
+          onLoadStart={() => setLoadFailed(false)}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             // Nudge the playhead a hair past zero so the browser paints exactly
@@ -6077,6 +6132,7 @@ function SmartVideo({
           }}
           onLoadedData={(event) => captureFirstFrame(event.currentTarget)}
           onCanPlay={(event) => captureFirstFrame(event.currentTarget)}
+          onError={advancePlaybackSource}
           onSeeked={(event) => {
             // First decode of an un-postered video → cache frame 0 as an instant
             // cover for the next time this node scrolls back into view.

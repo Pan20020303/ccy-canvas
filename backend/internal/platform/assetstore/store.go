@@ -27,9 +27,11 @@ type Store interface {
 }
 
 var (
-	defaultOnce  sync.Once
-	defaultStore Store
-	defaultErr   error
+	defaultOnce   sync.Once
+	defaultStore  Store
+	defaultErr    error
+	presignOnce   sync.Once
+	presignStores []Store
 )
 
 func Save(ctx context.Context, key string, body io.Reader, contentType string) (string, error) {
@@ -55,11 +57,57 @@ func UploadFile(ctx context.Context, key string, localPath string, contentType s
 }
 
 func PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (string, error) {
-	store, err := Default()
-	if err != nil {
-		return "", err
+	var lastErr error
+	for _, store := range configuredPresignStores() {
+		signed, err := store.PresignGet(ctx, rawURL, expiry)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if signed != "" {
+			return signed, nil
+		}
 	}
-	return store.PresignGet(ctx, rawURL, expiry)
+	return "", lastErr
+}
+
+// configuredPresignStores includes the active write backend plus any fully
+// configured legacy object store. Canvas snapshots keep stable asset URLs for
+// years; switching writes from COS to OSS must not make old private COS videos
+// unreadable. Saves still go only to Default(), while reads may be signed by
+// whichever configured store owns the URL.
+func configuredPresignStores() []Store {
+	presignOnce.Do(func() {
+		backend := strings.ToLower(strings.TrimSpace(os.Getenv("STORAGE_BACKEND")))
+		if store, err := Default(); err == nil {
+			presignStores = append(presignStores, store)
+		}
+		if backend != "cos" && hasCOSConfig() {
+			if store, err := newCOSStore(); err == nil {
+				presignStores = append(presignStores, store)
+			}
+		}
+		if backend != "oss" && hasOSSConfig() {
+			if store, err := newOSSStore(); err == nil {
+				presignStores = append(presignStores, store)
+			}
+		}
+	})
+	return presignStores
+}
+
+func hasCOSConfig() bool {
+	return strings.TrimSpace(os.Getenv("COS_BUCKET")) != "" &&
+		strings.TrimSpace(os.Getenv("COS_REGION")) != "" &&
+		strings.TrimSpace(os.Getenv("COS_SECRET_ID")) != "" &&
+		strings.TrimSpace(os.Getenv("COS_SECRET_KEY")) != ""
+}
+
+func hasOSSConfig() bool {
+	return strings.TrimSpace(os.Getenv("OSS_BUCKET")) != "" &&
+		strings.TrimSpace(os.Getenv("OSS_REGION")) != "" &&
+		strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID")) != "" &&
+		strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET")) != ""
 }
 
 func Default() (Store, error) {
@@ -81,6 +129,10 @@ func fromEnv() (Store, error) {
 		return nil, fmt.Errorf("unsupported STORAGE_BACKEND %q", backend)
 	}
 
+	return newCOSStore()
+}
+
+func newCOSStore() (Store, error) {
 	bucket := strings.TrimSpace(os.Getenv("COS_BUCKET"))
 	region := strings.TrimSpace(os.Getenv("COS_REGION"))
 	secretID := strings.TrimSpace(os.Getenv("COS_SECRET_ID"))
