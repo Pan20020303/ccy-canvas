@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
+import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, GitBranch, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
 
 import type { Edge, Node } from "@xyflow/react";
 
-import { getActiveAgentJob, resumeAgentJob, runAgent, type AgentEventMeta, type AgentSSEEvent } from "../api/agent-run";
+import { getActiveAgentJob, resumeAgentJob, runAgent, type AgentEventMeta, type AgentSSEEvent, type CanvasPatch } from "../api/agent-run";
 import {
   createAgentConversation,
   deleteAgentConversation,
@@ -47,6 +47,7 @@ import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/Age
 import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
 import { pickVisionModel } from "./nodes/director-blocking";
 import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
+import { presentCanvasOperation, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
 const HISTORY_FETCH_LIMIT = 50;
@@ -90,7 +91,7 @@ type RunStep =
   // 收到叙述文本/工具调用/最终回复时闭合。
   | { kind: "thought"; id: string; content: string; streaming?: boolean }
   | { kind: "tool"; id: string; invocation: ToolInvocation }
-  | { kind: "canvas"; id: string; op: string }
+  | { kind: "canvas"; id: string; patch: CanvasPatch }
   | ({ kind: "ask_user" } & AgentQuestionPage)
   | { kind: "error"; id: string; message: string }
   | {
@@ -115,6 +116,26 @@ type InteractiveRunStep =
   | Extract<RunStep, { kind: "canvas" }>
   | Extract<RunStep, { kind: "error" }>;
 type NonQuestionInteractiveStep = Exclude<InteractiveRunStep, { kind: "ask_user" }>;
+type CanvasRunStep = Extract<RunStep, { kind: "canvas" }>;
+type InteractiveRenderItem =
+  | { kind: "canvas_group"; id: string; steps: CanvasRunStep[] }
+  | { kind: "step"; id: string; step: Exclude<NonQuestionInteractiveStep, { kind: "canvas" }> };
+
+function groupCanvasOperations(steps: NonQuestionInteractiveStep[]): InteractiveRenderItem[] {
+  return steps.reduce<InteractiveRenderItem[]>((items, step) => {
+    if (step.kind !== "canvas") {
+      items.push({ kind: "step", id: step.id, step });
+      return items;
+    }
+    const previous = items.at(-1);
+    if (previous?.kind === "canvas_group") {
+      previous.steps.push(step);
+    } else {
+      items.push({ kind: "canvas_group", id: step.id, steps: [step] });
+    }
+    return items;
+  }, []);
+}
 
 /**
  * Claude-style agent run panel.
@@ -805,7 +826,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             setRunSteps((prev) => [...prev, {
               kind: "canvas",
               id: `canvas-${prev.length}`,
-              op: (event.data as { op: string }).op,
+              patch: event.data,
             }]);
             applyPatch(event);
             break;
@@ -980,7 +1001,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           setRunSteps((prev) => [...prev, {
             kind: "canvas",
             id: `canvas-${prev.length}`,
-            op: event.data.op,
+            patch: event.data,
           }]);
           if (!meta?.replayed) applyPatch(event);
           break;
@@ -1183,6 +1204,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const nonQuestionInteractiveSteps = interactiveSteps.filter(
     (step): step is NonQuestionInteractiveStep => step.kind !== "ask_user",
   );
+  const interactiveRenderItems = groupCanvasOperations(nonQuestionInteractiveSteps);
   useEffect(() => {
     setQuestionPage((current) => (
       questionSteps.length === 0 ? 0 : Math.min(current, questionSteps.length - 1)
@@ -1371,17 +1393,21 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   )}
                 />
               ) : null}
-              {nonQuestionInteractiveSteps.map((step) => (
-                <RunStepRow
-                  key={step.id}
-                  step={step}
-                  tick={tick}
-                  zh={zh}
-                  onConfirmRun={confirmPendingRun}
-                  onSkipRun={skipPendingRun}
-                  onPickModel={updatePendingModel}
-                  modelDisplayName={modelDisplayName}
-                />
+              {interactiveRenderItems.map((item) => (
+                item.kind === "canvas_group" ? (
+                  <CanvasOperationsCard key={item.id} steps={item.steps} zh={zh} />
+                ) : (
+                  <RunStepRow
+                    key={item.id}
+                    step={item.step}
+                    tick={tick}
+                    zh={zh}
+                    onConfirmRun={confirmPendingRun}
+                    onSkipRun={skipPendingRun}
+                    onPickModel={updatePendingModel}
+                    modelDisplayName={modelDisplayName}
+                  />
+                )
               ))}
             </div>
           ) : null
@@ -2247,6 +2273,99 @@ function QuestionnaireCard({
   );
 }
 
+function CanvasOperationIcon({ entity }: { entity: CanvasOperationEntity }) {
+  const Icon = entity === "text" ? MessageSquarePlus
+    : entity === "image" ? ImageIcon
+    : entity === "video" ? Film
+    : entity === "audio" ? Music2
+    : entity === "connection" ? GitBranch
+    : entity === "task" ? Play
+    : Sparkles;
+  return <Icon className="h-3.5 w-3.5" />;
+}
+
+function CanvasOperationsCard({ steps, zh }: { steps: CanvasRunStep[]; zh: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const operations = steps.map((step) => presentCanvasOperation(step.patch, zh));
+  const visibleOperations = expanded ? operations : operations.slice(0, 3);
+  const hiddenCount = operations.length - visibleOperations.length;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.09] via-white/[0.025] to-transparent shadow-[0_10px_28px_rgba(0,0,0,0.16)]">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition hover:bg-white/[0.025]"
+        aria-expanded={expanded}
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-emerald-300/20 bg-emerald-400/10 text-emerald-300">
+          <Check className="h-3.5 w-3.5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-medium text-neutral-100">
+            {zh ? "画布更新完成" : "Canvas updated"}
+          </span>
+          <span className="mt-0.5 block text-[9px] text-neutral-500">
+            {zh ? `本次完成 ${operations.length} 项操作` : `${operations.length} changes completed`}
+          </span>
+        </span>
+        <span className="rounded-full border border-emerald-300/15 bg-emerald-400/[0.08] px-2 py-0.5 text-[9px] text-emerald-200/80">
+          {zh ? `${operations.length} 项变更` : `${operations.length} changes`}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </button>
+
+      <div className="border-t border-white/[0.055] px-2 py-1.5">
+        {visibleOperations.map((operation, index) => (
+          <div key={`${steps[index]?.id ?? "canvas"}-${index}`} className="group rounded-lg px-2 py-2 transition hover:bg-white/[0.025]">
+            <div className="flex items-start gap-2.5">
+              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.055] text-neutral-300 ring-1 ring-inset ring-white/[0.06]">
+                <CanvasOperationIcon entity={operation.entity} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-[10px]">
+                  <span className="font-medium text-emerald-300/90">{operation.action}</span>
+                  <span className="text-neutral-600">·</span>
+                  <span className="text-neutral-400">{operation.detail}</span>
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] text-neutral-200" title={operation.title}>
+                  {operation.title}
+                </span>
+              </span>
+            </div>
+
+            {expanded && (operation.nodeId || operation.position) ? (
+              <div className="ml-8 mt-2 grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 rounded-md border border-white/[0.05] bg-black/15 px-2 py-1.5 text-[9px]">
+                {operation.nodeId ? (
+                  <>
+                    <span className="text-neutral-600">{zh ? "节点 ID" : "Node ID"}</span>
+                    <span className="truncate font-mono text-neutral-400" title={operation.nodeId}>{operation.nodeId}</span>
+                  </>
+                ) : null}
+                {operation.position ? (
+                  <>
+                    <span className="text-neutral-600">{zh ? "画布位置" : "Position"}</span>
+                    <span className="text-neutral-400">{operation.position}</span>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ))}
+        {hiddenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="w-full rounded-md py-1.5 text-[9px] text-neutral-500 transition hover:bg-white/[0.025] hover:text-neutral-300"
+          >
+            {zh ? `查看其余 ${hiddenCount} 项操作` : `View ${hiddenCount} more changes`}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function RunStepRow({
   step,
   tick,
@@ -2256,7 +2375,7 @@ function RunStepRow({
   onPickModel,
   modelDisplayName,
 }: {
-  step: NonQuestionRunStep;
+  step: Exclude<NonQuestionRunStep, { kind: "canvas" }>;
   tick: number;
   zh: boolean;
   onConfirmRun: (stepId: string) => void;
@@ -2275,14 +2394,6 @@ function RunStepRow({
   }
   if (step.kind === "tool") {
     return <ToolInvocationCard invocation={step.invocation} zh={zh} />;
-  }
-  if (step.kind === "canvas") {
-    return (
-      <div className="flex items-center gap-1.5 text-[10px] text-emerald-300/80">
-        <span className="h-1 w-1 rounded-full bg-emerald-400/80" />
-        {zh ? `画布操作 · ${step.op}` : `canvas · ${step.op}`}
-      </div>
-    );
   }
   if (step.kind === "pending_run") {
     return (
