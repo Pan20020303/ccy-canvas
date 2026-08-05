@@ -65,7 +65,7 @@ const (
 	// reports its own clean "timed out after polling" instead of being cut
 	// mid-request by a context cancel.
 	videoPollSafetyMargin       = 2 * time.Minute
-	providerTLSHandshakeTimeout = 60 * time.Second
+	providerTLSHandshakeTimeout = 20 * time.Second
 	providerRequestMaxAttempts  = 3
 )
 
@@ -1343,6 +1343,7 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	// logged); the mark-persisting/queue machinery below stays single-asset and
 	// applies to the primary entry via the shared single-asset path.
 	if len(result.ContentList) > 1 {
+		persisted := make([]string, 0, len(result.ContentList))
 		for i, raw := range result.ContentList {
 			u := strings.TrimSpace(raw)
 			if u == "" {
@@ -1351,23 +1352,37 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 			staged, err := StageRemoteAssetWithProviderAuth(ctx, u, c.baseURL, c.apiKey)
 			if err != nil {
 				out.cacheHit = false
-				result.AssetTemporary = true // entry stays on the expiring upstream URL
-				log.Printf("[modelcatalog] WARNING asset staging failed for log %s entry %d/%d; keeping temporary upstream URL: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
+				if i == 0 {
+					return out, fmt.Errorf("asset persistence failed: generated media could not be fetched: %w", err)
+				}
+				log.Printf("[modelcatalog] WARNING asset staging failed for log %s entry %d/%d; dropping invalid secondary result: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
+				continue
+			}
+			if err := validateGeneratedAsset(staged, req.ServiceType); err != nil {
+				out.cacheHit = false
+				if i == 0 {
+					return out, fmt.Errorf("asset persistence failed: provider result is not valid %s media: %w", req.ServiceType, err)
+				}
+				log.Printf("[modelcatalog] WARNING invalid secondary media for log %s entry %d/%d; dropping result: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
 				continue
 			}
 			if staged.LocalPath == "" {
-				result.ContentList[i] = staged.StagingURL
+				persisted = append(persisted, staged.StagingURL)
 				continue
 			}
 			cachedURL, perr := PromoteStagedAssetToStore(ctx, staged)
 			if perr != nil {
 				out.cacheHit = false
-				result.ContentList[i] = staged.StagingURL
+				persisted = append(persisted, staged.StagingURL)
 				log.Printf("[modelcatalog] WARNING COS promotion failed for log %s entry %d/%d; serving staged copy: %v", req.GenerationLogID, i+1, len(result.ContentList), perr)
 				continue
 			}
-			result.ContentList[i] = cachedURL
+			persisted = append(persisted, cachedURL)
 		}
+		if len(persisted) == 0 {
+			return out, fmt.Errorf("asset persistence failed: provider returned no readable media")
+		}
+		result.ContentList = persisted
 		// Keep Content in lockstep with the (possibly re-hosted) first entry so
 		// single-value consumers never see a URL the list no longer contains.
 		result.Content = result.ContentList[0]
@@ -1384,14 +1399,11 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	staged, err := StageRemoteAssetWithProviderAuth(ctx, originalURL, c.baseURL, c.apiKey)
 	if err != nil {
 		out.cacheHit = false
-		result.AssetTemporary = true // stays on the expiring upstream URL
-		log.Printf("[modelcatalog] WARNING asset staging failed for log %s; keeping temporary upstream URL: %v", req.GenerationLogID, err)
-		// P0-6: don't fail the generation, but make the degradation OBSERVABLE —
-		// asset_status='temporary_url' marks rows whose media will expire so
-		// they can be counted/alerted on instead of rotting silently. The
-		// frontend's expiring-URL second-chance re-host is the recovery path.
-		s.markGenerationAssetTemporary(req.GenerationLogID, err)
-		return out, nil
+		return out, fmt.Errorf("asset persistence failed: generated media could not be fetched: %w", err)
+	}
+	if err := validateGeneratedAsset(staged, req.ServiceType); err != nil {
+		out.cacheHit = false
+		return out, fmt.Errorf("asset persistence failed: provider result is not valid %s media: %w", req.ServiceType, err)
 	}
 	if staged.LocalPath == "" {
 		if staged.StagingURL == originalURL && isTemporaryGeneratedAssetURL(originalURL) {
@@ -1500,10 +1512,10 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 
 		result, runErr := s.runCandidateLoop(detachedCtx, candidates, req)
 
-		// Try to cache the upstream URL before surfacing success. If staging
-		// fails, keep the provider URL visible and mark cache_hit=false; a
-		// generated image/video should not be turned into a failed task just
-		// because durable asset archival hit a temporary download problem.
+		// Verify and stage the provider media before surfacing success. A task
+		// is only successful once its primary output is readable media; task
+		// metadata URLs and expired provider URLs must never become a false
+		// success that leaves the canvas stuck on a broken preview.
 		cacheHit := true
 		assetPending := false
 		if runErr == nil {
@@ -1778,6 +1790,15 @@ func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateCh
 		return nil, apperror.New(apperror.CodeInvalidInput, "No provider candidate available")
 	}
 	c := candidates[0]
+	ctx = withProviderRetryObserver(ctx, func(event providerRetryEvent) {
+		if !event.WillRetry || event.Err == nil {
+			return
+		}
+		errMsg := fmt.Sprintf("[relay_reconnect] 中转站连接失败，准备第 %d 次重连: %v", event.Attempt+1, event.Err)
+		log.Printf("[modelcatalog] log %s relay connection attempt %d/%d failed; reconnecting: %v", req.GenerationLogID, event.Attempt, providerRequestMaxAttempts, event.Err)
+		s.RecordGenerationAttempt(ctx, req.GenerationLogID, c.cfg.ID, c.cfg.Vendor,
+			event.Attempt, 0, event.DurationMs, errMsg)
+	})
 	started := time.Now()
 	result, err := s.dispatchToVendor(ctx, c, req)
 	duration := int(time.Since(started).Milliseconds())
@@ -2291,11 +2312,11 @@ func textProviderTimeout() time.Duration {
 func newProviderHTTPClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{
-		Timeout:   30 * time.Second,
+		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
 	transport.TLSHandshakeTimeout = providerTLSHandshakeTimeout
-	transport.DisableKeepAlives = true
+	transport.DisableKeepAlives = false
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,
@@ -2320,9 +2341,35 @@ func doProviderSubmitWithRetry(ctx context.Context, client *http.Client, req *ht
 	return doProviderRequestWithRetryPolicy(ctx, client, req, body, isRetryablePreSubmitNetworkError)
 }
 
+type providerRetryEvent struct {
+	Attempt    int
+	DurationMs int
+	Err        error
+	WillRetry  bool
+}
+
+type providerRetryObserver func(providerRetryEvent)
+
+type providerRetryObserverContextKey struct{}
+
+func withProviderRetryObserver(ctx context.Context, observer providerRetryObserver) context.Context {
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, providerRetryObserverContextKey{}, observer)
+}
+
+func notifyProviderRetryObserver(ctx context.Context, event providerRetryEvent) {
+	observer, _ := ctx.Value(providerRetryObserverContextKey{}).(providerRetryObserver)
+	if observer != nil {
+		observer(event)
+	}
+}
+
 func doProviderRequestWithRetryPolicy(ctx context.Context, client *http.Client, req *http.Request, body []byte, retryable func(error) bool) (*http.Response, error) {
 	var lastErr error
 	for attempt := 1; attempt <= providerRequestMaxAttempts; attempt++ {
+		attemptStarted := time.Now()
 		clone := req.Clone(ctx)
 		clone.Body = io.NopCloser(bytes.NewReader(body))
 		clone.GetBody = func() (io.ReadCloser, error) {
@@ -2334,7 +2381,14 @@ func doProviderRequestWithRetryPolicy(ctx context.Context, client *http.Client, 
 			return resp, nil
 		}
 		lastErr = err
-		if attempt == providerRequestMaxAttempts || !retryable(err) {
+		willRetry := attempt < providerRequestMaxAttempts && retryable(err)
+		notifyProviderRetryObserver(ctx, providerRetryEvent{
+			Attempt:    attempt,
+			DurationMs: int(time.Since(attemptStarted).Milliseconds()),
+			Err:        err,
+			WillRetry:  willRetry,
+		})
+		if !willRetry {
 			break
 		}
 		if closer, ok := client.Transport.(interface{ CloseIdleConnections() }); ok {
@@ -2671,15 +2725,15 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 	if readErr != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
 	}
+	taskID := extractImageTaskID(respBody)
+	if taskID != "" {
+		return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+	}
 	// 同步兜底：万一网关直接返回了成图(未见于文档，但解析器通吃)。
 	if result := s.tryExtractImageFromPollResponse(respBody); result != nil {
 		return result, nil
 	}
-	taskID := extractImageTaskID(respBody)
-	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
-	}
-	return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
 }
 
 // isApimartMidjourneyModel matches apimart 的 Midjourney/Niji 模型(以 model 名嗅探)。
@@ -2739,15 +2793,15 @@ func (s *Service) generateImageMidjourneyApimart(ctx context.Context, pc *domain
 	if readErr != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read provider response", readErr)
 	}
+	taskID := extractImageTaskID(respBody)
+	if taskID != "" {
+		return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+	}
 	// 同步兜底(网关直接返图)。
 	if result := s.tryExtractImageFromPollResponse(respBody); result != nil {
 		return result, nil
 	}
-	taskID := extractImageTaskID(respBody)
-	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart midjourney submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
-	}
-	return s.pollImageTask(ctx, baseURL, apiKey, "/tasks/{taskId}", taskID, "")
+	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart midjourney submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
 }
 
 // midjourneyAspectFlag 把 "W:H" 比例转成 MJ 的 --ar 参数;像素/auto/空 一律不转。

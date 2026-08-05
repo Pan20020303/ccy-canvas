@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -84,5 +86,20 @@ func TestAssetURLMatchesProviderHostAllowsKnownProviderSiblingDomains(t *testing
 func TestAssetURLMatchesProviderHostRejectsUnknownSiblingDomains(t *testing.T) {
 	if assetURLMatchesProviderHost("https://assets.example.com/generated/result.png", "https://api.example.com") {
 		t.Fatal("expected unknown sibling asset host to be rejected")
+	}
+}
+
+func TestValidateGeneratedAssetRejectsTaskJSONEvenWhenDeclaredAsImage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay-result.png")
+	if err := os.WriteFile(path, []byte(`{"status":"processing","task_id":"task-123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateGeneratedAsset(StagedAsset{
+		LocalPath:   path,
+		ContentType: "image/png",
+	}, "image")
+	if err == nil || !strings.Contains(err.Error(), "JSON/HTML") {
+		t.Fatalf("validateGeneratedAsset error = %v, want JSON/HTML rejection", err)
 	}
 }

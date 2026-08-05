@@ -176,6 +176,18 @@ export type GenerationLog = {
   created_at: string;
 };
 
+export type GenerationAttempt = {
+  id: string;
+  generation_log_id: string;
+  provider_config_id: string;
+  vendor: string;
+  attempt_number: number;
+  http_status: number;
+  error_msg: string;
+  duration_ms: number;
+  created_at: string;
+};
+
 export type LogsResponse = {
   data: GenerationLog[];
   total: number;
@@ -208,6 +220,11 @@ export async function listLogs(limit = 50, offset = 0, filters: AdminLogFilters 
     data: Array.isArray(body.data) ? body.data : [],
     total: typeof body.total === "number" ? body.total : Array.isArray(body.data) ? body.data.length : 0,
   };
+}
+
+export async function listGenerationAttempts(logID: string): Promise<GenerationAttempt[]> {
+  const body = await apiClient.getEnvelope<GenerationAttempt[]>(`/api/admin/logs/${encodeURIComponent(logID)}/attempts`);
+  return Array.isArray(body.data) ? body.data : [];
 }
 
 export type AdminAuditLog = {

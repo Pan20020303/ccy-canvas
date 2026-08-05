@@ -612,6 +612,7 @@ type fakeRepository struct {
 	providerConfigs   []domain.ProviderConfig
 	lastLogStatus     string
 	lastLogResult     string
+	lastLogError      string
 	lastLogResultURLs string
 	lastLogCacheHit   bool
 
@@ -632,7 +633,7 @@ func TestImageGenerationTimeoutIsSixHundredSeconds(t *testing.T) {
 	}
 }
 
-func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
+func TestNewProviderHTTPClientUsesBoundedTLSHandshakeAndKeepAlive(t *testing.T) {
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	if client.Timeout != 600*time.Second {
 		t.Fatalf("client.Timeout = %s, want %s", client.Timeout, 600*time.Second)
@@ -645,8 +646,8 @@ func TestNewProviderHTTPClientUsesLongerTLSHandshakeTimeout(t *testing.T) {
 	if transport.TLSHandshakeTimeout != providerTLSHandshakeTimeout {
 		t.Fatalf("transport.TLSHandshakeTimeout = %s, want %s", transport.TLSHandshakeTimeout, providerTLSHandshakeTimeout)
 	}
-	if !transport.DisableKeepAlives {
-		t.Fatal("transport.DisableKeepAlives = false, want true to avoid stale provider connections")
+	if transport.DisableKeepAlives {
+		t.Fatal("transport.DisableKeepAlives = true, want false to reuse healthy relay connections")
 	}
 }
 
@@ -664,6 +665,7 @@ func (e timeoutNetError) Temporary() bool { return true }
 
 func TestDoProviderRequestWithRetryRetriesTransientNetworkError(t *testing.T) {
 	attempts := 0
+	var retryEvents []providerRetryEvent
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			attempts++
@@ -690,13 +692,25 @@ func TestDoProviderRequestWithRetryRetriesTransientNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := doProviderRequestWithRetry(context.Background(), client, req, []byte(`{"ok":true}`))
+	ctx := withProviderRetryObserver(context.Background(), func(event providerRetryEvent) {
+		retryEvents = append(retryEvents, event)
+	})
+	resp, err := doProviderRequestWithRetry(ctx, client, req, []byte(`{"ok":true}`))
 	if err != nil {
 		t.Fatalf("doProviderRequestWithRetry returned error: %v", err)
 	}
 	defer resp.Body.Close()
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(retryEvents) != 1 {
+		t.Fatalf("retry events = %d, want 1", len(retryEvents))
+	}
+	if retryEvents[0].Attempt != 1 || !retryEvents[0].WillRetry {
+		t.Fatalf("retry event = %#v, want retry after attempt 1", retryEvents[0])
+	}
+	if retryEvents[0].Err == nil || !strings.Contains(retryEvents[0].Err.Error(), "TLS handshake timeout") {
+		t.Fatalf("retry event error = %v, want TLS handshake timeout", retryEvents[0].Err)
 	}
 }
 
@@ -832,7 +846,11 @@ func TestTryExtractImageFromPollResponse(t *testing.T) {
 		{"data array url", `{"data":[{"url":"https://manjuapi.com/generated/y.png"}]}`, "https://manjuapi.com/generated/y.png"},
 		{"content markdown", `{"choices":[{"message":{"content":"![img](https://manjuapi.com/generated/z.png)"}}]}`, "https://manjuapi.com/generated/z.png"},
 		{"still processing, no url", `{"status":"processing","progress":40}`, ""},
-		{"chinese status but url present is done", `{"status":"进行中","result_url":"https://manjuapi.com/generated/done.png"}`, "https://manjuapi.com/generated/done.png"},
+		{"processing input url is not output", `{"status":"processing","input":{"url":"https://example.com/reference.png"}}`, ""},
+		{"submitted poll url is not output", `{"status":"submitted","poll_url":"https://example.com/tasks/123"}`, ""},
+		{"completed detail url is not output", `{"status":"completed","detail_url":"https://example.com/tasks/123"}`, ""},
+		{"completed nested image url", `{"status":"completed","result":{"images":[{"url":["https://manjuapi.com/generated/nested.png"]}]}}`, "https://manjuapi.com/generated/nested.png"},
+		{"chinese completed status with url", `{"status":"已完成","result_url":"https://manjuapi.com/generated/done.png"}`, "https://manjuapi.com/generated/done.png"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1096,9 +1114,10 @@ func (r *fakeRepository) InsertGenerationAttempt(context.Context, domain.Generat
 func (r *fakeRepository) ListGenerationAttemptsByLog(context.Context, string) ([]domain.GenerationAttempt, error) {
 	return nil, nil
 }
-func (r *fakeRepository) UpdateGenerationLogResult(_ context.Context, _ string, status, resultURL, _ string, _ int32, cacheHit bool) error {
+func (r *fakeRepository) UpdateGenerationLogResult(_ context.Context, _ string, status, resultURL, errMsg string, _ int32, cacheHit bool) error {
 	r.lastLogStatus = status
 	r.lastLogResult = resultURL
+	r.lastLogError = errMsg
 	r.lastLogCacheHit = cacheHit
 	return nil
 }
@@ -1408,7 +1427,7 @@ func TestGenerateImageTextOnlyUsesOpenAIImageShape(t *testing.T) {
 	verifyCachedAsset(t, result.Content, []byte("fake"))
 }
 
-func TestGenerateImageFallsBackToTemporaryURLWhenGeneratedAssetCannotBeStaged(t *testing.T) {
+func TestGenerateImageDoesNotReportSuccessWhenGeneratedAssetCannotBeStaged(t *testing.T) {
 	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1") // safehttp blocks loopback; httptest serves from 127.0.0.1
 	key := []byte("01234567890123456789012345678901")
 	encryptedKey, err := crypto.Encrypt(key, "test-api-key")
@@ -1446,20 +1465,20 @@ func TestGenerateImageFallsBackToTemporaryURLWhenGeneratedAssetCannotBeStaged(t 
 		Model:           "gpt-image-2",
 		Prompt:          "draw a durable image",
 	})
-	if err != nil {
-		t.Fatalf("Generate returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "asset persistence failed") {
+		t.Fatalf("Generate error = %v, want asset persistence failure", err)
 	}
-	if result == nil || result.Content != temporaryURL {
-		t.Fatalf("Generate result = %#v, want temporary upstream URL %q", result, temporaryURL)
+	if result != nil {
+		t.Fatalf("Generate result = %#v, want nil for an unreadable output", result)
 	}
-	if repo.lastLogStatus != "success" {
-		t.Fatalf("lastLogStatus = %q, want success", repo.lastLogStatus)
+	if repo.markFailedCalls != 1 {
+		t.Fatalf("markFailedCalls = %d, want 1 terminal failure", repo.markFailedCalls)
 	}
-	if repo.lastLogResult != temporaryURL {
-		t.Fatalf("lastLogResult = %q, want %q", repo.lastLogResult, temporaryURL)
+	if repo.lastLogResult != "" {
+		t.Fatalf("lastLogResult = %q, want empty", repo.lastLogResult)
 	}
-	if repo.lastLogCacheHit {
-		t.Fatal("lastLogCacheHit = true, want false while asset is not yet cached")
+	if repo.lastLogStatus == "success" {
+		t.Fatal("unreadable media must not be persisted as success")
 	}
 }
 

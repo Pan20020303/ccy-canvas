@@ -327,6 +327,71 @@ func writeStagedAsset(body io.Reader, ext, contentType string) (StagedAsset, err
 	}, nil
 }
 
+// validateGeneratedAsset prevents relay task JSON, HTML error pages and other
+// non-media responses from being published as successful generated assets.
+// A locally staged file is sniffed rather than trusting Content-Type alone,
+// because several relays incorrectly return application/octet-stream.
+func validateGeneratedAsset(staged StagedAsset, serviceType string) error {
+	if strings.TrimSpace(staged.LocalPath) == "" {
+		if strings.HasPrefix(strings.TrimSpace(staged.StagingURL), "/uploads/") {
+			return nil
+		}
+		return fmt.Errorf("result was not staged to a readable local asset")
+	}
+
+	f, err := os.Open(staged.LocalPath)
+	if err != nil {
+		return fmt.Errorf("open staged asset: %w", err)
+	}
+	defer f.Close()
+
+	buf := make([]byte, 512)
+	n, readErr := f.Read(buf)
+	if readErr != nil && readErr != io.EOF {
+		return fmt.Errorf("inspect staged asset: %w", readErr)
+	}
+	if n == 0 {
+		return fmt.Errorf("staged asset was empty")
+	}
+	sample := buf[:n]
+	trimmed := bytes.TrimSpace(sample)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[' || trimmed[0] == '<') {
+		return fmt.Errorf("relay returned JSON/HTML instead of generated media")
+	}
+
+	detected := strings.ToLower(strings.TrimSpace(http.DetectContentType(sample)))
+	declared, _, _ := mime.ParseMediaType(staged.ContentType)
+	declared = strings.ToLower(strings.TrimSpace(declared))
+	ext := strings.ToLower(filepath.Ext(staged.LocalPath))
+
+	switch strings.ToLower(strings.TrimSpace(serviceType)) {
+	case "image":
+		if strings.HasPrefix(detected, "image/") || strings.HasPrefix(declared, "image/") || (detected == "application/octet-stream" && isKnownMediaExtension(ext, ".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif")) {
+			return nil
+		}
+	case "video":
+		if strings.HasPrefix(detected, "video/") || strings.HasPrefix(declared, "video/") || (detected == "application/octet-stream" && isKnownMediaExtension(ext, ".mp4", ".mov", ".webm", ".mkv", ".m4v")) {
+			return nil
+		}
+	case "audio":
+		if strings.HasPrefix(detected, "audio/") || strings.HasPrefix(declared, "audio/") || (detected == "application/octet-stream" && isKnownMediaExtension(ext, ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac")) {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return fmt.Errorf("unexpected media type %q (declared %q)", detected, declared)
+}
+
+func isKnownMediaExtension(ext string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if ext == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func uploadRoot() string {
 	root := strings.TrimSpace(os.Getenv("UPLOAD_DIR"))
 	if root == "" {

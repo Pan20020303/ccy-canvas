@@ -12,11 +12,12 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Unplug,
   XCircle,
 } from "lucide-react";
 
-import type { GenerationLog } from "../../api/admin";
-import { listLogs } from "../../api/admin";
+import type { GenerationAttempt, GenerationLog } from "../../api/admin";
+import { listGenerationAttempts, listLogs } from "../../api/admin";
 import { toAdminErrorSummary } from "../../api/errors";
 import { toRenderableMediaUrl } from "../../reference-media";
 import { Badge } from "../ui/badge";
@@ -241,6 +242,43 @@ function TaskDetailDrawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const [attempts, setAttempts] = useState<GenerationAttempt[]>([]);
+  const [attemptsLoading, setAttemptsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !log?.id) {
+      setAttempts([]);
+      return;
+    }
+    let active = true;
+    const loadAttempts = (showLoading: boolean) => {
+      if (showLoading) setAttemptsLoading(true);
+      void listGenerationAttempts(log.id)
+        .then((rows) => {
+          if (active) setAttempts(rows);
+        })
+        .catch(() => {
+          if (active && showLoading) setAttempts([]);
+        })
+        .finally(() => {
+          if (active && showLoading) setAttemptsLoading(false);
+        });
+    };
+
+    loadAttempts(true);
+    const timer = isActiveTask(log.status)
+      ? window.setInterval(() => loadAttempts(false), 4_000)
+      : undefined;
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [log?.id, log?.status, open]);
+
+  const reconnectAttempts = attempts
+    .filter((attempt) => attempt.error_msg.startsWith("[relay_reconnect]"))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full border-l border-white/10 bg-[#111111] p-0 text-neutral-100 sm:max-w-[720px]">
@@ -283,6 +321,34 @@ function TaskDetailDrawer({
                 <div className="rounded-[24px] border border-red-500/20 bg-red-500/[0.07] p-4">
                   <p className="text-[11px] uppercase tracking-[0.18em] text-red-200/80">错误信息</p>
                   <p className="mt-3 whitespace-pre-wrap break-all text-sm leading-6 text-red-100">{log.error_msg}</p>
+                </div>
+              ) : null}
+
+              {attemptsLoading || reconnectAttempts.length > 0 ? (
+                <div className="rounded-[24px] border border-amber-400/20 bg-amber-400/[0.05] p-4">
+                  <div className="flex items-center gap-2">
+                    {attemptsLoading ? <Loader2 className="h-4 w-4 animate-spin text-amber-300" /> : <Unplug className="h-4 w-4 text-amber-300" />}
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-amber-200/80">
+                      {isActiveTask(log.status) && reconnectAttempts.length > 0 ? "正在重连中转站" : "中转站连接记录"}
+                    </p>
+                  </div>
+                  {attemptsLoading ? (
+                    <p className="mt-3 text-sm text-neutral-400">正在读取连接记录…</p>
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {reconnectAttempts.map((attempt) => (
+                        <div key={attempt.id} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-medium text-amber-200">第 {attempt.attempt_number} 次连接失败，正在重连</span>
+                            <span className="text-neutral-500">{formatDateTime(attempt.created_at)} · {formatDuration(attempt.duration_ms)}</span>
+                          </div>
+                          <p className="mt-2 break-all text-xs leading-5 text-neutral-400">
+                            {attempt.error_msg.replace(/^\[relay_reconnect\]\s*/, "")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : null}
 

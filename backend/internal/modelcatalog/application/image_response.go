@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -209,21 +210,21 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 				continue // try next URL pattern
 			}
 
-			// Try to extract image from the response (flexible parsing).
-			if result := s.tryExtractImageFromPollResponse(body); result != nil {
-				return result, nil
-			}
-
-			// Check for explicit failure.
+			// A task is terminal only when the relay says it has completed and a
+			// final media field is present. Poll/detail/input URLs may exist while
+			// the task is still queued; treating any recursive `url` as the image
+			// used to publish a false success several minutes too early.
 			var generic map[string]interface{}
 			if json.Unmarshal(body, &generic) == nil {
-				if status, _ := generic["status"].(string); status == "failed" || status == "error" {
+				state, status := classifyImagePollState(generic)
+				if state == imagePollFailed {
 					return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Generation failed. Raw: %s", string(body[:min(len(body), 500)])))
 				}
-				if data, ok := generic["data"].(map[string]interface{}); ok {
-					if status, _ := data["status"].(string); status == "failed" || status == "error" {
-						return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Generation failed. Raw: %s", string(body[:min(len(body), 500)])))
-					}
+				if result := extractFinalImageResult(generic, state); result != nil {
+					return result, nil
+				}
+				if state == imagePollSucceeded {
+					log.Printf("[modelcatalog] image task %s reported terminal status %q without a final media URL; continuing to poll", taskID, status)
 				}
 			}
 
@@ -244,44 +245,144 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 	return nil, apperror.New(apperror.CodeInternal, "Image generation timed out after polling")
 }
 
+type imagePollState int
+
+const (
+	imagePollUnknown imagePollState = iota
+	imagePollActive
+	imagePollSucceeded
+	imagePollFailed
+)
+
+// classifyImagePollState reads status only from task-response wrappers. It
+// deliberately does not recurse through arbitrary input/request metadata,
+// where an unrelated status could override the actual task state.
+func classifyImagePollState(payload map[string]interface{}) (imagePollState, string) {
+	var visit func(interface{}, int) (imagePollState, string)
+	visit = func(value interface{}, depth int) (imagePollState, string) {
+		if depth <= 0 {
+			return imagePollUnknown, ""
+		}
+		switch current := value.(type) {
+		case map[string]interface{}:
+			for _, key := range []string{"status", "state", "task_status"} {
+				if raw, ok := current[key].(string); ok {
+					status := strings.ToLower(strings.TrimSpace(raw))
+					switch status {
+					case "failed", "failure", "error", "errored", "cancelled", "canceled", "expired", "timeout", "timed_out", "失败", "已失败", "已取消", "超时":
+						return imagePollFailed, raw
+					case "completed", "complete", "success", "succeeded", "finished", "done", "已完成", "成功", "完成":
+						return imagePollSucceeded, raw
+					case "submitted", "created", "queued", "pending", "processing", "running", "in_progress", "in-progress", "generating", "starting", "进行中", "处理中", "排队中", "生成中", "等待中":
+						return imagePollActive, raw
+					}
+				}
+			}
+			for _, key := range []string{"data", "task", "result", "output"} {
+				if child, ok := current[key]; ok {
+					if state, status := visit(child, depth-1); state != imagePollUnknown {
+						return state, status
+					}
+				}
+			}
+		case []interface{}:
+			for _, child := range current {
+				if state, status := visit(child, depth-1); state != imagePollUnknown {
+					return state, status
+				}
+			}
+		}
+		return imagePollUnknown, ""
+	}
+	return visit(payload, 5)
+}
+
 // tryExtractImageFromPollResponse attempts to find an image URL in various response shapes.
 func (s *Service) tryExtractImageFromPollResponse(body []byte) *GenerateResult {
 	var generic map[string]interface{}
 	if json.Unmarshal(body, &generic) != nil {
 		return nil
 	}
+	state, _ := classifyImagePollState(generic)
+	return extractFinalImageResult(generic, state)
+}
 
-	// Completion is signalled by the presence of a final image URL — not by
-	// a status string (gateways disagree on the exact value, and Manju may
-	// even return Chinese statuses). If a usable URL is present the task is
-	// done; if not, it's still in progress and the caller keeps polling.
-	// Search recursively (depth 5) for nested shapes like result.images[0].url
-	// and data[0].url.
-	// Order matters: prefer the most specific final-image fields. Manju/NewAPI
-	// completed tasks put the image in `result_url` or `final_url` (the latter
-	// was previously missing). `detail_url` is a detail *page*, not an image,
-	// so it's intentionally excluded.
-	for _, key := range []string{"result_url", "final_url", "download_url", "image_url", "url"} {
-		url := findStringField(generic, key, 5)
-		if url != "" && (strings.HasPrefix(url, "http") || strings.HasPrefix(url, "data:")) {
-			return &GenerateResult{Type: "url", Content: url}
-		}
+func extractFinalImageResult(payload map[string]interface{}, state imagePollState) *GenerateResult {
+	// An explicit non-terminal/failed status always wins over URLs carried in
+	// request echoes, progress metadata or task-detail links.
+	if state == imagePollActive || state == imagePollFailed {
+		return nil
 	}
-	// Manju 图生图 poll response carries the image as markdown inside
-	// choices[0].message.content: "![](https://manjuapi.com/generated/x.png)".
-	if content := findStringField(generic, "content", 5); content != "" {
-		if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
-			return &GenerateResult{Type: "url", Content: match[1]}
-		}
-		if match := plainImageURLPattern.FindString(content); match != "" {
-			return &GenerateResult{Type: "url", Content: strings.TrimRight(match, ".,;")}
-		}
-	}
-	b64 := findStringField(generic, "b64_json", 5)
-	if b64 != "" {
-		return &GenerateResult{Type: "url", Content: "data:image/png;base64," + b64}
+	if finalURL := findFinalImageURL(payload, false, 6); finalURL != "" {
+		return &GenerateResult{Type: "url", Content: finalURL}
 	}
 	return nil
+}
+
+// findFinalImageURL traverses only known response/output containers. Generic
+// `url` and `content` fields are accepted only after entering one of those
+// containers, so input.url, poll_url and detail_url can never become output.
+func findFinalImageURL(value interface{}, allowGenericOutput bool, depth int) string {
+	if depth <= 0 {
+		return ""
+	}
+	switch current := value.(type) {
+	case map[string]interface{}:
+		for _, key := range []string{"result_url", "final_url", "download_url", "image_url"} {
+			if candidate := firstStringValue(current[key]); isRenderableImageValue(candidate) {
+				return candidate
+			}
+		}
+		if allowGenericOutput {
+			if candidate := firstStringValue(current["url"]); isRenderableImageValue(candidate) {
+				return candidate
+			}
+			if b64 := firstStringValue(current["b64_json"]); strings.TrimSpace(b64) != "" {
+				return "data:image/png;base64," + strings.TrimSpace(b64)
+			}
+			if content := firstStringValue(current["content"]); content != "" {
+				if match := markdownImageURLPattern.FindStringSubmatch(content); len(match) == 2 {
+					return match[1]
+				}
+				if match := plainImageURLPattern.FindString(content); match != "" {
+					return strings.TrimRight(match, ".,;")
+				}
+			}
+		}
+		for _, key := range []string{"data", "result", "output", "outputs", "images", "artifacts", "choices", "message"} {
+			if child, ok := current[key]; ok {
+				if found := findFinalImageURL(child, true, depth-1); found != "" {
+					return found
+				}
+			}
+		}
+	case []interface{}:
+		for _, child := range current {
+			if found := findFinalImageURL(child, allowGenericOutput, depth-1); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+func firstStringValue(value interface{}) string {
+	switch current := value.(type) {
+	case string:
+		return strings.TrimSpace(current)
+	case []interface{}:
+		for _, item := range current {
+			if candidate, ok := item.(string); ok && strings.TrimSpace(candidate) != "" {
+				return strings.TrimSpace(candidate)
+			}
+		}
+	}
+	return ""
+}
+
+func isRenderableImageValue(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "data:image/")
 }
 
 // findStringField recursively searches a map for a non-empty string field by key name, up to maxDepth.

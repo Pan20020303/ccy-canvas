@@ -139,6 +139,15 @@ func (h *AdminHandler) RegisterRoutes(api huma.API) {
 		Security:    adminSec,
 	}, h.listLogs)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-log-attempts",
+		Method:      http.MethodGet,
+		Path:        "/api/admin/logs/{id}/attempts",
+		Summary:     "List relay connection attempts for a generation log",
+		Tags:        []string{"Admin", "Logs"},
+		Security:    adminSec,
+	}, h.listLogAttempts)
+
 	// Privileged management-operation audit trail. Kept separate from
 	// generation logs, which represent user generation tasks rather than
 	// administrator actions.
@@ -643,6 +652,65 @@ func (h *AdminHandler) listLogs(ctx context.Context, input *listLogsInput) (*lis
 	out := &listLogsOutput{}
 	out.Body.Data = items
 	out.Body.Total = int32(total)
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	return out, nil
+}
+
+type GenerationAttemptItem struct {
+	ID               string `json:"id"`
+	GenerationLogID  string `json:"generation_log_id"`
+	ProviderConfigID string `json:"provider_config_id"`
+	Vendor           string `json:"vendor"`
+	AttemptNumber    int32  `json:"attempt_number"`
+	HTTPStatus       int32  `json:"http_status"`
+	ErrorMsg         string `json:"error_msg"`
+	DurationMs       int32  `json:"duration_ms"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type listLogAttemptsInput struct {
+	ID string `path:"id"`
+}
+
+type listLogAttemptsOutput struct {
+	Body struct {
+		Data      []GenerationAttemptItem `json:"data"`
+		RequestID string                  `json:"request_id"`
+	}
+}
+
+func (h *AdminHandler) listLogAttempts(ctx context.Context, input *listLogAttemptsInput) (*listLogAttemptsOutput, error) {
+	logID, err := parseUUID(input.ID)
+	if err != nil {
+		return nil, huma.Error400BadRequest("Invalid generation log ID")
+	}
+	rows, err := h.q.ListGenerationAttemptsByLog(ctx, logID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to list generation attempts")
+	}
+	items := make([]GenerationAttemptItem, 0, len(rows))
+	for _, row := range rows {
+		item := GenerationAttemptItem{
+			ID:               pgUUIDStr(row.ID),
+			GenerationLogID:  pgUUIDStr(row.GenerationLogID),
+			ProviderConfigID: pgUUIDStr(row.ProviderConfigID),
+			Vendor:           row.Vendor,
+			AttemptNumber:    row.AttemptNumber,
+			ErrorMsg:         row.ErrorMsg,
+		}
+		if row.HttpStatus.Valid {
+			item.HTTPStatus = row.HttpStatus.Int32
+		}
+		if row.DurationMs.Valid {
+			item.DurationMs = row.DurationMs.Int32
+		}
+		if row.CreatedAt.Valid {
+			item.CreatedAt = row.CreatedAt.Time.Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	out := &listLogAttemptsOutput{}
+	out.Body.Data = items
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	return out, nil
 }
