@@ -58,7 +58,7 @@ export type ThreadRunStep =
   | { kind: string; id: string; [key: string]: unknown };
 
 /** 把面板状态映射成 assistant-ui 的 ThreadMessageLike 列表。 */
-function buildMessages(
+export function buildAgentThreadMessages(
   history: AgentConversationTurn[],
   runSteps: ThreadRunStep[],
   streamingReply: string,
@@ -83,14 +83,18 @@ function buildMessages(
   }));
 
   // 当前运行 → 一条带结构化 parts 的 assistant 消息(思考/工具/流式文本)。
-  const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
+  // Keep the live execution timeline separate from the streamed reply.
+  // assistant-ui keys leaf parts by their array index. A late tool call used to be
+  // inserted before an already-mounted text part, which made the text renderer
+  // observe a tool-call context and throw `MessagePartText can only be used...`.
+  const timelineParts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
   for (const step of runSteps) {
     if (step.kind === "thought") {
       const s = step as ThreadThoughtStep;
-      if (s.content.trim()) parts.push({ type: "reasoning", text: s.content });
+      if (s.content.trim()) timelineParts.push({ type: "reasoning", text: s.content });
     } else if (step.kind === "tool") {
       const inv = (step as ThreadToolStep).invocation;
-      parts.push({
+      timelineParts.push({
         type: "tool-call",
         toolCallId: inv.id,
         toolName: inv.name,
@@ -100,10 +104,12 @@ function buildMessages(
       });
     }
   }
-  if (streamingReply) parts.push({ type: "text", text: streamingReply });
-
-  if (parts.length > 0) {
-    const runMessage: ThreadMessageLike = { id: "current-run", role: "assistant", content: parts };
+  if (timelineParts.length > 0) {
+    const runMessage: ThreadMessageLike = {
+      id: "current-run-steps",
+      role: "assistant",
+      content: timelineParts,
+    };
     // 时序修正:运行结束后最终回复已作为最后一条 assistant 历史存在,
     // 工具/思考时间线应插在它「之前」;运行中则排在最后。
     const last = messages[messages.length - 1];
@@ -112,6 +118,15 @@ function buildMessages(
     } else {
       messages.push(runMessage);
     }
+  }
+  // The reply has its own stable message/part identity. Tool events can now arrive
+  // at any time without changing the type of the mounted Markdown text part.
+  if (streamingReply) {
+    messages.push({
+      id: "current-run-reply",
+      role: "assistant",
+      content: [{ type: "text", text: streamingReply }],
+    });
   }
   return messages;
 }
@@ -561,7 +576,7 @@ export function useAgentThreadRuntime({
   threadList?: ExternalStoreThreadListAdapter;
 }) {
   const messages = useMemo(
-    () => buildMessages(history, runSteps, streamingReply, running),
+    () => buildAgentThreadMessages(history, runSteps, streamingReply, running),
     [history, runSteps, streamingReply, running],
   );
 
