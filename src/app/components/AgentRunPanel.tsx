@@ -2287,81 +2287,57 @@ function CanvasOperationIcon({ entity }: { entity: CanvasOperationEntity }) {
 function CanvasOperationsCard({ steps, zh }: { steps: CanvasRunStep[]; zh: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const operations = steps.map((step) => presentCanvasOperation(step.patch, zh));
-  const visibleOperations = expanded ? operations : operations.slice(0, 3);
-  const hiddenCount = operations.length - visibleOperations.length;
+  const operationSummary = operations
+    .slice(0, 2)
+    .map((operation) => `${operation.action}${operation.detail}`)
+    .join(zh ? "、" : ", ");
+  const summarySuffix = operations.length > 2 ? (zh ? "等" : " and more") : "";
 
   return (
-    <div className="overflow-hidden rounded-xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/[0.09] via-white/[0.025] to-transparent shadow-[0_10px_28px_rgba(0,0,0,0.16)]">
+    <div className={`self-start overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.055] shadow-[0_8px_22px_rgba(0,0,0,0.14)] transition-[width,background-color] ${expanded ? "w-[280px] max-w-full" : "w-fit max-w-[260px]"}`}>
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition hover:bg-white/[0.025]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-white/[0.035]"
         aria-expanded={expanded}
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-emerald-300/20 bg-emerald-400/10 text-emerald-300">
-          <Check className="h-3.5 w-3.5" />
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-400/10 text-emerald-300">
+          <Sparkles className="h-3 w-3" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-medium text-neutral-100">
-            {zh ? "画布更新完成" : "Canvas updated"}
+          <span className="block truncate text-[11px] font-medium text-neutral-200">
+            {zh ? `已完成 ${operations.length} 项画布操作` : `${operations.length} canvas changes completed`}
           </span>
-          <span className="mt-0.5 block text-[9px] text-neutral-500">
-            {zh ? `本次完成 ${operations.length} 项操作` : `${operations.length} changes completed`}
+          <span className="mt-0.5 block truncate text-[10px] text-neutral-400" title={`${operationSummary}${summarySuffix}`}>
+            {operationSummary}{summarySuffix}
           </span>
         </span>
-        <span className="rounded-full border border-emerald-300/15 bg-emerald-400/[0.08] px-2 py-0.5 text-[9px] text-emerald-200/80">
-          {zh ? `${operations.length} 项变更` : `${operations.length} changes`}
-        </span>
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />
+        <ChevronDown className={`h-3 w-3 shrink-0 text-neutral-500 transition-transform ${expanded ? "rotate-180" : ""}`} />
       </button>
 
-      <div className="border-t border-white/[0.055] px-2 py-1.5">
-        {visibleOperations.map((operation, index) => (
-          <div key={`${steps[index]?.id ?? "canvas"}-${index}`} className="group rounded-lg px-2 py-2 transition hover:bg-white/[0.025]">
-            <div className="flex items-start gap-2.5">
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.055] text-neutral-300 ring-1 ring-inset ring-white/[0.06]">
-                <CanvasOperationIcon entity={operation.entity} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5 text-[10px]">
-                  <span className="font-medium text-emerald-300/90">{operation.action}</span>
-                  <span className="text-neutral-600">·</span>
-                  <span className="text-neutral-400">{operation.detail}</span>
+      {expanded ? (
+        <div className="prompt-editor-scroll max-h-[220px] overflow-y-auto border-t border-white/[0.055] px-2 py-1.5">
+          {operations.map((operation, index) => (
+            <div key={`${steps[index]?.id ?? "canvas"}-${index}`} className="rounded-lg px-2 py-1.5 transition hover:bg-white/[0.03]">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/[0.05] text-neutral-400">
+                  <CanvasOperationIcon entity={operation.entity} />
                 </span>
-                <span className="mt-0.5 block truncate text-[11px] text-neutral-200" title={operation.title}>
-                  {operation.title}
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1 text-[9px]">
+                    <span className="font-medium text-emerald-300/85">{operation.action}</span>
+                    <span className="text-neutral-600">·</span>
+                    <span className="text-neutral-500">{operation.detail}</span>
+                  </span>
+                  <span className="mt-0.5 block truncate text-[10px] text-neutral-300" title={operation.title}>
+                    {operation.title}
+                  </span>
                 </span>
-              </span>
-            </div>
-
-            {expanded && (operation.nodeId || operation.position) ? (
-              <div className="ml-8 mt-2 grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 rounded-md border border-white/[0.05] bg-black/15 px-2 py-1.5 text-[9px]">
-                {operation.nodeId ? (
-                  <>
-                    <span className="text-neutral-600">{zh ? "节点 ID" : "Node ID"}</span>
-                    <span className="truncate font-mono text-neutral-400" title={operation.nodeId}>{operation.nodeId}</span>
-                  </>
-                ) : null}
-                {operation.position ? (
-                  <>
-                    <span className="text-neutral-600">{zh ? "画布位置" : "Position"}</span>
-                    <span className="text-neutral-400">{operation.position}</span>
-                  </>
-                ) : null}
               </div>
-            ) : null}
-          </div>
-        ))}
-        {hiddenCount > 0 ? (
-          <button
-            type="button"
-            onClick={() => setExpanded(true)}
-            className="w-full rounded-md py-1.5 text-[9px] text-neutral-500 transition hover:bg-white/[0.025] hover:text-neutral-300"
-          >
-            {zh ? `查看其余 ${hiddenCount} 项操作` : `View ${hiddenCount} more changes`}
-          </button>
-        ) : null}
-      </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
