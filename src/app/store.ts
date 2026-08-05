@@ -291,6 +291,8 @@ type AppState = {
   /** Backend project integration */
   backendProjects: BackendProject[];
   activeBackendProjectId: string | null;
+  /** Persisted backend canvas revision used as the base for agent-run deltas. */
+  canvasRevision: number;
   backendSyncing: boolean;
   /** True only after the active project's canvas has been successfully
    *  loaded from (or confirmed empty on) the backend. The auto-save gate:
@@ -315,7 +317,7 @@ type AppState = {
   spaceMembers: SpaceMember[];
   invitations: AdminInvitation[];
   groups: Group[];
-  createGroup: (nodeIds: string[]) => void;
+  createGroup: (nodeIds: string[], name?: string) => void;
   removeGroup: (groupId: string) => void;
   ungroupNodes: (groupId: string) => void;
   setGroupMembers: (groupId: string, nodeIds: string[]) => void;
@@ -383,6 +385,10 @@ type AppState = {
   pushUndoSnapshot: () => void;
   undoCanvas: () => void;
   redoCanvas: () => void;
+  /** Atomically move one node and persist the project/space mirrors. */
+  moveNodeTo: (nodeId: string, position: { x: number; y: number }) => void;
+  /** Atomically delete explicit nodes together with connected edges/groups. */
+  deleteNodes: (nodeIds: string[]) => void;
   /** Delete the currently-selected node(s) + their edges (Del / Backspace). */
   deleteSelectedNodes: () => void;
   copiedCanvasSelection: CanvasClipboardSelection | null;
@@ -2375,6 +2381,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   // Backend project integration.
   backendProjects: [],
   activeBackendProjectId: null,
+  canvasRevision: 0,
   backendSyncing: false,
   canvasHydrated: false,
   canvasSaveStatus: 'idle',
@@ -2430,6 +2437,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             groups,
             activeProjectId: first.id,
             activeBackendProjectId: first.id,
+            canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
             canvasHydrated: true, // backend canvas is now the source of truth → auto-save is safe
             projectStateById,
             undoStack: [],
@@ -2454,6 +2462,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       set((state) => ({
         backendProjects: [project, ...state.backendProjects],
         activeBackendProjectId: project.id,
+        canvasRevision: 0,
         activeProjectId: project.id,
         canvasHydrated: true, // freshly created empty project — safe to auto-save
         nodes: [],
@@ -2484,7 +2493,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }
     // Switching: disable auto-save until the target canvas has loaded, so a
     // 2s auto-save can't write the outgoing/stale nodes into the new project.
-    set({ activeBackendProjectId: id, canvasHydrated: false, backendSyncing: true });
+    set({ activeBackendProjectId: id, canvasRevision: 0, canvasHydrated: false, backendSyncing: true });
     try {
       const canvas = await getCanvas(id);
       const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
@@ -2509,6 +2518,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           undoStack: [],
           copiedCanvasSelection: null,
           activeProjectId: id,
+          canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
           canvasHydrated: true,
           projectStateById,
           ...syncActiveSpaceSnapshot(state, { projectStateById }),
@@ -2550,6 +2560,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         const projectStateById = { ...state.projectStateById, [id]: createCanvasSnapshot(nodes, edges, groups) };
         return {
           nodes, edges, groups, undoStack: [], copiedCanvasSelection: null,
+          canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
           canvasHydrated: true, projectStateById,
           ...syncActiveSpaceSnapshot(state, { projectStateById }),
         };
@@ -2586,9 +2597,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     if (!options?.force && payloadSignature === lastSavedCanvasSignature) return;
     set({ canvasSaveStatus: 'saving' });
     try {
-      await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
+      const savedCanvas = await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
       lastSavedCanvasSignature = payloadSignature;
-      set({ canvasSaveStatus: 'saved', canvasSaveError: null });
+      set({
+        canvasRevision: Number.isSafeInteger(savedCanvas.version) ? savedCanvas.version : get().canvasRevision,
+        canvasSaveStatus: 'saved',
+        canvasSaveError: null,
+      });
     } catch (err) {
       // No longer silent: surface the failure so the user knows their work
       // isn't persisted. The signature is intentionally NOT updated, so the
@@ -2647,28 +2662,53 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
   }),
 
-  deleteSelectedNodes: () => set((state) => {
+  moveNodeTo: (nodeId, position) => set((state) => {
     if (computeActiveProjectReadOnly(state)) return {};
-    const doomed = new Set(state.nodes.filter((node) => node.selected).map((node) => node.id));
-    if (doomed.size === 0) return {};
-
-    const nodes = state.nodes.filter((node) => !doomed.has(node.id));
-    const edges = state.edges.filter((edge) => !doomed.has(edge.source) && !doomed.has(edge.target));
-    const groups = state.groups
-      .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }))
-      .filter((group) => group.nodeIds.length > 0);
+    const index = state.nodes.findIndex((node) => node.id === nodeId);
+    if (index < 0) return {};
+    const nodes = state.nodes.slice();
+    nodes[index] = { ...nodes[index], position: { ...position } };
     const undoStack = pushUndoState(state);
-    const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
     return {
       nodes,
-      edges,
-      groups,
       undoStack,
       redoStack: [],
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
+
+  deleteNodes: (nodeIds) => {
+    if (computeActiveProjectReadOnly(get())) return;
+    nodeIds.forEach(clearReferencePayloadValue);
+    set((state) => {
+      const doomed = new Set(nodeIds);
+      if (doomed.size === 0) return {};
+
+      const nodes = state.nodes.filter((node) => !doomed.has(node.id));
+      if (nodes.length === state.nodes.length) return {};
+      const edges = state.edges.filter((edge) => !doomed.has(edge.source) && !doomed.has(edge.target));
+      const groups = state.groups
+        .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }))
+        .filter((group) => group.nodeIds.length > 0);
+      const undoStack = pushUndoState(state);
+      const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
+      return {
+        nodes,
+        edges,
+        groups,
+        undoStack,
+        redoStack: [],
+        projectStateById,
+        ...syncActiveSpaceSnapshot(state, { projectStateById }),
+      };
+    });
+  },
+  deleteSelectedNodes: () => {
+    const state = get();
+    state.deleteNodes(state.nodes.filter((node) => node.selected).map((node) => node.id));
+  },
   copySelectedNodes: () => set((state) => ({
     copiedCanvasSelection: buildCanvasClipboardSelection({
       nodes: state.nodes,
@@ -2906,10 +2946,13 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
   }),
 
-  createGroup: (nodeIds) => set((state) => {
+  createGroup: (nodeIds, name) => set((state) => {
+    if (computeActiveProjectReadOnly(state)) return {};
     // Merge semantics: if any selected node already belongs to a group, absorb that
     // group's full membership into the new group (and drop the old group) instead of nesting.
-    const selectionSet = new Set(nodeIds);
+    const existingNodeIds = new Set(state.nodes.map((node) => node.id));
+    const selectionSet = new Set(nodeIds.filter((id) => existingNodeIds.has(id)));
+    if (selectionSet.size < 2) return {};
     const absorbedGroupIds = new Set<string>();
     state.groups.forEach((group) => {
       if (group.nodeIds.some((id) => selectionSet.has(id))) {
@@ -2925,7 +2968,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const groups = [...remainingGroups, {
       id: `g-${Date.now()}`,
       nodeIds: mergedNodeIds,
-      name: `分组 ${remainingGroups.length + 1}`,
+      name: name?.trim() || `分组 ${remainingGroups.length + 1}`,
       position: { x: bounds.x, y: bounds.y },
       width: bounds.width,
       height: bounds.height,

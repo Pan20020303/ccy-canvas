@@ -31,11 +31,54 @@ export type AgentEventMeta = {
 
 type AgentEventHandler = (event: AgentSSEEvent, meta?: AgentEventMeta) => void;
 
-export type CanvasPatch =
+type CanvasPatchRevision = {
+  /** Revision this mutation was computed against. Omitted by older servers. */
+  base_revision?: number;
+  /** Revision after applying this mutation. */
+  revision?: number;
+};
+
+export type CanvasPatch = (
   | { op: "add_node"; node: Node }
   | { op: "add_edge"; edge: Edge }
   | { op: "patch_node_data"; node_id: string; patch: Record<string, unknown> }
-  | { op: "run_node"; node_id: string; model?: string };
+  | { op: "run_node"; node_id: string; model?: string }
+  | { op: "move_node"; node_id: string; position: { x: number; y: number } }
+  | { op: "delete_node"; node_id: string }
+  | { op: "create_group"; node_ids: string[]; name?: string }
+) & CanvasPatchRevision;
+
+export type CanvasPatchRevisionResult =
+  | { accepted: true; nextRevision: number | null }
+  | { accepted: false; nextRevision: number | null; reason: string };
+
+/**
+ * Enforce the per-agent-run patch sequence. Legacy patches without revision
+ * metadata remain accepted; revisioned patches must be contiguous and based
+ * on the last patch the browser applied.
+ */
+export function advanceCanvasPatchRevision(
+  currentRevision: number | null,
+  patch: CanvasPatch,
+): CanvasPatchRevisionResult {
+  const base = patch.base_revision;
+  const next = patch.revision;
+  if (base == null && next == null) return { accepted: true, nextRevision: currentRevision };
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(next) || base! < 0 || next! < 0) {
+    return { accepted: false, nextRevision: currentRevision, reason: "画布 Patch 的版本信息不完整" };
+  }
+  if (next !== base! + 1) {
+    return { accepted: false, nextRevision: currentRevision, reason: `画布 Patch 版本不连续（${base} → ${next}）` };
+  }
+  if (currentRevision != null && base !== currentRevision) {
+    return {
+      accepted: false,
+      nextRevision: currentRevision,
+      reason: `画布 Patch 冲突：当前版本 ${currentRevision}，收到基于版本 ${base} 的操作`,
+    };
+  }
+  return { accepted: true, nextRevision: next! };
+}
 
 export type AgentRunBody = {
   message: string;
@@ -49,6 +92,8 @@ export type AgentRunBody = {
   model?: string;
   project_id?: string;
   workspace_id?: string;
+  /** Persisted canvas snapshot version used as this run's revision base. */
+  canvas_revision?: number;
   task_context?: unknown;
   generation_models?: Record<string, string[]>;
   thinking?: boolean;

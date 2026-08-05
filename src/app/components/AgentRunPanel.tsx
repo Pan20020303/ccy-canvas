@@ -7,7 +7,15 @@ import { useMountFadeIn } from "./motion/use-motion";
 
 import type { Edge, Node } from "@xyflow/react";
 
-import { getActiveAgentJob, resumeAgentJob, runAgent, type AgentEventMeta, type AgentSSEEvent, type CanvasPatch } from "../api/agent-run";
+import {
+  advanceCanvasPatchRevision,
+  getActiveAgentJob,
+  resumeAgentJob,
+  runAgent,
+  type AgentEventMeta,
+  type AgentSSEEvent,
+  type CanvasPatch,
+} from "../api/agent-run";
 import {
   createAgentConversation,
   deleteAgentConversation,
@@ -155,6 +163,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const onConnect = useStore((s) => s.onConnect);
   const updateNodeData = useStore((s) => s.updateNodeData);
   const runNode = useStore((s) => s.runNode);
+  const moveNodeTo = useStore((s) => s.moveNodeTo);
+  const deleteNodes = useStore((s) => s.deleteNodes);
+  const createGroup = useStore((s) => s.createGroup);
   const backendModels = useStore((s) => s.backendModels);
   const requestCanvasFocus = useStore((s) => s.requestCanvasFocus);
   const panelWidth = useStore((s) => s.agentPanelWidth);
@@ -302,6 +313,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [running, runSteps]);
 
   const abortRef = useRef<(() => void) | null>(null);
+  const canvasPatchRevisionRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -516,6 +528,16 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const applyPatch = useCallback((event: AgentSSEEvent) => {
     if (event.type !== "canvas_patch") return;
     const patch = event.data;
+    const revisionResult = advanceCanvasPatchRevision(canvasPatchRevisionRef.current, patch);
+    if (!revisionResult.accepted) {
+      setRunSteps((prev) => [...prev, {
+        kind: "error",
+        id: `patch-conflict-${prev.length}`,
+        message: `${revisionResult.reason}。该操作未应用，请重新发起任务。`,
+      }]);
+      return;
+    }
+    canvasPatchRevisionRef.current = revisionResult.nextRevision;
     switch (patch.op) {
       case "add_node": {
         // Belt-and-braces: ensure `.data` exists so node renderers don't crash
@@ -541,6 +563,16 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       }
       case "patch_node_data":
         updateNodeData(patch.node_id, patch.patch);
+        break;
+      case "move_node":
+        moveNodeTo(patch.node_id, patch.position);
+        scheduleNodeFocus(patch.node_id);
+        break;
+      case "delete_node":
+        deleteNodes([patch.node_id]);
+        break;
+      case "create_group":
+        createGroup(patch.node_ids, patch.name);
         break;
       case "run_node": {
         const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
@@ -616,7 +648,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
     }
-  }, [addNode, onConnect, runNode, updateNodeData, executionMode, backendModels, scheduleNodeFocus]);
+  }, [addNode, onConnect, runNode, updateNodeData, moveNodeTo, deleteNodes, createGroup, executionMode, backendModels, scheduleNodeFocus]);
 
   // 闭合最后一个仍在流式增长的思考步骤 —— 一旦模型开始输出叙述文本/工具调用/
   // 最终回复,说明这一段 reasoning 已经结束(ReasoningBlock 随之收起并定格耗时)。
@@ -681,6 +713,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setRunFinishedMs(null);
     setConnectionState(null);
     setRunning(true);
+    canvasPatchRevisionRef.current = useStore.getState().canvasRevision;
 
     const priorHistory = conversationHistory;
 
@@ -702,6 +735,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         // 记忆隔离域:每个项目的智能体记忆互相独立(save_memory / deep_retrieve /
         // 自动轮次记忆都按 user+agent+project 隔离)。
         project_id: useStore.getState().activeBackendProjectId ?? undefined,
+        canvas_revision: useStore.getState().canvasRevision,
         // 可用生成模型清单 → system prompt,让 agent 编排图片/视频生成
         // (create_node + set_prompt + run_node(model=...))。
         generation_models: buildGenerationModelCatalog(backendModels),
@@ -877,6 +911,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       : null;
     const startedAt = performance.now();
     let disposed = false;
+    canvasPatchRevisionRef.current = null;
 
     if (job.conversationId) {
       setActiveConversationId((prev) => ({ ...prev, [targetAgentId]: job.conversationId }));
@@ -2551,6 +2586,9 @@ function humanizeToolName(name: string, zh: boolean): string {
     list_nodes: "List nodes",
     find_nodes: "Find nodes",
     read_node: "Read node",
+    read_nodes: "Read nodes",
+    get_subgraph: "Read subgraph",
+    get_canvas_delta: "Read canvas changes",
     create_node: "Create node",
     connect_nodes: "Connect nodes",
     set_prompt: "Set prompt",
@@ -2563,6 +2601,9 @@ function humanizeToolName(name: string, zh: boolean): string {
     list_nodes: "列出节点",
     find_nodes: "查找节点",
     read_node: "读取节点",
+    read_nodes: "批量读取节点",
+    get_subgraph: "读取关联子图",
+    get_canvas_delta: "读取画布变化",
     create_node: "新建节点",
     connect_nodes: "连接节点",
     set_prompt: "设置提示词",

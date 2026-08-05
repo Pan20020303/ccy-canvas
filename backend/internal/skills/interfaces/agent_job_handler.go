@@ -324,7 +324,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		})
 	}
 
-	canvas := skillsapp.NewCanvasState(req.Nodes, req.Edges, emit)
+	canvas := skillsapp.NewCanvasStateAtRevision(req.Nodes, req.Edges, req.CanvasRevision, emit)
 	tools := []skillsapp.Tool{}
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
@@ -363,6 +363,9 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	}
 
 	systemPrompt := agent.SystemPrompt
+	if agent.CanvasTools {
+		systemPrompt = strings.TrimSpace(systemPrompt + fmt.Sprintf("\n\n[Canvas revision: %d]", req.CanvasRevision))
+	}
 	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges, req.Groups); overview != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【本次对话的最新画布状态】\n" + overview)
 	}

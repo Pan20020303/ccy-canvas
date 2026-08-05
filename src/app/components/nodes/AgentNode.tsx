@@ -5,7 +5,7 @@ import clsx from "clsx";
 
 import type { Edge, Node } from "@xyflow/react";
 
-import { runAgent, type AgentSSEEvent } from "../../api/agent-run";
+import { advanceCanvasPatchRevision, runAgent, type AgentSSEEvent } from "../../api/agent-run";
 import {
   listAgentConversationHistory,
   listAgents,
@@ -34,6 +34,9 @@ export function AgentNode({ id, data, selected }: any) {
   const onConnect = useStore((s) => s.onConnect);
   const updateNd = useStore((s) => s.updateNodeData);
   const runNd = useStore((s) => s.runNode);
+  const moveNodeTo = useStore((s) => s.moveNodeTo);
+  const deleteNodes = useStore((s) => s.deleteNodes);
+  const createGroup = useStore((s) => s.createGroup);
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -43,6 +46,7 @@ export function AgentNode({ id, data, selected }: any) {
   const [conversationHistory, setConversationHistory] = useState<AgentConversationTurn[]>([]);
   const [loadedHistoryAgentId, setLoadedHistoryAgentId] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const canvasPatchRevisionRef = useRef<number | null>(null);
 
   useEffect(() => {
     void Promise.all([listAgents(), listSkills()])
@@ -80,9 +84,17 @@ export function AgentNode({ id, data, selected }: any) {
     setActiveSkillName(outbound.invokedSkillName);
     setEvents([]);
     setRunning(true);
+    canvasPatchRevisionRef.current = useStore.getState().canvasRevision;
     abortRef.current = await runAgent(
       agentId,
-      { message: outbound.message, nodes: nodes as unknown[], edges: edges as unknown[], history: conversationHistory },
+      {
+        message: outbound.message,
+        nodes: nodes as unknown[],
+        edges: edges as unknown[],
+        groups: useStore.getState().groups as unknown[],
+        canvas_revision: useStore.getState().canvasRevision,
+        history: conversationHistory,
+      },
       (event) => {
         setEvents((prev) => [...prev, event]);
         if (event.type === "message") {
@@ -90,6 +102,15 @@ export function AgentNode({ id, data, selected }: any) {
         }
         if (event.type === "canvas_patch") {
           const patch = event.data;
+          const revisionResult = advanceCanvasPatchRevision(canvasPatchRevisionRef.current, patch);
+          if (!revisionResult.accepted) {
+            setEvents((prev) => [...prev, {
+              type: "error",
+              data: { message: `${revisionResult.reason}。该操作未应用，请重新发起任务。` },
+            }]);
+            return;
+          }
+          canvasPatchRevisionRef.current = revisionResult.nextRevision;
           switch (patch.op) {
             case "add_node":
               addNode(patch.node as Node);
@@ -106,6 +127,15 @@ export function AgentNode({ id, data, selected }: any) {
             }
             case "patch_node_data":
               updateNd(patch.node_id, patch.patch);
+              break;
+            case "move_node":
+              moveNodeTo(patch.node_id, patch.position);
+              break;
+            case "delete_node":
+              deleteNodes([patch.node_id]);
+              break;
+            case "create_group":
+              createGroup(patch.node_ids, patch.name);
               break;
             case "run_node": {
               const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);

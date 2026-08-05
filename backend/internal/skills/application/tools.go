@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,19 +31,61 @@ type Tool interface {
 // so the browser reflects the same mutations in real time.
 
 type CanvasState struct {
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	Nodes []CanvasNode `json:"nodes"`
 	Edges []CanvasEdge `json:"edges"`
 	// emit lets tools push events back to the SSE stream.
 	emit func(string, any)
 	// idCounter for deterministic node IDs when the agent doesn't supply one.
 	idCounter int
+
+	// Secondary indexes keep tool operations proportional to the affected
+	// subgraph instead of forcing a full canvas scan for every lookup/mutation.
+	nodeIndex   map[string]int
+	edgeIndex   map[string]int
+	edgePairs   map[string]map[string]struct{}
+	incoming    map[string]map[string]struct{}
+	outgoing    map[string]map[string]struct{}
+	nodesByType map[string]map[string]struct{}
+	spatial     map[spatialCell]map[string]struct{}
+
+	// revision is scoped to one agent run. Every successful canvas mutation
+	// advances it exactly once. changes is a bounded operation log used by
+	// get_canvas_delta so the model can refresh its view without re-reading the
+	// full graph after every tool call.
+	revision uint64
+	changes  []CanvasChange
+}
+
+const maxCanvasChanges = 256
+
+// CanvasChange is deliberately compact: it tells the agent what became stale
+// and lets read_nodes/get_subgraph fetch only the affected details.
+type CanvasChange struct {
+	Revision uint64   `json:"revision"`
+	Op       string   `json:"op"`
+	NodeIDs  []string `json:"node_ids,omitempty"`
+	EdgeIDs  []string `json:"edge_ids,omitempty"`
+}
+
+type CanvasRevisionConflictError struct {
+	Expected uint64
+	Current  uint64
+}
+
+func (e *CanvasRevisionConflictError) Error() string {
+	return fmt.Sprintf("canvas revision conflict: expected %d, current %d; call get_canvas_delta and retry", e.Expected, e.Current)
+}
+
+type spatialCell struct {
+	X int
+	Y int
 }
 
 type CanvasNode struct {
-	ID       string         `json:"id"`
-	Type     string         `json:"type"`
-	Position XY             `json:"position"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Position XY     `json:"position"`
 	// Always serialize `data` (no omitempty) so the React Flow node always
 	// has a `.data` object to read — node renderers blow up on undefined.
 	Data map[string]any `json:"data"`
@@ -69,10 +113,32 @@ type CanvasGroup struct {
 }
 
 func NewCanvasState(nodes []CanvasNode, edges []CanvasEdge, emit func(string, any)) *CanvasState {
+	return NewCanvasStateAtRevision(nodes, edges, 0, emit)
+}
+
+// NewCanvasStateAtRevision allows callers with a persisted canvas revision to
+// preserve it as the base for this run. NewCanvasState remains the compatible
+// zero-based constructor used by existing callers and tests.
+func NewCanvasStateAtRevision(nodes []CanvasNode, edges []CanvasEdge, revision uint64, emit func(string, any)) *CanvasState {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &CanvasState{Nodes: nodes, Edges: edges, emit: emit}
+	s := &CanvasState{
+		Nodes:       append([]CanvasNode(nil), nodes...),
+		Edges:       append([]CanvasEdge(nil), edges...),
+		emit:        emit,
+		nodeIndex:   make(map[string]int, len(nodes)),
+		edgeIndex:   make(map[string]int, len(edges)),
+		edgePairs:   make(map[string]map[string]struct{}, len(edges)),
+		incoming:    make(map[string]map[string]struct{}, len(nodes)),
+		outgoing:    make(map[string]map[string]struct{}, len(nodes)),
+		nodesByType: make(map[string]map[string]struct{}),
+		spatial:     make(map[spatialCell]map[string]struct{}),
+		revision:    revision,
+		changes:     make([]CanvasChange, 0, 16),
+	}
+	s.rebuildIndexes()
+	return s
 }
 
 // 节点卡片的粗略占位(宽 × 高):画布节点多为 300px 宽卡片,高度按中等内容估。
@@ -85,18 +151,10 @@ const (
 // 再右移一列重扫。模型给坐标时普遍"盲放"(反复用同一个默认值),不避让的
 // 话所有新节点都会叠死在一起。
 func (s *CanvasState) placeClear(want XY) XY {
-	overlaps := func(p XY) bool {
-		for _, n := range s.Nodes {
-			if abs(n.Position.X-p.X) < nodeSlotW && abs(n.Position.Y-p.Y) < nodeSlotH {
-				return true
-			}
-		}
-		return false
-	}
 	pos := want
 	for col := 0; col < 8; col++ {
 		for row := 0; row < 24; row++ {
-			if !overlaps(pos) {
+			if !s.overlapsLocked(pos, "") {
 				return pos
 			}
 			pos.Y += nodeSlotH
@@ -113,6 +171,183 @@ func abs(v float64) float64 {
 	return v
 }
 
+func edgePairKey(source, target string) string { return source + "\x00" + target }
+
+func cellFor(position XY) spatialCell {
+	return spatialCell{
+		X: int(math.Floor(position.X / nodeSlotW)),
+		Y: int(math.Floor(position.Y / nodeSlotH)),
+	}
+}
+
+func addSetValue(index map[string]map[string]struct{}, key, value string) {
+	values := index[key]
+	if values == nil {
+		values = make(map[string]struct{})
+		index[key] = values
+	}
+	values[value] = struct{}{}
+}
+
+func removeSetValue(index map[string]map[string]struct{}, key, value string) {
+	values := index[key]
+	if values == nil {
+		return
+	}
+	delete(values, value)
+	if len(values) == 0 {
+		delete(index, key)
+	}
+}
+
+func (s *CanvasState) addSpatialLocked(node CanvasNode) {
+	cell := cellFor(node.Position)
+	values := s.spatial[cell]
+	if values == nil {
+		values = make(map[string]struct{})
+		s.spatial[cell] = values
+	}
+	values[node.ID] = struct{}{}
+}
+
+func (s *CanvasState) removeSpatialLocked(node CanvasNode) {
+	cell := cellFor(node.Position)
+	values := s.spatial[cell]
+	delete(values, node.ID)
+	if len(values) == 0 {
+		delete(s.spatial, cell)
+	}
+}
+
+func (s *CanvasState) rebuildIndexes() {
+	for i, node := range s.Nodes {
+		if node.ID == "" {
+			continue
+		}
+		s.nodeIndex[node.ID] = i
+		addSetValue(s.nodesByType, node.Type, node.ID)
+		s.addSpatialLocked(node)
+	}
+	for i, edge := range s.Edges {
+		if edge.ID == "" {
+			continue
+		}
+		s.edgeIndex[edge.ID] = i
+		addSetValue(s.edgePairs, edgePairKey(edge.Source, edge.Target), edge.ID)
+		addSetValue(s.outgoing, edge.Source, edge.ID)
+		addSetValue(s.incoming, edge.Target, edge.ID)
+	}
+}
+
+func (s *CanvasState) nodeLocked(id string) (*CanvasNode, bool) {
+	i, ok := s.nodeIndex[id]
+	if !ok || i < 0 || i >= len(s.Nodes) {
+		return nil, false
+	}
+	return &s.Nodes[i], true
+}
+
+func (s *CanvasState) edgeLocked(id string) (*CanvasEdge, bool) {
+	i, ok := s.edgeIndex[id]
+	if !ok || i < 0 || i >= len(s.Edges) {
+		return nil, false
+	}
+	return &s.Edges[i], true
+}
+
+func (s *CanvasState) addNodeLocked(node CanvasNode) {
+	s.nodeIndex[node.ID] = len(s.Nodes)
+	s.Nodes = append(s.Nodes, node)
+	addSetValue(s.nodesByType, node.Type, node.ID)
+	s.addSpatialLocked(node)
+}
+
+func (s *CanvasState) addEdgeLocked(edge CanvasEdge) {
+	s.edgeIndex[edge.ID] = len(s.Edges)
+	s.Edges = append(s.Edges, edge)
+	addSetValue(s.edgePairs, edgePairKey(edge.Source, edge.Target), edge.ID)
+	addSetValue(s.outgoing, edge.Source, edge.ID)
+	addSetValue(s.incoming, edge.Target, edge.ID)
+}
+
+func (s *CanvasState) removeEdgeLocked(id string) bool {
+	i, ok := s.edgeIndex[id]
+	if !ok || i < 0 || i >= len(s.Edges) {
+		return false
+	}
+	edge := s.Edges[i]
+	delete(s.edgeIndex, id)
+	removeSetValue(s.edgePairs, edgePairKey(edge.Source, edge.Target), id)
+	removeSetValue(s.outgoing, edge.Source, id)
+	removeSetValue(s.incoming, edge.Target, id)
+	last := len(s.Edges) - 1
+	if i != last {
+		s.Edges[i] = s.Edges[last]
+		s.edgeIndex[s.Edges[i].ID] = i
+	}
+	s.Edges = s.Edges[:last]
+	return true
+}
+
+func (s *CanvasState) removeNodeLocked(id string) bool {
+	i, ok := s.nodeIndex[id]
+	if !ok || i < 0 || i >= len(s.Nodes) {
+		return false
+	}
+	incident := make(map[string]struct{})
+	for edgeID := range s.incoming[id] {
+		incident[edgeID] = struct{}{}
+	}
+	for edgeID := range s.outgoing[id] {
+		incident[edgeID] = struct{}{}
+	}
+	for edgeID := range incident {
+		s.removeEdgeLocked(edgeID)
+	}
+	node := s.Nodes[i]
+	delete(s.nodeIndex, id)
+	removeSetValue(s.nodesByType, node.Type, id)
+	s.removeSpatialLocked(node)
+	delete(s.incoming, id)
+	delete(s.outgoing, id)
+	last := len(s.Nodes) - 1
+	if i != last {
+		s.Nodes[i] = s.Nodes[last]
+		s.nodeIndex[s.Nodes[i].ID] = i
+	}
+	s.Nodes = s.Nodes[:last]
+	return true
+}
+
+func (s *CanvasState) moveNodeLocked(id string, position XY) bool {
+	node, ok := s.nodeLocked(id)
+	if !ok {
+		return false
+	}
+	s.removeSpatialLocked(*node)
+	node.Position = position
+	s.addSpatialLocked(*node)
+	return true
+}
+
+func (s *CanvasState) overlapsLocked(position XY, ignoreID string) bool {
+	center := cellFor(position)
+	for dx := -1; dx <= 1; dx++ {
+		for dy := -1; dy <= 1; dy++ {
+			for id := range s.spatial[spatialCell{X: center.X + dx, Y: center.Y + dy}] {
+				if id == ignoreID {
+					continue
+				}
+				node, ok := s.nodeLocked(id)
+				if ok && abs(node.Position.X-position.X) < nodeSlotW && abs(node.Position.Y-position.Y) < nodeSlotH {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // nextID generates a unique node/edge id that won't collide with the existing
 // snapshot. Format is human-readable so logs are easy to follow.
 func (s *CanvasState) nextID(prefix string) string {
@@ -120,18 +355,59 @@ func (s *CanvasState) nextID(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixMilli(), s.idCounter)
 }
 
+func (s *CanvasState) checkExpectedRevisionLocked(expected *uint64) error {
+	if expected == nil || *expected == s.revision {
+		return nil
+	}
+	return &CanvasRevisionConflictError{Expected: *expected, Current: s.revision}
+}
+
+func (s *CanvasState) recordChangeLocked(op string, nodeIDs, edgeIDs []string) (baseRevision, revision uint64) {
+	baseRevision = s.revision
+	s.revision++
+	change := CanvasChange{
+		Revision: s.revision,
+		Op:       op,
+		NodeIDs:  append([]string(nil), nodeIDs...),
+		EdgeIDs:  append([]string(nil), edgeIDs...),
+	}
+	s.changes = append(s.changes, change)
+	if overflow := len(s.changes) - maxCanvasChanges; overflow > 0 {
+		copy(s.changes, s.changes[overflow:])
+		s.changes = s.changes[:maxCanvasChanges]
+	}
+	return baseRevision, s.revision
+}
+
+func canvasPatchWithRevision(patch map[string]any, baseRevision, revision uint64) map[string]any {
+	patch["base_revision"] = baseRevision
+	patch["revision"] = revision
+	return patch
+}
+
+func canvasMutationResult(revision uint64, extra map[string]any) string {
+	result := map[string]any{"ok": true, "revision": revision}
+	for key, value := range extra {
+		result[key] = value
+	}
+	raw, _ := json.Marshal(result)
+	return string(raw)
+}
+
 // ─── Canvas tools ────────────────────────────────────────────────────────────
 
 type listNodesTool struct{ state *CanvasState }
 
-func (t *listNodesTool) Name() string        { return "list_nodes" }
-func (t *listNodesTool) Description() string { return "List all nodes currently on the canvas with id, type, and brief data summary." }
+func (t *listNodesTool) Name() string { return "list_nodes" }
+func (t *listNodesTool) Description() string {
+	return "List all nodes currently on the canvas with id, type, and brief data summary."
+}
 func (t *listNodesTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
 func (t *listNodesTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
-	t.state.mu.Lock()
-	defer t.state.mu.Unlock()
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
 	type brief struct {
 		ID      string `json:"id"`
 		Type    string `json:"type"`
@@ -320,7 +596,8 @@ const AgentInteractionGuide = `【交互准则】
 1. 先用一句话简要分析用户意图（要做什么、涉及画布哪些节点）。
 2. 如果意图明确，直接正常回答或执行，不要画蛇添足地反问。
 3. 如果请求存在多种合理理解或多条可行路径（例如"优化一下""做个视频"这类宽泛需求），不要擅自假设：调用 ask_user 工具，给出 2-4 个具体、互斥的选项（options），allow_custom 设为 true 允许用户补充其他意见；调用后立即结束本轮，等待用户选择。
-4. 已经为你提供了完整的画布快照，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；只有需要某个节点的完整细节时才单独 read_node。`
+4. 已经为你提供了完整的画布快照，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；需要多个节点细节时用 read_nodes，需要分析连线关系时用 get_subgraph，只有需要单个节点完整细节时才用 read_node。
+5. 多步画布操作期间，用 get_canvas_delta(since_revision) 获取增量变化；移动、删除、连线、分组等写操作优先携带最近返回的 expected_revision。发生 revision conflict 时先读取增量再重试。`
 
 type createNodeTool struct{ state *CanvasState }
 
@@ -334,7 +611,8 @@ func (t *createNodeTool) Parameters() json.RawMessage {
         "properties":{
           "type":{"type":"string","enum":["imageNode","videoNode","textNode","audioNode","referenceImageNode","referenceVideoNode"]},
           "position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},
-          "data":{"type":"object","additionalProperties":true}
+          "data":{"type":"object","additionalProperties":true},
+          "expected_revision":{"type":"integer","minimum":0,"description":"Optional optimistic-lock revision from get_canvas_delta or a previous mutation result"}
         },
         "required":["type","position"]
     }`)
@@ -344,6 +622,7 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 		Type     string         `json:"type"`
 		Position XY             `json:"position"`
 		Data     map[string]any `json:"data"`
+		Expected *uint64        `json:"expected_revision"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -370,42 +649,63 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 		}
 	}
 	t.state.mu.Lock()
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
 	// 自动避让:模型给的坐标与现有节点重叠时,就近挪到空位。
 	placed := t.state.placeClear(p.Position)
 	node := CanvasNode{ID: t.state.nextID("ag"), Type: p.Type, Position: placed, Data: p.Data}
-	t.state.Nodes = append(t.state.Nodes, node)
+	t.state.addNodeLocked(node)
+	baseRevision, revision := t.state.recordChangeLocked("add_node", []string{node.ID}, nil)
 	t.state.mu.Unlock()
-	t.state.emit(EventCanvasPatch, map[string]any{"op": "add_node", "node": node})
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "add_node", "node": node}, baseRevision, revision))
 	// 把实际落点回给模型:连续创建多个节点时它才能基于真实位置继续排布。
-	out, _ := json.Marshal(map[string]any{"id": node.ID, "position": placed})
-	return string(out), nil
+	return canvasMutationResult(revision, map[string]any{"id": node.ID, "position": placed}), nil
 }
 
 type connectNodesTool struct{ state *CanvasState }
 
-func (t *connectNodesTool) Name() string        { return "connect_nodes" }
-func (t *connectNodesTool) Description() string { return "Create an edge from source node to target node." }
+func (t *connectNodesTool) Name() string { return "connect_nodes" }
+func (t *connectNodesTool) Description() string {
+	return "Create an edge from source node to target node."
+}
 func (t *connectNodesTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"}},"required":["source","target"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"expected_revision":{"type":"integer","minimum":0}},"required":["source","target"]}`)
 }
 func (t *connectNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct{ Source, Target string }
+	var p struct {
+		Source   string  `json:"source"`
+		Target   string  `json:"target"`
+		Expected *uint64 `json:"expected_revision"`
+	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	t.state.mu.Lock()
-	// Prevent duplicate edges.
-	for _, e := range t.state.Edges {
-		if e.Source == p.Source && e.Target == p.Target {
-			t.state.mu.Unlock()
-			return `{"ok":true,"existing":true}`, nil
-		}
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	if _, ok := t.state.nodeLocked(p.Source); !ok {
+		t.state.mu.Unlock()
+		return "", fmt.Errorf("source node not found: %s", p.Source)
+	}
+	if _, ok := t.state.nodeLocked(p.Target); !ok {
+		t.state.mu.Unlock()
+		return "", fmt.Errorf("target node not found: %s", p.Target)
+	}
+	if len(t.state.edgePairs[edgePairKey(p.Source, p.Target)]) > 0 {
+		revision := t.state.revision
+		t.state.mu.Unlock()
+		return canvasMutationResult(revision, map[string]any{"existing": true}), nil
 	}
 	edge := CanvasEdge{ID: t.state.nextID("ae"), Source: p.Source, Target: p.Target}
-	t.state.Edges = append(t.state.Edges, edge)
+	t.state.addEdgeLocked(edge)
+	baseRevision, revision := t.state.recordChangeLocked("add_edge", []string{p.Source, p.Target}, []string{edge.ID})
 	t.state.mu.Unlock()
-	t.state.emit(EventCanvasPatch, map[string]any{"op": "add_edge", "edge": edge})
-	return `{"ok":true}`, nil
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "add_edge", "edge": edge}, baseRevision, revision))
+	return canvasMutationResult(revision, map[string]any{"edge_id": edge.ID}), nil
 }
 
 type setPromptTool struct{ state *CanvasState }
@@ -415,38 +715,43 @@ func (t *setPromptTool) Description() string {
 	return "Set the prompt (description) used when the node generates."
 }
 func (t *setPromptTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"prompt":{"type":"string"}},"required":["node_id","prompt"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"prompt":{"type":"string"},"expected_revision":{"type":"integer","minimum":0}},"required":["node_id","prompt"]}`)
 }
 func (t *setPromptTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		NodeID string `json:"node_id"`
-		Prompt string `json:"prompt"`
+		NodeID   string  `json:"node_id"`
+		Prompt   string  `json:"prompt"`
+		Expected *uint64 `json:"expected_revision"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	t.state.mu.Lock()
-	found := false
-	for i := range t.state.Nodes {
-		if t.state.Nodes[i].ID == p.NodeID {
-			if t.state.Nodes[i].Data == nil {
-				t.state.Nodes[i].Data = map[string]any{}
-			}
-			t.state.Nodes[i].Data["promptDraft"] = p.Prompt
-			found = true
-			break
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	node, found := t.state.nodeLocked(p.NodeID)
+	if found {
+		if node.Data == nil {
+			node.Data = map[string]any{}
 		}
+		node.Data["promptDraft"] = p.Prompt
+	}
+	var baseRevision, revision uint64
+	if found {
+		baseRevision, revision = t.state.recordChangeLocked("patch_node_data", []string{p.NodeID}, nil)
 	}
 	t.state.mu.Unlock()
 	if !found {
 		return "", fmt.Errorf("node not found: %s", p.NodeID)
 	}
-	t.state.emit(EventCanvasPatch, map[string]any{
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{
 		"op":      "patch_node_data",
 		"node_id": p.NodeID,
 		"patch":   map[string]string{"promptDraft": p.Prompt},
-	})
-	return `{"ok":true}`, nil
+	}, baseRevision, revision))
+	return canvasMutationResult(revision, nil), nil
 }
 
 type runNodeTool struct{ state *CanvasState }
@@ -481,31 +786,39 @@ type deleteNodeTool struct{ state *CanvasState }
 func (t *deleteNodeTool) Name() string        { return "delete_node" }
 func (t *deleteNodeTool) Description() string { return "Remove a node and all edges connected to it." }
 func (t *deleteNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0}},"required":["node_id"]}`)
 }
 func (t *deleteNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct{ NodeID string `json:"node_id"` }
+	var p struct {
+		NodeID   string  `json:"node_id"`
+		Expected *uint64 `json:"expected_revision"`
+	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	t.state.mu.Lock()
-	keptNodes := t.state.Nodes[:0]
-	for _, n := range t.state.Nodes {
-		if n.ID != p.NodeID {
-			keptNodes = append(keptNodes, n)
-		}
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
 	}
-	t.state.Nodes = keptNodes
-	keptEdges := t.state.Edges[:0]
-	for _, e := range t.state.Edges {
-		if e.Source != p.NodeID && e.Target != p.NodeID {
-			keptEdges = append(keptEdges, e)
-		}
+	incident := make(map[string]struct{})
+	for edgeID := range t.state.incoming[p.NodeID] {
+		incident[edgeID] = struct{}{}
 	}
-	t.state.Edges = keptEdges
+	for edgeID := range t.state.outgoing[p.NodeID] {
+		incident[edgeID] = struct{}{}
+	}
+	removed := t.state.removeNodeLocked(p.NodeID)
+	var baseRevision, revision uint64
+	if removed {
+		baseRevision, revision = t.state.recordChangeLocked("delete_node", []string{p.NodeID}, sortedSetKeys(incident))
+	}
 	t.state.mu.Unlock()
-	t.state.emit(EventCanvasPatch, map[string]any{"op": "delete_node", "node_id": p.NodeID})
-	return `{"ok":true}`, nil
+	if !removed {
+		return "", fmt.Errorf("node not found: %s", p.NodeID)
+	}
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "delete_node", "node_id": p.NodeID}, baseRevision, revision))
+	return canvasMutationResult(revision, nil), nil
 }
 
 type moveNodeTool struct{ state *CanvasState }
@@ -513,60 +826,67 @@ type moveNodeTool struct{ state *CanvasState }
 func (t *moveNodeTool) Name() string        { return "move_node" }
 func (t *moveNodeTool) Description() string { return "Move a node to a new position on the canvas." }
 func (t *moveNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["node_id","position"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},"expected_revision":{"type":"integer","minimum":0}},"required":["node_id","position"]}`)
 }
 func (t *moveNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		NodeID   string `json:"node_id"`
-		Position XY     `json:"position"`
+		NodeID   string  `json:"node_id"`
+		Position XY      `json:"position"`
+		Expected *uint64 `json:"expected_revision"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	t.state.mu.Lock()
-	found := false
-	for i := range t.state.Nodes {
-		if t.state.Nodes[i].ID == p.NodeID {
-			t.state.Nodes[i].Position = p.Position
-			found = true
-			break
-		}
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	found := t.state.moveNodeLocked(p.NodeID, p.Position)
+	var baseRevision, revision uint64
+	if found {
+		baseRevision, revision = t.state.recordChangeLocked("move_node", []string{p.NodeID}, nil)
 	}
 	t.state.mu.Unlock()
 	if !found {
 		return "", fmt.Errorf("node not found: %s", p.NodeID)
 	}
-	t.state.emit(EventCanvasPatch, map[string]any{"op": "move_node", "node_id": p.NodeID, "position": p.Position})
-	return `{"ok":true}`, nil
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "move_node", "node_id": p.NodeID, "position": p.Position}, baseRevision, revision))
+	return canvasMutationResult(revision, nil), nil
 }
 
 type readNodeTool struct{ state *CanvasState }
 
-func (t *readNodeTool) Name() string        { return "read_node" }
-func (t *readNodeTool) Description() string { return "Read the full data of a node: type, position, url, content, prompt, etc." }
+func (t *readNodeTool) Name() string { return "read_node" }
+func (t *readNodeTool) Description() string {
+	return "Read the full data of a node: type, position, url, content, prompt, etc."
+}
 func (t *readNodeTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
 }
 func (t *readNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct{ NodeID string `json:"node_id"` }
+	var p struct {
+		NodeID string `json:"node_id"`
+	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	t.state.mu.Lock()
-	defer t.state.mu.Unlock()
-	for _, n := range t.state.Nodes {
-		if n.ID == p.NodeID {
-			out, _ := json.Marshal(n)
-			return string(out), nil
-		}
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
+	node, ok := t.state.nodeLocked(p.NodeID)
+	if ok {
+		out, _ := json.Marshal(node)
+		return string(out), nil
 	}
 	return "", fmt.Errorf("node not found: %s", p.NodeID)
 }
 
 type findNodesTool struct{ state *CanvasState }
 
-func (t *findNodesTool) Name() string        { return "find_nodes" }
-func (t *findNodesTool) Description() string { return "Find nodes matching a type and/or a substring in their name/content." }
+func (t *findNodesTool) Name() string { return "find_nodes" }
+func (t *findNodesTool) Description() string {
+	return "Find nodes matching a type and/or a substring in their name/content."
+}
 func (t *findNodesTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"},"name_contains":{"type":"string"}},"additionalProperties":false}`)
 }
@@ -579,16 +899,29 @@ func (t *findNodesTool) Execute(_ context.Context, args json.RawMessage) (string
 		return "", err
 	}
 	needle := strings.ToLower(p.NameContains)
-	t.state.mu.Lock()
-	defer t.state.mu.Unlock()
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
 	type brief struct {
 		ID, Type, Name string
 	}
 	out := []brief{}
-	for _, n := range t.state.Nodes {
-		if p.Type != "" && n.Type != p.Type {
+	candidateIDs := make([]string, 0, len(t.state.Nodes))
+	if p.Type != "" {
+		for id := range t.state.nodesByType[p.Type] {
+			candidateIDs = append(candidateIDs, id)
+		}
+	} else {
+		for id := range t.state.nodeIndex {
+			candidateIDs = append(candidateIDs, id)
+		}
+	}
+	sort.Strings(candidateIDs)
+	for _, id := range candidateIDs {
+		node, ok := t.state.nodeLocked(id)
+		if !ok {
 			continue
 		}
+		n := *node
 		name := ""
 		if v, ok := n.Data["sourceName"].(string); ok {
 			name = v
@@ -606,28 +939,346 @@ func (t *findNodesTool) Execute(_ context.Context, args json.RawMessage) (string
 	return string(raw), nil
 }
 
-type createGroupTool struct{ state *CanvasState }
+type readNodesTool struct{ state *CanvasState }
 
-func (t *createGroupTool) Name() string        { return "create_group" }
-func (t *createGroupTool) Description() string { return "Group a set of nodes under a named container." }
-func (t *createGroupTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"}},"name":{"type":"string"}},"required":["node_ids"]}`)
+func (t *readNodesTool) Name() string { return "read_nodes" }
+func (t *readNodesTool) Description() string {
+	return "Read up to 50 canvas nodes in one call. Optionally request only specific fields to reduce context size."
 }
-func (t *createGroupTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (t *readNodesTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50},"fields":{"type":"array","items":{"type":"string"},"description":"Optional fields: type, position, data, or keys inside node.data such as content, promptDraft, url"}},"required":["node_ids"],"additionalProperties":false}`)
+}
+func (t *readNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		NodeIDs []string `json:"node_ids"`
-		Name    string   `json:"name"`
+		Fields  []string `json:"fields"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	if len(p.NodeIDs) < 2 {
+	if len(p.NodeIDs) == 0 || len(p.NodeIDs) > 50 {
+		return "", fmt.Errorf("read_nodes requires 1-50 node_ids")
+	}
+
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
+	nodes := make([]any, 0, len(p.NodeIDs))
+	missing := make([]string, 0)
+	seen := make(map[string]struct{}, len(p.NodeIDs))
+	for _, id := range p.NodeIDs {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		node, ok := t.state.nodeLocked(id)
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
+		if len(p.Fields) == 0 {
+			nodes = append(nodes, *node)
+			continue
+		}
+		item := map[string]any{"id": node.ID}
+		data := make(map[string]any)
+		for _, field := range p.Fields {
+			switch field {
+			case "id":
+			case "type":
+				item["type"] = node.Type
+			case "position":
+				item["position"] = node.Position
+			case "data":
+				item["data"] = node.Data
+			default:
+				if value, exists := node.Data[field]; exists {
+					data[field] = value
+				}
+			}
+		}
+		if len(data) > 0 {
+			item["data"] = data
+		}
+		nodes = append(nodes, item)
+	}
+	raw, _ := json.Marshal(map[string]any{"revision": t.state.revision, "nodes": nodes, "missing": missing})
+	return string(raw), nil
+}
+
+type getSubgraphTool struct{ state *CanvasState }
+
+func (t *getSubgraphTool) Name() string { return "get_subgraph" }
+func (t *getSubgraphTool) Description() string {
+	return "Read the compact upstream/downstream neighborhood around selected nodes. Prefer this over repeatedly calling read_node when reasoning about connected canvas content."
+}
+func (t *getSubgraphTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50},"direction":{"type":"string","enum":["upstream","downstream","both"],"default":"both"},"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}},"required":["node_ids"],"additionalProperties":false}`)
+}
+
+type subgraphNode struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Position XY     `json:"position"`
+	Name     string `json:"name,omitempty"`
+	Content  string `json:"content,omitempty"`
+	HasURL   bool   `json:"has_url,omitempty"`
+}
+
+func compactSubgraphNode(node CanvasNode) subgraphNode {
+	out := subgraphNode{ID: node.ID, Type: node.Type, Position: node.Position}
+	if value, ok := node.Data["sourceName"].(string); ok && value != "" {
+		out.Name = value
+	} else if value, ok := node.Data["customTitle"].(string); ok {
+		out.Name = value
+	}
+	if value, ok := node.Data["content"].(string); ok {
+		runes := []rune(value)
+		if len(runes) > 160 {
+			value = string(runes[:160]) + "..."
+		}
+		out.Content = value
+	}
+	if value, ok := node.Data["url"].(string); ok && value != "" {
+		out.HasURL = true
+	}
+	return out
+}
+
+func sortedSetKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (t *getSubgraphTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		NodeIDs   []string `json:"node_ids"`
+		Direction string   `json:"direction"`
+		Depth     *int     `json:"depth"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if len(p.NodeIDs) == 0 || len(p.NodeIDs) > 50 {
+		return "", fmt.Errorf("get_subgraph requires 1-50 node_ids")
+	}
+	direction := p.Direction
+	if direction == "" {
+		direction = "both"
+	}
+	if direction != "upstream" && direction != "downstream" && direction != "both" {
+		return "", fmt.Errorf("invalid direction: %s", direction)
+	}
+	depth := 1
+	if p.Depth != nil {
+		depth = *p.Depth
+	}
+	if depth < 0 || depth > 4 {
+		return "", fmt.Errorf("depth must be between 0 and 4")
+	}
+
+	const maxSubgraphNodes = 100
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
+	visited := make(map[string]struct{})
+	missing := make([]string, 0)
+	frontier := make([]string, 0, len(p.NodeIDs))
+	for _, id := range p.NodeIDs {
+		if _, duplicate := visited[id]; duplicate {
+			continue
+		}
+		if _, ok := t.state.nodeLocked(id); !ok {
+			missing = append(missing, id)
+			continue
+		}
+		visited[id] = struct{}{}
+		frontier = append(frontier, id)
+	}
+	edgeIDs := make(map[string]struct{})
+	truncated := false
+	for level := 0; level < depth && len(frontier) > 0; level++ {
+		nextSet := make(map[string]struct{})
+		for _, nodeID := range frontier {
+			candidateEdgeIDs := make(map[string]struct{})
+			if direction == "downstream" || direction == "both" {
+				for edgeID := range t.state.outgoing[nodeID] {
+					candidateEdgeIDs[edgeID] = struct{}{}
+				}
+			}
+			if direction == "upstream" || direction == "both" {
+				for edgeID := range t.state.incoming[nodeID] {
+					candidateEdgeIDs[edgeID] = struct{}{}
+				}
+			}
+			for _, edgeID := range sortedSetKeys(candidateEdgeIDs) {
+				edge, ok := t.state.edgeLocked(edgeID)
+				if !ok {
+					continue
+				}
+				neighbor := edge.Target
+				if neighbor == nodeID {
+					neighbor = edge.Source
+				}
+				if _, ok := t.state.nodeLocked(neighbor); !ok {
+					continue
+				}
+				if _, seen := visited[neighbor]; !seen {
+					if len(visited) >= maxSubgraphNodes {
+						truncated = true
+						continue
+					}
+					visited[neighbor] = struct{}{}
+					nextSet[neighbor] = struct{}{}
+				}
+				edgeIDs[edgeID] = struct{}{}
+			}
+		}
+		frontier = sortedSetKeys(nextSet)
+	}
+
+	nodeIDs := sortedSetKeys(visited)
+	nodes := make([]subgraphNode, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		if node, ok := t.state.nodeLocked(id); ok {
+			nodes = append(nodes, compactSubgraphNode(*node))
+		}
+	}
+	edges := make([]CanvasEdge, 0, len(edgeIDs))
+	for _, id := range sortedSetKeys(edgeIDs) {
+		if edge, ok := t.state.edgeLocked(id); ok {
+			edges = append(edges, *edge)
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"revision": t.state.revision,
+		"nodes":    nodes, "edges": edges, "missing": missing, "truncated": truncated,
+	})
+	return string(raw), nil
+}
+
+type getCanvasDeltaTool struct{ state *CanvasState }
+
+func (t *getCanvasDeltaTool) Name() string { return "get_canvas_delta" }
+func (t *getCanvasDeltaTool) Description() string {
+	return "Return compact canvas changes after a revision. Use this during multi-step work instead of listing or re-reading the whole canvas."
+}
+func (t *getCanvasDeltaTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"since_revision":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"maximum":256,"default":100}},"additionalProperties":false}`)
+}
+func (t *getCanvasDeltaTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		SinceRevision uint64 `json:"since_revision"`
+		Limit         int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &p); err != nil {
+			return "", err
+		}
+	}
+	if p.Limit == 0 {
+		p.Limit = 100
+	}
+	if p.Limit < 1 || p.Limit > maxCanvasChanges {
+		return "", fmt.Errorf("limit must be between 1 and %d", maxCanvasChanges)
+	}
+
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
+	if p.SinceRevision > t.state.revision {
+		return "", fmt.Errorf("since_revision %d is newer than current revision %d", p.SinceRevision, t.state.revision)
+	}
+
+	earliestAvailable := t.state.revision
+	if len(t.state.changes) > 0 {
+		earliestAvailable = t.state.changes[0].Revision - 1
+	}
+	resetRequired := p.SinceRevision < earliestAvailable
+	changes := make([]CanvasChange, 0, p.Limit)
+	nextRevision := p.SinceRevision
+	hasMore := false
+	if !resetRequired {
+		for _, change := range t.state.changes {
+			if change.Revision <= p.SinceRevision {
+				continue
+			}
+			if len(changes) >= p.Limit {
+				hasMore = true
+				break
+			}
+			change.NodeIDs = append([]string(nil), change.NodeIDs...)
+			change.EdgeIDs = append([]string(nil), change.EdgeIDs...)
+			changes = append(changes, change)
+			nextRevision = change.Revision
+		}
+	}
+	if resetRequired {
+		nextRevision = t.state.revision
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"current_revision":            t.state.revision,
+		"earliest_available_revision": earliestAvailable,
+		"next_revision":               nextRevision,
+		"changes":                     changes,
+		"has_more":                    hasMore,
+		"reset_required":              resetRequired,
+		"reset_hint":                  "Use list_nodes or get_subgraph to rebuild context when reset_required is true.",
+	})
+	return string(raw), nil
+}
+
+type createGroupTool struct{ state *CanvasState }
+
+func (t *createGroupTool) Name() string { return "create_group" }
+func (t *createGroupTool) Description() string {
+	return "Group a set of nodes under a named container."
+}
+func (t *createGroupTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"}},"name":{"type":"string"},"expected_revision":{"type":"integer","minimum":0}},"required":["node_ids"]}`)
+}
+func (t *createGroupTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		NodeIDs  []string `json:"node_ids"`
+		Name     string   `json:"name"`
+		Expected *uint64  `json:"expected_revision"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	uniqueNodeIDs := make([]string, 0, len(p.NodeIDs))
+	seen := make(map[string]struct{}, len(p.NodeIDs))
+	for _, nodeID := range p.NodeIDs {
+		if nodeID == "" {
+			continue
+		}
+		if _, duplicate := seen[nodeID]; duplicate {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		uniqueNodeIDs = append(uniqueNodeIDs, nodeID)
+	}
+	if len(uniqueNodeIDs) < 2 {
 		return "", fmt.Errorf("create_group needs at least 2 nodes")
 	}
-	t.state.emit(EventCanvasPatch, map[string]any{
-		"op": "create_group", "node_ids": p.NodeIDs, "name": p.Name,
-	})
-	return `{"ok":true}`, nil
+	t.state.mu.Lock()
+	if err := t.state.checkExpectedRevisionLocked(p.Expected); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	for _, nodeID := range uniqueNodeIDs {
+		if _, ok := t.state.nodeLocked(nodeID); !ok {
+			t.state.mu.Unlock()
+			return "", fmt.Errorf("node not found: %s", nodeID)
+		}
+	}
+	baseRevision, revision := t.state.recordChangeLocked("create_group", uniqueNodeIDs, nil)
+	t.state.mu.Unlock()
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{
+		"op": "create_group", "node_ids": uniqueNodeIDs, "name": p.Name,
+	}, baseRevision, revision))
+	return canvasMutationResult(revision, nil), nil
 }
 
 // BuildCanvasTools returns the canonical list of canvas-CLI tools.
@@ -636,6 +1287,9 @@ func BuildCanvasTools(state *CanvasState) []Tool {
 		&listNodesTool{state},
 		&findNodesTool{state},
 		&readNodeTool{state},
+		&readNodesTool{state},
+		&getSubgraphTool{state},
+		&getCanvasDeltaTool{state},
 		&createNodeTool{state},
 		&connectNodesTool{state},
 		&setPromptTool{state},

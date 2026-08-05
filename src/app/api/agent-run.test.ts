@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getActiveAgentJob, resumeAgentJob, runAgent, type AgentEventMeta, type AgentSSEEvent } from "./agent-run";
+import {
+  advanceCanvasPatchRevision,
+  getActiveAgentJob,
+  resumeAgentJob,
+  runAgent,
+  type AgentEventMeta,
+  type AgentSSEEvent,
+} from "./agent-run";
 
 afterEach(() => {
   localStorage.clear();
@@ -9,6 +16,44 @@ afterEach(() => {
 });
 
 describe("durable agent jobs", () => {
+  it("accepts contiguous canvas patches and rejects duplicates or gaps", () => {
+    const first = advanceCanvasPatchRevision(0, {
+      op: "move_node",
+      node_id: "n1",
+      position: { x: 10, y: 20 },
+      base_revision: 0,
+      revision: 1,
+    });
+    expect(first).toEqual({ accepted: true, nextRevision: 1 });
+
+    const duplicate = advanceCanvasPatchRevision(first.nextRevision, {
+      op: "delete_node",
+      node_id: "n1",
+      base_revision: 0,
+      revision: 1,
+    });
+    expect(duplicate.accepted).toBe(false);
+
+    const gap = advanceCanvasPatchRevision(first.nextRevision, {
+      op: "create_group",
+      node_ids: ["n1", "n2"],
+      base_revision: 2,
+      revision: 3,
+    });
+    expect(gap.accepted).toBe(false);
+  });
+
+  it("bootstraps a resumed stream and accepts legacy unversioned patches", () => {
+    expect(advanceCanvasPatchRevision(null, {
+      op: "delete_node",
+      node_id: "n1",
+      base_revision: 8,
+      revision: 9,
+    })).toEqual({ accepted: true, nextRevision: 9 });
+    expect(advanceCanvasPatchRevision(9, { op: "delete_node", node_id: "legacy" }))
+      .toEqual({ accepted: true, nextRevision: 9 });
+  });
+
   it("restores the saved event cursor", () => {
     localStorage.setItem("ccy:agent-job:agent-1", JSON.stringify({
       agentId: "agent-1",

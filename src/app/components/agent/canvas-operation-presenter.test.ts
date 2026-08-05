@@ -50,4 +50,31 @@ describe("presentCanvasOperation", () => {
     expect(result.title).toBe("节点连接");
     expect(result.detail).toBe("node-a → node-b");
   });
+
+  it("presents agent move/delete/group patches as concise canvas operations", () => {
+    expect(presentCanvasOperation({
+      op: "move_node",
+      node_id: "node-a",
+      position: { x: 120.4, y: -80.6 },
+    }, true)).toMatchObject({
+      action: "已移动",
+      nodeId: "node-a",
+      position: "120, -81",
+    });
+
+    expect(presentCanvasOperation({ op: "delete_node", node_id: "node-b" }, true)).toMatchObject({
+      action: "已删除",
+      nodeId: "node-b",
+    });
+
+    expect(presentCanvasOperation({
+      op: "create_group",
+      node_ids: ["node-a", "node-c"],
+      name: "第一幕",
+    }, true)).toMatchObject({
+      action: "已分组",
+      title: "第一幕",
+      detail: "2 个节点",
+    });
+  });
 });

@@ -175,6 +175,44 @@ describe("workspace project state", () => {
     });
   });
 
+  it("applies agent move, named group, and atomic delete mutations", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().addNode({
+      id: "agent-a",
+      type: "textNode",
+      position: { x: 0, y: 0 },
+      data: {},
+    } as never);
+    useStore.getState().addNode({
+      id: "agent-b",
+      type: "imageNode",
+      position: { x: 400, y: 0 },
+      data: {},
+    } as never);
+    useStore.getState().onConnect({
+      source: "agent-a",
+      target: "agent-b",
+      sourceHandle: null,
+      targetHandle: null,
+    });
+
+    useStore.getState().moveNodeTo("agent-a", { x: 120, y: 240 });
+    useStore.getState().createGroup(["agent-a", "agent-b", "missing"], "第一幕");
+
+    expect(useStore.getState().nodes.find((node) => node.id === "agent-a")?.position).toEqual({ x: 120, y: 240 });
+    expect(useStore.getState().groups.at(-1)).toMatchObject({
+      name: "第一幕",
+      nodeIds: ["agent-a", "agent-b"],
+    });
+
+    useStore.getState().deleteNodes(["agent-a"]);
+    const state = useStore.getState();
+    expect(state.nodes.some((node) => node.id === "agent-a")).toBe(false);
+    expect(state.edges.some((edge) => edge.source === "agent-a" || edge.target === "agent-a")).toBe(false);
+    expect(state.groups.at(-1)?.nodeIds).toEqual(["agent-b"]);
+  });
+
   it("moves a whole group together with all member nodes", async () => {
     const { useStore } = await loadStore();
 

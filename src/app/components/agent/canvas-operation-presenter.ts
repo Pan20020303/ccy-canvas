@@ -81,5 +81,29 @@ export function presentCanvasOperation(patch: CanvasPatch, zh: boolean): CanvasO
         detail: patch.model || (zh ? "跟随节点模型" : "Node default model"),
         nodeId: patch.node_id,
       };
+    case "move_node":
+      return {
+        action: zh ? "已移动" : "Moved",
+        entity: "node",
+        title: zh ? "画布节点" : "Canvas node",
+        detail: zh ? "更新节点位置" : "Updated node position",
+        nodeId: patch.node_id,
+        position: `${Math.round(patch.position.x)}, ${Math.round(patch.position.y)}`,
+      };
+    case "delete_node":
+      return {
+        action: zh ? "已删除" : "Deleted",
+        entity: "node",
+        title: zh ? "画布节点" : "Canvas node",
+        detail: patch.node_id,
+        nodeId: patch.node_id,
+      };
+    case "create_group":
+      return {
+        action: zh ? "已分组" : "Grouped",
+        entity: "node",
+        title: patch.name?.trim() || (zh ? "节点分组" : "Node group"),
+        detail: zh ? `${patch.node_ids.length} 个节点` : `${patch.node_ids.length} nodes`,
+      };
   }
 }
