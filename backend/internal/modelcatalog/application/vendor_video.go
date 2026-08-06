@@ -38,6 +38,13 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if isApimartBaseURL(baseURL) {
 		return s.generateVideoApimart(ctx, pc, baseURL, apiKey, req)
 	}
+	// ManjuAPI's MiniMax H3 uses the OpenAPI-style POST /v1/videos contract,
+	// not the older Manju chat/completions contract used by sora2/Veo/Grok.
+	// Route it before the chat model sniffing and the generic /videos adapter so
+	// its fixed 2K output and input_reference[2..5] shape are preserved.
+	if isManjuMiniMaxH3VideoModel(req.Model) {
+		return s.generateVideoManjuMiniMaxH3(ctx, pc, baseURL, apiKey, req)
+	}
 	// Manju 中转站(manjuapi.com)的视频模型走「POST /chat/completions 提交 →
 	// GET /videos/{id} 轮询」的私有约定，而不是 sora-style /videos。按模型名
 	// 嗅探路由(sora2 / "Veo 3.1 Fast 1080p" / grok-imagine-video 是中转站
@@ -1017,6 +1024,160 @@ func isManjuChatVideoModel(model string) bool {
 		return true
 	}
 	return strings.HasPrefix(m, "grok-imagine")
+}
+
+func isManjuMiniMaxH3VideoModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "MiniMax H3")
+}
+
+var manjuMiniMaxH3AspectRatios = map[string]struct{}{
+	"21:9": {},
+	"16:9": {},
+	"4:3":  {},
+	"1:1":  {},
+	"3:4":  {},
+	"9:16": {},
+}
+
+// generateVideoManjuMiniMaxH3 implements ManjuAPI's MiniMax H3 contract:
+//
+//   - no references: text-to-video;
+//   - 2..5 ordered references: multi-image reference-to-video, sent through
+//     input_reference so @Image 1, @Image 2, ... bind deterministically;
+//   - audio is always enabled by the provider and therefore needs no field.
+func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 prompt is required")
+	}
+
+	duration := req.Duration
+	if duration <= 0 {
+		duration = 10
+	}
+	if duration != 10 && duration != 15 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 duration must be 10 or 15 seconds")
+	}
+
+	ratio := strings.TrimSpace(req.AspectRatio)
+	if ratio == "" {
+		ratio = strings.TrimSpace(req.Size)
+	}
+	if ratio == "" {
+		ratio = "16:9"
+	}
+	if _, ok := manjuMiniMaxH3AspectRatios[ratio]; !ok {
+		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 aspect ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, or 9:16")
+	}
+
+	// H3 only exposes 2K. Reject an explicitly incompatible stale node value
+	// instead of silently sending a payload the upstream will reject.
+	resolution := strings.ToLower(strings.TrimSpace(req.Resolution))
+	if resolution == "" {
+		resolution = "2k"
+	}
+	if resolution != "2k" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 resolution is fixed at 2K")
+	}
+
+	references := make([]string, 0, len(req.ReferenceImages))
+	for i, raw := range req.ReferenceImages {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("MiniMax H3 reference image #%d cannot be empty", i+1))
+		}
+		resolved, err := localPathToDataURL(ref)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("Failed to process MiniMax H3 reference image #%d", i+1), err)
+		}
+		if !strings.HasPrefix(resolved, "http://") && !strings.HasPrefix(resolved, "https://") && !strings.HasPrefix(resolved, "data:image/") {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("MiniMax H3 reference image #%d must be a public http(s) URL or a complete image Data URI", i+1))
+		}
+		references = append(references, resolved)
+	}
+	if len(references) == 1 || len(references) > 5 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 multi-image mode requires 2 to 5 reference images")
+	}
+
+	body := map[string]interface{}{
+		"model":        "MiniMax H3",
+		"prompt":       prompt,
+		"duration":     duration,
+		"aspect_ratio": ratio,
+		"resolution":   "2k",
+	}
+	if len(references) >= 2 {
+		body["input_reference"] = references
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to encode MiniMax H3 request", err)
+	}
+
+	// The OpenAPI path includes /v1. resolveProviderURL de-duplicates it when
+	// an administrator stores a base URL that already ends in /v1.
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/v1/videos"), bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build MiniMax H3 request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(60 * time.Second)
+	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read MiniMax H3 response", readErr)
+	}
+
+	var submitResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &submitResp); err != nil {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized MiniMax H3 submit response: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	// Only a video_url is a completed result. A task id or task URL must never
+	// be surfaced as a successful media URL.
+	if videoURL := findStringField(submitResp, "video_url", 5); strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
+		return &GenerateResult{Type: "url", Content: videoURL}, nil
+	}
+	// A generic `url` is accepted only when the relay explicitly marks the
+	// submit response terminal. This supports synchronous relays without ever
+	// mistaking a poll/task URL for a completed video.
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", submitResp["status"])))
+	if status == "completed" || status == "succeeded" || status == "success" {
+		if videoURL := findStringField(submitResp, "url", 5); strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
+			return &GenerateResult{Type: "url", Content: videoURL}, nil
+		}
+	}
+
+	taskID := strings.TrimSpace(findStringField(submitResp, "task_id", 4))
+	if taskID == "" {
+		if id, ok := submitResp["id"].(string); ok {
+			taskID = strings.TrimSpace(id)
+		}
+	}
+	if taskID == "" {
+		// Some relays wrap the task object in data/result.
+		taskID = strings.TrimSpace(findStringField(submitResp, "id", 4))
+	}
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("MiniMax H3 submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+
+	queryPath := resolveVideoQueryPath(pc)
+	if strings.TrimSpace(queryPath) == "" {
+		queryPath = "/v1/videos/{taskId}"
+	}
+	if pollURL := strings.TrimSpace(findStringField(submitResp, "poll_url", 4)); pollURL != "" {
+		queryPath = pollURL
+	}
+	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
 }
 
 func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {

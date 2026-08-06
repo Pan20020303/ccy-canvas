@@ -68,6 +68,14 @@ describe("isModeSatisfied", () => {
     expect(isModeSatisfied("multi-image", { images: 1, videos: 0 })).toBe(true);
     expect(isModeSatisfied("multi-image", { images: 9, videos: 0 })).toBe(true);
   });
+
+  it("supports stricter per-model image bounds", () => {
+    const h3Override = { images: { min: 2, max: 5 } };
+    expect(isModeSatisfied("multi-image", { images: 1, videos: 0 }, h3Override)).toBe(false);
+    expect(isModeSatisfied("multi-image", { images: 2, videos: 0 }, h3Override)).toBe(true);
+    expect(isModeSatisfied("multi-image", { images: 5, videos: 0 }, h3Override)).toBe(true);
+    expect(isModeSatisfied("multi-image", { images: 6, videos: 0 }, h3Override)).toBe(false);
+  });
 });
 
 describe("modesForModel", () => {

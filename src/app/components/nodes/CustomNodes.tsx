@@ -76,7 +76,6 @@ import {
   REFERENCE_MODE_SPECS,
   modesForModel,
   isModeSatisfied,
-  firstSatisfiedMode,
   happyHorseSuffixSatisfied,
   type ReferenceModeKey,
 } from '../../reference-modes';
@@ -2089,6 +2088,13 @@ const PromptPanel = ({
   );
 
   const persistedReferenceMode = (params.referenceVariant as ReferenceModeKey | undefined);
+  const referenceOverrideFor = useCallback(
+    (key: ReferenceModeKey) =>
+      key === 'multi-image' && template?.referenceImageRange
+        ? { images: template.referenceImageRange }
+        : undefined,
+    [template?.referenceImageRange],
+  );
   // Resolve the effective active mode: prefer the persisted choice when it's
   // still both supported AND satisfiable; otherwise fall back to the first
   // satisfiable supported mode (or the first supported as a last resort).
@@ -2097,12 +2103,19 @@ const PromptPanel = ({
     if (
       persistedReferenceMode &&
       modelReferenceModes.includes(persistedReferenceMode) &&
-      isModeSatisfied(persistedReferenceMode, refCounts)
+      isModeSatisfied(persistedReferenceMode, refCounts, referenceOverrideFor(persistedReferenceMode))
     ) {
       return persistedReferenceMode;
     }
-    return firstSatisfiedMode(modelReferenceModes, refCounts) ?? modelReferenceModes[0];
-  }, [modelReferenceModes, persistedReferenceMode, refCounts]);
+    const satisfied = modelReferenceModes.find((key) => isModeSatisfied(key, refCounts, referenceOverrideFor(key)));
+    if (satisfied) return satisfied;
+    // A model with a multi-image minimum greater than one still needs to stay
+    // in multi-image mode while the user is attaching the first image.
+    if (refCounts.images > 0 && template?.referenceImageRange && modelReferenceModes.includes('multi-image')) {
+      return 'multi-image';
+    }
+    return modelReferenceModes[0];
+  }, [modelReferenceModes, persistedReferenceMode, refCounts, referenceOverrideFor, template?.referenceImageRange]);
 
   // Auto-fallback persistence: if the persisted mode drifted out of the
   // valid set (e.g. user deleted the upstream video while on 动作模仿),
@@ -2333,13 +2346,19 @@ const PromptPanel = ({
       {modelReferenceModes.map((key) => {
         const spec = REFERENCE_MODE_SPECS[key];
         const isActive = key === activeReferenceMode;
-        const satisfied = isModeSatisfied(key, refCounts);
+        const satisfied = isModeSatisfied(key, refCounts, referenceOverrideFor(key));
+        const modelRange = key === 'multi-image' ? template?.referenceImageRange : undefined;
+        const disabledTitle = modelRange
+          ? (language === 'zh'
+            ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
+            : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
+          : (language === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en);
         return (
           <button
             key={key}
             type="button"
             disabled={!satisfied}
-            title={satisfied ? undefined : (language === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en)}
+            title={satisfied ? undefined : disabledTitle}
             onClick={() => {
               if (!satisfied) return;
               updateNodeGenerationParams(nodeId, { referenceVariant: key });
@@ -2414,7 +2433,12 @@ const PromptPanel = ({
   const activeRequires = happyHorse?.suffix
     ? HAPPYHORSE_SUFFIX_REQUIRES[happyHorse.suffix] ?? null
     : activeReferenceMode
-      ? REFERENCE_MODE_SPECS[activeReferenceMode].requires
+      ? {
+          ...REFERENCE_MODE_SPECS[activeReferenceMode].requires,
+          ...(activeReferenceMode === 'multi-image' && template?.referenceImageRange
+            ? { images: template.referenceImageRange }
+            : {}),
+        }
       : null;
 
   const refLimitBar = (() => {

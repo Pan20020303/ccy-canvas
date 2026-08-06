@@ -198,15 +198,21 @@ export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
 ];
 
 export type ReferenceInputCounts = { images: number; videos: number };
+export type ReferenceRequirementOverride = {
+  images?: { min: number; max: number };
+  videos?: { min: number; max: number };
+};
 
 /** Whether the given input counts satisfy a mode's requirements. */
 export function isModeSatisfied(
   key: ReferenceModeKey,
   counts: ReferenceInputCounts,
+  override?: ReferenceRequirementOverride,
 ): boolean {
   const spec = REFERENCE_MODE_SPECS[key];
   if (!spec) return false;
-  const { images, videos } = spec.requires;
+  const images = override?.images ?? spec.requires.images;
+  const videos = override?.videos ?? spec.requires.videos;
   return (
     counts.images >= images.min &&
     counts.images <= images.max &&

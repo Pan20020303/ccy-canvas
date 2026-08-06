@@ -7,6 +7,7 @@ import {
   previewProviderConfigTSImport,
   supportsCustomSubmitQueryEndpoints,
   testChannelConnectivity,
+  VENDOR_TEMPLATES,
 } from "./providerConfigs";
 
 describe("provider model display names", () => {
@@ -37,6 +38,28 @@ describe("supportsCustomSubmitQueryEndpoints", () => {
     expect(supportsCustomSubmitQueryEndpoints("custom")).toBe(true);
     expect(supportsCustomSubmitQueryEndpoints("openai")).toBe(false);
     expect(supportsCustomSubmitQueryEndpoints("ark")).toBe(false);
+  });
+});
+
+describe("ManjuAPI MiniMax H3 provider template", () => {
+  it("uses the dedicated videos endpoint and fixed H3 capabilities", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("MiniMax H3"));
+    expect(template).toMatchObject({
+      vendor: "ManjuAPI",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "custom",
+      submitEndpoint: "/v1/videos",
+      queryEndpoint: "/v1/videos/{taskId}",
+    });
+    expect(template?.parameterSchema?.resolution_options).toEqual(["2k"]);
+    expect(template?.parameterSchema?.duration_options).toEqual([10, 15]);
+    expect(template?.parameterSchema?.defaults).toMatchObject({
+      duration: 10,
+      aspect_ratio: "16:9",
+      resolution: "2k",
+      input_reference_min: 2,
+      input_reference_max: 5,
+    });
   });
 });
 

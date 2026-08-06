@@ -93,6 +93,30 @@ describe("workspace project state", () => {
     ))).toHaveLength(1);
   });
 
+  it("rejects direct and transitive dependency cycles", async () => {
+    const { useStore } = await loadStore();
+    const initialEdges = useStore.getState().edges;
+    expect(initialEdges.some((edge) => edge.source === "1" && edge.target === "2")).toBe(true);
+
+    useStore.getState().onConnect({ source: "2", sourceHandle: null, target: "1", targetHandle: null });
+    expect(useStore.getState().edges).toHaveLength(initialEdges.length);
+
+    useStore.getState().addNode({
+      id: "cycle-c",
+      type: "textNode",
+      position: { x: 1000, y: 150 },
+      data: {},
+    } as never);
+    useStore.getState().onConnect({ source: "2", sourceHandle: null, target: "cycle-c", targetHandle: null });
+    const beforeCycle = useStore.getState().edges.length;
+    useStore.getState().onConnect({ source: "cycle-c", sourceHandle: null, target: "1", targetHandle: null });
+
+    expect(useStore.getState().edges).toHaveLength(beforeCycle);
+    expect(useStore.getState().edges.some((edge) => (
+      edge.source === "cycle-c" && edge.target === "1"
+    ))).toBe(false);
+  });
+
   it("removes invalid self-connections from persisted canvases", async () => {
     const { sanitizeCanvasEdges } = await loadStore();
     const cleaned = sanitizeCanvasEdges([
@@ -102,6 +126,32 @@ describe("workspace project state", () => {
     ] as never);
 
     expect(cleaned.map((edge) => edge.id)).toEqual(["valid-a"]);
+  });
+
+  it("repairs persisted cycles deterministically regardless of merge order", async () => {
+    const { sanitizeCanvasEdges } = await loadStore();
+    const cycle = [
+      { id: "edge-ab", source: "a", target: "b" },
+      { id: "edge-bc", source: "b", target: "c" },
+      { id: "edge-ca", source: "c", target: "a" },
+    ] as never;
+
+    const forwardIds = sanitizeCanvasEdges(cycle).map((edge) => edge.id).sort();
+    const reversedIds = sanitizeCanvasEdges([...cycle].reverse()).map((edge) => edge.id).sort();
+
+    expect(forwardIds).toEqual(reversedIds);
+    expect(forwardIds).toHaveLength(2);
+  });
+
+  it("rejects a collaborator edge that would close a local dependency loop", async () => {
+    const { useStore } = await loadStore();
+
+    useStore.getState().applyRemoteCanvasDelta({
+      edgesUpsert: [{ id: "remote-reverse", source: "2", target: "1" }],
+    });
+
+    expect(useStore.getState().edges.some((edge) => edge.id === "remote-reverse")).toBe(false);
+    expect(useStore.getState().edges.some((edge) => edge.source === "1" && edge.target === "2")).toBe(true);
   });
 
   it("creates a new project with its own empty canvas snapshot", async () => {

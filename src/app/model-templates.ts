@@ -43,6 +43,8 @@ export type ModelTemplate = {
    *  the prompt panel. Omitted → no reference tabs (pure text-to-video).
    *  See reference-modes.ts for the capability registry. */
   referenceModes?: ReferenceModeKey[];
+  /** Per-model image-reference bounds, narrowing the generic mode registry. */
+  referenceImageRange?: { min: number; max: number };
   defaults?: {
     mode?: string;
     resolution?: string;
@@ -640,6 +642,22 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4"],
     durationRange: { min: 3, max: 15, step: 1, defaultValue: 5 },
     defaults: { resolution: "720P", aspectRatio: "16:9" },
+  },
+  // ── ManjuAPI /v1/videos ────────────────────────────────────────────────
+  "MiniMax H3": {
+    vendor: "ManjuAPI",
+    modelName: "MiniMax H3",
+    serviceType: "video",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsDuration: true,
+    resolutionOptions: ["2k"],
+    aspectRatioOptions: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    durationOptions: [10, 15],
+    durationRange: { min: 10, max: 15, step: 5, defaultValue: 10 },
+    referenceModes: ["text-to-video", "multi-image"],
+    referenceImageRange: { min: 2, max: 5 },
+    defaults: { resolution: "2k", aspectRatio: "16:9" },
   },
   // ── Manju 中转站(manjuapi.com)chat/completions 视频三家 ─────────────────
   // 模型名与中转站完全一致(sora2 无连字符、Veo 带空格),后端按名嗅探路由到

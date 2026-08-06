@@ -52,6 +52,18 @@ describe("model templates", () => {
     });
   });
 
+  it("matches the ManjuAPI MiniMax H3 video contract", () => {
+    const template = getModelTemplate("MiniMax H3");
+    expect(template?.vendor).toBe("ManjuAPI");
+    expect(template?.serviceType).toBe("video");
+    expect(template?.resolutionOptions).toEqual(["2k"]);
+    expect(template?.aspectRatioOptions).toEqual(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
+    expect(template?.durationOptions).toEqual([10, 15]);
+    expect(template?.referenceModes).toEqual(["text-to-video", "multi-image"]);
+    expect(template?.referenceImageRange).toEqual({ min: 2, max: 5 });
+    expect(template?.defaults).toEqual({ resolution: "2k", aspectRatio: "16:9" });
+  });
+
   it("matches sora-2 options from relay-video-test html", () => {
     const template = getModelTemplate("sora-2");
     expect(template?.supportsMode).toBeFalsy();

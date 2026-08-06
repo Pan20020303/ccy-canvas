@@ -550,6 +550,37 @@ const OPENAI_IMAGE_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const MANJU_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "input_reference"],
+  aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+  resolution_options: ["2k"],
+  duration_options: [10, 15],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: {
+    duration: 10,
+    aspect_ratio: "16:9",
+    resolution: "2k",
+    audio: true,
+    input_reference_min: 2,
+    input_reference_max: 5,
+  },
+  models: {
+    "MiniMax H3": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "input_reference"],
+      aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+      resolution_options: ["2k"],
+      duration_options: [10, 15],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 10, aspect_ratio: "16:9", resolution: "2k", audio: true },
+    },
+  },
+};
+
 export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
   text: [
     {
@@ -865,6 +896,17 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   video: [
+    {
+      vendor: "ManjuAPI",
+      label: "ManjuAPI / MiniMax H3 视频",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "custom",
+      protocol: "openai_compatible",
+      models: ["MiniMax H3"],
+      submitEndpoint: "/v1/videos",
+      queryEndpoint: "/v1/videos/{taskId}",
+      parameterSchema: MANJU_MINIMAX_H3_VIDEO_SCHEMA,
+    },
     {
       vendor: "NewAPI",
       label: "NewAPI / 视频中转站",

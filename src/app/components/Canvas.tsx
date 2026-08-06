@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 
 import clsx from 'clsx';
-import { useStore, useActiveProjectReadOnly, eventMatchesShortcut, sanitizeCanvasEdges, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
+import { useStore, useActiveProjectReadOnly, eventMatchesShortcut, getCanvasConnectionIssue, sanitizeCanvasEdges, setCanvasInteractionActive, type HistoryItem, type Group } from '../store';
 import { uploadFileWithProgress } from '../api/projects';
 import { buildBulkOutboundEdges, computeGroupBounds } from '../group-routing';
 import {
@@ -906,15 +906,7 @@ const InnerCanvas = () => {
   }, [connectEdge, setConnectionDragging]);
 
   const isValidConnection = useCallback((connection: Connection | Edge) => (
-    Boolean(connection.source)
-    && Boolean(connection.target)
-    && connection.source !== connection.target
-    && !edges.some((edge) => (
-      edge.source === connection.source
-      && edge.target === connection.target
-      && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
-      && (edge.targetHandle ?? null) === (connection.targetHandle ?? null)
-    ))
+    getCanvasConnectionIssue(edges, connection) === null
   ), [edges]);
 
   // Repair canvases created before the validation existed. This removes the

@@ -527,23 +527,101 @@ const initialNodes: Node[] = [
 
 const initialEdges: Edge[] = [{ id: 'e1-2', source: '1', target: '2', type: 'flow' }];
 
+type CanvasConnectionLike = {
+  source?: string | null;
+  target?: string | null;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+};
+
+export type CanvasConnectionIssue = 'invalid' | 'self' | 'duplicate' | 'cycle' | null;
+
+const edgeConnectionKey = (edge: CanvasConnectionLike): string => [
+  edge.source ?? '',
+  edge.sourceHandle ?? '',
+  edge.target ?? '',
+  edge.targetHandle ?? '',
+].join('\u0000');
+
+const hasDirectedPathInAdjacency = (
+  outgoing: ReadonlyMap<string, readonly string[]>,
+  start: string,
+  destination: string,
+): boolean => {
+  if (start === destination) return true;
+  const pending = [start];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const nodeId = pending.pop()!;
+    if (nodeId === destination) return true;
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    for (const targetId of outgoing.get(nodeId) ?? []) {
+      if (!visited.has(targetId)) pending.push(targetId);
+    }
+  }
+  return false;
+};
+
+const buildDirectedAdjacency = (
+  edges: readonly Pick<Edge, 'source' | 'target'>[],
+): Map<string, string[]> => {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!edge.source || !edge.target || edge.source === edge.target) continue;
+    const targets = outgoing.get(edge.source);
+    if (targets) targets.push(edge.target);
+    else outgoing.set(edge.source, [edge.target]);
+  }
+  return outgoing;
+};
+
+/** Validate a proposed dependency edge. Adding source -> target closes a loop
+ * exactly when target can already reach source in the existing graph. */
+export function getCanvasConnectionIssue(
+  edges: readonly Edge[] = [],
+  connection: CanvasConnectionLike,
+): CanvasConnectionIssue {
+  const source = connection.source;
+  const target = connection.target;
+  if (!source || !target) return 'invalid';
+  if (source === target) return 'self';
+  const connectionKey = edgeConnectionKey(connection);
+  if (edges.some((edge) => edgeConnectionKey(edge) === connectionKey)) return 'duplicate';
+  return hasDirectedPathInAdjacency(buildDirectedAdjacency(edges), target, source) ? 'cycle' : null;
+}
+
 /** Remove graph connections that cannot represent a valid dependency.
- *  A node can never depend on itself, regardless of which quick-connect
- *  handles were used. Exact duplicate edges are collapsed as well. */
+ * Besides malformed/self/duplicate edges, this repairs legacy or concurrently
+ * edited canvases into a DAG. Candidates are evaluated in a canonical order so
+ * collaborators converge on the same surviving edges even if merge order differs. */
 export function sanitizeCanvasEdges(edges: Edge[] = []): Edge[] {
-  const seen = new Set<string>();
-  return edges.filter((edge) => {
-    if (!edge.source || !edge.target || edge.source === edge.target) return false;
-    const key = [
-      edge.source,
-      edge.sourceHandle ?? '',
-      edge.target,
-      edge.targetHandle ?? '',
-    ].join('\u0000');
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  const candidates = edges
+    .filter((edge) => Boolean(edge.source) && Boolean(edge.target) && edge.source !== edge.target)
+    .slice()
+    .sort((a, b) => {
+      const aKey = `${edgeConnectionKey(a)}\u0000${a.id ?? ''}`;
+      const bKey = `${edgeConnectionKey(b)}\u0000${b.id ?? ''}`;
+      return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+    });
+  const accepted: Edge[] = [];
+  const acceptedRefs = new Set<Edge>();
+  const seenConnections = new Set<string>();
+  const outgoing = new Map<string, string[]>();
+
+  for (const edge of candidates) {
+    const connectionKey = edgeConnectionKey(edge);
+    if (seenConnections.has(connectionKey)) continue;
+    if (hasDirectedPathInAdjacency(outgoing, edge.target, edge.source)) continue;
+    seenConnections.add(connectionKey);
+    accepted.push(edge);
+    acceptedRefs.add(edge);
+    const targets = outgoing.get(edge.source);
+    if (targets) targets.push(edge.target);
+    else outgoing.set(edge.source, [edge.target]);
+  }
+
+  return edges.filter((edge) => acceptedRefs.has(edge));
 }
 
 const createCanvasSnapshot = (
@@ -2155,7 +2233,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   onEdgesChange: (changes: EdgeChange[]) => {
     set((state) => {
-      const edges = applyEdgeChanges(changes, state.edges);
+      const edges = sanitizeCanvasEdges(applyEdgeChanges(changes, state.edges));
       const captured = shouldCaptureEdgeChangesForUndo(changes);
       const undoStack = captured ? pushUndoState(state) : state.undoStack;
       const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
@@ -2172,14 +2250,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   onConnect: (connection: Connection) => {
     set((state) => {
       if (computeActiveProjectReadOnly(state)) return {};
-      if (!connection.source || !connection.target || connection.source === connection.target) return {};
-      const duplicate = state.edges.some((edge) => (
-        edge.source === connection.source
-        && edge.target === connection.target
-        && (edge.sourceHandle ?? null) === (connection.sourceHandle ?? null)
-        && (edge.targetHandle ?? null) === (connection.targetHandle ?? null)
-      ));
-      if (duplicate) return {};
+      if (getCanvasConnectionIssue(state.edges, connection)) return {};
       const decoratedConnection = { ...connection, type: 'flow' };
       const edges = addEdge(decoratedConnection, state.edges);
       const undoStack = pushUndoState(state);
@@ -3505,6 +3576,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       for (const incoming of delta.edgesUpsert) byId.set(incoming.id, incoming as Edge);
       edges = [...byId.values()];
     }
+    edges = sanitizeCanvasEdges(edges);
     const groupsRm = delta.groupsRemove?.length ? new Set(delta.groupsRemove) : null;
     let groups = groupsRm ? state.groups.filter((g) => !groupsRm.has(g.id)) : state.groups;
     if (delta.groupsUpsert?.length) {
@@ -3739,21 +3811,34 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           videos: referenceMedia.videoUrls.length,
         };
         const supported = modesForModel(declared);
+        const referenceOverrideFor = (key: ReferenceModeKey) =>
+          key === 'multi-image' && template?.referenceImageRange
+            ? { images: template.referenceImageRange }
+            : undefined;
         const persisted = genParams?.referenceVariant as ReferenceModeKey | undefined;
         // Pick the mode the same way the UI does: persisted choice when still
         // valid, else first satisfiable supported mode.
+        const satisfied = supported.find((key) => isModeSatisfied(key, counts, referenceOverrideFor(key)));
+        const incompleteMultiImage = counts.images > 0 && template?.referenceImageRange && supported.includes('multi-image')
+          ? 'multi-image' as const
+          : undefined;
         const chosen: ReferenceModeKey | undefined =
-          persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts)
+          persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts, referenceOverrideFor(persisted))
             ? persisted
-            : (supported.find((k) => isModeSatisfied(k, counts)) ?? supported[0]);
+            : (satisfied ?? incompleteMultiImage ?? supported[0]);
 
         if (chosen) {
           const spec = REFERENCE_MODE_SPECS[chosen];
           // Preflight: if the chosen mode's input requirements aren't met,
           // surface the reason on the node and abort without a network call.
-          if (!isModeSatisfied(chosen, counts)) {
+          if (!isModeSatisfied(chosen, counts, referenceOverrideFor(chosen))) {
             const lang = get().language;
-            const hint = lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en;
+            const modelRange = chosen === 'multi-image' ? template?.referenceImageRange : undefined;
+            const hint = modelRange
+              ? (lang === 'zh'
+                ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
+                : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
+              : (lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en);
             set((snapshot) => {
           const nodes = snapshot.nodes.map((node) => node.id === nodeId
               ? { ...node, data: { ...node.data, status: 'error', error: hint } }
