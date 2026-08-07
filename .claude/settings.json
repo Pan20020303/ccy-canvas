@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Force -Name)",
+      "Bash(Select-Object -First 80)",
+      "PowerShell(git worktree remove .claude/worktrees/wizardly-ptolemy-157031 --force 2>&1)",
+      "PowerShell(git worktree remove .claude/worktrees/hopeful-grothendieck-d0487d --force 2>&1)",
+      "PowerShell(Stop-Process -Id 66092, 73696 -Force)",
+      "PowerShell(git worktree prune --verbose 2>&1)",
+      "PowerShell(git branch -D claude/hopeful-grothendieck-d0487d claude/wizardly-ptolemy-157031 codex/foundation-auth 2>&1)",
+      "PowerShell(git branch -D claude/great-wilson-fa5316 2>&1)"
+    ],
+    "additionalDirectories": [
+      "D:\\code\\ccy-canvas\\.claude\\worktrees\\hopeful-grothendieck-d0487d"
+    ]
+  }
+}
