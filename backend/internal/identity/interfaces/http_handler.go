@@ -73,6 +73,7 @@ func (h Handler) Routes(r chi.Router) {
 	r.Get("/api/auth/google/callback", h.GoogleCallback)
 	r.Post("/api/auth/logout", h.Logout)
 	r.Get("/api/auth/me", h.Me)
+	r.Patch("/api/auth/profile", h.UpdateProfile)
 	r.Post("/api/admin/invitations", h.RequireAdmin(h.CreateInvitation))
 }
 
@@ -88,6 +89,16 @@ type registerRequest struct {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+type updateProfileRequest struct {
+	Name     string            `json:"name"`
+	Avatar   string            `json:"avatar"`
+	Username string            `json:"username"`
+	Headline string            `json:"headline"`
+	Bio      string            `json:"bio"`
+	Location string            `json:"location"`
+	Socials  map[string]string `json:"socials"`
 }
 
 type createInvitationRequest struct {
@@ -247,6 +258,34 @@ func (h Handler) Me(w http.ResponseWriter, r *http.Request) {
 		"user":           user,
 		"credit_summary": summary,
 	})
+}
+
+func (h Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	claims, err := h.sessionClaims(r)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	var req updateProfileRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	user, err := h.service.UpdateProfile(r.Context(), identityapp.UpdateProfileInput{
+		UserID:   claims.UserID,
+		Name:     req.Name,
+		Avatar:   req.Avatar,
+		Username: req.Username,
+		Headline: req.Headline,
+		Bio:      req.Bio,
+		Location: req.Location,
+		Socials:  req.Socials,
+	})
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"user": user})
 }
 
 func (h Handler) CreateInvitation(w http.ResponseWriter, r *http.Request) {

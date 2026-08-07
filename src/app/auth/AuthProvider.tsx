@@ -11,6 +11,11 @@ export type AuthUser = {
   name: string;
   role: "admin" | "member";
   avatar?: string;
+  username?: string;
+  headline?: string;
+  bio?: string;
+  location?: string;
+  socials?: Record<string, string>;
   workspaceSpaces?: Array<{
     id: string;
     name: string;
@@ -43,6 +48,7 @@ type AuthContextValue = {
   }) => Promise<AuthUser>;
   logout: () => Promise<void>;
   refresh: () => Promise<AuthUser | null>;
+  updateProfile: (input: Pick<AuthUser, "name"> & Partial<Pick<AuthUser, "avatar" | "username" | "headline" | "bio" | "location" | "socials">>) => Promise<AuthUser>;
   /** Light-weight periodic sync: refreshes user + credit balance ONLY. Unlike
    *  refresh(), it does NOT reload backend models/projects — the full reload
    *  used to run on every 60s poll / tab refocus and REPLACED the live canvas
@@ -174,6 +180,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setCreditSummary(null);
       },
       refresh,
+      async updateProfile(input) {
+        const data = await apiClient.patch<{ user: AuthUser }>("/api/auth/profile", input);
+        setUser(data.user);
+        return data.user;
+      },
       refreshCredits,
     }),
     [creditSummary, loadBackendData, loading, refresh, refreshCredits, user],

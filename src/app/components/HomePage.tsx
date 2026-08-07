@@ -18,6 +18,7 @@ import {
   Shield,
   Sparkles,
   Trash2,
+  UserRound,
   Users,
   Zap,
 } from 'lucide-react';
@@ -92,6 +93,7 @@ export function HomePage() {
   const createBackendProject = useStore((s) => s.createBackendProject);
   const loadBackendProjects = useStore((s) => s.loadBackendProjects);
   const refreshBackendProjects = useStore((s) => s.refreshBackendProjects);
+  const setProfileOpen = useStore((s) => s.setProfileOpen);
   const zh = language === 'zh';
   const light = theme === 'light';
 
@@ -425,6 +427,14 @@ export function HomePage() {
                         <div className="text-sm text-neutral-200">{user.name}</div>
                         <div className="text-[11px] text-neutral-500">{user.email}</div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => { setMenuOpen(false); setProfileOpen(true); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-xs text-neutral-300 transition hover:bg-white/5"
+                      >
+                        <UserRound className="h-3.5 w-3.5 text-neutral-400" />
+                        {zh ? '个人设置' : 'Edit profile'}
+                      </button>
                       {user.role === 'admin' ? (
                         <button
                           type="button"

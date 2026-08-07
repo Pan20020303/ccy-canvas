@@ -47,6 +47,9 @@ func (r *fakeRepo) GetUserByEmail(context.Context, string) (UserWithPasswordDTO,
 func (r *fakeRepo) GetUserByID(context.Context, string) (UserDTO, error) {
 	return UserDTO{}, errNotFoundStub
 }
+func (r *fakeRepo) UpdateUserProfile(_ context.Context, input UpdateProfileInput) (UserDTO, error) {
+	return UserDTO{ID: input.UserID, Name: input.Name, Username: input.Username, Avatar: input.Avatar}, nil
+}
 func (r *fakeRepo) GetUserByOAuth(context.Context, string, string) (UserWithPasswordDTO, error) {
 	return UserWithPasswordDTO{}, errNotFoundStub
 }
@@ -119,5 +122,37 @@ func TestRegisterRollsBackWhenAccountCreationFails(t *testing.T) {
 	}
 	if !repo.rolledBack {
 		t.Fatal("transaction should have rolled back")
+	}
+}
+
+func TestUpdateProfileNormalizesPublicFields(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, fakeHasher{}, &fakeCreator{})
+
+	user, err := svc.UpdateProfile(context.Background(), UpdateProfileInput{
+		UserID:   "u1",
+		Name:     "  Alice  ",
+		Username: " Alice.Director ",
+		Headline: "  Film director  ",
+		Socials: map[string]string{
+			"website": " https://example.com ",
+			"private": "must be removed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateProfile error: %v", err)
+	}
+	if user.Name != "Alice" || user.Username != "alice.director" {
+		t.Fatalf("profile was not normalized: %#v", user)
+	}
+}
+
+func TestUpdateProfileRejectsInvalidUsername(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, fakeHasher{}, &fakeCreator{})
+
+	_, err := svc.UpdateProfile(context.Background(), UpdateProfileInput{UserID: "u1", Name: "Alice", Username: "不合法"})
+	if err == nil {
+		t.Fatal("expected invalid username error")
 	}
 }

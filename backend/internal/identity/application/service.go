@@ -24,6 +24,7 @@ type Repository interface {
 	CreateUser(ctx context.Context, input CreateUserInput) (UserDTO, error)
 	GetUserByEmail(ctx context.Context, email string) (UserWithPasswordDTO, error)
 	GetUserByID(ctx context.Context, id string) (UserDTO, error)
+	UpdateUserProfile(ctx context.Context, input UpdateProfileInput) (UserDTO, error)
 	GetUserByOAuth(ctx context.Context, provider string, providerUserID string) (UserWithPasswordDTO, error)
 	LinkOAuthAccount(ctx context.Context, userID string, provider string, providerUserID string, email string) error
 	UpdateLastLogin(ctx context.Context, id string) error
@@ -74,10 +75,27 @@ type CreateInvitationInput struct {
 }
 
 type UserDTO struct {
-	ID    string      `json:"id"`
-	Email string      `json:"email"`
-	Name  string      `json:"name"`
-	Role  domain.Role `json:"role"`
+	ID       string            `json:"id"`
+	Email    string            `json:"email"`
+	Name     string            `json:"name"`
+	Role     domain.Role       `json:"role"`
+	Avatar   string            `json:"avatar,omitempty"`
+	Username string            `json:"username,omitempty"`
+	Headline string            `json:"headline,omitempty"`
+	Bio      string            `json:"bio,omitempty"`
+	Location string            `json:"location,omitempty"`
+	Socials  map[string]string `json:"socials,omitempty"`
+}
+
+type UpdateProfileInput struct {
+	UserID   string
+	Name     string
+	Avatar   string
+	Username string
+	Headline string
+	Bio      string
+	Location string
+	Socials  map[string]string
 }
 
 type UserWithPasswordDTO struct {
@@ -264,6 +282,63 @@ func (s Service) Login(ctx context.Context, email string, rawPassword string) (U
 
 func (s Service) CurrentUser(ctx context.Context, userID string) (UserDTO, error) {
 	return s.repo.GetUserByID(ctx, userID)
+}
+
+func (s Service) UpdateProfile(ctx context.Context, input UpdateProfileInput) (UserDTO, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.Avatar = strings.TrimSpace(input.Avatar)
+	input.Username = strings.ToLower(strings.TrimSpace(input.Username))
+	input.Headline = strings.TrimSpace(input.Headline)
+	input.Bio = strings.TrimSpace(input.Bio)
+	input.Location = strings.TrimSpace(input.Location)
+
+	if input.UserID == "" || input.Name == "" {
+		return UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Name is required")
+	}
+	if len([]rune(input.Name)) > 80 || len([]rune(input.Headline)) > 120 || len([]rune(input.Bio)) > 300 || len([]rune(input.Location)) > 100 {
+		return UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Profile field is too long")
+	}
+	if input.Username != "" {
+		if len(input.Username) < 3 || len(input.Username) > 32 || !validUsername(input.Username) {
+			return UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Username must be 3-32 letters, numbers, dots, underscores, or hyphens")
+		}
+	}
+	if input.Avatar != "" && !validAvatarURL(input.Avatar) {
+		return UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Invalid avatar URL")
+	}
+
+	cleanSocials := make(map[string]string, len(input.Socials))
+	for key, value := range input.Socials {
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		if key != "website" && key != "x" && key != "instagram" {
+			continue
+		}
+		if len([]rune(value)) > 160 {
+			return UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Social link is too long")
+		}
+		cleanSocials[key] = value
+	}
+	input.Socials = cleanSocials
+	return s.repo.UpdateUserProfile(ctx, input)
+}
+
+func validUsername(value string) bool {
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validAvatarURL(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.HasPrefix(value, "/uploads/") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://")
 }
 
 func (s Service) CreateInvitation(ctx context.Context, role domain.Role, initialDailyQuota int32, maxUses int32, expiresAt time.Time, createdBy string, note string) (InvitationDTO, error) {

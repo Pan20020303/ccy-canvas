@@ -2,6 +2,7 @@ package infrastructure
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -76,11 +77,16 @@ func (r Repository) GetUserByEmail(ctx context.Context, email string) (applicati
 		}
 		return application.UserWithPasswordDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load user", err)
 	}
-	return application.UserWithPasswordDTO{
+	result := application.UserWithPasswordDTO{
 		UserDTO:      toUserDTO(row),
 		PasswordHash: row.PasswordHash,
 		Status:       row.Status,
-	}, nil
+	}
+	result.UserDTO, err = r.loadUserProfile(ctx, result.UserDTO)
+	if err != nil {
+		return application.UserWithPasswordDTO{}, err
+	}
+	return result, nil
 }
 
 func (r Repository) GetUserByOAuth(ctx context.Context, provider string, providerUserID string) (application.UserWithPasswordDTO, error) {
@@ -109,11 +115,16 @@ LIMIT 1`
 		}
 		return application.UserWithPasswordDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load OAuth account", err)
 	}
-	return application.UserWithPasswordDTO{
+	result := application.UserWithPasswordDTO{
 		UserDTO:      toUserDTO(row),
 		PasswordHash: row.PasswordHash,
 		Status:       row.Status,
-	}, nil
+	}
+	result.UserDTO, err = r.loadUserProfile(ctx, result.UserDTO)
+	if err != nil {
+		return application.UserWithPasswordDTO{}, err
+	}
+	return result, nil
 }
 
 func (r Repository) LinkOAuthAccount(ctx context.Context, userID string, provider string, providerUserID string, email string) error {
@@ -157,7 +168,72 @@ func (r Repository) GetUserByID(ctx context.Context, id string) (application.Use
 		}
 		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load user", err)
 	}
-	return toUserDTO(row), nil
+	return r.loadUserProfile(ctx, toUserDTO(row))
+}
+
+func (r Repository) UpdateUserProfile(ctx context.Context, input application.UpdateProfileInput) (application.UserDTO, error) {
+	userID, err := parseUUID(input.UserID)
+	if err != nil {
+		return application.UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Invalid user ID")
+	}
+	socials, err := json.Marshal(input.Socials)
+	if err != nil {
+		return application.UserDTO{}, apperror.New(apperror.CodeInvalidInput, "Invalid social links")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not start profile update", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE users SET name = $2, updated_at = now() WHERE id = $1`, userID, input.Name); err != nil {
+		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not update profile name", err)
+	}
+	_, err = tx.Exec(ctx, `
+INSERT INTO user_profiles (user_id, username, avatar_url, headline, bio, location, socials)
+VALUES ($1, NULLIF($2, ''), $3, $4, $5, $6, $7::jsonb)
+ON CONFLICT (user_id) DO UPDATE SET
+    username = NULLIF(EXCLUDED.username, ''),
+    avatar_url = EXCLUDED.avatar_url,
+    headline = EXCLUDED.headline,
+    bio = EXCLUDED.bio,
+    location = EXCLUDED.location,
+    socials = EXCLUDED.socials,
+    updated_at = now()`, userID, input.Username, input.Avatar, input.Headline, input.Bio, input.Location, socials)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return application.UserDTO{}, apperror.New(apperror.CodeConflict, "Username is already in use")
+		}
+		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not update user profile", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not commit profile update", err)
+	}
+	return r.GetUserByID(ctx, input.UserID)
+}
+
+func (r Repository) loadUserProfile(ctx context.Context, user application.UserDTO) (application.UserDTO, error) {
+	userID, err := parseUUID(user.ID)
+	if err != nil {
+		return application.UserDTO{}, apperror.New(apperror.CodeInternal, "Could not load user profile")
+	}
+	var socials []byte
+	err = r.pool.QueryRow(ctx, `
+SELECT COALESCE(username, ''), avatar_url, headline, bio, location, socials
+FROM user_profiles
+WHERE user_id = $1`, userID).Scan(&user.Username, &user.Avatar, &user.Headline, &user.Bio, &user.Location, &socials)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return user, nil
+	}
+	if err != nil {
+		return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not load user profile", err)
+	}
+	if len(socials) > 0 {
+		if err := json.Unmarshal(socials, &user.Socials); err != nil {
+			return application.UserDTO{}, apperror.Wrap(apperror.CodeInternal, "Could not decode user profile", err)
+		}
+	}
+	return user, nil
 }
 
 func (r Repository) UpdateLastLogin(ctx context.Context, id string) error {
