@@ -1479,6 +1479,32 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).not.toContain("\"seed\"");
   });
 
+  it("uses MiniMax H3 fixed 2k resolution instead of a stale 720p node value", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        data: { type: "url", content: "https://example.com/minimax-h3.mp4" },
+        request_id: "req-minimax-h3",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    useStore.getState().addNode({
+      id: "minimax-h3-node",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      data: { generationParams: { resolution: "720p", aspectRatio: "16:9", durationSeconds: 10 } },
+    } as never);
+
+    await useStore.getState().runNode("minimax-h3-node", { prompt: "a city at night", model: "MiniMax H3" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(String(init.body));
+    expect(body.resolution).toBe("2k");
+  });
+
   it("uses original public urls instead of proxy media urls for video references", async () => {
     const { useStore } = await loadStore();
     const remoteImageUrl = "https://ark-acg-cn-beijing.tos-cn-beijing.volces.com/doubao-seedream-5-0/reference.jpeg?X-Tos-Expires=86400&X-Tos-Signature=abc";

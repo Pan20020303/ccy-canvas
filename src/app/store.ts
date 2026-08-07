@@ -3777,11 +3777,25 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // capitalisation they want (e.g. HappyHorse declares "720P/1080P"),
     // so we just preserve whatever case was set; only fall back to
     // lowercase when there was no suffix at all.
-    const rawRes = genParams?.resolution ?? '720p';
+    const requestTemplate = getModelTemplate(payload.model ?? '');
+    const resolutionOptions = requestTemplate?.resolutionOptions ?? [];
+    const persistedResolution = genParams?.resolution?.trim();
+    const canonicalPersistedResolution = persistedResolution
+      ? resolutionOptions.find((option) => option.toLowerCase() === persistedResolution.toLowerCase())
+      : undefined;
+    // When a node switches models, persisted generation params can still
+    // contain the previous model's resolution. Prefer a canonical option from
+    // the active model; fixed-resolution models (MiniMax H3) must never inherit
+    // a stale 720p/1080p value.
+    const rawRes = resolutionOptions.length > 0
+      ? (canonicalPersistedResolution ?? requestTemplate?.defaults?.resolution ?? resolutionOptions[0])
+      : (persistedResolution ?? requestTemplate?.defaults?.resolution ?? '720p');
     const resolution = (() => {
       const text = rawRes.trim();
       const imageMatch = text.match(/([124])\s*k/i);
       if (serviceType === 'image' && imageMatch) return `${imageMatch[1]}K`;
+      const videoTierMatch = text.match(/([124])\s*k/i);
+      if (serviceType === 'video' && videoTierMatch) return `${videoTierMatch[1]}k`;
       const videoMatch = text.match(/(\d{3,4})\s*([Pp])/) ?? text.match(/(\d{3,4})/);
       if (serviceType === 'video' && videoMatch) {
         const suffix = videoMatch[2] ?? 'p';
@@ -3992,7 +4006,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // Active model's template — used to gate capability-scoped params (seed,
     // audio_setting) so a value that persisted from a previous model doesn't
     // ride along to a sibling that doesn't support it.
-    const activeTemplate = getModelTemplate(payload.model ?? '');
+    const activeTemplate = requestTemplate;
 
     // Make sure the recovery poller is running. Idempotent — first call
     // wires up the interval, subsequent calls are no-ops.

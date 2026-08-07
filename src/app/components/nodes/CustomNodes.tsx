@@ -1595,7 +1595,10 @@ const PromptPanel = ({
     ? lastDur : undefined;
 
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
-  const currentResolution = params.resolution ?? lastResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
+  const parameterResolution = params.resolution && template?.resolutionOptions
+    ? template.resolutionOptions.find((option) => option.toLowerCase() === params.resolution?.toLowerCase())
+    : params.resolution;
+  const currentResolution = parameterResolution ?? lastResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
   const currentAspectRatio = params.aspectRatio
     ?? lastAspectRatio
@@ -1617,7 +1620,7 @@ const PromptPanel = ({
     if (!params.vendor && activeVendor) nextPatch.vendor = activeVendor;
     if (!params.model && activeModel) nextPatch.model = activeModel;
     if (template.supportsMode && !params.mode && currentMode) nextPatch.mode = currentMode;
-    if (template.supportsResolution && !params.resolution && currentResolution) nextPatch.resolution = currentResolution;
+    if (template.supportsResolution && currentResolution && params.resolution !== currentResolution) nextPatch.resolution = currentResolution;
     if (template.supportsQuality && !params.quality && currentQuality) nextPatch.quality = currentQuality;
     if ((template.supportsAspectRatio || template.supportsAutoAspect) && !params.aspectRatio && currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
     if (template.supportsDuration && !params.durationSeconds && currentDuration) nextPatch.durationSeconds = currentDuration;

@@ -107,6 +107,17 @@ func TestManjuMiniMaxH3MultiImageBodyPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestManjuMiniMaxH3NormalizesStaleResolutionTo2K(t *testing.T) {
+	body := captureMiniMaxH3Submit(t, GenerateRequest{
+		Prompt:     "legacy node",
+		Resolution: "720p",
+	})
+
+	if body["resolution"] != "2k" {
+		t.Fatalf("resolution = %v, want fixed 2k", body["resolution"])
+	}
+}
+
 func TestManjuMiniMaxH3RejectsInvalidParameters(t *testing.T) {
 	sixRefs := make([]string, 6)
 	for i := range sixRefs {
@@ -122,7 +133,6 @@ func TestManjuMiniMaxH3RejectsInvalidParameters(t *testing.T) {
 		{name: "six references", req: GenerateRequest{Prompt: "x", ReferenceImages: sixRefs}, want: "2 to 5"},
 		{name: "invalid duration", req: GenerateRequest{Prompt: "x", Duration: 12}, want: "10 or 15"},
 		{name: "invalid ratio", req: GenerateRequest{Prompt: "x", AspectRatio: "2:1"}, want: "aspect ratio"},
-		{name: "invalid resolution", req: GenerateRequest{Prompt: "x", Resolution: "720p"}, want: "fixed at 2K"},
 		{name: "empty reference", req: GenerateRequest{Prompt: "x", ReferenceImages: []string{"", "https://cdn.example.com/b.jpg"}}, want: "cannot be empty"},
 		{name: "invalid reference scheme", req: GenerateRequest{Prompt: "x", ReferenceImages: []string{"ftp://example.com/a.jpg", "https://cdn.example.com/b.jpg"}}, want: "public http(s) URL"},
 	}

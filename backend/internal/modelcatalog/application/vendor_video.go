@@ -637,7 +637,7 @@ var klingRatios = map[string]bool{"16:9": true, "9:16": true, "1:1": true}
 
 // validateKlingVideoRequest — 可灵（百炼渠道）的本地约束校验（文档 2026-07）：
 // 标准版仅支持文生/首帧/首尾帧；Omni 额外支持参考生（refer ≤7）与视频编辑
-//（base 1 段 + refer ≤4）。宽高比仅 16:9/9:16/1:1，时长 3~15s。
+// （base 1 段 + refer ≤4）。宽高比仅 16:9/9:16/1:1，时长 3~15s。
 func validateKlingVideoRequest(req GenerateRequest) error {
 	model := strings.ToLower(strings.TrimSpace(req.Model))
 	isOmni := strings.Contains(model, "omni")
@@ -1070,15 +1070,11 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 aspect ratio must be one of 21:9, 16:9, 4:3, 1:1, 3:4, or 9:16")
 	}
 
-	// H3 only exposes 2K. Reject an explicitly incompatible stale node value
-	// instead of silently sending a payload the upstream will reject.
-	resolution := strings.ToLower(strings.TrimSpace(req.Resolution))
-	if resolution == "" {
-		resolution = "2k"
-	}
-	if resolution != "2k" {
-		return nil, apperror.New(apperror.CodeInvalidInput, "MiniMax H3 resolution is fixed at 2K")
-	}
+	// H3 only exposes 2K, so the server is authoritative for this fixed field.
+	// Older canvas nodes may still carry a previous model's 720p/1080p value;
+	// normalizing it here keeps those persisted nodes usable and guarantees the
+	// upstream always receives the documented payload.
+	resolution := "2k"
 
 	references := make([]string, 0, len(req.ReferenceImages))
 	for i, raw := range req.ReferenceImages {
@@ -1104,7 +1100,7 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 		"prompt":       prompt,
 		"duration":     duration,
 		"aspect_ratio": ratio,
-		"resolution":   "2k",
+		"resolution":   resolution,
 	}
 	if len(references) >= 2 {
 		body["input_reference"] = references
