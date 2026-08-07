@@ -529,6 +529,108 @@ html.theme-light .rich-text-editor th { background: rgba(0,0,0,0.04); }
   animation: ccy-spin 0.95s linear infinite;
 }
 
+/* ── Canvas entry loader.
+   Keep the loading gate visually quiet: the brand mark carries the motion and
+   the existing real preload percentage drives the hairline beneath it. */
+@keyframes ccy-canvas-loader-turn {
+  0% {
+    opacity: 0.58;
+    transform: rotate(0deg) scale(0.88);
+  }
+  48% {
+    opacity: 1;
+    transform: rotate(172deg) scale(1);
+  }
+  100% {
+    opacity: 0.58;
+    transform: rotate(360deg) scale(0.88);
+  }
+}
+
+@keyframes ccy-canvas-loader-glow {
+  0%, 100% { opacity: 0.18; transform: scale(0.78); }
+  50% { opacity: 0.44; transform: scale(1.08); }
+}
+
+@keyframes ccy-canvas-loader-sheen {
+  from { transform: translateX(-125%); }
+  to { transform: translateX(325%); }
+}
+
+.ccy-canvas-loader {
+  gap: 30px;
+}
+
+.ccy-canvas-loader-logo-shell {
+  position: relative;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+}
+
+.ccy-canvas-loader-logo-shell::before {
+  position: absolute;
+  inset: 2px;
+  border-radius: 999px;
+  background: rgba(241, 75, 20, 0.38);
+  filter: blur(14px);
+  content: "";
+  animation: ccy-canvas-loader-glow 1.65s ease-in-out infinite;
+}
+
+.ccy-canvas-loader-logo {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 8px rgba(241, 75, 20, 0.24));
+  transform-origin: 50% 50%;
+  animation: ccy-canvas-loader-turn 1.65s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.ccy-canvas-loader-track {
+  position: relative;
+  width: min(240px, 48vw);
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.ccy-canvas-loader-progress {
+  position: relative;
+  height: 100%;
+  min-width: 14px;
+  overflow: hidden;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.16);
+  transition: width 220ms ease-out;
+}
+
+.ccy-canvas-loader-progress::after {
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  background: linear-gradient(90deg, transparent, white, transparent);
+  content: "";
+  animation: ccy-canvas-loader-sheen 1.35s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ccy-canvas-loader-logo,
+  .ccy-canvas-loader-logo-shell::before,
+  .ccy-canvas-loader-progress::after {
+    animation: none;
+  }
+
+  .ccy-canvas-loader-logo {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Light theme — adaptations for the 2026-07 additions
    (canvas chrome, zoom ruler, guide/HD modals, homepage, BorderGlow cards)

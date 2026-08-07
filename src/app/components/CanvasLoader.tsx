@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import ccyLogo from "../../imports/logo.png";
 import { rememberMediaDims } from "../media-dims";
 import { toRenderableMediaUrl } from "../reference-media";
 import { useStore } from "../store";
@@ -161,16 +162,28 @@ export function CanvasLoader() {
         pointerEvents: visible ? "auto" : "none",
       }}
       aria-hidden={!visible}
+      aria-label="加载画布"
+      aria-live="polite"
+      role="status"
     >
-      <div className="flex flex-col items-center gap-4">
-        <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/12 border-t-white/70" />
-        <div className="text-[12.5px] tracking-[0.3em] text-white/55">加载画布…</div>
-        <div className="h-[3px] w-40 overflow-hidden rounded-full bg-white/8">
+      <div className="ccy-canvas-loader flex flex-col items-center">
+        <div className="ccy-canvas-loader-logo-shell" aria-hidden="true">
+          <img className="ccy-canvas-loader-logo" src={ccyLogo} alt="" />
+        </div>
+        <div
+          className="ccy-canvas-loader-track"
+          role="progressbar"
+          aria-label="画布资源加载进度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progress}
+        >
           <div
-            className="h-full rounded-full bg-white/55 transition-[width] duration-200 ease-out"
+            className="ccy-canvas-loader-progress"
             style={{ width: `${Math.max(6, progress)}%` }}
           />
         </div>
+        <span className="sr-only">加载画布…</span>
       </div>
     </div>
   );
