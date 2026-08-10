@@ -44,6 +44,7 @@ import { CreationModeDialog } from './CreationModeDialog';
 import { DestructiveConfirmDialog } from './ui/destructive-confirm-dialog';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
+import { UserAvatar } from './UserAvatar';
 
 // 3D 挂牌（three + rapier 物理）体积不小 — 懒加载，只在首页首帧后拉取。
 const Lanyard = lazy(() => import('./reactbits/Lanyard'));
@@ -408,13 +409,12 @@ export function HomePage() {
                   onClick={() => setMenuOpen((v) => !v)}
                   className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] transition hover:bg-white/[0.1]"
                 >
-                  {user.avatar ? (
-                    <img src={user.avatar} alt={user.name} className="h-7 w-7 rounded-full object-cover" />
-                  ) : (
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-xs text-neutral-100">
-                      {user.name.slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
+                  <UserAvatar
+                    avatar={user.avatar}
+                    name={user.name}
+                    className="h-7 w-7 rounded-full object-cover text-xs"
+                    fallbackClassName="bg-white/10 text-neutral-100"
+                  />
                 </button>
                 {menuOpen ? (
                   <>

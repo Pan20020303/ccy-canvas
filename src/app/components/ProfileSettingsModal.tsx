@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Loader2, MapPin, Plus, UserRound, X } from "lucide-react";
+import { Camera, Loader2, MapPin, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { uploadFile } from "../api/projects";
 import { useAuth } from "../auth/AuthProvider";
 import { useStore } from "../store";
+import { UserAvatar } from "./UserAvatar";
 
 type ProfileDraft = {
   name: string;
@@ -172,13 +173,12 @@ export function ProfileSettingsModal() {
             <FieldLabel>{zh ? "头像" : "Profile picture"}</FieldLabel>
             <div className="mt-3 flex items-center gap-4">
               <button type="button" onClick={() => inputRef.current?.click()} className="group relative h-[76px] w-[76px] shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">
-                {avatarSrc ? (
-                  <img src={avatarSrc} alt="" className="h-full w-full rounded-full border border-white/15 object-cover" />
-                ) : (
-                  <span className="grid h-full w-full place-items-center rounded-full border border-white/15 bg-gradient-to-br from-orange-500/80 via-amber-200/30 to-cyan-400/70 text-2xl font-semibold text-white">
-                    {draft.name.slice(0, 1).toUpperCase() || <UserRound className="h-6 w-6" />}
-                  </span>
-                )}
+                <UserAvatar
+                  avatar={avatarSrc}
+                  name={draft.name}
+                  className="h-full w-full rounded-full border border-white/15 object-cover text-2xl font-semibold"
+                  fallbackClassName="bg-gradient-to-br from-orange-500/80 via-amber-200/30 to-cyan-400/70 text-white"
+                />
                 <span className="absolute bottom-0 right-0 grid h-7 w-7 place-items-center rounded-lg border border-[#191b20] bg-[#3a3d44] text-white shadow-lg transition group-hover:bg-orange-500">
                   <Plus className="h-4 w-4" />
                 </span>

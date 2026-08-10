@@ -10,6 +10,7 @@ import logoUrl from "../../imports/logo.png";
 import { TaskQueue } from "./TaskQueue";
 import { CollaborationControls } from "./CollaborationControls";
 import { CreditLedgerModal } from "./CreditLedgerModal";
+import { UserAvatar } from "./UserAvatar";
 
 // 英文切换暂时下线:i18n 词条覆盖率过低(大量面板仍是中文),切到英文是
 // 最差的半成品中间态。先藏按钮止损,待覆盖补齐后翻回 true 即可恢复。
@@ -198,13 +199,7 @@ export const Navbar = () => {
               onClick={() => setMenuOpen((open) => !open)}
               className={`flex items-center justify-center ${pillBase} h-9 w-9 p-0 transition hover:-translate-y-0.5 hover:bg-black/70`}
             >
-              {user.avatar ? (
-                <img src={user.avatar} alt={user.name} className="h-7 w-7 rounded-full object-cover" />
-              ) : (
-                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-xs text-cyan-200">
-                  {user.name.slice(0, 1).toUpperCase()}
-                </div>
-              )}
+              <UserAvatar avatar={user.avatar} name={user.name} className="h-7 w-7 rounded-full object-cover text-xs" />
             </button>
 
             {menuOpen ? (
