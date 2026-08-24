@@ -259,7 +259,18 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
 	}
 
-	// Transient failure (network, 5xx upstream, lease loss). If retries are
+	// Every media generation submit is paid and non-idempotent. Once the
+	// provider call has returned any error (including 404/429/5xx or a network
+	// failure), replaying the Asynq task would submit the same generation again
+	// and may charge twice. Persist the first failure immediately. Text remains
+	// retryable because it does not create a separate paid media task.
+	if !shouldRetryGenerationFailure(p.ServiceType) {
+		log.Printf("[tasks] media generation failed for log %s (no retry): %v", p.LogID, runErr)
+		w.svc.FinalizeFailure(req, runErr, duration)
+		return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
+	}
+
+	// Transient TEXT failure (network, 5xx upstream, lease loss). If retries are
 	// exhausted, persist the terminal error now — no later attempt will.
 	// Otherwise leave the row 'running' and return the error so Asynq
 	// retries after backoff; the node keeps spinning instead of flashing
@@ -355,6 +366,13 @@ func isMediaGeneration(serviceType string) bool {
 	default:
 		return false
 	}
+}
+
+// shouldRetryGenerationFailure centralizes the replay policy after an
+// upstream generation attempt has failed. Media submits are never replayed;
+// only text generation may use the queue's transient-error retry budget.
+func shouldRetryGenerationFailure(serviceType string) bool {
+	return !isMediaGeneration(serviceType)
 }
 
 // isGenerationTimeout reports whether err is any kind of generation timeout

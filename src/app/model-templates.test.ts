@@ -64,6 +64,21 @@ describe("model templates", () => {
     expect(template?.defaults).toEqual({ resolution: "2k", aspectRatio: "16:9" });
   });
 
+  it("matches HopBase Seedance 2.5 capabilities", () => {
+    const template = getModelTemplate("dreamina-seedance-2-5-260628", {
+      vendor: "HopBase",
+      service_type: "video",
+      parameter_schema: undefined,
+    });
+    expect(template?.vendor).toBe("HopBase");
+    expect(template?.serviceType).toBe("video");
+    expect(template?.resolutionOptions).toEqual(["480p", "720p"]);
+    expect(template?.aspectRatioOptions).toContain("adaptive");
+    expect(template?.durationRange).toEqual({ min: 4, max: 30, step: 1, defaultValue: 5 });
+    expect(template?.referenceImageRange).toEqual({ min: 1, max: 30 });
+    expect(template?.referenceModes).toContain("video-edit");
+  });
+
   it("matches sora-2 options from relay-video-test html", () => {
     const template = getModelTemplate("sora-2");
     expect(template?.supportsMode).toBeFalsy();

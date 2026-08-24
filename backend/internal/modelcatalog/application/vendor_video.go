@@ -31,6 +31,13 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
 	}
+	// HopBase exposes Seedance 2.5/2.0 through its own async contract:
+	// POST /v1/video/generate -> task.id -> GET /v1/video/tasks/{id}.
+	// It is neither Ark nor the generic Sora-style /videos API, so route it
+	// before the generic adapters (the admin template uses api_spec=custom).
+	if isHopBaseProvider(pc, baseURL) {
+		return s.generateVideoHopBase(ctx, pc, baseURL, apiKey, req)
+	}
 	// apimart.ai 中转站:视频与图像同构 —— 「POST /videos/generations 提交 →
 	// data[0].task_id → GET /tasks/{id} 轮询,结果在 data.result.videos[].url」。
 	// 按 base_url 嗅探,必须放在 isManjuChatVideoModel 之前:apimart 也有
@@ -1120,7 +1127,7 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(60 * time.Second)
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -1253,7 +1260,7 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(60 * time.Second)
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}

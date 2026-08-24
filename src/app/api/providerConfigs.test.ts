@@ -63,6 +63,23 @@ describe("ManjuAPI MiniMax H3 provider template", () => {
   });
 });
 
+describe("HopBase Seedance provider template", () => {
+  it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.vendor === "HopBase");
+    expect(template).toMatchObject({
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+    });
+    expect(template?.models).toContain("dreamina-seedance-2-5-260628");
+    expect(template?.models).toContain("doubao-seedance-2-0-260128-a");
+    expect(template?.parameterSchema?.models?.["dreamina-seedance-2-5-260628"]?.resolution_options).toEqual(["480p", "720p"]);
+    expect(template?.parameterSchema?.models?.["dreamina-seedance-2-0-260128"]?.resolution_options).toContain("4k");
+  });
+});
+
 describe("getEndpointPreview", () => {
   it("shows separate OpenAI-compatible image generation and edit endpoints", () => {
     expect(getEndpointPreview("image", "openai")).toBe(

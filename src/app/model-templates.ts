@@ -181,6 +181,23 @@ const SEEDANCE_2_TEMPLATE = {
   // Seedance 2.0 is the most capable: first/last frame, 1–9 multi-image,
   // motion mimic, and mixed all-in-one references.
   referenceModes: ["first-last", "multi-image", "motion-mimic", "all-in-one"] as ReferenceModeKey[],
+  referenceImageRange: { min: 1, max: 9 },
+  defaults: { resolution: "720p", aspectRatio: "16:9" },
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
+// HopBase overseas Seedance 2.5. Compared with 2.0 it accepts longer clips
+// and substantially more mixed references, but currently tops out at 720p.
+const HOPBASE_SEEDANCE_25_TEMPLATE = {
+  serviceType: "video" as const,
+  supportsResolution: true,
+  supportsAspectRatio: true,
+  supportsAutoAspect: true,
+  supportsDuration: true,
+  resolutionOptions: ["480p", "720p"],
+  aspectRatioOptions: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+  durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
+  referenceModes: ["first-last", "multi-image", "motion-mimic", "all-in-one", "video-edit"] as ReferenceModeKey[],
+  referenceImageRange: { min: 1, max: 30 },
   defaults: { resolution: "720p", aspectRatio: "16:9" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
@@ -1122,6 +1139,9 @@ function inferSeedanceTemplate(
   const vendor = provider?.vendor ?? "Volcengine";
   const v = m.replace(/\./g, "-"); // 归一化点号→连字符,便于版本判断
   const fast = v.includes("fast");
+  if (v.includes("seedance-2-5")) {
+    return { vendor, modelName, ...HOPBASE_SEEDANCE_25_TEMPLATE };
+  }
   if (v.includes("seedance-2")) {
     return { vendor, modelName, ...(fast ? SEEDANCE_2_FAST_TEMPLATE : SEEDANCE_2_TEMPLATE) };
   }

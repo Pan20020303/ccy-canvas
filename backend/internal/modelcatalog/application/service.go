@@ -2104,7 +2104,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -2330,15 +2330,18 @@ func doProviderRequestWithRetry(ctx context.Context, client *http.Client, req *h
 	return doProviderRequestWithRetryPolicy(ctx, client, req, body, isRetryableProviderNetworkError)
 }
 
-// doProviderSubmitWithRetry is the retry wrapper for PAID, NON-IDEMPOTENT
-// generation submits (image/video/audio). It only retries failures that
-// provably happened BEFORE the upstream could have accepted the request
-// (dial / connection-refused / TLS handshake). A mid-flight EOF or reset
-// after the body was sent is NOT retried: the provider may have already
-// accepted and billed the generation, so a resend would produce a duplicate
-// paid result (P0-4). Same rationale as IsRequestDeadlineTimeout.
-func doProviderSubmitWithRetry(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
-	return doProviderRequestWithRetryPolicy(ctx, client, req, body, isRetryablePreSubmitNetworkError)
+// doProviderSubmitOnce performs exactly one PAID, NON-IDEMPOTENT generation
+// submit (image/video/audio). Even a dial or TLS failure is not replayed:
+// some relays can accept/bill a request before the client observes the
+// connection error, so an automatic resend can create a second paid task.
+// Poll/query requests remain retryable through doProviderRequestWithRetry.
+func doProviderSubmitOnce(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	clone := req.Clone(ctx)
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return client.Do(clone)
 }
 
 type providerRetryEvent struct {
@@ -2429,29 +2432,6 @@ func IsRequestDeadlineTimeout(err error) bool {
 		strings.Contains(msg, "awaiting headers")
 }
 
-// isRetryablePreSubmitNetworkError reports failures that provably occurred
-// BEFORE the upstream could have accepted the request — the only class that is
-// safe to retry for a paid, non-idempotent submit. Post-send ambiguity (EOF,
-// connection reset, "server closed") is deliberately excluded: the upstream
-// may have completed and billed the work.
-func isRetryablePreSubmitNetworkError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if IsRequestDeadlineTimeout(err) {
-		return false
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "tls handshake timeout") ||
-		strings.Contains(msg, "tls handshake failure")
-}
-
 func isRetryableProviderNetworkError(err error) bool {
 	if err == nil {
 		return false
@@ -2514,7 +2494,7 @@ func providerRequestErrorMessage(err error) string {
 		)
 	}
 	if isRetryableProviderNetworkError(err) {
-		return fmt.Sprintf("Provider request failed after %d attempts: upstream connection was closed or timed out (%v)", providerRequestMaxAttempts, err)
+		return fmt.Sprintf("Provider request failed: upstream connection was closed or timed out (%v)", err)
 	}
 	return fmt.Sprintf("Provider request failed: %v", err)
 }
@@ -2625,7 +2605,7 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -2713,7 +2693,7 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -2781,7 +2761,7 @@ func (s *Service) generateImageMidjourneyApimart(ctx context.Context, pc *domain
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -2862,7 +2842,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, bodyJSON)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}
@@ -2996,7 +2976,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
 
 	client := newProviderHTTPClient(imageGenerationTimeout())
-	resp, err := doProviderSubmitWithRetry(ctx, client, httpReq, body.Bytes())
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, body.Bytes())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
 	}

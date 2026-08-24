@@ -45,6 +45,17 @@ func TestMediaTimeoutIsTerminal(t *testing.T) {
 	}
 }
 
+func TestEveryMediaGenerationFailureIsTerminal(t *testing.T) {
+	for _, serviceType := range []string{"image", "video", "audio"} {
+		if shouldRetryGenerationFailure(serviceType) {
+			t.Fatalf("%s failure must be terminal so the paid submit is not replayed", serviceType)
+		}
+	}
+	if !shouldRetryGenerationFailure("text") {
+		t.Fatal("text failures may retain the queue retry policy")
+	}
+}
+
 func TestIsGenerationTimeout(t *testing.T) {
 	cases := map[string]bool{
 		"Image generation timed out after polling": true,

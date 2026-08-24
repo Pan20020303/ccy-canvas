@@ -620,16 +620,11 @@ const MediaParamsPopover = ({
                       onChange={(event) => onDuration(Number(event.target.value))}
                       className="prompt-duration-slider w-full accent-white"
                     />
-                    {/* Tick labels — first / last / every N in between */}
+                    {/* 只显示范围端点。逐秒把 4s…30s 全部铺开会在窄弹层里
+                        挤成一整串；当前值已经在滑块上方单独显示。 */}
                     <div className="mt-1 flex justify-between text-[10px] text-neutral-500 tabular-nums">
-                      {(() => {
-                        const r = template.durationRange!;
-                        const ticks: number[] = [];
-                        for (let v = r.min; v <= r.max; v += r.step) ticks.push(v);
-                        return ticks.map((t) => (
-                          <span key={t} className={clsx(t === duration ? 'text-white' : '')}>{t}s</span>
-                        ));
-                      })()}
+                      <span>{template.durationRange!.min}s</span>
+                      <span>{template.durationRange!.max}s</span>
                     </div>
                   </>
                 ) : null}
@@ -1600,9 +1595,18 @@ const PromptPanel = ({
     : params.resolution;
   const currentResolution = parameterResolution ?? lastResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
+  // 新建视频生成节点统一优先使用 16:9。之前 `auto` 和上一次使用的比例
+  // 排在模型默认值之前，导致刚创建的节点直接显示“自适应”。只有模型不支持
+  // 16:9 时，才回退到模型默认、上次合法参数或自适应。
+  const defaultVideoAspectRatio = serviceType === 'video'
+    && (template?.aspectRatioOptions?.includes('16:9') || template?.defaults?.aspectRatio === '16:9')
+    ? '16:9'
+    : undefined;
   const currentAspectRatio = params.aspectRatio
+    ?? defaultVideoAspectRatio
+    ?? template?.defaults?.aspectRatio
     ?? lastAspectRatio
-    ?? (template?.supportsAutoAspect ? 'auto' : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0] ?? '');
+    ?? (template?.supportsAutoAspect ? 'auto' : template?.aspectRatioOptions?.[0] ?? '');
   const currentDuration = params.durationSeconds ?? lastDuration ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
   const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';

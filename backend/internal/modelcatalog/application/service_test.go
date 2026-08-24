@@ -752,6 +752,26 @@ func TestDoProviderRequestWithRetryRetriesEOF(t *testing.T) {
 	}
 }
 
+func TestDoProviderSubmitOnceNeverRetriesPaidGeneration(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return nil, timeoutNetError("net/http: TLS handshake timeout")
+		}),
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.test/v1/video/generate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doProviderSubmitOnce(context.Background(), client, req, []byte(`{"prompt":"charge once"}`)); err == nil {
+		t.Fatal("expected the first submit failure to be returned")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want exactly 1 paid submit", attempts)
+	}
+}
+
 func TestIsRequestDeadlineTimeout(t *testing.T) {
 	cases := []struct {
 		name string

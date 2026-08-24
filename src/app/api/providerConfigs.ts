@@ -581,6 +581,46 @@ const MANJU_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: [
+    "model", "content", "duration", "resolution", "ratio", "generate_audio",
+    "watermark", "return_last_frame", "seed",
+  ],
+  aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+  resolution_options: ["480p", "720p"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", generate_audio: true, watermark: false },
+  models: {
+    "dreamina-seedance-2-5-260628": {
+      resolution_options: ["480p", "720p"],
+      supports_aspect_ratio: true,
+      supports_auto_aspect: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", return_last_frame: true },
+    },
+    "doubao-seedance-2-0-260128-a": {
+      resolution_options: ["480p", "720p", "1080p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p" },
+    },
+    "dreamina-seedance-2-0-hc": { resolution_options: ["480p", "720p", "1080p", "4k"] },
+    "dreamina-seedance-2-0-ep": { resolution_options: ["480p", "720p", "1080p", "4k"] },
+    "dreamina-seedance-2-0-260128": { resolution_options: ["480p", "720p", "1080p", "4k"] },
+    "dreamina-seedance-2-0-fast-hc": { resolution_options: ["480p", "720p"] },
+    "dreamina-seedance-2-0-fast-ep": { resolution_options: ["480p", "720p"] },
+    "dreamina-seedance-2-0-fast-260128": { resolution_options: ["480p", "720p"] },
+    "dreamina-seedance-2-0-mini-hc": { resolution_options: ["480p", "720p"] },
+    "dreamina-seedance-2-0-mini-ep": { resolution_options: ["480p", "720p"] },
+    "dreamina-seedance-2-0-mini-260615": { resolution_options: ["480p", "720p"] },
+  },
+};
+
 export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
   text: [
     {
@@ -896,6 +936,30 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   video: [
+    {
+      vendor: "HopBase",
+      label: "HopBase · Seedance 2.5 / 2.0",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: [
+        "dreamina-seedance-2-5-260628",
+        "doubao-seedance-2-0-260128-a",
+        "dreamina-seedance-2-0-hc",
+        "dreamina-seedance-2-0-ep",
+        "dreamina-seedance-2-0-260128",
+        "dreamina-seedance-2-0-fast-hc",
+        "dreamina-seedance-2-0-fast-ep",
+        "dreamina-seedance-2-0-fast-260128",
+        "dreamina-seedance-2-0-mini-hc",
+        "dreamina-seedance-2-0-mini-ep",
+        "dreamina-seedance-2-0-mini-260615",
+      ],
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      parameterSchema: HOPBASE_SEEDANCE_VIDEO_SCHEMA,
+      iconKey: "doubao",
+    },
     {
       vendor: "ManjuAPI",
       label: "ManjuAPI / MiniMax H3 视频",
