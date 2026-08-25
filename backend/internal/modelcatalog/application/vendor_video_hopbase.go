@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -17,6 +18,7 @@ import (
 const (
 	hopBaseVideoSubmitPath = "/v1/video/generate"
 	hopBaseVideoQueryPath  = "/v1/video/tasks/{taskId}"
+	hopBaseAssetPath       = "/v1/sd/assets"
 )
 
 type hopBaseSeedanceCapabilities struct {
@@ -122,9 +124,16 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 		content = append(content, map[string]any{"type": "text", "text": prompt})
 	}
 	for i, raw := range req.ReferenceImages {
-		url, err := arkReferenceImageURL(ctx, raw)
-		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
+		assetURL := strings.TrimSpace(raw)
+		if !strings.HasPrefix(assetURL, "asset://") {
+			publicURL, err := arkReferenceImageURL(ctx, raw)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
+			}
+			assetURL, err = s.createAndActivateHopBaseImageAsset(ctx, baseURL, apiKey, publicURL)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("参考图 #%d 上传 HopBase 素材库失败", i+1), err)
+			}
 		}
 		role := "reference_image"
 		if mode == "start_end" {
@@ -137,7 +146,7 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 			role = "first_frame"
 		}
 		content = append(content, map[string]any{
-			"type": "image_url", "image_url": map[string]any{"url": url}, "role": role,
+			"type": "image_url", "image_url": map[string]any{"url": assetURL}, "role": role,
 		})
 	}
 	for i, raw := range videoRefs {
@@ -208,6 +217,118 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase submit returned no task id: %s", string(respBody[:min(len(respBody), 500)])))
 	}
 	return s.pollHopBaseVideoTask(ctx, baseURL, apiKey, taskID)
+}
+
+func (s *Service) createAndActivateHopBaseImageAsset(ctx context.Context, baseURL, apiKey, publicURL string) (string, error) {
+	publicURL = strings.TrimSpace(publicURL)
+	parsed, err := url.Parse(publicURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("HopBase 素材库仅接受公网可访问的 HTTP(S) 图片 URL")
+	}
+
+	bodyJSON, err := json.Marshal(map[string]any{
+		"AssetType": "Image",
+		"URL":       publicURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("编码 HopBase 素材请求失败: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, hopBaseAssetPath), strings.NewReader(string(bodyJSON)))
+	if err != nil {
+		return "", fmt.Errorf("创建 HopBase 素材请求失败: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := safehttp.Client(30 * time.Second)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", providerRequestErrorMessage(err), err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return "", parseProviderErrorBytes(resp.StatusCode, respBody)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		return "", fmt.Errorf("HopBase 素材创建响应无效: %s", string(respBody[:min(len(respBody), 500)]))
+	}
+	assetID := hopBaseAssetField(hopBaseAssetScope(payload), "Id")
+	if assetID == "" {
+		return "", fmt.Errorf("HopBase 素材创建响应缺少 Id: %s", string(respBody[:min(len(respBody), 500)]))
+	}
+	return s.pollHopBaseImageAsset(ctx, baseURL, apiKey, assetID)
+}
+
+func (s *Service) pollHopBaseImageAsset(ctx context.Context, baseURL, apiKey, assetID string) (string, error) {
+	client := safehttp.Client(30 * time.Second)
+	pollURL := resolveProviderURL(baseURL, hopBaseAssetPath+"/"+url.PathEscape(assetID))
+	var lastBody []byte
+	for i := 0; i < videoPollMaxAttempts(); i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf("等待 HopBase 素材激活超时")
+			case <-time.After(videoPollInterval()):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		if err != nil {
+			return "", fmt.Errorf("创建 HopBase 素材查询请求失败: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastBody = body
+		if resp.StatusCode >= 400 {
+			return "", parseProviderErrorBytes(resp.StatusCode, body)
+		}
+		var payload map[string]any
+		if json.Unmarshal(body, &payload) != nil {
+			continue
+		}
+		status := strings.ToLower(hopBaseAssetField(hopBaseAssetScope(payload), "Status"))
+		switch status {
+		case "active":
+			return "asset://" + assetID, nil
+		case "failed", "error", "inactive", "rejected", "deleted":
+			message := hopBaseAssetField(hopBaseAssetScope(payload), "Message")
+			if message == "" {
+				message = string(body[:min(len(body), 500)])
+			}
+			return "", fmt.Errorf("HopBase 素材激活失败: %s", message)
+		}
+	}
+	if len(lastBody) > 0 {
+		return "", fmt.Errorf("等待 HopBase 素材激活超时，最后响应: %s", string(lastBody[:min(len(lastBody), 500)]))
+	}
+	return "", fmt.Errorf("等待 HopBase 素材激活超时")
+}
+
+func hopBaseAssetScope(payload map[string]any) map[string]any {
+	for key, value := range payload {
+		if strings.EqualFold(key, "data") {
+			if data, ok := value.(map[string]any); ok {
+				return data
+			}
+		}
+	}
+	return payload
+}
+
+func hopBaseAssetField(payload map[string]any, name string) string {
+	for key, value := range payload {
+		if strings.EqualFold(key, name) && value != nil {
+			return strings.TrimSpace(fmt.Sprint(value))
+		}
+	}
+	return ""
 }
 
 func hopBaseRatioAllowed(ratio string) bool {

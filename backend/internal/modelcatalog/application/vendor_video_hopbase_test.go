@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
@@ -31,12 +33,36 @@ func TestGenerateVideoHopBaseRoundtrip(t *testing.T) {
 
 	var submitted map[string]any
 	polls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assetCreates := 0
+	assetPolls := map[string]int{}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/ref.png":
 			w.Header().Set("Content-Type", "image/png")
 			_, _ = w.Write(pngBytes.Bytes())
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/sd/assets":
+			assetCreates++
+			if auth := r.Header.Get("Authorization"); auth != "Bearer hop-key" {
+				t.Errorf("asset Authorization = %q", auth)
+			}
+			var assetBody map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&assetBody); err != nil {
+				t.Fatalf("decode asset: %v", err)
+			}
+			if assetBody["AssetType"] != "Image" || assetBody["URL"] != server.URL+"/ref.png" {
+				t.Errorf("asset body = %#v", assetBody)
+			}
+			_, _ = w.Write([]byte(`{"data":{"Id":"asset-` + fmt.Sprint(assetCreates) + `","Status":null}}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/sd/assets/asset-"):
+			assetID := strings.TrimPrefix(r.URL.Path, "/v1/sd/assets/")
+			assetPolls[assetID]++
+			status := "Pending"
+			if assetPolls[assetID] > 1 {
+				status = "Active"
+			}
+			_, _ = w.Write([]byte(`{"data":{"Id":"` + assetID + `","Status":"` + status + `"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/video/generate":
 			if auth := r.Header.Get("Authorization"); auth != "Bearer hop-key" {
 				t.Errorf("Authorization = %q", auth)
@@ -93,6 +119,14 @@ func TestGenerateVideoHopBaseRoundtrip(t *testing.T) {
 	last := content[2].(map[string]any)
 	if first["role"] != "first_frame" || last["role"] != "last_frame" {
 		t.Errorf("roles = %v, %v", first["role"], last["role"])
+	}
+	firstURL := first["image_url"].(map[string]any)["url"]
+	lastURL := last["image_url"].(map[string]any)["url"]
+	if firstURL != "asset://asset-1" || lastURL != "asset://asset-2" {
+		t.Errorf("asset urls = %v, %v", firstURL, lastURL)
+	}
+	if assetCreates != 2 {
+		t.Errorf("asset creates = %d, want exactly one per reference image", assetCreates)
 	}
 }
 
