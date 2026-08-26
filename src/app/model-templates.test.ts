@@ -107,6 +107,23 @@ describe("model templates", () => {
     expect(template?.referenceModes).toContain("video-edit");
   });
 
+  it("matches official Grok Imagine Video 1.5 capabilities", () => {
+    const template = getModelTemplate("grok-imagine-video-1.5", {
+      vendor: "HopBase",
+      service_type: "video",
+      parameter_schema: undefined,
+    });
+    expect(template).toMatchObject({
+      vendor: "xAI",
+      serviceType: "video",
+      resolutionOptions: ["480p", "720p", "1080p"],
+      aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
+      durationRange: { min: 1, max: 15, step: 1, defaultValue: 10 },
+      referenceModes: ["text-to-video", "first-frame", "multi-image"],
+      referenceImageRange: { min: 2, max: 7 },
+    });
+  });
+
   it("matches sora-2 options from relay-video-test html", () => {
     const template = getModelTemplate("sora-2");
     expect(template?.supportsMode).toBeFalsy();

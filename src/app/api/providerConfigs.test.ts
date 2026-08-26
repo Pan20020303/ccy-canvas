@@ -91,7 +91,7 @@ describe("ManjuAPI Grok Imagine provider templates", () => {
 
 describe("HopBase Seedance provider template", () => {
   it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
-    const template = VENDOR_TEMPLATES.video.find((item) => item.vendor === "HopBase");
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("dreamina-seedance-2-5-260628"));
     expect(template).toMatchObject({
       baseURL: "https://api.hop-base.com",
       apiSpec: "custom",
@@ -103,6 +103,24 @@ describe("HopBase Seedance provider template", () => {
     expect(template?.models).toContain("doubao-seedance-2-0-260128-a");
     expect(template?.parameterSchema?.models?.["dreamina-seedance-2-5-260628"]?.resolution_options).toEqual(["480p", "720p"]);
     expect(template?.parameterSchema?.models?.["dreamina-seedance-2-0-260128"]?.resolution_options).toContain("4k");
+  });
+});
+
+describe("HopBase Grok Imagine Video 1.5 provider template", () => {
+  it("uses the xAI native async video endpoints and parameter names", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("grok-imagine-video-1.5"));
+    expect(template).toMatchObject({
+      vendor: "HopBase",
+      baseURL: "https://api.hop-base.com",
+      submitEndpoint: "/v1/videos/generations",
+      queryEndpoint: "/v1/videos/{taskId}",
+    });
+    expect(template?.parameterSchema?.aspect_ratio_options).toEqual([
+      "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3",
+    ]);
+    expect(template?.parameterSchema?.resolution_options).toEqual(["480p", "720p", "1080p"]);
+    expect(template?.parameterSchema?.allowed_parameters).toContain("reference_images");
+    expect(template?.parameterSchema?.allowed_parameters).not.toContain("content");
   });
 });
 

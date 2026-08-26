@@ -31,6 +31,12 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
 	}
+	// HopBase also relays xAI's native Grok Imagine Video 1.5 API. Route it
+	// before the broad HopBase Seedance detector because the two contracts use
+	// different endpoints, request fields, and polling status vocabularies.
+	if isHopBaseGrok15Provider(pc, baseURL, req.Model) {
+		return s.generateVideoHopBaseGrok15(ctx, pc, baseURL, apiKey, req)
+	}
 	// HopBase exposes Seedance 2.5/2.0 through its own async contract:
 	// POST /v1/video/generate -> task.id -> GET /v1/video/tasks/{id}.
 	// It is neither Ark nor the generic Sora-style /videos API, so route it
