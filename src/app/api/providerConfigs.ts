@@ -581,6 +581,76 @@ const MANJU_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const MANJU_GROK_TEXT_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution"],
+  aspect_ratio_options: ["16:9", "9:16"],
+  resolution_options: ["720p"],
+  duration_options: [6, 10],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 6, aspect_ratio: "16:9", resolution: "720p" },
+  models: {
+    "grok-imagine-video": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution"],
+      aspect_ratio_options: ["16:9", "9:16"],
+      resolution_options: ["720p"],
+      duration_options: [6, 10],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 6, aspect_ratio: "16:9", resolution: "720p" },
+    },
+  },
+};
+
+const MANJU_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "input_reference"],
+  aspect_ratio_options: ["16:9", "9:16"],
+  resolution_options: ["720p"],
+  duration_options: [6, 10, 15],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 10, aspect_ratio: "16:9", resolution: "720p" },
+  models: {
+    "grok-imagine-video-1.5-fast": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "input_reference"],
+      aspect_ratio_options: ["16:9", "9:16"],
+      resolution_options: ["720p"],
+      duration_options: [6, 10, 15],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: {
+        duration: 10,
+        aspect_ratio: "16:9",
+        resolution: "720p",
+        input_reference_min: 1,
+        input_reference_max: 7,
+      },
+    },
+    "grok-imagine-video-1.5-preview": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "input_reference"],
+      aspect_ratio_options: ["16:9", "9:16"],
+      resolution_options: ["720p"],
+      duration_options: [10, 15],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: {
+        duration: 10,
+        aspect_ratio: "16:9",
+        resolution: "720p",
+        input_reference_min: 1,
+        input_reference_max: 1,
+      },
+    },
+  },
+};
+
 const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
     "model", "content", "duration", "resolution", "ratio", "generate_audio",
@@ -970,6 +1040,28 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       submitEndpoint: "/v1/videos",
       queryEndpoint: "/v1/videos/{taskId}",
       parameterSchema: MANJU_MINIMAX_H3_VIDEO_SCHEMA,
+    },
+    {
+      vendor: "ManjuAPI",
+      label: "ManjuAPI / Grok Imagine 文生视频",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "custom",
+      protocol: "openai_compatible",
+      models: ["grok-imagine-video"],
+      submitEndpoint: "/v1/chat/completions",
+      queryEndpoint: "/v1/videos/{taskId}",
+      parameterSchema: MANJU_GROK_TEXT_VIDEO_SCHEMA,
+    },
+    {
+      vendor: "ManjuAPI",
+      label: "ManjuAPI / Grok Imagine 1.5 视频",
+      baseURL: "https://manjuapi.com",
+      apiSpec: "custom",
+      protocol: "openai_compatible",
+      models: ["grok-imagine-video-1.5-fast", "grok-imagine-video-1.5-preview"],
+      submitEndpoint: "/v1/videos",
+      queryEndpoint: "/v1/videos/{taskId}",
+      parameterSchema: MANJU_GROK_15_VIDEO_SCHEMA,
     },
     {
       vendor: "NewAPI",

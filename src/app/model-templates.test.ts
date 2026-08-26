@@ -64,6 +64,34 @@ describe("model templates", () => {
     expect(template?.defaults).toEqual({ resolution: "2k", aspectRatio: "16:9" });
   });
 
+  it("matches the ManjuAPI Grok Imagine video contracts", () => {
+    const text = getModelTemplate("grok-imagine-video");
+    expect(text).toMatchObject({
+      serviceType: "video",
+      resolutionOptions: ["720p"],
+      aspectRatioOptions: ["16:9", "9:16"],
+      durationOptions: [6, 10],
+      referenceModes: ["text-to-video"],
+    });
+
+    const fast = getModelTemplate("grok-imagine-video-1.5-fast");
+    expect(fast).toMatchObject({
+      vendor: "ManjuAPI",
+      resolutionOptions: ["720p"],
+      durationOptions: [6, 10, 15],
+      referenceModes: ["first-frame", "multi-image"],
+      referenceImageRange: { min: 2, max: 7 },
+    });
+
+    const preview = getModelTemplate("grok-imagine-video-1.5-preview");
+    expect(preview).toMatchObject({
+      vendor: "ManjuAPI",
+      resolutionOptions: ["720p"],
+      durationOptions: [10, 15],
+      referenceModes: ["first-frame"],
+    });
+  });
+
   it("matches HopBase Seedance 2.5 capabilities", () => {
     const template = getModelTemplate("dreamina-seedance-2-5-260628", {
       vendor: "HopBase",

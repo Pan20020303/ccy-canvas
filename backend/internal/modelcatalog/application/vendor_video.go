@@ -45,6 +45,12 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if isApimartBaseURL(baseURL) {
 		return s.generateVideoApimart(ctx, pc, baseURL, apiKey, req)
 	}
+	// Grok Imagine Video 1.5 uses ManjuAPI's POST /v1/videos contract. Keep
+	// this before the legacy grok-imagine chat/completions route; otherwise the
+	// old prefix matcher would send the 1.5 payload to the wrong endpoint.
+	if isManjuGrok15VideoModel(req.Model) {
+		return s.generateVideoManjuGrok15(ctx, pc, baseURL, apiKey, req)
+	}
 	// ManjuAPI's MiniMax H3 uses the OpenAPI-style POST /v1/videos contract,
 	// not the older Manju chat/completions contract used by sora2/Veo/Grok.
 	// Route it before the chat model sniffing and the generic /videos adapter so
@@ -1030,7 +1036,14 @@ func isManjuChatVideoModel(model string) bool {
 	if strings.HasPrefix(m, "veo ") { // "veo 3.1 fast 1080p" — 带空格是中转站命名
 		return true
 	}
-	return strings.HasPrefix(m, "grok-imagine")
+	// The 1.5 fast/preview variants use POST /v1/videos and are deliberately
+	// excluded here. Keep the original aliases for existing channel configs.
+	return m == "grok-imagine-video" || m == "grok-imagine"
+}
+
+func isManjuGrok15VideoModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return m == "grok-imagine-video-1.5-fast" || m == "grok-imagine-video-1.5-preview"
 }
 
 func isManjuMiniMaxH3VideoModel(model string) bool {
@@ -1183,6 +1196,134 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
 }
 
+// generateVideoManjuGrok15 implements ManjuAPI's Grok Imagine Video 1.5
+// contracts. Both models submit to /v1/videos, but their reference and
+// duration constraints differ:
+//
+//   - fast: one first-frame image or 2..7 ordered reference images; 6/10/15s;
+//   - preview: exactly one first-frame image; 10/15s.
+func (s *Service) generateVideoManjuGrok15(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	model := strings.ToLower(strings.TrimSpace(req.Model))
+	if !isManjuGrok15VideoModel(model) {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Unsupported Grok Imagine Video 1.5 model")
+	}
+
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video prompt is required")
+	}
+
+	duration := req.Duration
+	if duration <= 0 {
+		duration = 10
+	}
+	if model == "grok-imagine-video-1.5-fast" {
+		if duration != 6 && duration != 10 && duration != 15 {
+			return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 Fast duration must be 6, 10, or 15 seconds")
+		}
+	} else if duration != 10 && duration != 15 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 Preview duration must be 10 or 15 seconds")
+	}
+
+	ratio := strings.TrimSpace(req.AspectRatio)
+	if ratio == "" {
+		ratio = strings.TrimSpace(req.Size)
+	}
+	if ratio == "" {
+		ratio = "16:9"
+	}
+	if ratio != "16:9" && ratio != "9:16" {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video aspect ratio must be 16:9 or 9:16")
+	}
+
+	references := make([]string, 0, len(req.ReferenceImages))
+	for i, raw := range req.ReferenceImages {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Grok Imagine Video reference image #%d cannot be empty", i+1))
+		}
+		resolved, err := localPathToDataURL(ref)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("Failed to process Grok Imagine Video reference image #%d", i+1), err)
+		}
+		if !strings.HasPrefix(resolved, "http://") && !strings.HasPrefix(resolved, "https://") && !strings.HasPrefix(resolved, "data:image/") {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Grok Imagine Video reference image #%d must be a public http(s) URL or a complete image Data URI", i+1))
+		}
+		references = append(references, resolved)
+	}
+
+	if model == "grok-imagine-video-1.5-fast" {
+		if len(references) < 1 || len(references) > 7 {
+			return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 Fast requires 1 to 7 reference images")
+		}
+	} else if len(references) != 1 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 Preview requires exactly 1 first-frame image")
+	}
+
+	body := map[string]interface{}{
+		"model":        model,
+		"prompt":       prompt,
+		"duration":     duration,
+		"aspect_ratio": ratio,
+		"resolution":   "720p",
+	}
+	if len(references) == 1 {
+		body["input_reference"] = references[0]
+	} else {
+		body["input_reference"] = references
+	}
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to encode Grok Imagine Video request", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/v1/videos"), bytes.NewReader(bodyJSON))
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build Grok Imagine Video request", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := newProviderHTTPClient(60 * time.Second)
+	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, readProviderError(resp)
+	}
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to read Grok Imagine Video response", readErr)
+	}
+
+	var submitResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &submitResp); err != nil {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized Grok Imagine Video submit response: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+	if videoURL := findStringField(submitResp, "video_url", 5); strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
+		return &GenerateResult{Type: "url", Content: videoURL}, nil
+	}
+
+	taskID := strings.TrimSpace(findStringField(submitResp, "task_id", 4))
+	if taskID == "" {
+		taskID = strings.TrimSpace(findStringField(submitResp, "id", 4))
+	}
+	if taskID == "" {
+		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Grok Imagine Video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+	}
+
+	queryPath := resolveVideoQueryPath(pc)
+	if strings.TrimSpace(queryPath) == "" {
+		queryPath = "/v1/videos/{taskId}"
+	}
+	if pollURL := strings.TrimSpace(findStringField(submitResp, "poll_url", 4)); pollURL != "" {
+		queryPath = pollURL
+	}
+	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
+}
+
 func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	model := strings.ToLower(strings.TrimSpace(req.Model))
 	ratio := strings.TrimSpace(req.AspectRatio)
@@ -1224,10 +1365,10 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 		if referenceURL != "" {
 			body["input_reference"] = referenceURL
 		}
-	case strings.HasPrefix(model, "grok-imagine"):
-		// grok 只接受 6/10/15 秒与 720p；时长取最接近的合法值。
+	case model == "grok-imagine-video" || model == "grok-imagine":
+		// 旧版 grok 文生视频只接受 6/10 秒与 720p；时长取最接近的合法值。
 		grokDur := 6
-		for _, d := range []int{6, 10, 15} {
+		for _, d := range []int{6, 10} {
 			if abs(duration-d) < abs(duration-grokDur) {
 				grokDur = d
 			}
@@ -1252,7 +1393,9 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 	}
 
 	bodyJSON, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/chat/completions"), bytes.NewReader(bodyJSON))
+	// The public Manju contract includes /v1. resolveProviderURL de-duplicates
+	// the prefix when an existing channel already stores a base URL ending in /v1.
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveProviderURL(baseURL, "/v1/chat/completions"), bytes.NewReader(bodyJSON))
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to build request", err)
 	}

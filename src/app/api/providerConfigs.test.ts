@@ -63,6 +63,32 @@ describe("ManjuAPI MiniMax H3 provider template", () => {
   });
 });
 
+describe("ManjuAPI Grok Imagine provider templates", () => {
+  it("separates the legacy text endpoint from the 1.5 videos endpoint", () => {
+    const text = VENDOR_TEMPLATES.video.find((item) => item.models.includes("grok-imagine-video"));
+    expect(text).toMatchObject({
+      vendor: "ManjuAPI",
+      submitEndpoint: "/v1/chat/completions",
+      queryEndpoint: "/v1/videos/{taskId}",
+    });
+    expect(text?.parameterSchema?.duration_options).toEqual([6, 10]);
+
+    const grok15 = VENDOR_TEMPLATES.video.find((item) => item.models.includes("grok-imagine-video-1.5-fast"));
+    expect(grok15).toMatchObject({
+      vendor: "ManjuAPI",
+      submitEndpoint: "/v1/videos",
+      queryEndpoint: "/v1/videos/{taskId}",
+    });
+    expect(grok15?.models).toContain("grok-imagine-video-1.5-preview");
+    expect(grok15?.parameterSchema?.models?.["grok-imagine-video-1.5-fast"]?.duration_options).toEqual([6, 10, 15]);
+    expect(grok15?.parameterSchema?.models?.["grok-imagine-video-1.5-fast"]?.defaults).toMatchObject({
+      input_reference_min: 1,
+      input_reference_max: 7,
+    });
+    expect(grok15?.parameterSchema?.models?.["grok-imagine-video-1.5-preview"]?.duration_options).toEqual([10, 15]);
+  });
+});
+
 describe("HopBase Seedance provider template", () => {
   it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.vendor === "HopBase");

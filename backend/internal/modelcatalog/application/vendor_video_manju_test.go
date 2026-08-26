@@ -25,10 +25,12 @@ func TestIsManjuChatVideoModel(t *testing.T) {
 		{"veo 3.1 fast 1080p", true},
 		{"grok-imagine-video", true},
 		{"grok-imagine", true},
+		{"grok-imagine-video-1.5-fast", false},
+		{"grok-imagine-video-1.5-preview", false},
 		// 标准 /videos 家族不能被劫持:
 		{"sora-2", false},
 		{"sora-v3-fast", false},
-		{"veo-3", false},   // 无空格 → 非中转站命名
+		{"veo-3", false}, // 无空格 → 非中转站命名
 		{"grok-1.5", false},
 		{"kling/kling-v3-video-generation", false},
 	}
@@ -39,14 +41,27 @@ func TestIsManjuChatVideoModel(t *testing.T) {
 	}
 }
 
+func TestIsManjuGrok15VideoModel(t *testing.T) {
+	for _, model := range []string{"grok-imagine-video-1.5-fast", "GROK-IMAGINE-VIDEO-1.5-PREVIEW"} {
+		if !isManjuGrok15VideoModel(model) {
+			t.Errorf("isManjuGrok15VideoModel(%q) = false", model)
+		}
+	}
+	for _, model := range []string{"grok-imagine-video", "grok-1.5", "sora2"} {
+		if isManjuGrok15VideoModel(model) {
+			t.Errorf("isManjuGrok15VideoModel(%q) = true", model)
+		}
+	}
+}
+
 // captureManjuSubmit spins a fake relay that records the submit body and
 // returns a SYNC video_url (exercising the sync fast-path so tests stay fast).
 func captureManjuSubmit(t *testing.T, model string, req GenerateRequest) map[string]interface{} {
 	t.Helper()
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			t.Errorf("submit path = %q, want /chat/completions", r.URL.Path)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("submit path = %q, want /v1/chat/completions", r.URL.Path)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
 			t.Errorf("Authorization = %q", auth)
@@ -138,6 +153,91 @@ func TestManjuGrokBodyShape(t *testing.T) {
 	}
 }
 
+func captureManjuGrok15Submit(t *testing.T, model string, req GenerateRequest) map[string]interface{} {
+	t.Helper()
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/videos" {
+			t.Errorf("submit path = %q, want /v1/videos", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode submit body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"completed","data":{"video_url":"https://cdn.example.com/grok15.mp4"}}`))
+	}))
+	defer server.Close()
+
+	svc := &Service{}
+	req.Model = model
+	result, err := svc.generateVideoManjuGrok15(context.Background(), &domain.ProviderConfig{ServiceType: "video"}, server.URL, "test-key", req)
+	if err != nil {
+		t.Fatalf("generateVideoManjuGrok15: %v", err)
+	}
+	if result.Content != "https://cdn.example.com/grok15.mp4" {
+		t.Errorf("result url = %q", result.Content)
+	}
+	return captured
+}
+
+func TestManjuGrok15FastSingleReferenceBody(t *testing.T) {
+	body := captureManjuGrok15Submit(t, "grok-imagine-video-1.5-fast", GenerateRequest{
+		Prompt:          "人物自然转身",
+		Duration:        6,
+		AspectRatio:     "9:16",
+		Resolution:      "1080p", // fixed upstream field must still be normalized
+		ReferenceImages: []string{"https://cdn.example.com/first.png"},
+	})
+	if body["duration"] != float64(6) || body["aspect_ratio"] != "9:16" || body["resolution"] != "720p" {
+		t.Errorf("fast params wrong: %v", body)
+	}
+	if body["input_reference"] != "https://cdn.example.com/first.png" {
+		t.Errorf("single input_reference = %#v", body["input_reference"])
+	}
+}
+
+func TestManjuGrok15FastMultiReferenceBody(t *testing.T) {
+	body := captureManjuGrok15Submit(t, "grok-imagine-video-1.5-fast", GenerateRequest{
+		Prompt:      "让 @Image 1 中的人物进入 @Image 2 的场景",
+		Duration:    15,
+		AspectRatio: "16:9",
+		ReferenceImages: []string{
+			"https://cdn.example.com/person.png",
+			"https://cdn.example.com/scene.png",
+		},
+	})
+	refs, ok := body["input_reference"].([]interface{})
+	if !ok || len(refs) != 2 {
+		t.Fatalf("multi input_reference = %#v", body["input_reference"])
+	}
+	if refs[0] != "https://cdn.example.com/person.png" || refs[1] != "https://cdn.example.com/scene.png" {
+		t.Errorf("reference order changed: %#v", refs)
+	}
+}
+
+func TestManjuGrok15PreviewRequiresOneReference(t *testing.T) {
+	svc := &Service{}
+	pc := &domain.ProviderConfig{ServiceType: "video"}
+	_, err := svc.generateVideoManjuGrok15(context.Background(), pc, "http://unused", "k", GenerateRequest{
+		Model:    "grok-imagine-video-1.5-preview",
+		Prompt:   "x",
+		Duration: 10,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly 1") {
+		t.Errorf("expected one-reference validation error, got %v", err)
+	}
+
+	_, err = svc.generateVideoManjuGrok15(context.Background(), pc, "http://unused", "k", GenerateRequest{
+		Model:           "grok-imagine-video-1.5-preview",
+		Prompt:          "x",
+		Duration:        6,
+		ReferenceImages: []string{"https://cdn.example.com/first.png"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "10 or 15") {
+		t.Errorf("expected preview duration validation error, got %v", err)
+	}
+}
+
 func TestManjuRejectsNonPublicReference(t *testing.T) {
 	svc := &Service{}
 	pc := &domain.ProviderConfig{ServiceType: "video"}
@@ -163,7 +263,7 @@ func TestManjuTaskPollRoundtrip(t *testing.T) {
 	polled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodPost && r.URL.Path == "/chat/completions" {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions" {
 			_, _ = w.Write([]byte(`{"id":"sora2-fb22482c0bde","status":"running","progress":0}`))
 			return
 		}
