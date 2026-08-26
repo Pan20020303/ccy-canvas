@@ -42,14 +42,14 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 时长必须为 1–15 秒")
 	}
 
-	ratio := strings.ToLower(strings.TrimSpace(req.AspectRatio))
-	if ratio == "" {
-		ratio = strings.ToLower(strings.TrimSpace(req.Size))
+	aspectRatio := strings.ToLower(strings.TrimSpace(req.AspectRatio))
+	if aspectRatio == "" {
+		aspectRatio = strings.ToLower(strings.TrimSpace(req.Size))
 	}
-	if ratio == "" || ratio == "auto" || ratio == "adaptive" {
-		ratio = "16:9"
+	if aspectRatio == "" || aspectRatio == "auto" || aspectRatio == "adaptive" {
+		aspectRatio = "16:9"
 	}
-	if !hopBaseGrokAspectRatioAllowed(ratio) {
+	if !hopBaseGrokAspectRatioAllowed(aspectRatio) {
 		return nil, apperror.New(apperror.CodeInvalidInput, "Grok Imagine Video 1.5 比例仅支持 16:9、9:16、1:1、4:3、3:4、3:2 或 2:3")
 	}
 
@@ -105,7 +105,7 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 
 	body := map[string]any{
 		"model": req.Model, "content": content, "duration": duration,
-		"resolution": resolution, "ratio": ratio,
+		"resolution": resolution, "aspect_ratio": aspectRatio,
 		"generate_audio": true, "watermark": false,
 	}
 	for _, key := range []string{"generate_audio", "watermark"} {

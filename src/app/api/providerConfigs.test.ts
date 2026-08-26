@@ -121,7 +121,8 @@ describe("HopBase Grok Imagine Video 1.5 provider template", () => {
     ]);
     expect(template?.parameterSchema?.resolution_options).toEqual(["480p", "720p", "1080p"]);
     expect(template?.parameterSchema?.allowed_parameters).toContain("content");
-    expect(template?.parameterSchema?.allowed_parameters).toContain("ratio");
+    expect(template?.parameterSchema?.allowed_parameters).toContain("aspect_ratio");
+    expect(template?.parameterSchema?.allowed_parameters).not.toContain("ratio");
     expect(template?.parameterSchema?.allowed_parameters).not.toContain("reference_images");
   });
 });

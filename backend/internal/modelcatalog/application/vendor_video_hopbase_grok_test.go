@@ -60,8 +60,11 @@ func TestGenerateVideoHopBaseGrok15UsesUnifiedGatewayAndPolls(t *testing.T) {
 	if polls != 2 {
 		t.Fatalf("polls = %d, want 2", polls)
 	}
-	if submitted["model"] != "grok-imagine-video-1.5" || submitted["ratio"] != "16:9" || submitted["resolution"] != "1080p" {
+	if submitted["model"] != "grok-imagine-video-1.5" || submitted["aspect_ratio"] != "16:9" || submitted["resolution"] != "1080p" {
 		t.Errorf("submit body = %#v", submitted)
+	}
+	if _, exists := submitted["ratio"]; exists {
+		t.Errorf("grok-imagine-video-1.5 must not send unsupported ratio field: %#v", submitted)
 	}
 	if submitted["generate_audio"] != true || submitted["watermark"] != false {
 		t.Errorf("submit defaults = %#v", submitted)

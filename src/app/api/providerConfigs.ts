@@ -692,11 +692,11 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
 };
 
 // HopBase exposes Grok Imagine Video 1.5 through its unified asynchronous
-// video gateway. Keep the Grok capability limits separate while sharing the
-// documented content/ratio request contract with the other HopBase models.
+// video gateway. Keep the Grok capability limits and its model-specific
+// content/aspect_ratio request contract separate from the Seedance models.
 const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
-    "model", "content", "duration", "ratio", "resolution",
+    "model", "content", "duration", "aspect_ratio", "resolution",
     "generate_audio", "watermark",
   ],
   aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
@@ -709,7 +709,7 @@ const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   models: {
     "grok-imagine-video-1.5": {
       allowed_parameters: [
-        "model", "content", "duration", "ratio", "resolution",
+        "model", "content", "duration", "aspect_ratio", "resolution",
         "generate_audio", "watermark",
       ],
       aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
