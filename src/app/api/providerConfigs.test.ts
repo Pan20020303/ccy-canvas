@@ -124,12 +124,12 @@ describe("HopBase Grok Imagine Video 1.5 provider template", () => {
     expect(template?.parameterSchema?.allowed_parameters).toContain("aspect_ratio");
     expect(template?.parameterSchema?.allowed_parameters).not.toContain("ratio");
     expect(template?.parameterSchema?.allowed_parameters).not.toContain("reference_images");
-    expect(template?.parameterSchema?.allowed_parameters).not.toContain("generate_audio");
+    expect(template?.parameterSchema?.allowed_parameters).toContain("generate_audio");
     expect(template?.parameterSchema?.allowed_parameters).not.toContain("watermark");
-    expect(template?.parameterSchema?.defaults).not.toHaveProperty("generate_audio");
-    expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.allowed_parameters).not.toContain("generate_audio");
+    expect(template?.parameterSchema?.defaults).toMatchObject({ generate_audio: true });
+    expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.allowed_parameters).toContain("generate_audio");
     expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.allowed_parameters).not.toContain("watermark");
-    expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.defaults).not.toHaveProperty("generate_audio");
+    expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.defaults).toMatchObject({ generate_audio: true });
   });
 });
 

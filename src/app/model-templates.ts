@@ -753,6 +753,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     resolutionOptions: ["480p", "720p", "1080p"],
     aspectRatioOptions: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
     durationRange: { min: 1, max: 15, step: 1, defaultValue: 10 },
+    audioSettingOptions: ["on", "off"],
     referenceModes: ["text-to-video", "first-frame", "multi-image"],
     referenceImageRange: { min: 2, max: 7 },
     defaults: { resolution: "720p", aspectRatio: "16:9" },

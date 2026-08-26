@@ -107,6 +107,11 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 		"model": req.Model, "content": content, "duration": duration,
 		"resolution": resolution, "aspect_ratio": aspectRatio,
 	}
+	// HopBase rejects generate_audio on channels that do not expose the optional
+	// capability, so omit it by default. Only an explicit user opt-in is sent.
+	if hopBaseGrokGenerateAudioEnabled(req) {
+		body["generate_audio"] = true
+	}
 
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
@@ -144,6 +149,14 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase Grok submit returned no task id: %s", truncateHopBaseGrokBody(respBody, 500)))
 	}
 	return s.pollHopBaseVideoTask(ctx, baseURL, apiKey, taskID)
+}
+
+func hopBaseGrokGenerateAudioEnabled(req GenerateRequest) bool {
+	if strings.EqualFold(strings.TrimSpace(req.AudioSetting), "on") {
+		return true
+	}
+	value, ok := req.Parameters["generate_audio"].(bool)
+	return ok && value
 }
 
 func hopBaseGrokAspectRatioAllowed(value string) bool {
