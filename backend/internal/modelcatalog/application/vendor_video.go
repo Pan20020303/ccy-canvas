@@ -31,9 +31,9 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	if ResolveProfile(pc).ID == "dashscope" {
 		return s.generateVideoDashScope(ctx, pc, baseURL, apiKey, req)
 	}
-	// HopBase also relays xAI's native Grok Imagine Video 1.5 API. Route it
-	// before the broad HopBase Seedance detector because the two contracts use
-	// different endpoints, request fields, and polling status vocabularies.
+	// HopBase routes Grok Imagine Video 1.5 through its unified asynchronous
+	// video gateway. Keep Grok-specific capability validation before the broad
+	// Seedance detector, while sharing the same submit and polling contract.
 	if isHopBaseGrok15Provider(pc, baseURL, req.Model) {
 		return s.generateVideoHopBaseGrok15(ctx, pc, baseURL, apiKey, req)
 	}

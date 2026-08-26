@@ -691,14 +691,13 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
-// HopBase acts as the OpenAI-compatible transport for xAI's native Grok
-// Imagine Video 1.5 contract. Keep this separate from the Seedance schema:
-// Grok submits prompt/aspect_ratio and image/reference_images, while Seedance
-// submits content/ratio to a different endpoint.
+// HopBase exposes Grok Imagine Video 1.5 through its unified asynchronous
+// video gateway. Keep the Grok capability limits separate while sharing the
+// documented content/ratio request contract with the other HopBase models.
 const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
-    "model", "prompt", "duration", "aspect_ratio", "resolution",
-    "image", "reference_images", "generate_audio",
+    "model", "content", "duration", "ratio", "resolution",
+    "generate_audio", "watermark",
   ],
   aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
   resolution_options: ["480p", "720p", "1080p"],
@@ -710,8 +709,8 @@ const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   models: {
     "grok-imagine-video-1.5": {
       allowed_parameters: [
-        "model", "prompt", "duration", "aspect_ratio", "resolution",
-        "image", "reference_images", "generate_audio",
+        "model", "content", "duration", "ratio", "resolution",
+        "generate_audio", "watermark",
       ],
       aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
       resolution_options: ["480p", "720p", "1080p"],
@@ -1067,10 +1066,10 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       label: "HopBase · Grok Imagine Video 1.5",
       baseURL: "https://api.hop-base.com",
       apiSpec: "custom",
-      protocol: "openai_compatible",
+      protocol: "native",
       models: ["grok-imagine-video-1.5"],
-      submitEndpoint: "/v1/videos/generations",
-      queryEndpoint: "/v1/videos/{taskId}",
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
       parameterSchema: HOPBASE_GROK_15_VIDEO_SCHEMA,
       iconKey: "grok",
     },
