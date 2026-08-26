@@ -47,6 +47,7 @@ func TestGenerateVideoHopBaseGrok15UsesUnifiedGatewayAndPolls(t *testing.T) {
 	}, server.URL, "hop-key", GenerateRequest{
 		Model: "grok-imagine-video-1.5", Prompt: "a cinematic tracking shot",
 		Duration: 12, Resolution: "1080p", AspectRatio: "16:9",
+		Parameters: map[string]any{"generate_audio": true},
 	})
 	if err != nil {
 		t.Fatalf("roundtrip: %v", err)
@@ -66,7 +67,10 @@ func TestGenerateVideoHopBaseGrok15UsesUnifiedGatewayAndPolls(t *testing.T) {
 	if _, exists := submitted["ratio"]; exists {
 		t.Errorf("grok-imagine-video-1.5 must not send unsupported ratio field: %#v", submitted)
 	}
-	if submitted["generate_audio"] != true || submitted["watermark"] != false {
+	if _, exists := submitted["generate_audio"]; exists {
+		t.Errorf("grok-imagine-video-1.5 must not send unsupported generate_audio field: %#v", submitted)
+	}
+	if submitted["watermark"] != false {
 		t.Errorf("submit defaults = %#v", submitted)
 	}
 	content, ok := submitted["content"].([]any)
