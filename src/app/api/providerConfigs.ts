@@ -697,7 +697,6 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
 const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
     "model", "content", "duration", "aspect_ratio", "resolution",
-    "watermark",
   ],
   aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
   resolution_options: ["480p", "720p", "1080p"],
@@ -710,7 +709,6 @@ const HOPBASE_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
     "grok-imagine-video-1.5": {
       allowed_parameters: [
         "model", "content", "duration", "aspect_ratio", "resolution",
-        "watermark",
       ],
       aspect_ratio_options: ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
       resolution_options: ["480p", "720p", "1080p"],

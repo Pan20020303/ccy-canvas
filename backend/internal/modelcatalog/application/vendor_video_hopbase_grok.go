@@ -106,14 +106,6 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 	body := map[string]any{
 		"model": req.Model, "content": content, "duration": duration,
 		"resolution": resolution, "aspect_ratio": aspectRatio,
-		"watermark": false,
-	}
-	for _, key := range []string{"watermark"} {
-		if value, exists := req.Parameters[key]; exists {
-			if typed, valid := value.(bool); valid {
-				body[key] = typed
-			}
-		}
 	}
 
 	bodyJSON, err := json.Marshal(body)
