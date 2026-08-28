@@ -118,3 +118,20 @@ export async function disableModel(id: string): Promise<AdminModel> {
 export function listUserModels(): Promise<UserModel[]> {
   return apiClient.get<UserModel[]>("/api/app/models");
 }
+
+export type LocalSeedVR2UpscaleResult = {
+  url: string;
+  kind: "image" | "video";
+  engine: "seedvr2-3b-int8";
+  scale: number;
+};
+
+export function upscaleLocalSeedVR2(payload: {
+  media_url: string;
+  kind: "image" | "video";
+  scale: number;
+  quality?: "LOW" | "MEDIUM" | "HIGH" | "ULTRA";
+  node_id?: string;
+}): Promise<LocalSeedVR2UpscaleResult> {
+  return apiClient.post<LocalSeedVR2UpscaleResult>("/api/app/upscale/local-seedvr2", payload);
+}

@@ -480,6 +480,18 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		DefaultStatus: http.StatusOK,
 	}, h.generate)
 
+	huma.Register(api, huma.Operation{
+		OperationID:   "local-seedvr2-upscale",
+		Method:        http.MethodPost,
+		Path:          "/api/app/upscale/local-seedvr2",
+		Summary:       "Restore and upscale an image or video with local SeedVR2 3B INT8",
+		Tags:          []string{"App", "Generation"},
+		Security:      userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.localSeedVR2Upscale)
+
+
+
 	// --- User App: Task lookup (recovery polling) ---
 	huma.Register(api, huma.Operation{
 		OperationID: "get-task-by-id",
@@ -1316,6 +1328,8 @@ type generateInput struct {
 		ReferenceImages  []string                    `json:"reference_images,omitempty" doc:"Reference image URLs"`
 		ReferenceVideo   string                      `json:"reference_video,omitempty" doc:"Single reference video URL"`
 		ReferenceVideos  []string                    `json:"reference_videos,omitempty" doc:"Multiple reference video URLs"`
+		ReferenceAudio   string                      `json:"reference_audio,omitempty" doc:"Single reference audio URL"`
+		ReferenceAudios  []string                    `json:"reference_audios,omitempty" doc:"Multiple reference audio URLs"`
 		EditOperation    string                      `json:"edit_operation,omitempty" doc:"Image edit operation hint"`
 		MaskImage        string                      `json:"mask_image,omitempty" doc:"Image edit mask"`
 		OutputCount      int                         `json:"output_count,omitempty" doc:"Number of requested outputs"`
@@ -1332,6 +1346,99 @@ type generateInput struct {
 		EnableSequential *bool                       `json:"enable_sequential,omitempty" doc:"wan2.7 组图 (grid) mode — one request yields up to 12 images"`
 		ThinkingMode     *bool                       `json:"thinking_mode,omitempty" doc:"wan2.7 文生图 thinking mode (default true)"`
 	}
+}
+
+type localSeedVR2UpscaleInput struct {
+	Body struct {
+		MediaURL string  `json:"media_url" minLength:"1"`
+		Kind     string  `json:"kind" enum:"image,video"`
+		Scale    float64 `json:"scale,omitempty" minimum:"1" maximum:"4"`
+		Quality  string  `json:"quality,omitempty" enum:"LOW,MEDIUM,HIGH,ULTRA"`
+		NodeID   string  `json:"node_id,omitempty" doc:"Canvas node receiving the upscaled result"`
+	}
+}
+
+type localSeedVR2UpscaleOutput struct {
+	Body struct {
+		Data      application.LocalUpscaleResult `json:"data"`
+		RequestID string                         `json:"request_id"`
+		TaskID    string                         `json:"task_id,omitempty"`
+	}
+}
+
+func (h *Handler) localSeedVR2Upscale(ctx context.Context, input *localSeedVR2UpscaleInput) (*localSeedVR2UpscaleOutput, error) {
+	startedAt := time.Now()
+	model := "seedvr2-3b-int8-local"
+	kind := strings.ToLower(strings.TrimSpace(input.Body.Kind))
+	quality := strings.ToUpper(strings.TrimSpace(input.Body.Quality))
+	if quality == "" {
+		quality = "ULTRA"
+	}
+	scale := input.Body.Scale
+	if scale < 1 || scale > 4 {
+		scale = 2
+	}
+
+	// SeedVR2 has a dedicated synchronous endpoint instead of /generate, so it
+	// must explicitly join the same generation_logs audit trail. Logging stays
+	// best-effort: a transient DB error must not prevent a local upscale.
+	var logID pgtype.UUID
+	var userID pgtype.UUID
+	if claims, ok := authn.ClaimsFromContext(ctx); ok {
+		_ = userID.Scan(claims.UserID)
+	}
+	if h.q != nil && userID.Valid {
+		prompt := "local SeedVR2 " + kind + " upscale"
+		if row, err := h.q.InsertGenerationLog(ctx, sqlc.InsertGenerationLogParams{
+			UserID:      userID,
+			NodeID:      strings.TrimSpace(input.Body.NodeID),
+			ServiceType: kind,
+			Model:       model,
+			Prompt:      prompt,
+			Status:      "pending",
+			ResultUrl:   "",
+			ErrorMsg:    "",
+			DurationMs:  0,
+		}); err == nil {
+			logID = row.ID
+			_ = h.q.MarkGenerationLogRunning(ctx, logID)
+		}
+	}
+	finishLog := func(status, resultURL, errMsg string) {
+		if h.q == nil || !logID.Valid {
+			return
+		}
+		durationMs := min(time.Since(startedAt).Milliseconds(), int64(2147483647))
+		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = h.q.UpdateGenerationLogResult(logCtx, sqlc.UpdateGenerationLogResultParams{
+			ID:         logID,
+			Status:     status,
+			ResultUrl:  resultURL,
+			ErrorMsg:   errMsg,
+			DurationMs: int32(durationMs),
+			CacheHit:   false,
+		})
+	}
+
+	result, err := h.svc.UpscaleLocalMedia(ctx, application.LocalUpscaleRequest{
+		MediaURL: input.Body.MediaURL,
+		Kind:     kind,
+		Scale:    scale,
+		Quality:  quality,
+	})
+	if err != nil {
+		finishLog("error", "", err.Error())
+		return nil, toHTTPError(err)
+	}
+	finishLog("success", result.URL, "")
+	out := &localSeedVR2UpscaleOutput{}
+	out.Body.Data = *result
+	out.Body.RequestID = httpx.RequestIDFrom(ctx)
+	if logID.Valid {
+		out.Body.TaskID = formatPgUUID(logID)
+	}
+	return out, nil
 }
 
 // generateData is the response data block — extends the upstream
@@ -1658,6 +1765,8 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		ReferenceImages:  input.Body.ReferenceImages,
 		ReferenceVideo:   input.Body.ReferenceVideo,
 		ReferenceVideos:  input.Body.ReferenceVideos,
+		ReferenceAudio:   input.Body.ReferenceAudio,
+		ReferenceAudios:  input.Body.ReferenceAudios,
 		EditOperation:    input.Body.EditOperation,
 		MaskImage:        input.Body.MaskImage,
 		OutputCount:      application.CapOutputCount(input.Body.OutputCount),

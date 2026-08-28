@@ -1066,7 +1066,9 @@ type GenerateRequest struct {
 	ReferenceImages  []string
 	ReferenceVideo   string
 	ReferenceVideos  []string
-	ReferenceMode    string // auto / start_frame / start_end / image_reference / motion_mimic / video_edit
+	ReferenceAudio   string
+	ReferenceAudios  []string
+	ReferenceMode    string // auto / start_frame / start_end / image_reference / three_view / motion_mimic / video_edit
 	// AudioSetting controls HappyHorse video-edit audio: "auto" (model decides,
 	// default) or "origin" (keep the source video's audio). Ignored by other
 	// modes/models.
@@ -1179,12 +1181,17 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 		if !serves {
 			continue
 		}
+		apiKey := ""
 		if c.EncryptedAPIKey == "" {
-			continue
-		}
-		apiKey, derr := crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
-		if derr != nil {
-			continue
+			if !isComfyLocalImageProvider(&c, req.Model) && !isComfyZImageProvider(&c, req.Model) && !isComfyMiniMaxH3Provider(&c, req.Model) && !isComfyWanAnimate2Provider(&c, req.Model) && !isComfyCosyVoice3Provider(&c, req.Model) && !isComfyStableAudio3SFXProvider(&c, req.Model) && !isComfyQwen3VoiceDesignProvider(&c, req.Model) {
+				continue
+			}
+		} else {
+			var derr error
+			apiKey, derr = crypto.Decrypt(s.encryptionKey, c.EncryptedAPIKey)
+			if derr != nil {
+				continue
+			}
 		}
 		cand := candidateChannel{
 			cfg:     &c,
@@ -1235,11 +1242,28 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 	}
 	switch serviceType {
 	case "image":
+		if isComfyLocalImageProvider(c.cfg, req.Model) {
+			return s.generateImageComfyLocal(ctx, c.baseURL, req)
+		}
+		if isComfyZImageProvider(c.cfg, req.Model) {
+			return s.generateImageComfyZImage(ctx, c.baseURL, req)
+		}
 		return s.generateImage(ctx, c.cfg, c.baseURL, c.apiKey, req)
 	case "text":
 		return s.generateText(ctx, c.baseURL, c.apiKey, req)
 	case "video":
 		return s.generateVideo(ctx, c.cfg, c.baseURL, c.apiKey, req)
+	case "audio":
+		if isComfyCosyVoice3Provider(c.cfg, req.Model) {
+			return s.generateAudioComfyCosyVoice3(ctx, c.baseURL, req)
+		}
+		if isComfyStableAudio3SFXProvider(c.cfg, req.Model) {
+			return s.generateAudioComfyStableAudio3SFX(ctx, c.baseURL, req)
+		}
+		if isComfyQwen3VoiceDesignProvider(c.cfg, req.Model) {
+			return s.generateAudioComfyQwen3VoiceDesign(ctx, c.baseURL, req)
+		}
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Audio generation is not supported for model %q", req.Model))
 	default:
 		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("Generation not yet supported for service type %q", serviceType))
 	}

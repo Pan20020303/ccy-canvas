@@ -581,6 +581,59 @@ const MANJU_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const COMFYUI_MINIMAX_H3_9REF_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "reference_images", "reference_video", "reference_videos", "reference_audio", "reference_audios", "reference_mode", "seed"],
+  aspect_ratio_options: ["16:9", "9:16", "1:1"],
+  resolution_options: ["480p", "768p"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: {
+    duration: 3,
+    aspect_ratio: "16:9",
+    resolution: "480p",
+    input_reference_min: 0,
+    input_reference_max: 9,
+  },
+  models: {
+    "minimax-h3-t2v-ref2v-turbo-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "reference_images", "reference_video", "reference_videos", "reference_audio", "reference_audios", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p", "768p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 3, aspect_ratio: "16:9", resolution: "480p" },
+    },
+  },
+};
+
+const COMFYUI_WAN_ANIMATE2_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "reference_images", "reference_video", "reference_mode", "seed"],
+  aspect_ratio_options: ["16:9", "9:16", "1:1"],
+  resolution_options: ["480p"],
+  duration_options: [1, 2, 3, 4, 5],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 3, aspect_ratio: "9:16", resolution: "480p" },
+  models: {
+    "wan-animate-2-motion-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "reference_images", "reference_video", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p"],
+      duration_options: [1, 2, 3, 4, 5],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      defaults: { duration: 3, aspect_ratio: "9:16", resolution: "480p" },
+    },
+  },
+  vendor_models: [{ modelName: "wan-animate-2-motion-local", name: "动作复刻 · Wan Animate 2（本地 6-Step）", type: "video" }],
+};
+
 const MANJU_GROK_TEXT_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution"],
   aspect_ratio_options: ["16:9", "9:16"],
@@ -1036,6 +1089,30 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
   ],
   video: [
     {
+      vendor: "ComfyUI",
+      label: "ComfyUI · Wan Animate 2 本地动作复刻",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["wan-animate-2-motion-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: COMFYUI_WAN_ANIMATE2_SCHEMA,
+      iconKey: "comfyui",
+    },
+    {
+      vendor: "ComfyUI",
+      label: "ComfyUI · MiniMax H3 文生/参考生 4-step",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["minimax-h3-t2v-ref2v-turbo-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: COMFYUI_MINIMAX_H3_9REF_SCHEMA,
+      iconKey: "minimax",
+    },
+    {
       vendor: "HopBase",
       label: "HopBase · Seedance 2.5 / 2.0",
       baseURL: "https://api.hop-base.com",
@@ -1343,6 +1420,55 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   audio: [
+    {
+      vendor: "ComfyUI",
+      label: "ComfyUI · Stable Audio 3 环境音效（不能说话）",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["stable-audio-3-small-sfx-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "duration", "seed"],
+        defaults: { duration: 10 },
+        supports_duration: true,
+        vendor_models: [{ modelName: "stable-audio-3-small-sfx-local", name: "环境音效/拟音（不能说话） · Stable Audio 3", type: "audio" }],
+      },
+      iconKey: "comfyui",
+    },
+    {
+      vendor: "ComfyUI",
+      label: "ComfyUI · Qwen3-TTS 描述音色说话",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["qwen3-tts-voice-design-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "voice_description", "language", "temperature", "top_p", "seed"],
+        defaults: { language: "Auto", temperature: 0.9, top_p: 0.95 },
+        vendor_models: [{ modelName: "qwen3-tts-voice-design-local", name: "描述音色说话 · Qwen3-TTS", type: "audio" }],
+      },
+      iconKey: "comfyui",
+    },
+    {
+      vendor: "ComfyUI",
+      label: "ComfyUI · CosyVoice3 本地语音克隆",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["cosyvoice3-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "reference_audio", "speed", "seed"],
+        defaults: { speed: 1 },
+        vendor_models: [{ modelName: "cosyvoice3-local", name: "音色复刻 · CosyVoice3", type: "audio" }],
+      },
+      iconKey: "comfyui",
+    },
     // 国际
     {
       vendor: "OpenAI",
@@ -1525,6 +1651,8 @@ export type GeneratePayload = {
   reference_mode?: string;
   reference_video?: string;
   reference_videos?: string[];
+  reference_audio?: string;
+  reference_audios?: string[];
   /** HappyHorse video-edit audio control: "auto" (default) / "origin" (keep source audio). */
   audio_setting?: string;
   /** Random seed [0, 2147483647] for reproducible generation. */

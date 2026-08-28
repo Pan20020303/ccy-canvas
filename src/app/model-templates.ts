@@ -1,6 +1,6 @@
 import type { ServiceType } from "./model-config";
 import type { AppProviderConfig, ModelParameterSchema } from "./api/providerConfigs";
-import type { ReferenceModeKey } from "./reference-modes";
+import type { ReferenceModeKey, ReferenceRequirementOverride } from "./reference-modes";
 
 export type DurationRange = {
   min: number;
@@ -29,6 +29,14 @@ export type ModelTemplate = {
   audioSettingOptions?: string[];
   /** When true, exposes a numeric seed input (0..2147483647) for reproducible runs. */
   supportsSeed?: boolean;
+  supportsZImageParams?: boolean;
+  localImageKind?: 'klein' | 'krea2';
+  /** Voice-cloning playback speed multiplier shown in the audio parameter panel. */
+  audioSpeedRange?: DurationRange;
+  /** Free-form natural-language voice/style instruction for VoiceDesign TTS. */
+  supportsVoiceDescription?: boolean;
+  /** Spoken-language choices exposed by a VoiceDesign TTS model. */
+  audioLanguageOptions?: string[];
   /** 文本模型是否支持视觉(读图)。true 时,文本节点会把连入的参考图作为 image_url
    *  一并发给模型(如百炼 qwen3.7-plus 多模态);false/未设 → 纯文本,连图会被忽略。 */
   supportsVision?: boolean;
@@ -43,6 +51,8 @@ export type ModelTemplate = {
    *  the prompt panel. Omitted → no reference tabs (pure text-to-video).
    *  See reference-modes.ts for the capability registry. */
   referenceModes?: ReferenceModeKey[];
+  /** Per-mode reference bounds for models stricter than the shared mode. */
+  referenceRequirements?: Partial<Record<ReferenceModeKey, ReferenceRequirementOverride>>;
   /** Per-model image-reference bounds, narrowing the generic mode registry. */
   referenceImageRange?: { min: number; max: number };
   defaults?: {
@@ -716,6 +726,37 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     referenceModes: ["text-to-video"],
     defaults: { resolution: "720p", aspectRatio: "16:9" },
   },
+  "minimax-h3-t2v-ref2v-turbo-local": {
+    vendor: "ComfyUI",
+    modelName: "minimax-h3-t2v-ref2v-turbo-local",
+    serviceType: "video",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsDuration: true,
+    resolutionOptions: ["480p", "768p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationRange: { min: 1, max: 15, step: 1, defaultValue: 3 },
+    referenceModes: ["text-to-video", "multi-image", "three-view", "all-in-one"],
+    referenceImageRange: { min: 1, max: 9 },
+    defaults: { resolution: "480p", aspectRatio: "16:9" },
+  },
+  "wan-animate-2-motion-local": {
+    vendor: "ComfyUI",
+    modelName: "wan-animate-2-motion-local",
+    serviceType: "video",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsDuration: true,
+    supportsSeed: true,
+    resolutionOptions: ["480p"],
+    aspectRatioOptions: ["16:9", "9:16", "1:1"],
+    durationOptions: [1, 2, 3, 4, 5],
+    referenceModes: ["motion-mimic"],
+    referenceRequirements: {
+      "motion-mimic": { images: { min: 1, max: 1 }, videos: { min: 1, max: 1 } },
+    },
+    defaults: { resolution: "480p", aspectRatio: "9:16" },
+  },
   "grok-imagine-video-1.5-fast": {
     vendor: "ManjuAPI",
     modelName: "grok-imagine-video-1.5-fast",
@@ -761,6 +802,76 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Suno",
     serviceType: "audio",
     modelName: "suno-v4",
+  },
+  "flux2-klein-base-4b-local": {
+    vendor: "ComfyUI", serviceType: "image", modelName: "flux2-klein-base-4b-local",
+    supportsResolution: true, resolutionOptions: ["512px", "768px", "1024px"],
+    supportsAspectRatio: true, aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    supportsSeed: true, localImageKind: 'klein', referenceImageRange: { min: 0, max: 4 },
+    defaults: { resolution: "768px", aspectRatio: "1:1" },
+  },
+  "flux2-klein-base-9b-local": {
+    vendor: "ComfyUI", serviceType: "image", modelName: "flux2-klein-base-9b-local",
+    supportsResolution: true, resolutionOptions: ["512px", "768px", "1024px"],
+    supportsAspectRatio: true, aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    supportsSeed: true, localImageKind: 'klein', referenceImageRange: { min: 0, max: 4 },
+    defaults: { resolution: "768px", aspectRatio: "1:1" },
+  },
+  "krea2-turbo-local": {
+    vendor: "ComfyUI", serviceType: "image", modelName: "krea2-turbo-local",
+    supportsResolution: true, resolutionOptions: ["512px", "768px", "1024px"],
+    supportsAspectRatio: true, aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    supportsSeed: true, localImageKind: 'krea2', referenceImageRange: { min: 0, max: 0 },
+    defaults: { resolution: "768px", aspectRatio: "1:1" },
+  },
+  "z-image-turbo-local": {
+    vendor: "ComfyUI",
+    serviceType: "image",
+    modelName: "z-image-turbo-local",
+    supportsResolution: true,
+    resolutionOptions: ["512px", "768px", "1024px"],
+    supportsAspectRatio: true,
+    aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    supportsSeed: true,
+    supportsZImageParams: true,
+    referenceImageRange: { min: 0, max: 0 },
+    defaults: { resolution: "768px", aspectRatio: "1:1" },
+  },
+  "z-image-turbo-v60-local": {
+    vendor: "ComfyUI",
+    serviceType: "image",
+    modelName: "z-image-turbo-v60-local",
+    supportsResolution: true,
+    resolutionOptions: ["512px", "768px", "1024px"],
+    supportsAspectRatio: true,
+    aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+    supportsSeed: true,
+    supportsZImageParams: true,
+    referenceImageRange: { min: 0, max: 0 },
+    defaults: { resolution: "768px", aspectRatio: "1:1" },
+  },
+  "cosyvoice3-local": {
+    vendor: "ComfyUI",
+    serviceType: "audio",
+    modelName: "cosyvoice3-local",
+    supportsSeed: true,
+    audioSpeedRange: { min: 0.5, max: 2, step: 0.05, defaultValue: 1 },
+  },
+  "stable-audio-3-small-sfx-local": {
+    vendor: "ComfyUI",
+    serviceType: "audio",
+    modelName: "stable-audio-3-small-sfx-local",
+    supportsDuration: true,
+    durationRange: { min: 1, max: 47, step: 1, defaultValue: 10 },
+    supportsSeed: true,
+  },
+  "qwen3-tts-voice-design-local": {
+    vendor: "ComfyUI",
+    serviceType: "audio",
+    modelName: "qwen3-tts-voice-design-local",
+    supportsVoiceDescription: true,
+    audioLanguageOptions: ["Auto", "Chinese", "English", "Japanese", "Korean"],
+    supportsSeed: true,
   },
   "doubao-seedance-2-0-260128": {
     vendor: "Volcengine",

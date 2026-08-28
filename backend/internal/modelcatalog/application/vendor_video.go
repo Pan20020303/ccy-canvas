@@ -18,6 +18,12 @@ import (
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
+	if isComfyWanAnimate2Provider(pc, req.Model) {
+		return s.generateVideoComfyWanAnimate2(ctx, baseURL, req)
+	}
+	if isComfyMiniMaxH3Provider(pc, req.Model) {
+		return s.generateVideoComfyMiniMaxH3(ctx, baseURL, req)
+	}
 	// Volcengine ark uses a different async-task contract (path + payload + status
 	// vocabulary) than the sora-style /videos endpoint. Route only providers that
 	// actually use the Ark task contract, not every custom provider with explicit

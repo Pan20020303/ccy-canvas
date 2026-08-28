@@ -4,11 +4,29 @@ import {
   isModeSatisfied,
   modesForModel,
   firstSatisfiedMode,
+  formatReferenceRequirement,
   happyHorseSuffixSatisfied,
   REFERENCE_MODE_SPECS,
   REFERENCE_MODE_ORDER,
   type ReferenceModeKey,
 } from "./reference-modes";
+
+describe("formatReferenceRequirement", () => {
+  const wanRequirement = {
+    images: { min: 1, max: 1 },
+    videos: { min: 1, max: 1 },
+  };
+
+  it("describes the exact Wan Animate inputs in Chinese", () => {
+    expect(formatReferenceRequirement(wanRequirement, "zh"))
+      .toBe("该模型需要连接 1 张角色参考图 和 1 条动作视频");
+  });
+
+  it("describes the exact Wan Animate inputs in English", () => {
+    expect(formatReferenceRequirement(wanRequirement, "en"))
+      .toBe("This model needs 1 identity image and 1 motion video");
+  });
+});
 
 describe("happyHorseSuffixSatisfied", () => {
   it("t2v accepts no references", () => {

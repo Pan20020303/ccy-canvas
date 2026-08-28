@@ -15,6 +15,7 @@ export type ReferenceModeKey =
   | "first-frame"
   | "first-last"
   | "multi-image"
+  | "three-view"
   | "motion-mimic"
   | "all-in-one"
   | "video-edit"
@@ -30,6 +31,7 @@ export type BackendReferenceMode =
   | "first_frame"
   | "start_end"
   | "image_reference"
+  | "three_view"
   | "motion_mimic"
   | "video_edit";
 
@@ -107,6 +109,21 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
       en: "Multi-image needs at least 1 image",
     },
   },
+  "three-view": {
+    key: "three-view",
+    label: { zh: "三视图解析", en: "Three-view" },
+    requires: { images: { min: 1, max: 3 }, videos: { min: 0, max: 0 } },
+    backendMode: "three_view",
+    slots: [
+      { zh: "三视图图 / 正面", en: "Sheet / Front" },
+      { zh: "侧面（可选）", en: "Side (optional)", optional: true },
+      { zh: "背面（可选）", en: "Back (optional)", optional: true },
+    ],
+    disabledHint: {
+      zh: "连接 1 张三视图合成图，或按正面、侧面、背面连接 1~3 张图",
+      en: "Connect one three-view sheet, or 1–3 front/side/back images",
+    },
+  },
   "motion-mimic": {
     key: "motion-mimic",
     label: { zh: "动作模仿", en: "Motion mimic" },
@@ -124,7 +141,7 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
   "all-in-one": {
     key: "all-in-one",
     label: { zh: "全能参考", en: "All-in-one" },
-    requires: { images: { min: 0, max: 9 }, videos: { min: 0, max: 2 } },
+    requires: { images: { min: 0, max: 9 }, videos: { min: 0, max: 3 } },
     backendMode: "image_reference",
     slots: [],
     disabledHint: {
@@ -189,6 +206,7 @@ export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
   "first-frame",
   "first-last",
   "multi-image",
+  "three-view",
   "motion-mimic",
   "all-in-one",
   "video-edit",
@@ -202,6 +220,34 @@ export type ReferenceRequirementOverride = {
   images?: { min: number; max: number };
   videos?: { min: number; max: number };
 };
+
+/** Human-readable model-specific requirement, used when a model tightens the
+ * shared mode contract (for example Wan Animate 2 requires both identity image
+ * and motion video while the generic motion-mimic mode allows an image to be
+ * omitted). */
+export function formatReferenceRequirement(
+  override: ReferenceRequirementOverride | undefined,
+  language: "zh" | "en",
+): string | undefined {
+  if (!override) return undefined;
+  const parts: string[] = [];
+  const append = (range: { min: number; max: number } | undefined, zhUnit: string, enUnit: string) => {
+    if (!range || range.min === 0) return;
+    if (language === "zh") {
+      const count = range.min === range.max ? `${range.min}` : `${range.min}～${range.max}`;
+      parts.push(`${count} ${zhUnit}`);
+      return;
+    }
+    const count = range.min === range.max ? `${range.min}` : `${range.min}–${range.max}`;
+    parts.push(`${count} ${enUnit}${range.max === 1 ? "" : "s"}`);
+  };
+  append(override.images, "张角色参考图", "identity image");
+  append(override.videos, "条动作视频", "motion video");
+  if (parts.length === 0) return undefined;
+  return language === "zh"
+    ? `该模型需要连接 ${parts.join(" 和 ")}`
+    : `This model needs ${parts.join(" and ")}`;
+}
 
 /** Whether the given input counts satisfy a mode's requirements. */
 export function isModeSatisfied(

@@ -64,6 +64,14 @@ describe("model templates", () => {
     expect(template?.defaults).toEqual({ resolution: "2k", aspectRatio: "16:9" });
   });
 
+  it("keeps extended H3 reference modes on the local ComfyUI model", () => {
+    const local = getModelTemplate("minimax-h3-t2v-ref2v-turbo-local");
+    expect(local?.vendor).toBe("ComfyUI");
+    expect(local?.referenceModes).toEqual(["text-to-video", "multi-image", "three-view", "all-in-one"]);
+    expect(local?.referenceImageRange).toEqual({ min: 1, max: 9 });
+    expect(local?.resolutionOptions).toEqual(["480p", "768p"]);
+  });
+
   it("matches the ManjuAPI Grok Imagine video contracts", () => {
     const text = getModelTemplate("grok-imagine-video");
     expect(text).toMatchObject({
