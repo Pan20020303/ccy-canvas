@@ -97,6 +97,8 @@ const edgeTypes = { flow: FlowEdge };
 const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
+import {collectDownloadItems,type DownloadItem} from '../batch-download';
+const BatchDownloadPanel=lazy(()=>import('./BatchDownloadPanel'));
 
 const VideoEditorHost = lazy(() => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
 type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode' | 'videoEditorNode';
@@ -415,6 +417,8 @@ const InnerCanvas = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasFocusRequest?.nonce]);
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
+  const [downloadBatch,setDownloadBatch]=useState<DownloadItem[]|null>(null);
+  const selectedDownloads=useMemo(()=>collectDownloadItems(nodes.filter(n=>n.selected)),[nodes]);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const connectingFrom = useRef<{ nodeId: string; handleId?: string | null } | null>(null);
@@ -2037,6 +2041,9 @@ const InnerCanvas = () => {
         ));
         const rightX = viewport.x + (selectionBounds.x + selectionBounds.width) * viewport.zoom;
         const centerY = viewport.y + (selectionBounds.y + selectionBounds.height / 2) * viewport.zoom;
+        const toolbarWidth=wrapperRef.current?.clientWidth||window.innerWidth;
+        const toolbarHeight=wrapperRef.current?.clientHeight||window.innerHeight;
+        const halfToolbar=Math.min(280,toolbarWidth/2-16);
         return (
           <>
           {/* Selection bulk-routing + handle on the right edge */}
@@ -2057,10 +2064,11 @@ const InnerCanvas = () => {
             <Plus className="h-4 w-4" />
           </button>
           <div
-            className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
+            className="absolute z-30 flex flex-wrap -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
             style={{
-              left: viewport.x + (selectionBounds.x + selectionBounds.width / 2) * viewport.zoom,
-              top: viewport.y + selectionBounds.y * viewport.zoom - 12,
+              left: Math.max(halfToolbar+16,Math.min(toolbarWidth-halfToolbar-16,viewport.x+(selectionBounds.x+selectionBounds.width/2)*viewport.zoom)),
+              top: Math.max(112,Math.min(toolbarHeight-16,viewport.y+selectionBounds.y*viewport.zoom-12)),
+              width:'max-content',maxWidth:'calc(100% - 32px)',
             }}
           >
             <button className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5">
@@ -2087,6 +2095,15 @@ const InnerCanvas = () => {
               </button>
             )}
 
+            <button type="button" disabled={!selectedDownloads.length||!!downloadBatch}
+              title={language==='zh'?'下载所选节点的原始图片、视频和音频；跳过没有结果的节点':'Download selected original images, videos and audio'}
+              onMouseDown={e=>e.stopPropagation()} onPointerDown={e=>e.stopPropagation()}
+              onClick={()=>setDownloadBatch(selectedDownloads)}
+              className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5 disabled:opacity-40">
+              <Download className="h-3.5 w-3.5 text-orange-400"/>
+              {language==='zh'?'批量下载':'Download ZIP'} ({selectedDownloads.length})
+            </button>
+
             {/* Arrange the selection: grid / horizontal / vertical, always
                 spaced out so nodes never overlap. */}
             <div className="h-4 w-px bg-white/10" />
@@ -2098,6 +2115,8 @@ const InnerCanvas = () => {
           </>
         );
       })() : null}
+
+      {downloadBatch&&<Suspense fallback={null}><BatchDownloadPanel items={downloadBatch} zh={language==='zh'} onClose={()=>setDownloadBatch(null)}/></Suspense>}
 
       {/* Bulk-routing converging curves — same look as the single-wire
           preview (FreeConnectionLine)。这层 SVG 用的是屏幕坐标，而单根预览
