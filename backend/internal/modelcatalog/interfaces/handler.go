@@ -492,9 +492,9 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 
 	huma.Register(api, huma.Operation{
 		OperationID: "local-video-trim", Method: http.MethodPost,
-		Path: "/api/app/video/trim",
+		Path:    "/api/app/video/trim",
 		Summary: "Trim a video locally with FFmpeg (no AI generation)",
-		Tags: []string{"App", "Generation"}, Security: userSecurity,
+		Tags:    []string{"App", "Generation"}, Security: userSecurity,
 		DefaultStatus: http.StatusOK,
 	}, h.localVideoTrim)
 
@@ -1742,6 +1742,11 @@ func (h *Handler) batchTasksByNodeIDs(ctx context.Context, input *batchTasksInpu
 }
 
 func (h *Handler) generate(ctx context.Context, input *generateInput) (*generateOutput, error) {
+	// Reject, never silently truncate or charge for an oversized Seedream
+	// request. Agent batches use distinct nodes/jobs, each with its own prompt.
+	if input.Body.ServiceType == "image" && application.IsSeedreamImageModel(input.Body.Model) && input.Body.OutputCount > 10 {
+		return nil, huma.Error400BadRequest("豆包单次最多生成 10 张图片；更多图片请拆分节点排队生成。")
+	}
 	// Resolve current user; logging is best-effort and never fails the request.
 	var userID pgtype.UUID
 	if claims, ok := authn.ClaimsFromContext(ctx); ok {

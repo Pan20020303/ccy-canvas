@@ -171,7 +171,9 @@ func (q *Queries) LoadGenerationLogPayload(ctx context.Context, id pgtype.UUID) 
 
 const markGenerationLogRunning = `
 UPDATE generation_logs
-SET status = 'running'
+SET status = 'running',
+    request_payload = COALESCE(request_payload, '{}'::jsonb) ||
+      jsonb_build_object('_execution_started_at', COALESCE(request_payload->>'_execution_started_at', NOW()::text))
 WHERE id = $1 AND status IN ('pending', 'queued', 'retrying')
 `
 
@@ -353,7 +355,9 @@ SELECT id, user_id, node_id, service_type, status,
        COALESCE((request_payload->>'CreditCost')::int, 0) AS credit_cost,
        COALESCE(request_payload->>'project_id', request_payload->>'ProjectID', '') AS project_id,
        COALESCE(request_payload->>'CreditScope', 'personal') AS credit_scope,
-       created_at
+       CASE WHEN service_type = 'image' AND status = 'running'
+            THEN COALESCE((request_payload->>'_execution_started_at')::timestamptz, created_at)
+            ELSE created_at END AS created_at
 FROM generation_logs
 WHERE status IN ('pending', 'queued', 'running', 'retrying')
   AND created_at < $1

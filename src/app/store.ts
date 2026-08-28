@@ -424,7 +424,7 @@ type AppState = {
    *  也一起切换,让面板里看到的提示词跟图对上. */
   setActiveVersion: (nodeId: string, versionId: string) => void;
   updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
-  runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean }) => void;
+  runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean }) => Promise<void>;
   cancelNode: (nodeId: string) => void;
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
   /** 图层编辑器:当前打开的 layerEditorNode id(null = 关闭)。 */

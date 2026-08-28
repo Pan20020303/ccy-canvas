@@ -503,6 +503,22 @@ describe("workspace control bar state", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not ask again for an approved agent batch while keeping manual generation confirmations", async () => {
+    const {useStore} = await loadStore(undefined, {keepConfirmDefault:true});
+    const fetchMock = vi.fn().mockResolvedValue({ok:false,status:400,
+      headers:new Headers({'content-type':'application/json'}),
+      text:async()=>JSON.stringify({error:{code:'invalid_input',message:'test rejection'}})});
+    vi.stubGlobal('fetch',fetchMock);
+    await useStore.getState().runNode('2',{prompt:'image 1',model:'gpt-image-2',skipConfirm:true});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().pendingRunConfirm).toHaveLength(0);
+    expect(useStore.getState().confirmBeforeGenerate).toBe(true);
+    await useStore.getState().runNode('2',{prompt:'unrelated manual request',model:'gpt-image-2'});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().pendingRunConfirm).toHaveLength(1);
+    useStore.getState().setPendingRunConfirm([]);
+  });
+
   it("starts with minimap hidden and grid snap disabled", async () => {
     const { useStore } = await loadStore();
 

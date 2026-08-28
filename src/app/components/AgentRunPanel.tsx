@@ -56,6 +56,7 @@ import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from ".
 import { pickVisionModel } from "./nodes/director-blocking";
 import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
 import { presentCanvasOperation, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
+import { GenerationBatch } from "./agent/generation-batch";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
 const HISTORY_FETCH_LIMIT = 50;
@@ -162,7 +163,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const addNode = useStore((s) => s.addNode);
   const onConnect = useStore((s) => s.onConnect);
   const updateNodeData = useStore((s) => s.updateNodeData);
-  const runNode = useStore((s) => s.runNode);
   const moveNodeTo = useStore((s) => s.moveNodeTo);
   const deleteNodes = useStore((s) => s.deleteNodes);
   const createGroup = useStore((s) => s.createGroup);
@@ -229,7 +229,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [activeConversationId, setActiveConversationId] = useState<Record<string, string>>({});
 
   // Execution mode (frontend-only, persisted in localStorage). "manual" = the
-  // agent asks for confirmation before every generation (PendingRunCard);
+  // agent asks once per turn/model (PendingRunCard);
   // "auto" = it runs generations autonomously. NOTE: the confirmation gate is
   // entirely frontend (see applyPatch's needsConfirmation) — this does NOT touch
   // the backend AgentUseMode (which controls sub-agent routing, a separate axis).
@@ -264,6 +264,28 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Per-run streaming state.
   const [streamingReply, setStreamingReply] = useState("");
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
+  const generationBatchRef = useRef<GenerationBatch | null>(null);
+  const pendingSequenceRef = useRef(0);
+  const resetGenerationBatch = useCallback(() => {
+    const project = useStore.getState().activeProjectId;
+    const backendProject = useStore.getState().activeBackendProjectId;
+    const batch = new GenerationBatch(async request => {
+      const state = useStore.getState();
+      if (state.activeProjectId !== project || state.activeBackendProjectId !== backendProject) {
+        throw new Error('画布项目已切换，未提交的生成已停止，请回原项目重新发起。');
+      }
+      if (!state.nodes.some(node => node.id === request.nodeId)) throw new Error('节点已删除，已跳过生成。');
+      // This turn has already been approved (or explicitly uses automatic
+      // execution). Do not open the canvas's second per-node confirmation.
+      await state.runNode(request.nodeId, {prompt: request.prompt, model: request.model, skipConfirm: true});
+    }, (request, error) => {
+      if (generationBatchRef.current !== batch) return;
+      setRunSteps(prev => [...prev, {kind: 'error', id: `batch-error-${request.id}`,
+        message: error instanceof Error ? error.message : String(error)}]);
+    });
+    generationBatchRef.current = batch;
+    return batch;
+  }, []);
   const [questionPage, setQuestionPage] = useState(0);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedMs, setRunFinishedMs] = useState<number | null>(null);
@@ -624,31 +646,27 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           break;
         }
 
-        // Execution mode drives the confirmation gate (frontend-only):
-        //   manual → every generation pops a PendingRunCard for approval;
-        //   auto   → all generations run autonomously without a prompt.
-        const needsConfirmation = executionMode === "manual";
-        if (needsConfirmation) {
-          setRunSteps((prev) => [...prev, {
+        const model = patch.model || data.model || fallbackModel;
+        const batch = generationBatchRef.current ?? resetGenerationBatch();
+        const request = {id: `pending-${++pendingSequenceRef.current}`, nodeId: patch.node_id, serviceType, prompt, model};
+        const disposition = batch.register(request, executionMode === "auto");
+        if (disposition === "duplicate") break;
+        setRunSteps((prev) => [...prev, {
             kind: "pending_run",
-            id: `pending-${prev.length}`,
+            id: request.id,
             nodeId: patch.node_id,
             nodeType: node?.type ?? "",
             serviceType,
             prompt,
             availableModels: allConfiguredModels,
-            status: "pending",
+            status: disposition,
             // agent 经 run_node(model=...) 指定的模型优先(编排生图/生视频)。
-            chosenModel: patch.model || data.model || fallbackModel,
+            chosenModel: batch.approvedModel(request),
           }]);
-        } else {
-          const model = patch.model || data.model || fallbackModel;
-          runNode(patch.node_id, { prompt, model });
-        }
         break;
       }
     }
-  }, [addNode, onConnect, runNode, updateNodeData, moveNodeTo, deleteNodes, createGroup, executionMode, backendModels, scheduleNodeFocus]);
+  }, [addNode, onConnect, updateNodeData, moveNodeTo, deleteNodes, createGroup, executionMode, backendModels, scheduleNodeFocus, resetGenerationBatch]);
 
   // 闭合最后一个仍在流式增长的思考步骤 —— 一旦模型开始输出叙述文本/工具调用/
   // 最终回复,说明这一段 reasoning 已经结束(ReasoningBlock 随之收起并定格耗时)。
@@ -669,6 +687,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (!selectedId || !source.trim() || running || !selectedAgent) return;
 
     const rawMessage = source.trim();
+    resetGenerationBatch();
     const outbound = buildAgentRunMessage(selectedAgent, skills, source, selectedSkillId);
     const invokedSkill = selectedSkillId
       ? skills.find((skill) => skill.id === selectedSkillId)
@@ -912,6 +931,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     const startedAt = performance.now();
     let disposed = false;
     canvasPatchRevisionRef.current = null;
+    resetGenerationBatch();
 
     if (job.conversationId) {
       setActiveConversationId((prev) => ({ ...prev, [targetAgentId]: job.conversationId }));
@@ -1100,6 +1120,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   };
 
   const stop = () => {
+    generationBatchRef.current?.stop();
     abortRef.current?.();
     abortRef.current = null;
     setRunSteps(sealStreamingThought);
@@ -1113,22 +1134,18 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // discards it, and updatePendingModel lets the user pick a different model
   // before they confirm.
   const confirmPendingRun = (stepId: string) => {
-    setRunSteps((prev) => {
-      const idx = prev.findIndex((s) => s.id === stepId);
-      if (idx < 0) return prev;
-      const step = prev[idx];
-      if (step.kind !== "pending_run" || step.status !== "pending") return prev;
-      const model = step.chosenModel ?? step.availableModels[0] ?? "";
-      if (!model) return prev;
-      // Side-effect: actually trigger the run.
-      runNode(step.nodeId, { prompt: step.prompt, model });
-      const next = prev.slice();
-      next[idx] = { ...step, status: "confirmed", chosenModel: model };
-      return next;
-    });
+    const step = runSteps.find(s => s.id === stepId);
+    if (!step || step.kind !== "pending_run" || step.status !== "pending") return;
+    const model = step.chosenModel ?? step.availableModels[0] ?? "";
+    const accepted = generationBatchRef.current?.approve(stepId, model) ?? [];
+    const ids = new Set(accepted.map(request => request.id));
+    // No generation side effects inside a React updater (StrictMode can replay it).
+    setRunSteps(prev => prev.map(s => s.kind === "pending_run" && ids.has(s.id)
+      ? {...s, status: "confirmed", chosenModel: model} : s));
   };
 
   const skipPendingRun = (stepId: string) => {
+    generationBatchRef.current?.skip(stepId);
     setRunSteps((prev) => prev.map((s) => {
       if (s.id !== stepId || s.kind !== "pending_run" || s.status !== "pending") return s;
       return { ...s, status: "skipped" };
@@ -2425,7 +2442,7 @@ function RunStepRow({
   );
 }
 
-function PendingRunCard({
+export function PendingRunCard({
   step,
   zh,
   onConfirm,
@@ -2449,6 +2466,7 @@ function PendingRunCard({
     : step.serviceType === "audio" ? (zh ? "音频生成" : "Audio generation")
     : step.serviceType === "image" ? (zh ? "图像生成" : "Image generation")
     : (zh ? "文本生成" : "Text generation");
+  const cardRef = useMountFadeIn<HTMLDivElement>({ opacity: 0, y: 8, scale: 0.97 }, { duration: 0.3 });
 
   if (step.status === "skipped") {
     return (
@@ -2462,13 +2480,12 @@ function PendingRunCard({
     return (
       <div className="flex items-center gap-2 rounded-md border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2 text-[11px] text-emerald-200">
         <Icon className="h-3.5 w-3.5" />
-        {zh ? `已运行 · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}` : `Started · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}`}
+        {zh ? `已确认，按队列生成 · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}` : `Approved for queued generation · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}`}
       </div>
     );
   }
 
   const currentModel = step.chosenModel ?? step.availableModels[0] ?? "";
-  const cardRef = useMountFadeIn<HTMLDivElement>({ opacity: 0, y: 8, scale: 0.97 }, { duration: 0.3 });
   return (
     <div ref={cardRef} className="rounded-lg border border-amber-400/30 bg-amber-500/[0.06] p-3">
       <div className="flex items-center gap-2 text-xs font-medium text-amber-200">
@@ -2508,9 +2525,12 @@ function PendingRunCard({
           className="flex items-center gap-1 rounded-md border border-amber-400/30 bg-amber-500/20 px-3 py-1 text-[11px] font-medium text-amber-100 transition hover:bg-amber-500/30 disabled:opacity-40"
         >
           <Play className="h-3 w-3" />
-          {zh ? "运行" : "Run"}
+          {zh ? "允许本轮同模型批量运行" : "Allow this model for this turn"}
         </button>
       </div>
+      <p className="mt-2 text-[10px] leading-relaxed text-neutral-400">{zh
+        ? '仅授权本轮任务中该模型的生成，包含后续新增的同批节点；更换模型或新任务仍需确认。豆包图片最多 10 张同时生成，其余排队。'
+        : 'Approves this model for this turn, including later nodes. A new model or turn asks again. Seedream images queue beyond 10 active outputs.'}</p>
     </div>
   );
 }

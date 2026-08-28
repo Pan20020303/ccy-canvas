@@ -11,6 +11,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/redis/go-redis/v9"
 
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -33,6 +34,7 @@ type Worker struct {
 	svc            *modelapp.Service
 	queries        *sqlc.Queries
 	agentProcessor AgentRunProcessor
+	capacity       *generationCapacity
 }
 
 // AgentRunProcessor is implemented by the skills runtime. Keeping the
@@ -57,7 +59,9 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 		asynq.Config{
 			// Total worker pool size. Single-replica backend default.
 			// Adjust via env later if you spread workers across machines.
-			Concurrency: 20,
+			Concurrency:    20,
+			RetryDelayFunc: generationRetryDelay,
+			IsFailure:      generationIsFailure,
 			Queues: map[string]int{
 				// Higher weight = more share of the 20 slots.
 				// Video is intentionally low so a 30 min Sora call
@@ -72,6 +76,9 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 			},
 			// Asynq's default retry delay is fine (1s, 2s, 4s, 8s, ...).
 			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, t *asynq.Task, err error) {
+				if errors.Is(err, errGenerationCapacity) {
+					return
+				}
 				log.Printf("[tasks] task %s failed (will retry per Asynq policy): %v", t.Type(), err)
 			}),
 		},
@@ -80,6 +87,9 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 		server:  server,
 		svc:     svc,
 		queries: queries,
+		capacity: &generationCapacity{client: redis.NewClient(&redis.Options{
+			Addr: redisAddr, Password: redisPassword, DB: redisDB,
+		}), prefix: "ccy:generation-capacity:v1:"},
 	}
 }
 
@@ -118,6 +128,9 @@ func (w *Worker) Shutdown() {
 		return
 	}
 	w.server.Shutdown()
+	if w.capacity != nil {
+		_ = w.capacity.client.Close()
+	}
 }
 
 func (w *Worker) handleAgentRun(ctx context.Context, t *asynq.Task) error {
@@ -210,6 +223,24 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		runCtx, cancelRun = context.WithDeadline(ctx, textDeadline)
 	}
 	defer cancelRun()
+
+	// Acquire before marking running or calling the provider. Busy jobs stay
+	// durable and queued; yielding releases the worker slot for other tasks.
+	release, capacityErr := w.capacity.acquire(runCtx, req)
+	if capacityErr != nil {
+		if errors.Is(capacityErr, errGenerationCapacity) {
+			return capacityErr
+		}
+		w.svc.FinalizeFailure(req, capacityErr, elapsedSinceEnqueue(p))
+		return fmt.Errorf("%w: %w", capacityErr, asynq.SkipRetry)
+	}
+	defer func() {
+		// On a forced abort, retain the lease until its original deadline;
+		// the remote provider may still be generating after disconnect.
+		if runCtx.Err() == nil {
+			release()
+		}
+	}()
 
 	// Flip queued → running so frontend sees movement before the call
 	// returns. Errors here are non-fatal; the final outcome write in

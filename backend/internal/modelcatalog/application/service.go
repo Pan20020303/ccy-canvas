@@ -1764,6 +1764,15 @@ func staleGenerationBudget(serviceType string) time.Duration {
 	return 2*maxRuntimeForType(serviceType) + 30*time.Minute
 }
 
+func staleGenerationBudgetForStatus(serviceType, status string) time.Duration {
+	// Waiting for one of the bounded image slots is not stuck inference.
+	// Running image ages are measured from _execution_started_at by the repo.
+	if serviceType == "image" && (status == "queued" || status == "pending" || status == "retrying") {
+		return 24 * time.Hour
+	}
+	return staleGenerationBudget(serviceType)
+}
+
 // ReapStaleGenerations is the final backstop (F3) for tasks whose executor
 // vanished without writing an outcome — an OOM-killed Asynq worker, a
 // crashed legacy inline goroutine, or a persist write that failed twice.
@@ -1782,7 +1791,7 @@ func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
 	}
 	reaped := 0
 	for _, row := range rows {
-		budget := staleGenerationBudget(row.ServiceType)
+		budget := staleGenerationBudgetForStatus(row.ServiceType, row.Status)
 		age := time.Since(row.CreatedAt)
 		if age < budget {
 			continue
