@@ -35,10 +35,13 @@ import {
 import { computeGroupBounds } from './group-routing';
 import { clearReferencePayloadValue, getReferencePayloadValue, isPublicHttpAssetUrl, isTransientBrowserMediaUrl, resolveBackendAssetUrl } from './reference-media';
 import { getModelTemplate } from './model-templates';
+import { buildZImageParams, type ZImageParams } from './zimage-params';
+import { buildLocalImageParams, type LocalImageSettings } from './local-image-params';
 import {
   REFERENCE_MODE_SPECS,
   modesForModel,
   isModeSatisfied,
+  formatReferenceRequirement,
   type ReferenceModeKey,
 } from './reference-modes';
 
@@ -203,10 +206,18 @@ export type NodeGenerationParams = {
   quality?: string;
   aspectRatio?: string;
   durationSeconds?: number;
+  /** Voice-cloning speed multiplier; only sent by models that expose it. */
+  audioSpeed?: number;
+  /** VoiceDesign instruction, e.g. "young warm female voice, natural Mandarin". */
+  voiceDescription?: string;
+  /** Spoken language passed to local VoiceDesign TTS. */
+  audioLanguage?: string;
   /** HappyHorse video-edit audio: "auto" (default) / "origin" (keep source audio). */
   audioSetting?: string;
   /** Random seed [0, 2147483647]; unset → provider picks a random seed. */
   seed?: number;
+  zImage?: ZImageParams;
+  localImage?: LocalImageSettings;
   editOperation?: string;
   maskImage?: string;
   outputCount?: number;
@@ -223,6 +234,8 @@ export type NodeGenerationParams = {
   referenceImages?: string[];
   referenceVideo?: string;
   referenceVideos?: string[];
+  referenceAudio?: string;
+  referenceAudios?: string[];
   // Video reference variant (Seedance 2.0 tabs). Drives the prompt panel's
   // reference-slot layout; passed through to the backend as a hint about
   // how upstream media should be interpreted.
@@ -232,6 +245,7 @@ export type NodeGenerationParams = {
 type UpstreamReferenceMedia = {
   imageUrls: string[];
   videoUrls: string[];
+  audioUrls: string[];
 };
 
 type AppState = {
@@ -415,6 +429,9 @@ type AppState = {
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
   /** 图层编辑器:当前打开的 layerEditorNode id(null = 关闭)。 */
   layerEditorNodeId: string | null;
+  videoEditorNodeId: string | null;
+  openVideoEditor: (nodeId: string) => void;
+  closeVideoEditor: () => void;
   openLayerEditor: (nodeId: string) => void;
   closeLayerEditor: () => void;
   /** 使用偏好:生成前确认(设置 → 使用偏好)。开启后每次调用模型先弹窗确认。
@@ -1572,7 +1589,11 @@ function stripHeavyFromGenerationParams(params: unknown): unknown {
   if (Array.isArray(out.referenceVideos)) {
     out.referenceVideos = out.referenceVideos.map((url) => stripHeavyMediaString(url)).filter(Boolean);
   }
+  if (Array.isArray(out.referenceAudios)) {
+    out.referenceAudios = out.referenceAudios.map((url) => stripHeavyMediaString(url)).filter(Boolean);
+  }
   out.referenceVideo = stripHeavyMediaString(out.referenceVideo);
+  out.referenceAudio = stripHeavyMediaString(out.referenceAudio);
   out.maskImage = stripHeavyMediaString(out.maskImage);
   return out;
 }
@@ -1893,6 +1914,7 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
 
   const imageUrls: string[] = [];
   const videoUrls: string[] = [];
+  const audioUrls: string[] = [];
 
   for (const node of nodes) {
     if (!upstreamIds.has(node.id)) {
@@ -1931,12 +1953,14 @@ function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeI
     // 图层编辑节点保存后把合成图写在 data.url —— 作为图片参考输出。
     if (node.type === 'referenceImageNode' || node.type === 'imageNode' || node.type === 'layerEditorNode') {
       imageUrls.push(url);
-    } else if (node.type === 'referenceVideoNode' || node.type === 'videoNode') {
+    } else if (node.type === 'referenceVideoNode' || node.type === 'videoNode' || node.type === 'videoEditorNode') {
       videoUrls.push(url);
+    } else if (node.type === 'referenceAudioNode' || node.type === 'audioNode') {
+      audioUrls.push(url);
     }
   }
 
-  return { imageUrls, videoUrls };
+  return { imageUrls, videoUrls, audioUrls };
 }
 
 // 文本节点的内容基准格式现在是 Markdown（LLM 产出就是 Markdown）。只有旧节点
@@ -3673,12 +3697,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
     const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
-    const rawReferenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length
+    const rawReferenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length || genParams?.referenceAudio || genParams?.referenceAudios?.length
       ? {
           imageUrls: genParams.referenceImages ?? [],
           videoUrls: [
             ...(genParams.referenceVideo ? [genParams.referenceVideo] : []),
             ...(genParams.referenceVideos ?? []),
+          ],
+          audioUrls: [
+            ...(genParams.referenceAudio ? [genParams.referenceAudio] : []),
+            ...(genParams.referenceAudios ?? []),
           ],
         }
       : collectUpstreamReferenceMedia(state.nodes, state.edges, nodeId);
@@ -3769,7 +3797,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     // Get aspectRatio (used as size ratio) and resolution from generation params.
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
-    const aspectRatio = genParams?.aspectRatio ?? 'auto';
+    const requestTemplate = getModelTemplate(payload.model ?? '');
+    const aspectRatio = requestTemplate?.supportsZImageParams || requestTemplate?.localImageKind
+      ? (requestTemplate.aspectRatioOptions?.find(option => option === genParams?.aspectRatio?.trim()) ?? requestTemplate.defaults?.aspectRatio ?? '1:1')
+      : genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
     // Preserve the ORIGINAL case of the 'p' / 'P' suffix: some providers
     // (DashScope / 阿里云 HappyHorse) reject lowercase `720p` with
@@ -3777,7 +3808,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // capitalisation they want (e.g. HappyHorse declares "720P/1080P"),
     // so we just preserve whatever case was set; only fall back to
     // lowercase when there was no suffix at all.
-    const requestTemplate = getModelTemplate(payload.model ?? '');
     const resolutionOptions = requestTemplate?.resolutionOptions ?? [];
     const persistedResolution = genParams?.resolution?.trim();
     const canonicalPersistedResolution = persistedResolution
@@ -3792,6 +3822,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       : (persistedResolution ?? requestTemplate?.defaults?.resolution ?? '720p');
     const resolution = (() => {
       const text = rawRes.trim();
+      if (serviceType === 'image' && (requestTemplate?.supportsZImageParams || requestTemplate?.localImageKind)) return text;
       const imageMatch = text.match(/([124])\s*k/i);
       if (serviceType === 'image' && imageMatch) return `${imageMatch[1]}K`;
       const videoTierMatch = text.match(/([124])\s*k/i);
@@ -3823,12 +3854,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         const counts = {
           images: referenceMedia.imageUrls.length,
           videos: referenceMedia.videoUrls.length,
+          audios: referenceMedia.audioUrls.length,
         };
         const supported = modesForModel(declared);
         const referenceOverrideFor = (key: ReferenceModeKey) =>
-          key === 'multi-image' && template?.referenceImageRange
-            ? { images: template.referenceImageRange }
-            : undefined;
+          template?.referenceRequirements?.[key]
+            ?? (key === 'multi-image' && template?.referenceImageRange
+              ? { images: template.referenceImageRange }
+              : undefined);
         const persisted = genParams?.referenceVariant as ReferenceModeKey | undefined;
         // Pick the mode the same way the UI does: persisted choice when still
         // valid, else first satisfiable supported mode.
@@ -3837,7 +3870,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ? 'multi-image' as const
           : undefined;
         const chosen: ReferenceModeKey | undefined =
-          persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts, referenceOverrideFor(persisted))
+          counts.audios > 0 && supported.includes('all-in-one')
+            ? 'all-in-one'
+            : persisted && supported.includes(persisted) && isModeSatisfied(persisted, counts, referenceOverrideFor(persisted))
             ? persisted
             : (satisfied ?? incompleteMultiImage ?? supported[0]);
 
@@ -3846,13 +3881,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           // Preflight: if the chosen mode's input requirements aren't met,
           // surface the reason on the node and abort without a network call.
           if (!isModeSatisfied(chosen, counts, referenceOverrideFor(chosen))) {
-            const lang = get().language;
-            const modelRange = chosen === 'multi-image' ? template?.referenceImageRange : undefined;
-            const hint = modelRange
-              ? (lang === 'zh'
-                ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
-                : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
-              : (lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en);
+              const lang = get().language;
+              const modelRange = chosen === 'multi-image' ? template?.referenceImageRange : undefined;
+              const modelRequirementHint = formatReferenceRequirement(referenceOverrideFor(chosen), lang);
+              const hint = modelRequirementHint ?? (modelRange
+                ? (lang === 'zh'
+                  ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
+                  : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
+                : (lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en));
             set((snapshot) => {
           const nodes = snapshot.nodes.map((node) => node.id === nodeId
               ? { ...node, data: { ...node.data, status: 'error', error: hint } }
@@ -3868,6 +3904,17 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           }
           resolvedReferenceMode = spec.backendMode;
         }
+      }
+    }
+
+    if (serviceType === 'image' && requestTemplate?.localImageKind) {
+      const maxImages = requestTemplate.referenceImageRange?.max ?? 0;
+      if (referenceMedia.imageUrls.length > maxImages || referenceMedia.videoUrls.length || referenceMedia.audioUrls.length) {
+        const hint = get().language === 'zh'
+          ? (maxImages ? 'FLUX.2 Klein 最多接入 4 张参考图片，不支持视频或音频参考。' : 'Krea-2 当前仅支持文生图和 Darkbrush LoRA；多图参考请选 FLUX.2 Klein。')
+          : `This model accepts 0–${maxImages} reference images and no video/audio.`;
+        get().updateNodeData(nodeId, { status: 'error', error: hint });
+        return;
       }
     }
 
@@ -4027,14 +4074,33 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         quality: serviceType === 'image' ? quality : undefined,
         edit_operation: genParams?.editOperation,
         mask_image: genParams?.maskImage,
-        output_count: genParams?.outputCount,
+        output_count: activeTemplate?.localImageKind ? 1 : genParams?.outputCount,
         expand_direction: genParams?.expandDirection,
         derive_from_node_id: genParams?.deriveFromNodeId,
         trim_range: genParams?.trimRange,
         crop_rect: genParams?.cropRect,
         target_tracks: genParams?.targetTracks,
         output_format: genParams?.outputFormat,
-        parameters: genParams?.outputFormat ? { output_format: genParams.outputFormat } : undefined,
+        parameters: (serviceType === 'image' && (activeTemplate?.supportsZImageParams || activeTemplate?.localImageKind)) || genParams?.outputFormat || (serviceType === 'audio' && (activeTemplate?.audioSpeedRange || activeTemplate?.supportsVoiceDescription))
+          ? {
+              ...(serviceType === 'image' && activeTemplate?.supportsZImageParams
+                ? buildZImageParams(genParams?.zImage) : {}),
+              ...(serviceType === 'image' && activeTemplate?.localImageKind
+                ? buildLocalImageParams(activeTemplate.localImageKind, genParams?.localImage) : {}),
+              ...(genParams?.outputFormat && !activeTemplate?.supportsZImageParams && !activeTemplate?.localImageKind ? { output_format: genParams.outputFormat } : {}),
+              ...(serviceType === 'audio' && activeTemplate?.audioSpeedRange
+                ? { speed: genParams?.audioSpeed ?? activeTemplate.audioSpeedRange.defaultValue }
+                : {}),
+              ...(serviceType === 'audio' && activeTemplate?.supportsVoiceDescription
+                ? {
+                    voice_description: genParams?.voiceDescription ?? '',
+                    language: genParams?.audioLanguage ?? activeTemplate.audioLanguageOptions?.[0] ?? 'Auto',
+                    temperature: 0.9,
+                    top_p: 0.95,
+                  }
+                : {}),
+            }
+          : undefined,
         duration: durationSeconds,
         aspect_ratio: serviceType === 'video' ? aspectRatio : undefined,
         reference_images: referenceMedia.imageUrls.length > 0 ? referenceMedia.imageUrls : undefined,
@@ -4047,6 +4113,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             : undefined),
         reference_video: referenceMedia.videoUrls.length === 1 ? referenceMedia.videoUrls[0] : undefined,
         reference_videos: referenceMedia.videoUrls.length > 1 ? referenceMedia.videoUrls : undefined,
+        reference_audio: referenceMedia.audioUrls.length === 1 ? referenceMedia.audioUrls[0] : undefined,
+        reference_audios: referenceMedia.audioUrls.length > 1 ? referenceMedia.audioUrls : undefined,
         // Gate on the ACTIVE model's declared capability so a stale value set
         // on a previous model (genParams persists across model switches) never
         // rides along to a sibling that doesn't support it. audio_setting only
@@ -4057,7 +4125,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         audio_setting: serviceType === 'video' && activeTemplate?.audioSettingOptions?.length
           ? (genParams?.audioSetting ?? activeTemplate.audioSettingOptions[0])
           : undefined,
-        seed: (serviceType === 'video' || serviceType === 'image') && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
+        seed: (serviceType === 'video' || serviceType === 'image' || serviceType === 'audio') && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
         // wan2.7 组图 (grid) mode → the backend sets enable_sequential so one
         // request yields up to 12 images. Gated to the image 组图 tab.
         enable_sequential: serviceType === 'image' && genParams?.referenceVariant === 'wan-group' ? true : undefined,
@@ -4296,6 +4364,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setSettingsOpen: (open) => set({ isSettingsOpen: open }),
 
   layerEditorNodeId: null,
+  videoEditorNodeId: null,
+  openVideoEditor: (nodeId) => set({ videoEditorNodeId: nodeId }),
+  closeVideoEditor: () => set({ videoEditorNodeId: null }),
   openLayerEditor: (nodeId) => set({ layerEditorNodeId: nodeId }),
   closeLayerEditor: () => set({ layerEditorNodeId: null }),
 

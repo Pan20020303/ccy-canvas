@@ -498,6 +498,12 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		DefaultStatus: http.StatusOK,
 	}, h.localVideoTrim)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "local-video-editor", Method: http.MethodPost,
+		Path: "/api/app/video/edit", Summary: "Render a local FFmpeg editing timeline",
+		Tags: []string{"App", "Generation"}, Security: userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.localVideoEdit)
 
 	// --- User App: Task lookup (recovery polling) ---
 	huma.Register(api, huma.Operation{

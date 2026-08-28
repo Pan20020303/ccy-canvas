@@ -11,6 +11,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  Scissors,
   Settings as SettingsIcon,
   StickyNote,
   Upload,
@@ -23,10 +24,10 @@ import { AssetLibraryModal } from './AssetLibraryModal';
 import { Dock, DockItem } from './reactbits/Dock';
 
 type PanelKey = 'add' | null;
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode' | 'directorStageNode' | 'layerEditorNode';
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'panoramaNode' | 'stickyNoteNode' | 'directorStageNode' | 'layerEditorNode' | 'videoEditorNode';
 
 // 加号菜单(2026-07 参考样式):「添加节点」分组 + 「临时资源」分组;
-// 视频合成 / 3D World 尚未落地,占位置灰(Beta 徽标)。
+// 剪辑统一使用剪辑工作台；3D World 尚未落地，占位置灰。
 const NODE_OPTIONS: Array<{
   kind?: NodeKind;
   icon: typeof Pencil;
@@ -37,12 +38,12 @@ const NODE_OPTIONS: Array<{
   subEn?: string;
   disabled?: boolean;
 }> = [
+  { kind: 'videoEditorNode', icon: Scissors, zh: '剪辑工作台', en: 'Video Editor', subZh: '全屏时间线、素材导入、拼接与配音', subEn: 'Timeline, media import, cuts and audio' },
   { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text', subZh: '脚本、广告词、品牌文案', subEn: 'Scripts, ad copy, brand text' },
   { kind: 'imageNode', icon: ImageIcon, zh: '图片', en: 'Image' },
   { kind: 'videoNode', icon: Video, zh: '视频', en: 'Video' },
   { kind: 'audioNode', icon: Music, zh: '音频', en: 'Audio' },
   { kind: 'panoramaNode', icon: Globe, zh: '生成 360°', en: '360° Panorama' },
-  { icon: Video, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subZh: '多视频/音轨合成', subEn: 'Multi-track compose', disabled: true },
   { kind: 'directorStageNode', icon: Layers3, zh: '导演台', en: 'Director Stage', subZh: '3D 构图编辑器', subEn: '3D composition editor' },
   { icon: Globe, zh: '3D World', en: '3D World', badge: 'Beta', subZh: '生成可漫游的 3D 世界', subEn: 'Explorable 3D worlds', disabled: true },
   { kind: 'stickyNoteNode', icon: StickyNote, zh: '评论便签', en: 'Comment note' },

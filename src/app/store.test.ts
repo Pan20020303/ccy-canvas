@@ -1429,6 +1429,79 @@ describe("workspace control bar state", () => {
     expect(String(init.body)).not.toContain("data:video/mp4;base64,from-drop");
   });
 
+  it("sends the selected local Z-Image options through the generation API", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/zimage.png" }, request_id: "req-zimage" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "zimage-test", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().updateNodeGenerationParams("zimage-test", {
+      seed: 42, resolution: "512px", aspectRatio: "16:9",
+      zImage: { steps: 12, sampler: "euler", scheduler: "beta", lora: "pixel-art", loraStrength: 0.6 },
+    });
+    await useStore.getState().runNode("zimage-test", { prompt: "pixel bookstore", model: "z-image-turbo-local" });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      seed: 42, resolution: "512px", size: "16:9",
+      parameters: { steps: 12, sampler: "euler", scheduler: "beta", lora: "pixel-art", lora_strength: 0.6 },
+    });
+  });
+
+  it.each(["z-image-turbo-local", "z-image-turbo-v60-local"])("clears stale cloud dimensions when submitting %s", async (model) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/zimage.png" }, request_id: "req-zimage-stale" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "zimage-stale", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().updateNodeGenerationParams("zimage-stale", { resolution: "1K", aspectRatio: "auto", outputFormat: "webp" });
+    await useStore.getState().runNode("zimage-stale", { prompt: "bookstore", model });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      resolution: "768px", size: "1:1",
+      parameters: { steps: 8, sampler: "res_multistep", scheduler: "simple", lora: "none", lora_strength: 0.8 },
+    });
+    expect(JSON.parse(String(request![1].body)).parameters).not.toHaveProperty("output_format");
+  });
+
+  it.each(["flux2-klein-base-4b-local", "flux2-klein-base-9b-local", "krea2-turbo-local"])("sends model-specific parameters for %s", async (model) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "application/json" }), text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/local.png" }, request_id: "req-local" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "local-test", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().updateNodeGenerationParams("local-test", {
+      seed: 12, resolution: "512px", aspectRatio: "auto", outputCount: 4, outputFormat: "webp",
+      localImage: { klein: { steps: 30, cfg: 4.5 }, krea2: { steps: 12, lora: 'darkbrush', loraStrength: 0.7 } },
+      zImage: { lora: 'pixel-art' },
+    });
+    await useStore.getState().runNode("local-test", { prompt: "bookstore", model });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      seed: 12, resolution: "512px", size: "1:1", output_count: 1,
+      parameters: model === 'krea2-turbo-local' ? { steps: 12, lora: 'darkbrush', lora_strength: 0.7 } : { steps: 30, cfg: 4.5 },
+    });
+    expect(JSON.parse(String(request![1].body)).parameters).not.toHaveProperty('sampler');
+  });
+
+  it.each([0, 1, 2, 3, 4, 5])("preserves or rejects FLUX reference count %s", async (count) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ "content-type": "application/json" }), text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/local.png" }, request_id: "req-local-ref" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "local-ref-test", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    for (let i = 0; i < count; i++) {
+      useStore.getState().addNode({ id: `ref-${i}`, type: 'referenceImageNode', position: { x: 0, y: 0 }, data: { url: `https://example.com/ref-${i}.png` } } as never);
+      useStore.getState().onConnect({ source: `ref-${i}`, target: 'local-ref-test', sourceHandle: null, targetHandle: null });
+    }
+    await useStore.getState().runNode('local-ref-test', { prompt: 'combine references', model: 'flux2-klein-base-4b-local' });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes('/generate'));
+    if (count > 4) { expect(request).toBeUndefined(); expect(useStore.getState().nodes.find(n => n.id === 'local-ref-test')?.data.status).toBe('error'); }
+    else { expect(JSON.parse(String(request![1].body)).reference_images ?? []).toEqual(Array.from({ length: count }, (_, i) => `https://example.com/ref-${i}.png`)); }
+  });
+
   it("sends seed + audio_setting for a HappyHorse video-edit run that has them set", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({

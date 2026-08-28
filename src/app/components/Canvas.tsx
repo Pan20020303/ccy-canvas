@@ -98,7 +98,8 @@ const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 
-type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode';
+const VideoEditorHost = lazy(() => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
+type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode' | 'videoEditorNode';
 type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
 type ContextMenuState = {
   x: number;
@@ -112,6 +113,7 @@ type ContextMenuState = {
 };
 
 const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string; subtitleZh?: string; subtitleEn?: string }[] = [
+  { kind: 'videoEditorNode', icon: Scissors, zh: '剪辑工作台', en: 'Video Editor', subtitleZh: '全屏时间线、素材导入、拼接与配音', subtitleEn: 'Timeline, media import, cuts and audio' },
   { kind: 'textNode', icon: Pencil, zh: '文本', en: 'Text', subtitleZh: '脚本、广告词、品牌文案', subtitleEn: 'Scripts, ad copy, brand text' },
   { kind: 'imageNode', icon: ImageIcon, zh: '图片生成', en: 'Image' },
   { kind: 'videoNode', icon: Video, zh: '视频生成', en: 'Video' },
@@ -120,7 +122,6 @@ const PICKER_OPTIONS: { kind: NodeKind; icon: any; zh: string; en: string; subti
 ];
 
 const FUTURE_NODE_OPTIONS = [
-  { key: 'video-compose', icon: Scissors, zh: '视频合成', en: 'Video Compose', badge: 'Beta', subtitleZh: '多视频/音轨合成', subtitleEn: 'Multi-video / audio compositing' },
   { key: 'director-desk', icon: Layers3, zh: '导演台', en: 'Director Desk', badge: 'NEW', subtitleZh: '3D 构图编辑器', subtitleEn: '3D composition editor' },
   { key: 'script', icon: SquarePen, zh: '脚本', en: 'Script', badge: 'Beta', subtitleZh: '创意脚本、生成故事板', subtitleEn: 'Create scripts and storyboards' },
 ] as const;
@@ -384,6 +385,7 @@ const InnerCanvas = () => {
   const openSaveAssetDialog = useStore((state) => state.openSaveAssetDialog);
   const directorStageNodeId = useStore((state) => state.directorStageNodeId);
   const layerEditorNodeId = useStore((state) => state.layerEditorNodeId);
+  const videoEditorNodeId = useStore((state) => state.videoEditorNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
   const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
@@ -592,7 +594,7 @@ const InnerCanvas = () => {
       // 导演台 / 图层编辑器 overlay 打开时,画布全局快捷键整体让位 ——
       // 尤其 Backspace/Delete 在 overlay 里删的是选中的演员/道具/图层,
       // 落到这里会把节点本身删掉。
-      if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId) return;
+      if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId || useStore.getState().videoEditorNodeId) return;
 
       // ── Delete / Backspace ─────────────────────────────────────────────
       // Office-standard: Del removes the current selection. Selected NODES take
@@ -2613,6 +2615,7 @@ const InnerCanvas = () => {
 
       {/* 人物站位/涂画放大编辑器:全局单例，独立于节点选中/工具条生命周期 */}
       <PositionStudioHost />
+      {videoEditorNodeId && <Suspense fallback={null}><VideoEditorHost key={videoEditorNodeId} /></Suspense>}
 
       {/* 3D 导演台 overlay — 仅在用户打开时挂载,关闭后整个 WebGL 上下文释放.
           key=节点 id:目标节点变化时强制全新挂载,演员/道具/机位这些

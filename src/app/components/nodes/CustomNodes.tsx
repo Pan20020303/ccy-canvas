@@ -1,5 +1,14 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { ZImageParamsControls } from './ZImageParamsControls';
+import { LocalImageParamsControls } from './LocalImageParamsControls';
+import { ReferenceLimitsBar, resolveReferenceLimits } from './ReferenceLimitsBar';
+import { requestMediaPreviewAction, useMediaPreviewAction } from '../media-preview-utils';
+import VideoTrimDialog, { type VideoTrimSelection } from '../VideoTrimDialog';
+import { trimLocalVideo } from '../../api/video-edit';
+
+import type { LocalImageSettings } from '../../local-image-params';
+import type { ZImageParams } from '../../zimage-params';
 import { toast } from 'sonner';
 import gsap from 'gsap';
 import * as THREE from 'three';
@@ -60,6 +69,7 @@ import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
+import { upscaleLocalSeedVR2 } from '../../api/models';
 import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
@@ -76,6 +86,7 @@ import {
   REFERENCE_MODE_SPECS,
   modesForModel,
   isModeSatisfied,
+  formatReferenceRequirement,
   happyHorseSuffixSatisfied,
   type ReferenceModeKey,
 } from '../../reference-modes';
@@ -535,9 +546,19 @@ const MediaParamsPopover = ({
   onDuration,
   onOutputFormat,
   audioSetting,
+  audioSpeed,
+  voiceDescription,
+  voiceLanguage,
   seed,
   onAudioSetting,
+  onAudioSpeed,
+  onVoiceDescription,
+  onVoiceLanguage,
   onSeed,
+  zImage,
+  onZImage,
+  localImage,
+  onLocalImage,
 }: {
   template: ModelTemplate;
   resolution: string;
@@ -546,6 +567,9 @@ const MediaParamsPopover = ({
   duration: number;
   outputFormat: string;
   audioSetting?: string;
+  audioSpeed?: number;
+  voiceDescription?: string;
+  voiceLanguage?: string;
   seed?: number;
   onResolution: (v: string) => void;
   onQuality: (v: string) => void;
@@ -553,7 +577,14 @@ const MediaParamsPopover = ({
   onDuration: (v: number) => void;
   onOutputFormat: (v: string) => void;
   onAudioSetting?: (v: string) => void;
+  onAudioSpeed?: (v: number) => void;
+  onVoiceDescription?: (v: string) => void;
+  onVoiceLanguage?: (v: string) => void;
   onSeed?: (v: number | undefined) => void;
+  zImage?: ZImageParams;
+  localImage?: LocalImageSettings;
+  onLocalImage?: (value: LocalImageSettings) => void;
+  onZImage?: (v: ZImageParams) => void;
 }) => {
   const [open, setOpen] = useState(false);
   const language = useStore((state) => state.language);
@@ -567,6 +598,7 @@ const MediaParamsPopover = ({
     // provider schema may set supportsDuration for the family while a specific
     // mode (e.g. video-edit) has no range/options and doesn't send duration.
     (template.supportsDuration && (template.durationRange || template.durationOptions?.length)) ? `${duration}s` : null,
+    template.audioSpeedRange ? `${audioSpeed ?? template.audioSpeedRange.defaultValue}×` : null,
   ].filter(Boolean);
 
   const hasAspect = template.supportsAspectRatio && template.aspectRatioOptions?.length;
@@ -579,6 +611,9 @@ const MediaParamsPopover = ({
   const hasDurationSlider = template.supportsDuration && template.durationRange;
   const hasDurationOptions = template.supportsDuration && template.durationOptions?.length && !template.durationRange;
   const hasAudioSetting = (template.audioSettingOptions?.length ?? 0) > 0 && !!onAudioSetting;
+  const hasAudioSpeed = !!template.audioSpeedRange && !!onAudioSpeed;
+  const hasVoiceDescription = !!template.supportsVoiceDescription && !!onVoiceDescription;
+  const hasVoiceLanguage = (template.audioLanguageOptions?.length ?? 0) > 0 && !!onVoiceLanguage;
   const hasSeed = !!template.supportsSeed && !!onSeed;
   const AUDIO_LABEL: Record<string, string> = {
     auto: language === 'zh' ? '自动' : 'Auto',
@@ -603,7 +638,7 @@ const MediaParamsPopover = ({
           {/* Backdrop catches outside-clicks. Higher than the panel container so
               clicking anywhere outside closes us — including in adjacent nodes. */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full left-0 z-40 mb-3 w-[300px] overflow-hidden rounded-2xl border border-white/8 bg-[#15181d]/85 p-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]">
+          <div className="absolute bottom-full left-0 z-40 mb-3 max-h-[70vh] w-[300px] overflow-y-auto overscroll-contain rounded-2xl border border-white/8 bg-[#15181d]/85 p-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]" onWheel={event => event.stopPropagation()}>
             {/* ── Duration ────────────────────────────────────────────── */}
             {(hasDurationSlider || hasDurationOptions) ? (
               <div className="mb-4">
@@ -750,7 +785,62 @@ const MediaParamsPopover = ({
               )
             ) : null}
 
+            {hasAudioSpeed ? (
+              <div className="mt-4">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '语速' : 'Speech speed'}</div>
+                <div className="mb-2 text-xl font-medium tracking-tight text-white">{(audioSpeed ?? template.audioSpeedRange!.defaultValue).toFixed(2)}×</div>
+                <input
+                  type="range"
+                  min={template.audioSpeedRange!.min}
+                  max={template.audioSpeedRange!.max}
+                  step={template.audioSpeedRange!.step}
+                  value={audioSpeed ?? template.audioSpeedRange!.defaultValue}
+                  onChange={(event) => onAudioSpeed!(Number(event.target.value))}
+                  className="prompt-duration-slider w-full accent-white"
+                />
+                <div className="mt-1 flex justify-between text-[10px] text-neutral-500 tabular-nums">
+                  <span>{template.audioSpeedRange!.min}×</span>
+                  <span>{template.audioSpeedRange!.max}×</span>
+                </div>
+              </div>
+            ) : null}
+
+            {hasVoiceDescription ? (
+              <div className="mt-4">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '音色描述' : 'Voice description'}</div>
+                <textarea
+                  value={voiceDescription ?? ''}
+                  onChange={(event) => onVoiceDescription!(event.target.value)}
+                  rows={4}
+                  placeholder={language === 'zh'
+                    ? '例如：年轻女声，声音温柔清晰，普通话自然，语速适中'
+                    : 'e.g. A young warm female voice, clear and natural'}
+                  className="w-full resize-none rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-xs leading-relaxed text-neutral-200 outline-none transition placeholder:text-neutral-600 focus:border-white/25"
+                />
+              </div>
+            ) : null}
+
+            {hasVoiceLanguage ? (
+              <div className="mt-4">
+                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '朗读语言' : 'Language'}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {template.audioLanguageOptions!.map((option) => (
+                    <PillButton key={option} active={option === (voiceLanguage ?? 'Auto')} onClick={() => onVoiceLanguage!(option)}>
+                      {option === 'Auto' && language === 'zh' ? '自动' : option}
+                    </PillButton>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {/* ── Seed (reproducible generation) ───────────────────────── */}
+            {template.supportsZImageParams && onZImage ? (
+              <ZImageParamsControls value={zImage} onChange={onZImage} zh={language === 'zh'} />
+            ) : null}
+            {template.localImageKind && onLocalImage ? (
+              <LocalImageParamsControls kind={template.localImageKind} value={localImage?.[template.localImageKind]}
+                onChange={value => onLocalImage({ ...localImage, [template.localImageKind!]: value })} zh={language === 'zh'} />
+            ) : null}
             {hasSeed ? (
               <div className="mt-4">
                 <div className="mb-2 flex items-center justify-between text-[11px] text-neutral-400">
@@ -1610,10 +1700,13 @@ const PromptPanel = ({
   const currentDuration = params.durationSeconds ?? lastDuration ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
   const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';
+  const currentAudioSpeed = params.audioSpeed ?? template?.audioSpeedRange?.defaultValue ?? 1;
+  const currentVoiceDescription = params.voiceDescription ?? '';
+  const currentVoiceLanguage = params.audioLanguage ?? template?.audioLanguageOptions?.[0] ?? 'Auto';
   const currentSeed = typeof params.seed === 'number' ? params.seed : undefined;
   // 出图张数(一图多变体):仅图片服务可选 1/2/4,后端按张计费并把多出的结果
   // 扇出成兄弟节点(buildExtraImageNodes);网关不支持 n 时自动回落单图。
-  const currentOutputCount = typeof params.outputCount === 'number' && params.outputCount > 0 ? params.outputCount : 1;
+  const currentOutputCount = template?.localImageKind ? 1 : typeof params.outputCount === 'number' && params.outputCount > 0 ? params.outputCount : 1;
 
   useEffect(() => {
     if (!template) {
@@ -1629,6 +1722,7 @@ const PromptPanel = ({
     if ((template.supportsAspectRatio || template.supportsAutoAspect) && !params.aspectRatio && currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
     if (template.supportsDuration && !params.durationSeconds && currentDuration) nextPatch.durationSeconds = currentDuration;
     if (template.supportsOutputFormat && !params.outputFormat && currentOutputFormat) nextPatch.outputFormat = currentOutputFormat;
+    if (template.audioSpeedRange && params.audioSpeed === undefined) nextPatch.audioSpeed = currentAudioSpeed;
 
     if (Object.keys(nextPatch).length > 0) {
       updateNodeGenerationParams(nodeId, nextPatch);
@@ -1637,6 +1731,7 @@ const PromptPanel = ({
     activeModel,
     activeVendor,
     currentAspectRatio,
+    currentAudioSpeed,
     currentDuration,
     currentMode,
     currentQuality,
@@ -1644,6 +1739,7 @@ const PromptPanel = ({
     currentOutputFormat,
     nodeId,
     params.aspectRatio,
+    params.audioSpeed,
     params.durationSeconds,
     params.mode,
     params.model,
@@ -1929,6 +2025,9 @@ const PromptPanel = ({
       quality: nextTemplate?.defaults?.quality ?? nextTemplate?.qualityOptions?.[0],
       aspectRatio: nextTemplate?.supportsAutoAspect ? 'auto' : nextTemplate?.defaults?.aspectRatio ?? nextTemplate?.aspectRatioOptions?.[0],
       durationSeconds: nextTemplate?.durationRange?.defaultValue,
+      audioSpeed: nextTemplate?.audioSpeedRange?.defaultValue,
+      voiceDescription: nextTemplate?.supportsVoiceDescription ? '' : undefined,
+      audioLanguage: nextTemplate?.audioLanguageOptions?.[0],
       outputFormat: nextTemplate?.defaults?.outputFormat ?? nextTemplate?.outputFormatOptions?.[0],
     });
   };
@@ -2097,16 +2196,23 @@ const PromptPanel = ({
   const persistedReferenceMode = (params.referenceVariant as ReferenceModeKey | undefined);
   const referenceOverrideFor = useCallback(
     (key: ReferenceModeKey) =>
-      key === 'multi-image' && template?.referenceImageRange
-        ? { images: template.referenceImageRange }
-        : undefined,
-    [template?.referenceImageRange],
+      template?.referenceRequirements?.[key]
+        ?? (key === 'multi-image' && template?.referenceImageRange
+          ? { images: template.referenceImageRange }
+          : undefined),
+    [template?.referenceImageRange, template?.referenceRequirements],
   );
   // Resolve the effective active mode: prefer the persisted choice when it's
   // still both supported AND satisfiable; otherwise fall back to the first
   // satisfiable supported mode (or the first supported as a last resort).
   const activeReferenceMode = useMemo<ReferenceModeKey | ''>(() => {
     if (modelReferenceModes.length === 0) return '';
+    // Audio is orthogonal to the legacy image/video count registry. For H3,
+    // attaching any audio should enter its native mixed-reference mode instead
+    // of leaving the visually misleading "text-to-video" tab active.
+    if (refCounts.audios > 0 && modelReferenceModes.includes('all-in-one')) {
+      return 'all-in-one';
+    }
     if (
       persistedReferenceMode &&
       modelReferenceModes.includes(persistedReferenceMode) &&
@@ -2353,13 +2459,14 @@ const PromptPanel = ({
       {modelReferenceModes.map((key) => {
         const spec = REFERENCE_MODE_SPECS[key];
         const isActive = key === activeReferenceMode;
-        const satisfied = isModeSatisfied(key, refCounts, referenceOverrideFor(key));
-        const modelRange = key === 'multi-image' ? template?.referenceImageRange : undefined;
-        const disabledTitle = modelRange
-          ? (language === 'zh'
-            ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
-            : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
-          : (language === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en);
+          const satisfied = isModeSatisfied(key, refCounts, referenceOverrideFor(key));
+          const modelRange = key === 'multi-image' ? template?.referenceImageRange : undefined;
+          const modelRequirementHint = formatReferenceRequirement(referenceOverrideFor(key), language);
+          const disabledTitle = modelRequirementHint ?? (modelRange
+            ? (language === 'zh'
+              ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
+              : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
+            : (language === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en));
         return (
           <button
             key={key}
@@ -2410,9 +2517,10 @@ const PromptPanel = ({
       if (!item.url) return;
       const refId = `ref-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 4)}`;
       const isVideo = item.kind === 'video';
+      const isAudio = item.kind === 'audio';
       addNode({
         id: refId,
-        type: isVideo ? 'referenceVideoNode' : 'referenceImageNode',
+        type: isVideo ? 'referenceVideoNode' : isAudio ? 'referenceAudioNode' : 'referenceImageNode',
         position: { x: base.x - 340, y: base.y + index * 60 },
         data: { url: item.url, status: 'done', sourceName: item.title },
       } as never);
@@ -2437,46 +2545,19 @@ const PromptPanel = ({
 
   // 当前模式的参考数量上限（注册表模式 / HappyHorse 模式二选一），驱动参考条
   // 下方的「图片 ≤ N」提示与超限红字。
-  const activeRequires = happyHorse?.suffix
-    ? HAPPYHORSE_SUFFIX_REQUIRES[happyHorse.suffix] ?? null
-    : activeReferenceMode
-      ? {
-          ...REFERENCE_MODE_SPECS[activeReferenceMode].requires,
-          ...(activeReferenceMode === 'multi-image' && template?.referenceImageRange
-            ? { images: template.referenceImageRange }
-            : {}),
-        }
-      : null;
-
-  const refLimitBar = (() => {
-    if (upstreamNodes.length === 0 || !activeRequires) return null;
-    const zh = language === 'zh';
-    const chips: string[] = [];
-    if (activeRequires.images.max > 0) chips.push(zh ? `图片 ≤ ${activeRequires.images.max}` : `Images ≤ ${activeRequires.images.max}`);
-    if (activeRequires.videos.max > 0) chips.push(zh ? `视频 ≤ ${activeRequires.videos.max}` : `Videos ≤ ${activeRequires.videos.max}`);
-    const warnings: string[] = [];
-    if (refCounts.images > activeRequires.images.max) {
-      warnings.push(activeRequires.images.max === 0
-        ? (zh ? '当前模式不支持图片参考' : 'This mode takes no image references')
-        : (zh ? `当前模型图片最多 ${activeRequires.images.max} 张，现在 ${refCounts.images} 张` : `At most ${activeRequires.images.max} images; you have ${refCounts.images}`));
-    }
-    if (refCounts.videos > activeRequires.videos.max) {
-      warnings.push(activeRequires.videos.max === 0
-        ? (zh ? '当前模式不支持视频参考' : 'This mode takes no video references')
-        : (zh ? `当前模型视频最多 ${activeRequires.videos.max} 段，现在 ${refCounts.videos} 段` : `At most ${activeRequires.videos.max} videos; you have ${refCounts.videos}`));
-    }
-    if (chips.length === 0 && warnings.length === 0) return null;
-    return (
-      <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5 px-1">
-        {chips.map((chip) => (
-          <span key={chip} className="rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-neutral-400">{chip}</span>
-        ))}
-        {warnings.map((warning) => (
-          <span key={warning} className="rounded-md bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-300">{warning}</span>
-        ))}
-      </div>
-    );
-  })();
+  const referenceLimits = resolveReferenceLimits({
+    suffixRequires: happyHorse?.suffix ? HAPPYHORSE_SUFFIX_REQUIRES[happyHorse.suffix] : undefined,
+    mode: activeReferenceMode || undefined,
+    override: activeReferenceMode ? referenceOverrideFor(activeReferenceMode) : undefined,
+    imageRange: serviceType === 'image' ? template?.referenceImageRange : undefined,
+  });
+  const refLimitBar = <ReferenceLimitsBar
+    limits={referenceLimits}
+    counts={refCounts}
+    zh={language === 'zh'}
+    serviceType={serviceType}
+    canSwitchToAudioMode={modelReferenceModes.includes('all-in-one')}
+  />;
 
   const previewStrip = (
     <>
@@ -2726,7 +2807,7 @@ const PromptPanel = ({
             onChange={(value) => updateNodeGenerationParams(nodeId, { mode: value })}
           />
         ) : null}
-        {template && (template.supportsResolution || template.supportsQuality || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration || template.supportsOutputFormat) ? (
+        {template && (template.supportsResolution || template.supportsQuality || template.supportsAspectRatio || template.supportsAutoAspect || template.supportsDuration || template.supportsOutputFormat || template.supportsSeed || template.audioSpeedRange || template.supportsVoiceDescription) ? (
           <MediaParamsPopover
             template={template}
             resolution={currentResolution}
@@ -2740,12 +2821,22 @@ const PromptPanel = ({
             onDuration={(value) => updateNodeGenerationParams(nodeId, { durationSeconds: value })}
             onOutputFormat={(value) => updateNodeGenerationParams(nodeId, { outputFormat: value })}
             audioSetting={currentAudioSetting}
+            audioSpeed={currentAudioSpeed}
+            voiceDescription={currentVoiceDescription}
+            voiceLanguage={currentVoiceLanguage}
             seed={currentSeed}
             onAudioSetting={(value) => updateNodeGenerationParams(nodeId, { audioSetting: value })}
+            onAudioSpeed={(value) => updateNodeGenerationParams(nodeId, { audioSpeed: value })}
+            onVoiceDescription={(value) => updateNodeGenerationParams(nodeId, { voiceDescription: value })}
+            onVoiceLanguage={(value) => updateNodeGenerationParams(nodeId, { audioLanguage: value })}
             onSeed={(value) => updateNodeGenerationParams(nodeId, { seed: value })}
+            zImage={params.zImage}
+            onZImage={(value) => updateNodeGenerationParams(nodeId, { zImage: value })}
+            localImage={params.localImage}
+            onLocalImage={(value) => updateNodeGenerationParams(nodeId, { localImage: value })}
           />
         ) : null}
-        {serviceType === 'image' ? (
+        {serviceType === 'image' && !template?.localImageKind ? (
           <div className="nodrag nopan relative">
             {/* 收起态:一个「×N」按钮显示当前张数;点开才展开 1/2/4。 */}
             <button
@@ -3450,89 +3541,30 @@ function NodeErrorBanner({ error }: { error: string }) {
   );
 }
 
-const PreviewModal = ({ kind, src, onClose }: { kind: 'image' | 'video'; src: string; onClose: () => void }) => {
-  const [zoom, setZoom] = useState(1);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
-  const dragging = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
+const MediaPreview = lazy(() => import('../MediaPreview'));
 
-  // ESC to close.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  // Scroll to zoom (image only).
-  const onWheel = (e: React.WheelEvent) => {
-    if (kind !== 'image') return;
-    e.stopPropagation();
-    setZoom((z) => Math.min(5, Math.max(0.2, z - e.deltaY * 0.001)));
+const PreviewModal = ({ kind, src, onClose, nodeId }: { kind: 'image' | 'video'; src: string; onClose: () => void; nodeId?: string }) => {
+  const language = useStore(state => state.language);
+  const nodes = useStore(state => state.nodes);
+  const readOnly = useActiveProjectReadOnly();
+  const source = nodeId ? nodes.find(node => node.id === nodeId) : undefined;
+  const title = String(source?.data?.customTitle || source?.data?.sourceName || (kind === 'image' ? '图片' : '视频'));
+  const canUseTools = Boolean(source?.selected && nodes.filter(node => node.selected).length === 1 && !readOnly);
+  const openTool = (action: 'edit' | 'upscale') => {
+    if (!nodeId) return;
+    onClose();
+    requestMediaPreviewAction(nodeId, action);
   };
-
-  // Drag to pan (image only).
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (kind !== 'image') return;
-    dragging.current = true;
-    lastPos.current = { x: e.clientX, y: e.clientY };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragging.current) return;
-    setPos((p) => ({ x: p.x + e.clientX - lastPos.current.x, y: p.y + e.clientY - lastPos.current.y }));
-    lastPos.current = { x: e.clientX, y: e.clientY };
-  };
-  const onPointerUp = () => { dragging.current = false; };
-
-  const handleDownload = () => {
-    void downloadAsset(src, kind === 'image' ? 'generated-image.png' : 'generated-video.mp4');
-  };
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/90 backdrop-blur-md"
-      onClick={onClose}
-      onWheel={onWheel}
-    >
-      {/* Top-right toolbar */}
-      <div className="absolute right-5 top-5 z-10 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-        {kind === 'image' && (
-          <>
-            <button onClick={() => setZoom((z) => Math.min(5, z + 0.3))} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs text-white hover:bg-white/20">+</button>
-            <button onClick={() => { setZoom(1); setPos({ x: 0, y: 0 }); }} className="flex h-8 items-center rounded-full bg-white/10 px-2.5 text-[10px] text-white/70 hover:bg-white/20">{Math.round(zoom * 100)}%</button>
-            <button onClick={() => setZoom((z) => Math.max(0.2, z - 0.3))} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs text-white hover:bg-white/20">-</button>
-          </>
-        )}
-        <button onClick={handleDownload} className="flex h-8 items-center gap-1 rounded-full bg-white/10 px-3 text-[10px] text-white/70 hover:bg-white/20">下载</button>
-        <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      {/* Content */}
-      <div
-        className={clsx('max-h-[92vh] max-w-[92vw]', kind === 'image' && 'cursor-grab active:cursor-grabbing')}
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onDoubleClick={() => { setZoom(zoom === 1 ? 2 : 1); setPos({ x: 0, y: 0 }); }}
-      >
-        {kind === 'image' ? (
-          <img
-            src={toRenderableMediaUrl(src)}
-            alt=""
-            draggable={false}
-            className="max-h-[92vh] max-w-[92vw] rounded-lg object-contain shadow-2xl select-none transition-transform duration-150"
-            style={{ transform: `translate(${pos.x}px, ${pos.y}px) scale(${zoom})` }}
-          />
-        ) : (
-          <video src={toRenderableMediaUrl(src)} controls autoPlay className="max-h-[92vh] max-w-[92vw] rounded-lg shadow-2xl" />
-        )}
-      </div>
-    </div>,
-    document.body,
-  );
+  return <Suspense fallback={createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-[#111215] text-white" role="dialog" aria-label="加载预览">
+      <span>正在加载预览…</span><button className="absolute right-6 top-6" onClick={onClose}>关闭</button>
+    </div>, document.body)}>
+    <MediaPreview key={src} kind={kind} src={src} title={title} zh={language === 'zh'} onClose={onClose}
+      onDownload={() => downloadAsset(src, title + (kind === 'image' ? '.png' : '.mp4'))}
+      onEdit={canUseTools ? () => openTool('edit') : undefined}
+      onUpscale={canUseTools ? () => openTool('upscale') : undefined}
+    />
+  </Suspense>;
 };
 
 type ImageActionKind = 'panorama' | 'angles' | 'lighting' | 'grid-compose' | 'enhance' | 'split' | 'edit';
@@ -4241,9 +4273,10 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
   zh: boolean;
   modelAvailable: boolean;
   busy: boolean;
-  onSubmit: (resolution: '2k' | '4k', aspectRatio: string) => void;
+  onSubmit: (resolution: '2k' | '4k', aspectRatio: string, engine: 'seedvr2' | 'nano') => void;
   onClose: () => void;
 }) {
+  const [engine, setEngine] = useState<'seedvr2' | 'nano'>('seedvr2');
   const [res, setRes] = useState<'2k' | '4k'>('2k');
   const [ratio, setRatio] = useState<string>('auto');
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
@@ -4350,7 +4383,16 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
                 <span className="text-[13px] font-medium text-neutral-200">{zh ? '处理引擎' : 'Engine'}</span>
                 <span className="text-[11px] text-neutral-500">{zh ? '大模型智能超分' : 'Model-powered upscale'}</span>
               </div>
-              <div className="rounded-xl border border-indigo-400/60 bg-indigo-500/10 p-3">
+              <button type="button" onClick={() => setEngine('seedvr2')} className={clsx('mb-2 w-full rounded-xl border p-3 text-left transition', engine === 'seedvr2' ? 'border-emerald-400/60 bg-emerald-500/10' : 'border-white/10 bg-white/[0.03]')}>
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-emerald-200">SeedVR2 3B INT8</span>
+                  <span className="rounded bg-emerald-500 px-1 text-[9px] font-bold leading-4 text-white">LOCAL</span>
+                </div>
+                <div className="mt-1 text-[11px] leading-relaxed text-emerald-200/80">
+                  {zh ? '本机生成式修复超分，重建纹理与细节；已针对 16GB 显存启用分块。' : 'Local generative restoration with detail reconstruction, tiled for 16 GB VRAM.'}
+                </div>
+              </button>
+              <button type="button" onClick={() => setEngine('nano')} className={clsx('w-full rounded-xl border p-3 text-left transition', engine === 'nano' ? 'border-indigo-400/60 bg-indigo-500/10' : 'border-white/10 bg-white/[0.03]')}>
                 <div className="flex items-center gap-2">
                   <span className="text-[13px] font-semibold text-indigo-200">Nano Pro {zh ? '大模型高清' : 'HD'}</span>
                   <span className="rounded bg-indigo-500 px-1 text-[9px] font-bold leading-4 text-white">AI</span>
@@ -4358,8 +4400,8 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
                 <div className="mt-1 text-[11px] leading-relaxed text-indigo-200/80">
                   {zh ? '大模型驱动的智能高清还原，细节丰富自然，支持 2K/4K 输出。' : 'Model-driven HD restoration with rich, natural detail. 2K/4K output.'}
                 </div>
-              </div>
-              {!modelAvailable ? (
+              </button>
+              {engine === 'nano' && !modelAvailable ? (
                 <div className="mt-2 text-[11px] text-amber-400/90">
                   {zh ? '未找到 gemini-3.0-pro-image 模型，请先在管理端启用。' : 'gemini-3.0-pro-image is not configured — enable it in admin first.'}
                 </div>
@@ -4420,13 +4462,13 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
             </div>
           </div>
           <div className="flex items-center justify-between border-t border-white/10 px-5 py-3.5">
-            <div className="text-[12px] text-neutral-300">{zh ? '高清' : 'HD'} · Nano Pro · {res.toUpperCase()}</div>
+            <div className="text-[12px] text-neutral-300">{zh ? '高清' : 'HD'} · {engine === 'seedvr2' ? 'SeedVR2 Local' : 'Nano Pro'} · {res.toUpperCase()}</div>
             <button
               type="button"
-              disabled={busy || !modelAvailable}
+              disabled={busy || (engine === 'nano' && !modelAvailable)}
               // 自动 = 跟随原图：把探测到的（贴近标准的）原图比例传下去，
               // 避免派生节点回退到默认 1:1。
-              onClick={() => onSubmit(res, ratio === 'auto' ? (dims ? ratioLabel : 'auto') : ratio)}
+              onClick={() => onSubmit(res, ratio === 'auto' ? (dims ? ratioLabel : 'auto') : ratio, engine)}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
@@ -4439,11 +4481,40 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
   );
 }
 
+function VideoSeedVR2UpscaleModal({ sourceUrl, zh, busy, onSubmit, onClose }: {
+  sourceUrl: string;
+  zh: boolean;
+  busy: boolean;
+  onSubmit: (scale: number, quality: 'MEDIUM' | 'HIGH' | 'ULTRA') => void;
+  onClose: () => void;
+}) {
+  const [scale, setScale] = useState(2);
+  const [quality, setQuality] = useState<'MEDIUM' | 'HIGH' | 'ULTRA'>('ULTRA');
+  return createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 p-6 backdrop-blur-md" onClick={onClose}>
+      <div className="flex h-[min(680px,84vh)] w-[min(1080px,94vw)] overflow-hidden rounded-2xl border border-white/10 bg-[#101218]" onClick={(event) => event.stopPropagation()}>
+        <div className="flex flex-1 items-center justify-center bg-black/40 p-6"><video src={toRenderableMediaUrl(sourceUrl)} controls className="max-h-full max-w-full rounded-lg" /></div>
+        <div className="flex w-[340px] shrink-0 flex-col border-l border-white/10">
+          <div className="flex items-center justify-between p-5"><div className="font-semibold text-neutral-100">{zh ? '视频超分' : 'Video upscale'}</div><button type="button" onClick={onClose}><X className="h-4 w-4 text-neutral-400" /></button></div>
+          <div className="flex-1 space-y-5 px-5">
+            <div className="rounded-xl border border-emerald-400/60 bg-emerald-500/10 p-3"><div className="flex items-center gap-2 text-sm font-semibold text-emerald-200">SeedVR2 3B INT8 <span className="rounded bg-emerald-500 px-1 text-[9px] text-white">LOCAL</span></div><p className="mt-2 text-xs leading-relaxed text-emerald-100/70">{zh ? '本机时序一致性修复超分，自动分块，保留原帧率与音轨。' : 'Local temporally consistent restoration with auto chunking, preserving FPS and audio.'}</p></div>
+            <div><div className="mb-2 text-xs text-neutral-400">{zh ? '放大倍率' : 'Scale'}</div><div className="flex gap-2">{[2, 3, 4].map((value) => <button key={value} type="button" onClick={() => setScale(value)} className={clsx('rounded-full border px-4 py-1.5 text-xs', scale === value ? 'border-white bg-white text-black' : 'border-white/15 text-neutral-300')}>{value}×</button>)}</div></div>
+            <div><div className="mb-2 text-xs text-neutral-400">{zh ? '质量' : 'Quality'}</div><div className="flex gap-2">{(['MEDIUM', 'HIGH', 'ULTRA'] as const).map((value) => <button key={value} type="button" onClick={() => setQuality(value)} className={clsx('rounded-full border px-3 py-1.5 text-[11px]', quality === value ? 'border-emerald-300 bg-emerald-400/15 text-emerald-100' : 'border-white/15 text-neutral-400')}>{value}</button>)}</div></div>
+            <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-3 text-[11px] leading-relaxed text-amber-100/70">{zh ? '视频越长、分辨率越高，处理时间和显存占用越大。' : 'Longer and larger videos require more processing time and VRAM.'}</div>
+          </div>
+          <div className="flex items-center justify-between border-t border-white/10 p-4"><span className="text-xs text-neutral-300">SeedVR2 · {scale}× · {quality}</span><button type="button" disabled={busy} onClick={() => onSubmit(scale, quality)} className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-black disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}</button></div>
+        </div>
+      </div>
+    </div>, document.body,
+  );
+}
+
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
   const backendModels = useStore((state) => state.backendModels);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const onConnect = useStore((state) => state.onConnect);
   const openPositionStudio = useStore((state) => state.openPositionStudio);
   const createGroup = useStore((state) => state.createGroup);
@@ -4741,6 +4812,11 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     }
   };
 
+  useMediaPreviewAction(sourceNodeId, action => {
+    if (action === 'upscale') setHdOpen(true);
+    else openDraft('edit');
+  });
+
   if (!sourceNode || !['imageNode', 'referenceImageNode', 'panoramaNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
 
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
@@ -5006,7 +5082,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         </DialogContent>
       </Dialog>
 
-      {fullscreenOpen ? <PreviewModal kind="image" src={sourceUrl} onClose={() => setFullscreenOpen(false)} /> : null}
+      {fullscreenOpen ? <PreviewModal kind="image" src={sourceUrl} nodeId={sourceNodeId} onClose={() => setFullscreenOpen(false)} /> : null}
       {hdOpen ? (
         <HdEnhanceModal
           sourceUrl={sourceUrl}
@@ -5014,11 +5090,39 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           modelAvailable={Boolean(nanoProModel)}
           busy={busy}
           onClose={() => setHdOpen(false)}
-          onSubmit={(resolution, aspectRatio) => {
+          onSubmit={(resolution, aspectRatio, engine) => {
             void (async () => {
               if (busy) return;
               setBusy(true);
+              // The modal is configuration-only. Once submitted, progress lives
+              // on the derived canvas node instead of blocking this dialog.
+              setHdOpen(false);
               try {
+                if (engine === 'seedvr2') {
+                  const base = sourceNode?.position ?? { x: 0, y: 0 };
+                  const derivedId = `img-seedvr2-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                  addNode({ id: derivedId, type: 'imageNode', position: { x: base.x + 360, y: base.y }, data: {
+                    customTitle: language === 'zh' ? 'SeedVR2 超分图片' : 'SeedVR2 upscaled image',
+                    status: 'generating', taskPhase: 'generating', runningStartedAt: Date.now(),
+                    sourceKind: 'derived', derivedFromNodeId: sourceNodeId, derivationAction: 'seedvr2_upscale',
+                    generationParams: { model: 'seedvr2-3b-int8-local', resolution, aspectRatio, scale: resolution === '4k' ? 4 : 2 },
+                  } } as never);
+                  onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+                  try {
+                    const stableSource = await uploadTransientImageReference(sourceUrl, `seedvr2-source-${Date.now()}.png`);
+                    const result = await upscaleLocalSeedVR2({ media_url: stableSource, kind: 'image', scale: resolution === '4k' ? 4 : 2, quality: 'ULTRA', node_id: derivedId });
+                    updateNodeData(derivedId, {
+                      url: result.url, output: result.url, status: 'done', taskPhase: undefined,
+                      runningStartedAt: undefined, error: undefined,
+                      generationParams: { model: 'seedvr2-3b-int8-local', resolution, aspectRatio, scale: result.scale },
+                    });
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    updateNodeData(derivedId, { status: 'error', taskPhase: undefined, runningStartedAt: undefined, error: message });
+                    toast.error(language === 'zh' ? `图片超分失败：${message}` : `Image upscale failed: ${message}`);
+                  }
+                  return;
+                }
                 const basePrompt = language === 'zh'
                   ? '保留构图与主体，提升清晰度、纹理与细节层次。'
                   : 'Preserve composition and subject while enhancing sharpness, texture, and details.';
@@ -5037,7 +5141,6 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
                   outputCount: 1,
                   derivationAction: 'enhance',
                 });
-                setHdOpen(false);
               } finally {
                 setBusy(false);
               }
@@ -5125,9 +5228,11 @@ export function PositionStudioHost() {
 }
 
 function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
+  const [trimOpen, setTrimOpen] = useState(false);
   const language = useStore((state) => state.language);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
+  const updateNodeData = useStore((state) => state.updateNodeData);
   const onConnect = useStore((state) => state.onConnect);
   const createGroup = useStore((state) => state.createGroup);
   const runNode = useStore((state) => state.runNode);
@@ -5144,6 +5249,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [busy, setBusy] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [hdOpen, setHdOpen] = useState(false);
 
   const sourceTitle = language === 'zh' ? '视频二次处理' : 'Video actions';
   const actionButtonClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-100/88 transition-colors hover:bg-white/10 hover:text-white';
@@ -5174,10 +5280,12 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   };
 
   const openSession = (action: VideoActionKind, draft: Partial<VideoActionDraft> = {}) => {
+    if (action === 'trim') {
+      void import('../video-editor/VideoEditorHost').then(m => m.createVideoEditorNode(sourceNodeId));
+      return;
+    }
     const defaults: VideoActionDraft = {
-      prompt: action === 'trim'
-        ? (language === 'zh' ? '截取视频片段，保留主体和画质。' : 'Trim the clip while preserving subject and quality.')
-        : action === 'crop'
+      prompt: action === 'crop'
           ? (language === 'zh' ? '裁剪画面区域并保持整体观感自然。' : 'Crop the frame while keeping the result natural.')
           : action === 'enhance'
             ? (language === 'zh' ? '提升视频清晰度、细节和整体完成度。' : 'Enhance clarity, details, and overall finish.')
@@ -5272,18 +5380,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     setBusy(true);
     try {
       const d = session.draft;
-      if (session.action === 'trim') {
-        await spawnDerivedNode({
-          nodeType: 'videoNode',
-          action: session.action,
-          prompt: d.prompt,
-          title: language === 'zh' ? '剪辑结果' : 'Trimmed clip',
-          trimRange: { start: Math.max(0, d.trimStart), end: Math.max(Math.max(0, d.trimStart), d.trimEnd) },
-          outputFormat: d.outputFormat || 'mp4',
-          targetTracks: d.targetTracks,
-          editOperation: 'trim',
-        });
-      } else if (session.action === 'crop') {
+      if (session.action === 'crop') {
         await spawnDerivedNode({
           nodeType: 'videoNode',
           action: session.action,
@@ -5346,7 +5443,35 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     }
   };
 
-  if (!sourceNode || sourceNode.type !== 'videoNode' || !sourceUrl) return null;
+  const submitLocalTrim = (selection: VideoTrimSelection) => {
+    if (!sourceNode || !sourceUrl) return;
+    setTrimOpen(false);
+    const id = 'video-ffmpeg-' + crypto.randomUUID();
+    const generationParams = { model: 'ffmpeg-local-trim', referenceVideo: sourceUrl,
+      trimRange: { start: selection.start, end: selection.end }, mute: selection.mute };
+    addNode({ id, type: 'videoNode', position: { x: sourceNode.position.x + 380, y: sourceNode.position.y },
+      data: { customTitle: language === 'zh' ? 'FFmpeg 剪辑视频' : 'FFmpeg trimmed video',
+        sourceKind: 'derived', derivedFromNodeId: sourceNodeId, derivationAction: 'trim',
+        generationParams, status: 'generating', taskPhase: 'generating', runningStartedAt: Date.now() },
+    } as never);
+    onConnect({ source: sourceNodeId, target: id, sourceHandle: null, targetHandle: null } as never);
+    void trimLocalVideo({ media_url: sourceUrl, ...selection, node_id: id }).then(result => {
+      updateNodeData(id, { url: result.url, output: result.url, status: 'done', taskPhase: undefined,
+        runningStartedAt: undefined, error: undefined, mediaDuration: result.duration,
+        mediaWidth: result.width, mediaHeight: result.height, generationParams });
+    }).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      updateNodeData(id, { status: 'error', taskPhase: undefined, runningStartedAt: undefined, error: message });
+      toast.error((language === 'zh' ? '剪辑失败：' : 'Trim failed: ') + message);
+    });
+  };
+
+  useMediaPreviewAction(sourceNodeId, action => {
+    if (action === 'upscale') setHdOpen(true);
+    else openSession('trim');
+  });
+
+  if (!sourceNode || !['videoNode', 'referenceVideoNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
 
   return (
     <>
@@ -5354,6 +5479,10 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         <Button variant="ghost" size="sm" onClick={() => openSession('trim')} className={actionButtonClass}>
           <Scissors className="h-3.5 w-3.5" />
           {language === 'zh' ? '剪辑' : 'Trim'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => setHdOpen(true)} className={actionButtonClass}>
+          <Sparkles className="h-3.5 w-3.5" />
+          {language === 'zh' ? '超分' : 'Upscale'}
         </Button>
         {/* 未开发:裁剪 / 高清 / 解析 / 智能去字幕 —— 整体隐藏(见 SHOW_WIP_MEDIA_ACTIONS)。 */}
         {SHOW_WIP_MEDIA_ACTIONS ? (
@@ -5410,6 +5539,38 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
           onClose={() => setHistoryOpen(false)}
         />
       ) : null}
+
+      {hdOpen ? <VideoSeedVR2UpscaleModal sourceUrl={sourceUrl} zh={language === 'zh'} busy={busy} onClose={() => setHdOpen(false)} onSubmit={(scale, quality) => {
+        void (async () => {
+          if (busy || !sourceNode) return;
+          setBusy(true);
+          setHdOpen(false);
+          const base = sourceNode.position ?? { x: 0, y: 0 };
+          const derivedId = `video-seedvr2-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          addNode({ id: derivedId, type: 'videoNode', position: { x: base.x + 380, y: base.y }, data: {
+            customTitle: language === 'zh' ? 'SeedVR2 超分视频' : 'SeedVR2 upscaled video',
+            status: 'generating', taskPhase: 'generating', runningStartedAt: Date.now(),
+            sourceKind: 'derived', derivedFromNodeId: sourceNodeId, derivationAction: 'seedvr2_upscale',
+            generationParams: { model: 'seedvr2-3b-int8-local', scale, quality, referenceVideo: sourceUrl },
+          } } as never);
+          onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+          try {
+            const result = await upscaleLocalSeedVR2({ media_url: sourceUrl, kind: 'video', scale, quality, node_id: derivedId });
+            updateNodeData(derivedId, {
+              url: result.url, output: result.url, status: 'done', taskPhase: undefined,
+              runningStartedAt: undefined, error: undefined,
+              generationParams: { model: 'seedvr2-3b-int8-local', scale: result.scale, quality, referenceVideo: sourceUrl },
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            updateNodeData(derivedId, { status: 'error', taskPhase: undefined, runningStartedAt: undefined, error: message });
+            toast.error(language === 'zh' ? `视频超分失败：${message}` : `Video upscale failed: ${message}`);
+          } finally { setBusy(false); }
+        })();
+      }} /> : null}
+
+      {trimOpen && <VideoTrimDialog src={sourceUrl} title={sourceData.customTitle || sourceData.sourceName}
+        zh={language === 'zh'} onClose={() => setTrimOpen(false)} onSubmit={submitLocalTrim} />}
 
       <Dialog open={Boolean(session?.open)} onOpenChange={(open) => { if (!open) setSession(null); }}>
         <DialogContent className="max-w-2xl border-white/10 bg-[#111318] text-neutral-100">
@@ -5501,7 +5662,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         </DialogContent>
       </Dialog>
 
-      {fullscreenOpen && sourceUrl ? <PreviewModal kind="video" src={sourceUrl} onClose={() => setFullscreenOpen(false)} /> : null}
+      {fullscreenOpen && sourceUrl ? <PreviewModal kind="video" src={sourceUrl} nodeId={sourceNodeId} onClose={() => setFullscreenOpen(false)} /> : null}
     </>
   );
 }
@@ -5689,7 +5850,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
       )}
-      {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="image" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
@@ -6007,17 +6168,19 @@ function SmartVideo({
   const hovered = controlledHovered ?? internalHovered;
   const renderable = toRenderableMediaUrl(src);
   const original = extractOriginalMediaUrl(src);
-  // Prefer the stable object URL for ordinary playback. A media element can
-  // display cross-origin video without CORS as long as `crossOrigin` is not
-  // set, which also keeps the canvas usable when the authenticated proxy is
-  // temporarily unavailable. Private / legacy objects fall back to the proxy.
+  // Prefer our authenticated proxy. Generated assets commonly live in private
+  // COS/OSS buckets, so trying the public object URL first creates a guaranteed
+  // 403 (and, on some CDNs, a long connection timeout) for every video node.
+  // The raw object URL remains a useful last-resort fallback for public assets.
   const playbackSources = useMemo(
-    () => Array.from(new Set([original, renderable].filter(Boolean))),
+    () => Array.from(new Set([renderable, original].filter(Boolean))),
     [original, renderable],
   );
   const [sourceIndex, setSourceIndex] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [autoRetryRound, setAutoRetryRound] = useState(0);
+  const [retryPending, setRetryPending] = useState(false);
   const playbackSrc = playbackSources[Math.min(sourceIndex, Math.max(0, playbackSources.length - 1))] ?? '';
   // Fall back to the session-cached frame-0 cover when the node has no stored
   // poster, so re-entering the viewport shows a cover instantly instead of a
@@ -6029,6 +6192,8 @@ function SmartVideo({
     setVideoReady(false);
     setLoadFailed(false);
     setSourceIndex(0);
+    setAutoRetryRound(0);
+    setRetryPending(false);
   }, [src]);
   const posterSrc = poster ? toRenderableMediaUrl(poster, { thumbWidth: 720 }) : capturedPoster;
 
@@ -6058,22 +6223,46 @@ function SmartVideo({
       if (current < playbackSources.length - 1) {
         return current + 1;
       }
+      // Do not make the user click for ordinary proxy/CDN hiccups. Retry the
+      // complete proxy -> direct fallback chain three times with backoff; only
+      // then surface the manual retry affordance.
+      if (autoRetryRound < 3) {
+        setAutoRetryRound((round) => round + 1);
+        setRetryPending(true);
+        return current;
+      }
       setLoadFailed(true);
       return current;
     });
-  }, [playbackSources.length]);
+  }, [autoRetryRound, playbackSources.length]);
+
+  useEffect(() => {
+    if (!retryPending) return;
+    const baseDelay = [1_200, 3_000, 7_000][Math.max(0, autoRetryRound - 1)] ?? 7_000;
+    // Small jitter prevents a canvas full of videos from retrying in lockstep.
+    const timeout = window.setTimeout(() => {
+      setSourceIndex(0);
+      setRetryNonce((value) => value + 1);
+      setRetryPending(false);
+    }, baseDelay + Math.round(Math.random() * 500));
+    return () => window.clearTimeout(timeout);
+  }, [autoRetryRound, retryPending]);
 
   // A broken proxy connection can leave Chromium in NETWORK_LOADING without
   // ever emitting `error`. Move to the fallback instead of showing a spinner
   // forever. A successful metadata/data event clears this timer naturally.
   useEffect(() => {
-    if (!mountVideo || videoReady || loadFailed || !playbackSrc) return;
-    const timeout = window.setTimeout(advancePlaybackSource, 15_000);
+    if (!mountVideo || videoReady || loadFailed || retryPending || !playbackSrc) return;
+    // Large local upscales can legitimately need longer than 15 seconds for
+    // their first range/metadata response while the object store is busy.
+    const timeout = window.setTimeout(advancePlaybackSource, 30_000);
     return () => window.clearTimeout(timeout);
-  }, [advancePlaybackSource, loadFailed, mountVideo, playbackSrc, retryNonce, videoReady]);
+  }, [advancePlaybackSource, loadFailed, mountVideo, playbackSrc, retryNonce, retryPending, videoReady]);
 
   const captureFirstFrame = useCallback((video: HTMLVideoElement) => {
     setVideoReady(true);
+    setAutoRetryRound(0);
+    setRetryPending(false);
     if (poster || videoPosterCache.has(src)) return;
     const dataUrl = captureVideoPoster(video);
     if (!dataUrl) return;
@@ -6122,6 +6311,8 @@ function SmartVideo({
             setLoadFailed(false);
             setVideoReady(false);
             setSourceIndex(0);
+            setAutoRetryRound(0);
+            setRetryPending(false);
             setRetryNonce((value) => value + 1);
           }}
         >
@@ -6133,7 +6324,7 @@ function SmartVideo({
           <Loader2 className="h-5 w-5 animate-spin text-white/25" />
         </div>
       )}
-      {mountVideo && playbackSrc && !loadFailed ? (
+      {mountVideo && playbackSrc && !loadFailed && !retryPending ? (
         <video
           key={`${playbackSrc}:${retryNonce}`}
           ref={videoRef}
@@ -6321,7 +6512,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
-      {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="video" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -6404,7 +6595,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
         ) : null}
         {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
       </div>
-      {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="image" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
@@ -6474,6 +6665,9 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
                   updateNodeData(id, { mediaWidth: videoWidth, mediaHeight: videoHeight });
                 }
               }
+              if (video.duration && data.mediaDuration !== video.duration) {
+                updateNodeData(id, { mediaDuration: video.duration });
+              }
             }}
           />
         ) : (
@@ -6483,7 +6677,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
         )}
         {data.status === 'uploading' ? <UploadingOverlay progress={data.progress} /> : null}
       </div>
-      {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="video" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -6499,7 +6693,7 @@ export const AudioNode = ({ id, data, selected }: any) => {
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.error}
-      promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
+      promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="qwen3-tts-voice-design-local" />}
     >
       <div className={clsx('flex items-center space-x-3 rounded-[12px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/18">
@@ -7559,7 +7753,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
       )}
-      {preview && data.url ? <PreviewModal kind="image" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="image" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
   );
@@ -7701,7 +7895,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
-      {preview && data.url ? <PreviewModal kind="video" src={data.url} onClose={() => setPreview(false)} /> : null}
+      {preview && data.url ? <PreviewModal kind="video" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
     </BaseNode>
   );
 };
@@ -7709,6 +7903,9 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
 const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
+  const audioModel = getNodeParams(data).model ?? 'cosyvoice3-local';
+  const isTextToSound = audioModel === 'stable-audio-3-small-sfx-local';
+  const isVoiceDesign = audioModel === 'qwen3-tts-voice-design-local';
   const title = data.customTitle || (language === 'zh' ? '生成音频' : 'Generate Audio');
   // 生成完成后变成与「音频上传」一致的波形播放卡；空态用统一的占位框。
   const hasAudio = Boolean(data.url) && data.status !== 'uploading';
@@ -7724,7 +7921,7 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
       loadingNodeId={id}
       error={data.error}
       topFloatingPanel={hasAudio ? <AudioActionToolbar sourceNodeId={id} /> : undefined}
-      promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="suno-v4" />}
+      promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="qwen3-tts-voice-design-local" />}
     >
       {hasAudio ? (
         <AudioWaveformPlayer
@@ -7740,7 +7937,11 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
           zh={language === 'zh'}
           className={clsx('w-full', NODE_TONE_STYLES.audio.surface)}
           style={{ height: 150 }}
-          caption={{ zh: '输入提示词生成音频', en: 'Enter a prompt to generate audio' }}
+          caption={isTextToSound
+            ? { zh: '仅生成环境声/拟音，不能朗读台词', en: 'Sound effects and ambience only; not speech' }
+            : isVoiceDesign
+              ? { zh: '输入台词，并在参数中描述女声/男声、年龄、情绪和语速', en: 'Enter dialogue, then describe voice, age, emotion and pace in parameters' }
+              : { zh: '连接 3–10 秒参考音频，再输入文字生成', en: 'Connect a 3–10s voice reference, then enter text' }}
         />
       )}
     </BaseNode>
@@ -8715,6 +8916,7 @@ import { NodeVersionsBadge, NodeVersionsModal } from './NodeVersions';
 import type { NodeVersion } from '../../store';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 import { LayerEditorNode } from './LayerEditorNode';
+import { VideoEditorNode } from './VideoEditorNode';
 
 // Every node component is memoized: React Flow re-renders ALL registered node
 // components whenever its nodes array changes identity (i.e. every drag frame
@@ -8735,4 +8937,5 @@ export const nodeTypes = {
   directorStageNode: memo(DirectorStageNode),
   compositionPreviewNode: memo(CompositionPreviewNode),
   layerEditorNode: memo(LayerEditorNode),
+  videoEditorNode: memo(VideoEditorNode),
 };
