@@ -1,0 +1,59 @@
+.ccy-editor{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;background:#111317;color:#e7e8eb;font:12px/1.5 Inter,"Microsoft YaHei",sans-serif;outline:none;color-scheme:dark}
+.ccy-editor *{box-sizing:border-box}.ccy-editor button{display:inline-flex;gap:7px;align-items:center;justify-content:center;border:1px solid transparent;border-radius:6px;padding:7px 10px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap;font:inherit}
+.ccy-editor button:hover{background:#ffffff0d}.ccy-editor button:disabled{opacity:.35;cursor:not-allowed}.ccy-editor button:focus-visible,.ccy-editor input:focus-visible,.ccy-editor select:focus-visible{outline:2px solid #fb923c;outline-offset:2px}
+.ccy-editor input,.ccy-editor select{background:#23262e;color:#e9eaed;border:1px solid #373a43;border-radius:5px;padding:7px 9px;min-width:0;font:inherit}.ccy-editor input[type=range]{padding:0;accent-color:#fb923c}
+.ccy-editor .ve-primary{background:#f97316;color:white;padding:9px 20px;font-weight:600}.ccy-editor .ve-primary:hover{background:#ea580c}
+.ccy-editor .ve-header{height:58px;min-height:58px;display:flex;align-items:center;padding:0 18px;gap:13px;border-bottom:1px solid #2b2e35;background:#181b21}
+.ccy-editor .ve-header input{background:transparent;border-color:transparent;font-weight:600;width:220px}.ccy-editor .ve-save{color:#929aa9;font-size:11px}.ccy-editor .ve-engine{color:#f6b585;font-size:11px}
+.ccy-editor .ve-grow{flex:1}.ccy-editor .ve-divider{height:19px;width:1px;background:#353941;display:block}
+.ccy-editor .ve-main{display:grid;grid-template-columns:265px minmax(0,1fr) 255px;flex:1;min-height:220px;overflow:hidden}
+.ccy-editor .ve-library{border-right:1px solid #2b2e35;background:#181a20;display:flex;flex-direction:column;min-height:0}
+.ccy-editor .ve-tabs{display:flex;padding:13px 12px 5px;gap:12px}.ccy-editor .ve-tabs button{border-radius:0;color:#929aa9;border-bottom:2px solid transparent;padding-bottom:12px}.ccy-editor .ve-tabs .active{color:#fff;border-bottom-color:#fb923c}
+.ccy-editor .ve-import{margin:12px;border:1px dashed #656c7a;background:#262a33;padding:13px 5px}.ccy-editor .ve-assets{overflow:auto;padding:0 12px 15px;display:grid;grid-template-columns:1fr 1fr;gap:12px;align-content:start;flex:1}
+.ccy-editor .ve-asset{cursor:grab;min-width:0}.ccy-editor .ve-asset-thumb{height:74px;background:#2a2e38;position:relative;display:flex;align-items:center;justify-content:center;border-radius:6px;overflow:hidden;color:#869bb9}
+.ccy-editor .ve-asset-thumb.audio{background:#153a38;color:#59b5a1}.ccy-editor .ve-asset-thumb img{height:100%;width:100%;object-fit:contain}.ccy-editor .ve-asset-thumb span{position:absolute;bottom:3px;left:5px;font-size:9px;background:#0009;border-radius:3px;padding:1px 3px;color:#e3e7ed}
+.ccy-editor .ve-asset-thumb button{position:absolute;right:3px;bottom:3px;padding:3px;background:#e8ebf4;color:#111}.ccy-editor .ve-asset p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;margin:5px 0;color:#c3c8d1}
+.ccy-editor .ve-empty{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;color:#767e8e;text-align:center;padding:30px 12px;width:100%;height:100%}.ccy-editor .ve-empty p{margin:0}.ccy-editor .ve-empty small{font-size:11px}
+.ccy-editor .ve-viewer{display:flex;flex-direction:column;min-width:0;min-height:0;background:#101216}.ccy-editor .ve-viewer-title{display:flex;justify-content:space-between;padding:12px 17px;color:#8e96a5}
+.ccy-editor .ve-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:5px 22px}.ccy-editor .ve-screen{height:100%;max-width:100%;position:relative;background:#050608;box-shadow:0 4px 24px #0006;overflow:hidden}
+.ccy-editor .ve-screen video,.ccy-editor .ve-screen img{width:100%;height:100%;object-fit:contain;display:block}.ccy-editor .ve-preview-error{position:absolute;inset:0;background:#000c;display:flex;align-items:center;justify-content:center;gap:15px;flex-direction:column}
+.ccy-editor .ve-transport{height:58px;display:flex;align-items:center;justify-content:center;gap:20px;position:relative;flex-shrink:0}.ccy-editor .ve-transport>span:first-child{position:absolute;left:18px;color:#f1f3f7;font-variant-numeric:tabular-nums}
+.ccy-editor .ve-transport small{color:#747f92}.ccy-editor .ve-shortcut{position:absolute;right:18px;font-size:10px;color:#7a8290}.ccy-editor .ve-play{border-radius:50%;background:#2d323d;width:35px;height:35px}
+.ccy-editor .ve-inspector{background:#181a20;border-left:1px solid #2b2e35;padding:14px 18px;overflow:auto}.ccy-editor .ve-inspector h3{font-size:12px;margin:0 0 15px;font-weight:600}
+.ccy-editor .ve-inspector label{display:flex;flex-direction:column;margin:14px 0;gap:8px;color:#aeb5c3;font-size:11px}.ccy-editor .ve-inspector label span{display:flex;gap:8px;align-items:center}
+.ccy-editor .ve-selected-name{color:#f6ba89;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ccy-editor .ve-hint{font-size:10px;color:#7d8798;line-height:1.8}
+.ccy-editor hr{border:0;border-top:1px solid #30343b;margin:18px 0}.ccy-editor .ve-danger{color:#fa8d8d}
+.ccy-editor .ve-timeline{height:42vh;min-height:280px;max-height:520px;border-top:1px solid #333640;background:#171a20;display:flex;flex-direction:column}
+.ccy-editor .ve-editbar{height:43px;min-height:43px;display:flex;align-items:center;gap:5px;padding:0 15px;border-bottom:1px solid #30343b}.ccy-editor .ve-editbar small{font-size:9px;color:#7c879a;margin-left:3px}
+.ccy-editor .ve-zoom{display:flex;align-items:center;gap:8px;width:140px}.ccy-editor .ve-zoom input{width:105px}
+.ccy-editor .ve-tracks{display:flex;overflow:auto;flex:1;min-height:0}.ccy-editor .ve-track-labels{width:104px;flex-shrink:0;background:#1c2027;border-right:1px solid #343843;position:sticky;left:0;z-index:3}
+.ccy-editor .ve-track-labels>div{height:64px;display:flex;gap:8px;align-items:center;padding:0 13px;border-bottom:1px solid #ffffff06;color:#8995a9;font-size:11px}.ccy-editor .ve-track-labels>div:first-child{height:31px;font-size:10px;color:#636f81}
+.ccy-editor .ve-track-scroll{min-width:0;flex:1;min-height:100%}.ccy-editor .ve-track-content{position:relative;min-height:100%}
+.ccy-editor .ve-ruler{height:31px;position:relative;border-bottom:1px solid #ffffff07;cursor:crosshair;background:repeating-linear-gradient(90deg,transparent 0,transparent 39px,#ffffff09 39px,#ffffff09 40px)}
+.ccy-editor .ve-ruler span{position:absolute;top:5px;color:#798494;font-size:9px;padding-left:5px;font-variant-numeric:tabular-nums}
+.ccy-editor .ve-video-lane,.ccy-editor .ve-audio-lane{height:64px;position:relative;display:flex;align-items:center;border-bottom:1px solid #ffffff09}
+.ccy-editor .ve-clip{height:50px;min-width:4px;display:flex;align-items:center;gap:6px;padding:0 12px;position:absolute;top:7px;flex-shrink:0;background:#314967;color:#d9e7fd;border:1px solid #557caa;border-radius:5px;cursor:grab;user-select:none;overflow:hidden;touch-action:none}
+.ccy-editor .ve-clip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.ccy-editor .ve-clip small{position:absolute;bottom:2px;right:8px;font-size:8px;opacity:.75}
+.ccy-editor .ve-clip.image{background:#634c29;border-color:#9e7c48;color:#f7ddb4}.ccy-editor .ve-clip.audio{background:#225447;border-color:#3b947b;color:#bcf1dd;position:absolute;top:7px;cursor:ew-resize}
+.ccy-editor .ve-clip.selected{border:2px solid #ffad61;box-shadow:inset 0 0 0 1px #ffad6140}.ccy-editor .ve-trim-handle{position:absolute;top:0;bottom:0;width:8px;border-radius:0;padding:0;cursor:ew-resize;background:#ffffff15;z-index:2;touch-action:none}
+.ccy-editor .ve-trim-handle.left{left:0}.ccy-editor .ve-trim-handle.right{right:0}.ccy-editor .ve-trim-handle:hover{background:#ffb36a}.ccy-editor .ve-lane-empty{color:#59687b;font-size:11px;padding-left:20px}
+.ccy-editor .ve-playhead{position:absolute;top:0;bottom:0;width:1px;background:#fba968;z-index:4;pointer-events:none}.ccy-editor .ve-playhead>div{position:absolute;top:0;left:-5px;width:11px;height:15px;background:#fba968;clip-path:polygon(0 0,100% 0,100% 65%,50% 100%,0 65%);pointer-events:auto;cursor:ew-resize;touch-action:none}
+.ccy-editor .ve-status{height:27px;min-height:27px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;color:#8a93a1;font-size:10px;background:#13161b;border-top:1px solid #292d34}
+.ccy-editor .ve-snap-guide{position:absolute;top:0;bottom:0;width:1px;background:#5eead4;z-index:5;pointer-events:none}
+.ccy-editor .ve-snap-guide span{position:absolute;top:0;left:4px;white-space:nowrap;background:#13332f;color:#99f6e4;padding:2px 5px;border-radius:3px;font-size:10px}
+.ccy-editor .ve-snap-toggle{display:flex;align-items:center;gap:5px;white-space:nowrap;padding:0 8px}
+.ccy-editor .ve-snap-toggle input{accent-color:#fb923c}
+.ccy-editor .ve-black-gap{position:absolute;inset:0;background:#000}
+.ccy-editor .ve-align-controls button{border-color:#39424c;margin:0 4px 5px 0;font-size:11px}
+.ccy-editor .ve-layer-controls button{border-color:#39424c;margin:0 4px 5px 0;font-size:11px}
+.ccy-editor .ve-preview-layer{position:absolute;transform:translate(-50%,-50%);pointer-events:none}
+.ccy-editor .ve-preview-error{z-index:2}
+.ccy-editor .ve-track-active{background:#fb923c0b}
+.ccy-editor .ve-track-labels>div:not(:first-child){padding:0 6px}
+.ccy-editor .ve-track-labels button{padding:8px 5px;width:100%;font-size:11px}
+.ccy-editor .ve-track-labels .ve-track-active{color:#ffb778}
+.ccy-editor .ve-track-labels{align-self:flex-start;min-height:100%}
+.ccy-editor .ve-screen{background:#000}
+.ccy-editor .ve-editbar{overflow-x:auto;flex-shrink:0}
+@media(max-width:1100px){.ccy-editor .ve-main{grid-template-columns:210px minmax(0,1fr) 210px}.ccy-editor .ve-shortcut,.ccy-editor .ve-save{display:none}.ccy-editor .ve-header input{width:165px}.ccy-editor .ve-inspector{padding:10px 12px}}
+@media(max-width:800px){.ccy-editor .ve-main{grid-template-columns:160px minmax(0,1fr) 175px}.ccy-editor .ve-assets{grid-template-columns:1fr}.ccy-editor .ve-engine{display:none}.ccy-editor .ve-header{gap:6px;padding:0 8px}.ccy-editor .ve-editbar{gap:0;padding:0 6px}.ccy-editor .ve-editbar small{display:none}.ccy-editor .ve-transport>span:first-child{font-size:10px;left:7px}}
