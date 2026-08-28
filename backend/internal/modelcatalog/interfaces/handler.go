@@ -490,6 +490,13 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		DefaultStatus: http.StatusOK,
 	}, h.localSeedVR2Upscale)
 
+	huma.Register(api, huma.Operation{
+		OperationID: "local-video-trim", Method: http.MethodPost,
+		Path: "/api/app/video/trim",
+		Summary: "Trim a video locally with FFmpeg (no AI generation)",
+		Tags: []string{"App", "Generation"}, Security: userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.localVideoTrim)
 
 
 	// --- User App: Task lookup (recovery polling) ---
