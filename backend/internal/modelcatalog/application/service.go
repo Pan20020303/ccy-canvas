@@ -1069,9 +1069,9 @@ type GenerateRequest struct {
 	ReferenceAudio   string
 	ReferenceAudios  []string
 	ReferenceMode    string // auto / start_frame / start_end / image_reference / three_view / motion_mimic / video_edit
-	// AudioSetting controls HappyHorse video-edit audio: "auto" (model decides,
-	// default) or "origin" (keep the source video's audio). Ignored by other
-	// modes/models.
+	// AudioSetting controls optional video audio behavior. Supported values are
+	// model-specific; callers should only send values exposed by the active model
+	// template (for example "on"/"off" or "auto"/"origin").
 	AudioSetting string
 	// Seed is the optional random seed [0, 2147483647] for reproducible video
 	// generation. nil → the provider picks a random seed.
