@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"regexp"
@@ -26,6 +27,10 @@ var httpStatusRegex = regexp.MustCompile(`(?i)\bHTTP\s+(\d{3})\b`)
 func httpStatusFromError(err error) int {
 	if err == nil {
 		return 0
+	}
+	var upstream *providerResponseError
+	if errors.As(err, &upstream) {
+		return upstream.StatusCode
 	}
 	m := httpStatusRegex.FindStringSubmatch(err.Error())
 	if len(m) < 2 {
@@ -174,7 +179,7 @@ func ClassifyError(httpStatus int, errMsg string) ErrorCategory {
 			return CategoryTimeout
 		}
 	}
-	if httpStatus == 408 {
+	if httpStatus == 408 || httpStatus == 504 {
 		return CategoryTimeout
 	}
 

@@ -53,7 +53,17 @@ func publicTaskErrorMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	return apperror.PublicMessage(err)
+	message := apperror.PublicMessage(err)
+	var upstream *providerResponseError
+	if errors.As(err, &upstream) {
+		if upstream.Code != "" && upstream.Code != "unrecognized" {
+			message += " [上游错误码: " + upstream.Code + "]"
+		}
+		if upstream.RequestID != "" {
+			message += " [请求编号: " + upstream.RequestID + "]"
+		}
+	}
+	return message
 }
 
 const (
@@ -1920,6 +1930,11 @@ func (s *Service) recordChannelOutcome(
 	var errMsg string
 	if err != nil {
 		errMsg = publicTaskErrorMessage(err)
+		var upstream *providerResponseError
+		if errors.As(err, &upstream) {
+			log.Printf("[provider_failure] log_id=%s provider_id=%s http_status=%d upstream_code=%q upstream_request_id=%q duration_ms=%d",
+				req.GenerationLogID, c.cfg.ID, upstream.StatusCode, upstream.Code, upstream.RequestID, durationMs)
+		}
 		cat := ClassifyError(httpStatus, errMsg)
 		// Timeouts get their own counter (Stage 4) and are NOT counted
 		// against the cooldown threshold. Everything else flows through

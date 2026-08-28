@@ -63,19 +63,27 @@ func providerImageParameterSchema(pc *domain.ProviderConfig, modelName string) p
 	if err := json.Unmarshal(pc.ParameterSchema, &parsed); err != nil {
 		return fallback
 	}
+	// A per-model entry may carry only a subset of fields (e.g. just
+	// credit_cost) while the provider-level schema holds request_format,
+	// parameter_aliases and defaults. Merge instead of replace so a sparse
+	// model schema still inherits the provider-level chat-image contract —
+	// otherwise e.g. gpt-image-2 loses "chat_completions_image" + the
+	// aspect_ratio alias and falls back to the pixel-size text-only path,
+	// collapsing 16:9/9:16 into 1536x1024/1024x1536.
 	if len(parsed.Models) > 0 {
 		if modelSchema, ok := parsed.Models[modelName]; ok {
-			parsed = modelSchema
+			overlayProviderParameterSchema(&parsed, modelSchema)
 		} else {
 			lowerModel := strings.ToLower(strings.TrimSpace(modelName))
 			for key, modelSchema := range parsed.Models {
 				if strings.ToLower(strings.TrimSpace(key)) == lowerModel {
-					parsed = modelSchema
+					overlayProviderParameterSchema(&parsed, modelSchema)
 					break
 				}
 			}
 		}
 	}
+	parsed.Models = nil
 	if len(parsed.AllowedParameters) == 0 {
 		parsed.AllowedParameters = fallback.AllowedParameters
 	}
@@ -83,6 +91,48 @@ func providerImageParameterSchema(pc *domain.ProviderConfig, modelName string) p
 		parsed.Defaults = fallback.Defaults
 	}
 	return parsed
+}
+
+// overlayProviderParameterSchema merges a model-specific schema over a
+// provider-level schema. Model-level fields take precedence; anything the
+// model schema leaves empty falls through to the provider-level value.
+func overlayProviderParameterSchema(dst *providerParameterSchema, src providerParameterSchema) {
+	if len(src.AllowedParameters) > 0 {
+		dst.AllowedParameters = src.AllowedParameters
+	}
+	if src.Defaults != nil {
+		if dst.Defaults == nil {
+			dst.Defaults = src.Defaults
+		} else {
+			for k, v := range src.Defaults {
+				dst.Defaults[k] = v
+			}
+		}
+	}
+	if len(src.ParameterAliases) > 0 {
+		if dst.ParameterAliases == nil {
+			dst.ParameterAliases = src.ParameterAliases
+		} else {
+			for k, v := range src.ParameterAliases {
+				dst.ParameterAliases[k] = v
+			}
+		}
+	}
+	if len(src.ModelRoutes) > 0 {
+		dst.ModelRoutes = src.ModelRoutes
+	}
+	if strings.TrimSpace(src.RequestFormat) != "" {
+		dst.RequestFormat = src.RequestFormat
+	}
+	if strings.TrimSpace(src.ReferenceFormat) != "" {
+		dst.ReferenceFormat = src.ReferenceFormat
+	}
+	if len(src.QualityOptions) > 0 {
+		dst.QualityOptions = src.QualityOptions
+	}
+	if src.CreditCost != nil {
+		dst.CreditCost = src.CreditCost
+	}
 }
 
 func isChatCompletionsImageSchema(schema providerParameterSchema) bool {

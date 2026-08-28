@@ -2753,3 +2753,27 @@ func TestProviderRequestErrorMessage_DialFailure(t *testing.T) {
 		t.Errorf("expected firewall hint in message, got: %s", msg)
 	}
 }
+
+func TestProviderImageParameterSchemaMergesModelOverProvider(t *testing.T) {
+	schema := json.RawMessage(`{
+		"request_format": "chat_completions_image",
+		"parameter_aliases": {"aspect_ratio": "aspect_ratio", "resolution": "output_resolution"},
+		"allowed_parameters": ["model", "messages", "stream", "aspect_ratio", "output_resolution"],
+		"defaults": {"stream": false, "aspect_ratio": "auto"},
+		"models": {"gpt-image-2": {"credit_cost": 3}}
+	}`)
+	pc := &domain.ProviderConfig{ParameterSchema: schema}
+	got := providerImageParameterSchema(pc, "gpt-image-2")
+	if got.RequestFormat != "chat_completions_image" {
+		t.Fatalf("RequestFormat = %q, want chat_completions_image", got.RequestFormat)
+	}
+	if got.ParameterAliases["aspect_ratio"] != "aspect_ratio" {
+		t.Fatalf("ParameterAliases[aspect_ratio] = %q, want aspect_ratio", got.ParameterAliases["aspect_ratio"])
+	}
+	if got.CreditCost == nil || *got.CreditCost != 3 {
+		t.Fatalf("CreditCost = %v, want 3", got.CreditCost)
+	}
+	if got.Defaults["aspect_ratio"] != "auto" {
+		t.Fatalf("Defaults[aspect_ratio] = %v, want auto (inherited from provider level)", got.Defaults["aspect_ratio"])
+	}
+}
