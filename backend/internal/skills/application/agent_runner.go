@@ -86,7 +86,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	stats := RunStats{}
 	max := r.MaxSteps
 	if max == 0 {
-		max = 12
+		max = 24
 	}
 
 	model := in.Model
@@ -293,8 +293,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		}
 	}
 
-	emit(EventError, map[string]string{"message": "Max steps exceeded"})
-	return stats, errors.New("max steps exceeded")
+	maxStepsMessage := "任务步骤达到上限。批量创建生成节点时请使用 create_generation_batch；其他复杂任务会由系统自动分段，仍失败时请查看已完成段数。"
+	emit(EventError, map[string]string{"message": maxStepsMessage})
+	return stats, apperror.New(apperror.CodeValidation, maxStepsMessage)
 }
 
 func toolCallsNamed(calls []ToolCall, name string) []ToolCall {
@@ -382,7 +383,34 @@ func sanitizeConversationHistory(history []ChatMessage) []ChatMessage {
 			Content: message.Content,
 		})
 	}
-	return sanitized
+	if len(sanitized) == 0 {
+		return nil
+	}
+
+	// Keep the newest complete messages inside a deterministic budget. This
+	// prevents a previously pasted document from being resent forever and
+	// making an otherwise small follow-up exceed the model context window.
+	keptRunes := 0
+	newestFirst := make([]ChatMessage, 0, len(sanitized))
+	for index := len(sanitized) - 1; index >= 0; index-- {
+		messageRunes := len([]rune(sanitized[index].Content))
+		if messageRunes > MaxAgentHistoryRunes {
+			continue
+		}
+		if keptRunes+messageRunes > MaxAgentHistoryRunes {
+			break
+		}
+		keptRunes += messageRunes
+		newestFirst = append(newestFirst, sanitized[index])
+	}
+	if len(newestFirst) == 0 {
+		return nil
+	}
+	kept := make([]ChatMessage, len(newestFirst))
+	for index := range newestFirst {
+		kept[len(newestFirst)-1-index] = newestFirst[index]
+	}
+	return kept
 }
 
 // ─── 跨轮工具历史(P3)────────────────────────────────────────────────────────

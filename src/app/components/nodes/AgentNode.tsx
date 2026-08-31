@@ -138,11 +138,14 @@ export function AgentNode({ id, data, selected }: any) {
               createGroup(patch.node_ids, patch.name);
               break;
             case "run_node": {
+              if (typeof patch.model === "string" && patch.model.trim()) {
+                updateNd(patch.node_id, { model: patch.model.trim() });
+              }
               const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
               const nodeData = (node?.data ?? {}) as Record<string, string>;
-              const prompt = nodeData.promptDraft ?? nodeData.content ?? "";
+              const prompt = typeof patch.prompt === "string" ? patch.prompt : (nodeData.promptDraft ?? nodeData.content ?? "");
               if (prompt.trim()) {
-                runNd(patch.node_id, { prompt });
+                void runNd(patch.node_id, { prompt, model: patch.model });
               }
               break;
             }

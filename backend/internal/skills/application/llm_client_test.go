@@ -1,9 +1,45 @@
 package application
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"ccy-canvas/backend/internal/shared/apperror"
 )
+
+func TestNewLLMHTTPErrorExplainsContextLimit(t *testing.T) {
+	raw := `{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1394697 tokens (1394697 in the messages, 0 in the completion)."}}`
+	err := newLLMHTTPError(400, raw, "deepseek-v4-flash")
+	message := apperror.PublicMessage(err)
+	for _, want := range []string{"deepseek-v4-flash", "1,394,697", "1,048,576", "自动分段"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("public message %q does not contain %q", message, want)
+		}
+	}
+	if apperror.Normalize(err).Code != apperror.CodeRequestTooLarge {
+		t.Fatalf("code = %s, want %s", apperror.Normalize(err).Code, apperror.CodeRequestTooLarge)
+	}
+	if !strings.Contains(apperror.Diagnostic(err), "LLM HTTP 400") {
+		t.Fatalf("diagnostic = %q", apperror.Diagnostic(err))
+	}
+}
+
+func TestNewLLMHTTPErrorExplainsGenericBadRequest(t *testing.T) {
+	err := newLLMHTTPError(400, `{"error":{"message":"invalid tool schema"}}`, "model-x")
+	message := apperror.PublicMessage(err)
+	if !strings.Contains(message, "HTTP 400") || strings.Contains(message, "服务器不可用") {
+		t.Fatalf("unexpected public message: %q", message)
+	}
+}
+
+func TestClassifyLLMFailureExplainsNetworkFailure(t *testing.T) {
+	err := classifyLLMFailure(fmt.Errorf("LLM request failed: connection reset by peer"), "model-x")
+	message := apperror.PublicMessage(err)
+	if !strings.Contains(message, "模型渠道") || strings.Contains(message, "服务器不可用") {
+		t.Fatalf("unexpected public message: %q", message)
+	}
+}
 
 // usage 尾包(choices 为空)必须在空-choices 跳过之前被抓取 —— 驱动上下文计量表。
 func TestParseSSECapturesUsageTailChunk(t *testing.T) {

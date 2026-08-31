@@ -42,7 +42,7 @@ export type CanvasPatch = (
   | { op: "add_node"; node: Node }
   | { op: "add_edge"; edge: Edge }
   | { op: "patch_node_data"; node_id: string; patch: Record<string, unknown> }
-  | { op: "run_node"; node_id: string; model?: string }
+  | { op: "run_node"; node_id: string; prompt?: string; model?: string }
   | { op: "move_node"; node_id: string; position: { x: number; y: number } }
   | { op: "delete_node"; node_id: string }
   | { op: "create_group"; node_ids: string[]; name?: string }

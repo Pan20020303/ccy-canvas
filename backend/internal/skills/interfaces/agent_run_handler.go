@@ -306,7 +306,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
-	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
+	stats, runErr := runner.RunAdaptive(ctx, skillsapp.RunInput{
 		SystemPrompt: systemPrompt,
 		Model:        catalogModel,
 		UserMessage:  resolvedMessage,

@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"ccy-canvas/backend/internal/shared/apperror"
 )
 
 // Minimal LLM chat client speaking the OpenAI Chat Completions wire format
@@ -20,14 +24,14 @@ import (
 type ChatMessage struct {
 	Role       string     `json:"role"` // "system" | "user" | "assistant" | "tool"
 	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`  // only for "assistant"
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // only for "assistant"
 	ToolCallID string     `json:"tool_call_id,omitempty"` // only for "tool"
 	Name       string     `json:"name,omitempty"`         // tool name for "tool" messages
 }
 
 type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"` // always "function"
+	ID       string     `json:"id"`
+	Type     string     `json:"type"` // always "function"
 	Function ToolCallFn `json:"function"`
 }
 
@@ -38,7 +42,7 @@ type ToolCallFn struct {
 
 // ToolDef matches OpenAI's tools[] entry shape.
 type ToolDef struct {
-	Type     string `json:"type"` // always "function"
+	Type     string    `json:"type"` // always "function"
 	Function ToolDefFn `json:"function"`
 }
 
@@ -286,7 +290,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 	health ChannelHealthReporter,
 ) (*ChatResponse, error) {
 	if len(endpoints) == 0 {
-		return nil, errors.New("no endpoints configured for model")
+		return nil, apperror.New(apperror.CodeInvalidInput, "当前模型没有可用渠道，请管理员检查模型服务配置。")
 	}
 
 	var lastErr error
@@ -312,7 +316,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 			if !isTransientStreamError(err) {
 				// Ollama 系网关不认字符串式 tool_calls.arguments(4xx):
 				// 换对象形态对同一 endpoint 降级重试一次。
-				if !triedObjectArgs && hasToolCallHistory(messages) && strings.Contains(err.Error(), "LLM HTTP 4") {
+				if !triedObjectArgs && hasToolCallHistory(messages) && isLLMHTTP4xxError(err) {
 					triedObjectArgs = true
 					objectArgs = true
 					continue
@@ -332,10 +336,10 @@ func (c *LLMClient) ChatStreamMultiOpts(
 		// the error string in modelcatalog.ClassifyError; we pass 0 here
 		// because streaming errors typically don't surface a clean status).
 		if health != nil && ep.ProviderID != "" && endpointLastErr != nil {
-			health.OnEndpointFailure(ctx, ep.ProviderID, 0, endpointLastErr.Error())
+			health.OnEndpointFailure(ctx, ep.ProviderID, 0, apperror.Diagnostic(endpointLastErr))
 		}
 	}
-	return nil, lastErr
+	return nil, classifyLLMFailure(lastErr, model)
 }
 
 func (c *LLMClient) doStream(
@@ -385,7 +389,7 @@ func (c *LLMClient) doStream(
 
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return nil, fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(raw))
+		return nil, newLLMHTTPError(resp.StatusCode, string(raw), model)
 	}
 
 	// Some relays don't honour stream:true and just send a regular JSON body.
@@ -396,6 +400,105 @@ func (c *LLMClient) doStream(
 	}
 
 	return parseSSE(resp.Body, opts)
+}
+
+var (
+	maxContextTokensRE = regexp.MustCompile(`(?i)maximum context length is[\s,:]*([0-9]+)[\s]*tokens`)
+	requestedTokensRE  = regexp.MustCompile(`(?i)(?:you requested|requested)[\s,:]*([0-9]+)[\s]*tokens`)
+)
+
+// newLLMHTTPError turns provider diagnostics into a stable, actionable public
+// error while retaining the full bounded response for server-side health logs.
+func newLLMHTTPError(status int, raw, model string) error {
+	diagnostic := fmt.Errorf("LLM HTTP %d: %s", status, raw)
+	lower := strings.ToLower(raw)
+	maxTokens := firstRegexInt(maxContextTokensRE, raw)
+	requestedTokens := firstRegexInt(requestedTokensRE, raw)
+	contextExceeded := maxTokens > 0 || strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "maximum context length") || strings.Contains(lower, "too many tokens")
+	if contextExceeded {
+		modelLabel := strings.TrimSpace(model)
+		if modelLabel == "" {
+			modelLabel = "当前模型"
+		}
+		message := fmt.Sprintf("内容超过 %s 的上下文上限", modelLabel)
+		if requestedTokens > 0 && maxTokens > 0 {
+			message += fmt.Sprintf("：本次请求约 %s tokens，上限 %s tokens", formatInteger(requestedTokens), formatInteger(maxTokens))
+		} else if maxTokens > 0 {
+			message += fmt.Sprintf("（上限 %s tokens）", formatInteger(maxTokens))
+		}
+		message += "。当前模型调用尚未开始执行，请让系统自动分段，或缩短单次提交内容。"
+		return apperror.Wrap(apperror.CodeRequestTooLarge, message, diagnostic)
+	}
+
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return apperror.Wrap(apperror.CodeInvalidInput,
+			fmt.Sprintf("模型服务拒绝了请求（HTTP %d）。通常是内容长度、工具参数或参考素材格式不兼容；请查看任务详情后调整。", status), diagnostic)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return apperror.Wrap(apperror.CodeUpstreamUnavailable,
+			fmt.Sprintf("模型渠道鉴权失败（HTTP %d），请管理员检查该模型的 API Key 和渠道配置。", status), diagnostic)
+	case http.StatusTooManyRequests:
+		return apperror.WithRetryable(apperror.Wrap(apperror.CodeRateLimited,
+			"模型渠道当前限流（HTTP 429），请稍后重试或切换模型。", diagnostic), true)
+	default:
+		if status >= 500 {
+			return apperror.WithRetryable(apperror.Wrap(apperror.CodeUpstreamUnavailable,
+				fmt.Sprintf("模型渠道返回 HTTP %d，当前渠道暂时不可用；可稍后重试或切换模型。", status), diagnostic), true)
+		}
+		return apperror.Wrap(apperror.CodeUpstreamUnavailable,
+			fmt.Sprintf("模型调用失败（HTTP %d），请检查模型渠道配置。", status), diagnostic)
+	}
+}
+
+func classifyLLMFailure(err error, model string) error {
+	if err == nil {
+		return nil
+	}
+	var appErr *apperror.Error
+	if errors.As(err, &appErr) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	diagnostic := apperror.Diagnostic(err)
+	lower := strings.ToLower(diagnostic)
+	if strings.Contains(diagnostic, "LLM HTTP 4xx") {
+		return newLLMHTTPError(http.StatusBadRequest, diagnostic, model)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded") {
+		return apperror.WithRetryable(apperror.Wrap(apperror.CodeTimeout,
+			"模型响应超时。任务没有得到完整结果，请稍后重试或切换模型。", err), true)
+	}
+	if strings.Contains(lower, "llm parse") || strings.Contains(lower, "no choices") {
+		return apperror.WithRetryable(apperror.Wrap(apperror.CodeUpstreamUnavailable,
+			"模型渠道返回了无法解析的响应，请重试或切换模型；管理员可在渠道日志中查看原始错误。", err), true)
+	}
+	return apperror.WithRetryable(apperror.Wrap(apperror.CodeUpstreamUnavailable,
+		"无法连接模型渠道或流式响应被中断，请重试或切换模型；管理员可在渠道日志中查看原始错误。", err), true)
+}
+
+func isLLMHTTP4xxError(err error) bool {
+	diagnostic := apperror.Diagnostic(err)
+	return strings.Contains(diagnostic, "LLM HTTP 4")
+}
+
+func firstRegexInt(re *regexp.Regexp, text string) int64 {
+	match := re.FindStringSubmatch(text)
+	if len(match) != 2 {
+		return 0
+	}
+	value, _ := strconv.ParseInt(match[1], 10, 64)
+	return value
+}
+
+func formatInteger(value int64) string {
+	digits := strconv.FormatInt(value, 10)
+	for index := len(digits) - 3; index > 0; index -= 3 {
+		digits = digits[:index] + "," + digits[index:]
+	}
+	return digits
 }
 
 // parseSSE consumes a Server-Sent Events stream and reconstructs the OpenAI
@@ -442,7 +545,7 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 					// OpenRouter 等用 reasoning —— 两个都认。
 					ReasoningContent string `json:"reasoning_content"`
 					Reasoning        string `json:"reasoning"`
-					ToolCalls []struct {
+					ToolCalls        []struct {
 						// index 标准在 tool_call 层;Ollama 系网关放到 function 里 —— 两处都认。
 						Index    *int   `json:"index"`
 						ID       string `json:"id,omitempty"`
@@ -616,7 +719,7 @@ func (c *LLMClient) VisionOneShot(
 
 	var lastErr error
 	for _, ep := range endpoints {
-		answer, err := c.visionOnce(ctx, ep, bodyJSON)
+		answer, err := c.visionOnce(ctx, ep, model, bodyJSON)
 		if err == nil {
 			return answer, nil
 		}
@@ -625,7 +728,7 @@ func (c *LLMClient) VisionOneShot(
 	return "", lastErr
 }
 
-func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, bodyJSON []byte) (string, error) {
+func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, bodyJSON []byte) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.BaseURL+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", err
@@ -640,7 +743,7 @@ func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, bodyJSON []byte
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return "", fmt.Errorf("vision LLM HTTP %d: %s", resp.StatusCode, string(raw))
+		return "", newLLMHTTPError(resp.StatusCode, string(raw), model)
 	}
 	parsed, err := parseOneShot(resp.Body, StreamOpts{})
 	if err != nil {

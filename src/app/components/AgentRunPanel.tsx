@@ -597,9 +597,15 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         createGroup(patch.node_ids, patch.name);
         break;
       case "run_node": {
+        // The backend includes prompt/model in every run patch. Keeping the
+        // event self-contained prevents rapid add/set/run streams from racing
+        // the React store and leaving random batch items blank or on defaults.
+        if (typeof patch.model === "string" && patch.model.trim()) {
+          updateNodeData(patch.node_id, { model: patch.model.trim() });
+        }
         const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
         const data = (node?.data ?? {}) as Record<string, string>;
-        const prompt = data.promptDraft ?? data.content ?? "";
+        const prompt = typeof patch.prompt === "string" ? patch.prompt : (data.promptDraft ?? data.content ?? "");
         if (!prompt.trim()) break;
 
         const serviceTypeMap: Record<string, string> = {

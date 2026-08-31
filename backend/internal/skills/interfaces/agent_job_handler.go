@@ -62,6 +62,10 @@ func (rt *AgentRunRouter) createAgentJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	req.ConversationID = formatUUID(conversation.ID)
+	// Durable execution reloads canonical conversation history from the
+	// database. Persisting the browser's optimistic copy can add several MB on
+	// every retry (including failed pasted documents) without affecting the run.
+	req.History = nil
 	payload, err := json.Marshal(req)
 	if err != nil {
 		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInvalidInput, "无法保存任务内容", err))
@@ -370,6 +374,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【本次对话的最新画布状态】\n" + overview)
 	}
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentBatchGenerationGuide)
 	if agent.CanvasTools {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【真实执行】所有画布变化必须通过工具调用完成。先执行，再汇报；不得在未调用工具时声称已经创建、连线或生成。")
 	}
@@ -411,7 +416,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		emit(event, data)
 	}
 	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints, Health: rt.catalogSvc}
-	stats, runErr := runner.Run(ctx, skillsapp.RunInput{
+	stats, runErr := runner.RunAdaptive(ctx, skillsapp.RunInput{
 		SystemPrompt: systemPrompt,
 		Model:        catalogModel,
 		UserMessage:  resolvedMessage,

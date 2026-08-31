@@ -599,6 +599,8 @@ const AgentInteractionGuide = `【交互准则】
 4. 已经为你提供了完整的画布快照，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；需要多个节点细节时用 read_nodes，需要分析连线关系时用 get_subgraph，只有需要单个节点完整细节时才用 read_node。
 5. 多步画布操作期间，用 get_canvas_delta(since_revision) 获取增量变化；移动、删除、连线、分组等写操作优先携带最近返回的 expected_revision。发生 revision conflict 时先读取增量再重试。`
 
+const AgentBatchGenerationGuide = `【批量生成可靠性规则】创建 2 个及以上生成节点时，先把用户需求分析为完整清单，再调用 create_generation_batch；不要逐个调用 create_node、set_prompt、run_node。用户给了多条提示词时必须逐条保留，items 数量必须与要求一致，不得静默省略。每个 item 必须有非空、可以独立生成的完整 prompt。同批模型写在 model，只有确实要混用模型时才使用 item.model。单次最多 50 个；超过 50 个才按每批最多 50 个拆分。工具返回后核对 created 是否等于计划数量再汇报。`
+
 type createNodeTool struct{ state *CanvasState }
 
 func (t *createNodeTool) Name() string { return "create_node" }
@@ -662,6 +664,149 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "add_node", "node": node}, baseRevision, revision))
 	// 把实际落点回给模型:连续创建多个节点时它才能基于真实位置继续排布。
 	return canvasMutationResult(revision, map[string]any{"id": node.ID, "position": placed}), nil
+}
+
+type createGenerationBatchTool struct{ state *CanvasState }
+
+type generationBatchItem struct {
+	Prompt   string `json:"prompt"`
+	Title    string `json:"title"`
+	Model    string `json:"model"`
+	Position *XY    `json:"position"`
+}
+
+type generationBatchMutation struct {
+	Node         CanvasNode
+	Prompt       string
+	Model        string
+	BaseRevision uint64
+	Revision     uint64
+}
+
+func (t *createGenerationBatchTool) Name() string { return "create_generation_batch" }
+func (t *createGenerationBatchTool) Description() string {
+	return "Atomically create and submit 1-50 generation nodes. Use this for every multi-output image/video/audio/text request instead of repeated create_node, set_prompt, and run_node calls. Each item must contain its complete non-empty prompt; model applies to the whole batch unless an item overrides it."
+}
+func (t *createGenerationBatchTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{
+        "type":"object",
+        "properties":{
+          "node_type":{"type":"string","enum":["imageNode","videoNode","audioNode","textNode"]},
+          "model":{"type":"string","description":"Exact generation model name shared by the batch"},
+          "start_position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},
+          "columns":{"type":"integer","minimum":1,"maximum":10,"default":5},
+          "items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"prompt":{"type":"string","minLength":1},"title":{"type":"string"},"model":{"type":"string","description":"Optional per-item model override"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["prompt"],"additionalProperties":false}},
+          "expected_revision":{"type":"integer","minimum":0}
+        },
+        "required":["node_type","items"],
+        "additionalProperties":false
+    }`)
+}
+
+func generationNodeTitle(nodeType string, index int) string {
+	label := map[string]string{
+		"imageNode": "生成图像",
+		"videoNode": "生成视频",
+		"audioNode": "生成音频",
+		"textNode":  "生成文本",
+	}[nodeType]
+	return fmt.Sprintf("%s %d", label, index+1)
+}
+
+func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		NodeType         string                `json:"node_type"`
+		Model            string                `json:"model"`
+		StartPosition    *XY                   `json:"start_position"`
+		Columns          int                   `json:"columns"`
+		Items            []generationBatchItem `json:"items"`
+		ExpectedRevision *uint64               `json:"expected_revision"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if p.NodeType != "imageNode" && p.NodeType != "videoNode" && p.NodeType != "audioNode" && p.NodeType != "textNode" {
+		return "", fmt.Errorf("unsupported generation node type: %s", p.NodeType)
+	}
+	if len(p.Items) == 0 || len(p.Items) > 50 {
+		return "", fmt.Errorf("create_generation_batch requires 1-50 items")
+	}
+	for index := range p.Items {
+		p.Items[index].Prompt = strings.TrimSpace(p.Items[index].Prompt)
+		p.Items[index].Title = strings.TrimSpace(p.Items[index].Title)
+		p.Items[index].Model = strings.TrimSpace(p.Items[index].Model)
+		if p.Items[index].Prompt == "" {
+			return "", fmt.Errorf("item %d has an empty prompt; no nodes were created", index+1)
+		}
+	}
+	p.Model = strings.TrimSpace(p.Model)
+	if p.Columns == 0 {
+		p.Columns = 5
+	}
+	if p.Columns < 1 || p.Columns > 10 {
+		return "", fmt.Errorf("columns must be between 1 and 10")
+	}
+	start := XY{X: 100, Y: 100}
+	if p.StartPosition != nil {
+		start = *p.StartPosition
+	}
+
+	mutations := make([]generationBatchMutation, 0, len(p.Items))
+	t.state.mu.Lock()
+	if err := t.state.checkExpectedRevisionLocked(p.ExpectedRevision); err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	for index, item := range p.Items {
+		model := item.Model
+		if model == "" {
+			model = p.Model
+		}
+		position := XY{
+			X: start.X + float64(index%p.Columns)*nodeSlotW,
+			Y: start.Y + float64(index/p.Columns)*nodeSlotH,
+		}
+		if item.Position != nil {
+			position = *item.Position
+		}
+		position = t.state.placeClear(position)
+		title := item.Title
+		if title == "" {
+			title = generationNodeTitle(p.NodeType, index)
+		}
+		data := map[string]any{"customTitle": title, "promptDraft": item.Prompt}
+		if model != "" {
+			data["model"] = model
+		}
+		node := CanvasNode{ID: t.state.nextID("ag"), Type: p.NodeType, Position: position, Data: data}
+		t.state.addNodeLocked(node)
+		baseRevision, revision := t.state.recordChangeLocked("add_node", []string{node.ID}, nil)
+		mutations = append(mutations, generationBatchMutation{
+			Node: node, Prompt: item.Prompt, Model: model,
+			BaseRevision: baseRevision, Revision: revision,
+		})
+	}
+	finalRevision := t.state.revision
+	t.state.mu.Unlock()
+
+	nodeIDs := make([]string, 0, len(mutations))
+	for _, mutation := range mutations {
+		nodeIDs = append(nodeIDs, mutation.Node.ID)
+		t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{
+			"op": "add_node", "node": mutation.Node,
+		}, mutation.BaseRevision, mutation.Revision))
+		runPatch := map[string]any{
+			"op": "run_node", "node_id": mutation.Node.ID, "prompt": mutation.Prompt,
+		}
+		if mutation.Model != "" {
+			runPatch["model"] = mutation.Model
+		}
+		t.state.emit(EventCanvasPatch, runPatch)
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"created": len(mutations), "node_ids": nodeIDs, "revision": finalRevision,
+	})
+	return string(raw), nil
 }
 
 type connectNodesTool struct{ state *CanvasState }
@@ -771,7 +916,23 @@ func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, 
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
-	patch := map[string]any{"op": "run_node", "node_id": p.NodeID}
+	t.state.mu.RLock()
+	node, found := t.state.nodeLocked(p.NodeID)
+	prompt := ""
+	if found {
+		prompt, _ = node.Data["promptDraft"].(string)
+		if strings.TrimSpace(prompt) == "" {
+			prompt, _ = node.Data["content"].(string)
+		}
+	}
+	t.state.mu.RUnlock()
+	if !found {
+		return "", fmt.Errorf("node not found: %s", p.NodeID)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return "", fmt.Errorf("node %s has no prompt; call set_prompt before run_node", p.NodeID)
+	}
+	patch := map[string]any{"op": "run_node", "node_id": p.NodeID, "prompt": prompt}
 	if strings.TrimSpace(p.Model) != "" {
 		patch["model"] = strings.TrimSpace(p.Model)
 	}
@@ -1291,6 +1452,7 @@ func BuildCanvasTools(state *CanvasState) []Tool {
 		&getSubgraphTool{state},
 		&getCanvasDeltaTool{state},
 		&createNodeTool{state},
+		&createGenerationBatchTool{state},
 		&connectNodesTool{state},
 		&setPromptTool{state},
 		&runNodeTool{state},
