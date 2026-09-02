@@ -1360,6 +1360,13 @@ func maxRuntimeForType(serviceType string) time.Duration {
 	return def
 }
 
+func maxRuntimeForRequest(req GenerateRequest) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) {
+		return 3 * time.Hour
+	}
+	return maxRuntimeForType(req.ServiceType)
+}
+
 type generatedAssetPersistenceOutcome struct {
 	cacheHit bool
 	pending  bool
@@ -1532,7 +1539,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 	// to the browser, but the upstream task can keep running and write its
 	// outcome to generation_logs. Stage 2 will surface those late results
 	// to the UI; Stage 1's contract is "no more lost generations".
-	detachedCtx, cancelDetached := context.WithTimeout(context.Background(), maxRuntimeForType(req.ServiceType))
+	detachedCtx, cancelDetached := context.WithTimeout(context.Background(), maxRuntimeForRequest(req))
 
 	type genResult struct {
 		result *GenerateResult

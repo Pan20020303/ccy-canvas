@@ -148,6 +148,13 @@ func timeoutForServiceType(serviceType string) time.Duration {
 	}
 }
 
+func timeoutForGenerationPayload(p GenerationPayload) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(p.Model), "minimax-h3-director-local") {
+		return 3 * time.Hour
+	}
+	return timeoutForServiceType(p.ServiceType)
+}
+
 // maxRetryForServiceType caps queue-level retries. Text generation is cheap
 // enough to retry after an early network failure, but the worker also enforces
 // an absolute deadline measured from EnqueuedAt. Two retries give short-lived
@@ -193,7 +200,7 @@ func (q *Queue) Enqueue(ctx context.Context, p GenerationPayload) (string, error
 		// a *successful* generation. Permanent failures short-circuit via
 		// asynq.SkipRetry, so they don't burn the retry budget.
 		asynq.MaxRetry(maxRetryForServiceType(p.ServiceType)),
-		asynq.Timeout(timeoutForServiceType(p.ServiceType)),
+		asynq.Timeout(timeoutForGenerationPayload(p)),
 		asynq.Retention(24*time.Hour),
 		// TaskID = RequestID: duplicate submits return ErrTaskIDConflict
 		// which the handler treats as "this is already in flight".

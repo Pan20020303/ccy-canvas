@@ -63,6 +63,22 @@ describe("ManjuAPI MiniMax H3 provider template", () => {
   });
 });
 
+describe("local MiniMax H3 provider template", () => {
+  it("offers dual-clock short video and the long-video Director profiles", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("minimax-h3-director-local"));
+    expect(template?.models).toEqual([
+      "minimax-h3-t2v-ref2v-turbo-local",
+      "minimax-h3-director-local",
+    ]);
+    expect(template?.parameterSchema?.quality_options).toEqual(["极速", "均衡二采", "高质二采"]);
+    expect(template?.parameterSchema?.models?.["minimax-h3-director-local"]?.defaults).toMatchObject({
+      duration: 30,
+      aspect_ratio: "9:16",
+      input_reference_max: 9,
+    });
+  });
+});
+
 describe("ManjuAPI Grok Imagine provider templates", () => {
   it("separates the legacy text endpoint from the 1.5 videos endpoint", () => {
     const text = VENDOR_TEMPLATES.video.find((item) => item.models.includes("grok-imagine-video"));

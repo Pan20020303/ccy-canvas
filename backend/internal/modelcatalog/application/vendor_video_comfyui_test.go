@@ -2,9 +2,17 @@ package application
 
 import (
 	"testing"
+	"time"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
 )
+
+func TestMiniMaxDirectorGetsLongVideoBudget(t *testing.T) {
+	req := GenerateRequest{ServiceType: "video", Model: comfyMiniMaxH3DirectorModel}
+	if got := maxRuntimeForRequest(req); got != 3*time.Hour {
+		t.Fatalf("director runtime = %s, want 3h", got)
+	}
+}
 
 func TestIsComfyMiniMaxH3Provider(t *testing.T) {
 	pc := &domain.ProviderConfig{Vendor: "ComfyUI"}
@@ -17,7 +25,7 @@ func TestIsComfyMiniMaxH3Provider(t *testing.T) {
 }
 
 func TestBuildComfyMiniMaxPromptSupportsTextOnly(t *testing.T) {
-	prompt := buildComfyMiniMaxPrompt(nil, nil, nil, "text only", 864, 480, 73, 42)
+	prompt := buildComfyMiniMaxPrompt(nil, nil, nil, "text only", 864, 480, 73, 42, "极速")
 	conditioning := prompt["15"].(map[string]any)["inputs"].(map[string]any)
 	if len(conditioning) != 8 {
 		t.Fatalf("text-only conditioning inputs = %d, want 8", len(conditioning))
@@ -29,7 +37,7 @@ func TestBuildComfyMiniMaxPromptSupportsTextOnly(t *testing.T) {
 
 func TestBuildComfyMiniMaxPromptHasNineOrderedReferences(t *testing.T) {
 	images := []string{"1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png", "9.png"}
-	prompt := buildComfyMiniMaxPrompt(images, nil, nil, "test", 864, 480, 73, 42)
+	prompt := buildComfyMiniMaxPrompt(images, nil, nil, "test", 864, 480, 73, 42, "极速")
 	conditioning := prompt["15"].(map[string]any)["inputs"].(map[string]any)
 	for i := 0; i < 9; i++ {
 		key := "ref_images.ref_image_" + string(rune('0'+i))
@@ -44,10 +52,16 @@ func TestBuildComfyMiniMaxPromptHasNineOrderedReferences(t *testing.T) {
 	if prompt["19"].(map[string]any)["inputs"].(map[string]any)["steps"] != 4 {
 		t.Fatal("expected 4 steps")
 	}
+	if prompt["18"].(map[string]any)["class_type"] != "MiniMaxH3DualClockEulerSampler" {
+		t.Fatal("expected dual-clock Euler sampler")
+	}
+	if prompt["25"].(map[string]any)["class_type"] != "MiniMaxH3SigmaShift" {
+		t.Fatal("expected H3 video/audio sigma shift")
+	}
 }
 
 func TestBuildComfyMiniMaxPromptMapsVideoAndAudioReferences(t *testing.T) {
-	prompt := buildComfyMiniMaxPrompt(nil, []string{"motion.mp4"}, []string{"voice.wav"}, "test", 864, 480, 73, 42)
+	prompt := buildComfyMiniMaxPrompt(nil, []string{"motion.mp4"}, []string{"voice.wav"}, "test", 864, 480, 73, 42, "极速")
 	conditioning := prompt["15"].(map[string]any)["inputs"].(map[string]any)
 	if _, ok := prompt["30"]; !ok {
 		t.Fatal("expected LoadVideo node")
@@ -66,6 +80,32 @@ func TestBuildComfyMiniMaxPromptMapsVideoAndAudioReferences(t *testing.T) {
 	}
 	if got := conditioning["ref_audios.ref_audio_0"]; got == nil {
 		t.Fatal("expected standalone audio reference")
+	}
+}
+
+func TestBuildComfyMiniMaxPromptAddsSecondPassByProfile(t *testing.T) {
+	prompt := buildComfyMiniMaxPrompt(nil, nil, nil, "test", 864, 480, 73, 42, "均衡二采")
+	if prompt["74"].(map[string]any)["class_type"] != "SamplerCustomAdvanced" {
+		t.Fatal("expected second sampling pass")
+	}
+	if got := prompt["21"].(map[string]any)["inputs"].(map[string]any)["samples"].([]any)[0]; got != "74" {
+		t.Fatalf("decode source = %v, want second-pass latent", got)
+	}
+}
+
+func TestBuildComfyMiniMaxDirectorPromptSplitsIntoFiveSecondGroups(t *testing.T) {
+	prompt := buildComfyMiniMaxDirectorPrompt([]string{"subject.png"}, nil, nil, "test", 480, 864, 12, 42, "均衡二采")
+	for _, id := range []string{"100", "101", "102"} {
+		if prompt[id].(map[string]any)["class_type"] != "MiniMaxH3DirectorGroupReferenceToVideo" {
+			t.Fatalf("missing reference director group %s", id)
+		}
+	}
+	combine := prompt["150"].(map[string]any)["inputs"].(map[string]any)
+	if len(combine) != 3 {
+		t.Fatalf("director groups = %d, want 3", len(combine))
+	}
+	if _, ok := prompt["152"]; !ok {
+		t.Fatal("balanced profile must include Director Refine")
 	}
 }
 

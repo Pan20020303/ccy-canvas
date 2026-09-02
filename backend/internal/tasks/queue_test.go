@@ -26,3 +26,10 @@ func TestTextTaskUsesBoundedQueueRetries(t *testing.T) {
 		}
 	}
 }
+
+func TestMiniMaxDirectorGetsLongVideoBudget(t *testing.T) {
+	p := GenerationPayload{ServiceType: "video", Model: "minimax-h3-director-local"}
+	if got := timeoutForGenerationPayload(p); got != 3*time.Hour {
+		t.Fatalf("director timeout = %s, want 3h", got)
+	}
+}

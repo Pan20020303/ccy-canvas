@@ -70,6 +70,18 @@ describe("model templates", () => {
     expect(local?.referenceModes).toEqual(["text-to-video", "multi-image", "three-view", "all-in-one"]);
     expect(local?.referenceImageRange).toEqual({ min: 1, max: 9 });
     expect(local?.resolutionOptions).toEqual(["480p", "768p"]);
+    expect(local?.qualityOptions).toEqual(["极速", "均衡二采", "高质二采"]);
+  });
+
+  it("exposes the local MiniMax H3 long-video Director", () => {
+    const director = getModelTemplate("minimax-h3-director-local");
+    expect(director).toMatchObject({
+      vendor: "ComfyUI",
+      durationRange: { min: 15, max: 120, step: 5, defaultValue: 30 },
+      qualityOptions: ["极速", "均衡二采", "高质二采"],
+      referenceImageRange: { min: 1, max: 9 },
+      defaults: { resolution: "480p", aspectRatio: "9:16", quality: "极速" },
+    });
   });
 
   it("exposes the local LTX-2.5 production range", () => {

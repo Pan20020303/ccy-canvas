@@ -23,13 +23,14 @@ import (
 )
 
 const (
-	comfyMiniMaxH3Model       = "minimax-h3-t2v-ref2v-turbo-local"
-	comfyMiniMaxH3LegacyModel = "minimax-h3-ref2v-9ref-turbo-local"
+	comfyMiniMaxH3Model         = "minimax-h3-t2v-ref2v-turbo-local"
+	comfyMiniMaxH3LegacyModel   = "minimax-h3-ref2v-9ref-turbo-local"
+	comfyMiniMaxH3DirectorModel = "minimax-h3-director-local"
 )
 
 func isComfyMiniMaxH3Provider(pc *domain.ProviderConfig, model string) bool {
 	model = strings.TrimSpace(model)
-	if pc == nil || (!strings.EqualFold(model, comfyMiniMaxH3Model) && !strings.EqualFold(model, comfyMiniMaxH3LegacyModel)) {
+	if pc == nil || (!strings.EqualFold(model, comfyMiniMaxH3Model) && !strings.EqualFold(model, comfyMiniMaxH3LegacyModel) && !strings.EqualFold(model, comfyMiniMaxH3DirectorModel)) {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(pc.Vendor), "ComfyUI")
@@ -89,9 +90,15 @@ func (s *Service) generateVideoComfyMiniMaxH3(ctx context.Context, baseURL strin
 	width, height := comfyMiniMaxDimensions(req.AspectRatio, req.Resolution)
 	duration := req.Duration
 	if duration <= 0 {
-		duration = 3
+		if strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) {
+			duration = 30
+		} else {
+			duration = 3
+		}
 	}
-	if duration > 15 {
+	if strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) && duration > 120 {
+		duration = 120
+	} else if !strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) && duration > 15 {
 		duration = 15
 	}
 	seed := int64(time.Now().UnixNano() & 0x7fffffff)
@@ -102,7 +109,16 @@ func (s *Service) generateVideoComfyMiniMaxH3(ctx context.Context, baseURL strin
 	if strings.EqualFold(strings.TrimSpace(req.ReferenceMode), "three_view") {
 		promptText = "Analyze the supplied character three-view reference first. Treat a single sheet as front, side, and back panels; when three images are supplied, interpret them in front, side, back order. Preserve the same identity, clothing, proportions, and design from every camera angle.\n\n" + promptText
 	}
-	prompt := buildComfyMiniMaxPrompt(uploaded, uploadedVideos, uploadedAudios, promptText, width, height, validMiniMaxFrameCount(duration), seed)
+	outputNode := "24"
+	modelName := "MiniMax H3"
+	var prompt map[string]any
+	if strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) {
+		prompt = buildComfyMiniMaxDirectorPrompt(uploaded, uploadedVideos, uploadedAudios, promptText, width, height, duration, seed, req.Quality)
+		outputNode = "190"
+		modelName = "MiniMax H3 Director"
+	} else {
+		prompt = buildComfyMiniMaxPrompt(uploaded, uploadedVideos, uploadedAudios, promptText, width, height, validMiniMaxFrameCount(duration), seed, req.Quality)
+	}
 	body, _ := json.Marshal(map[string]any{"prompt": prompt, "client_id": uuid.NewString()})
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/prompt", bytes.NewReader(body))
 	if err != nil {
@@ -125,7 +141,7 @@ func (s *Service) generateVideoComfyMiniMaxH3(ctx context.Context, baseURL strin
 	if json.Unmarshal(responseBody, &queued) != nil || queued.PromptID == "" {
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("ComfyUI returned no prompt_id: %s", string(responseBody[:min(len(responseBody), 800)])))
 	}
-	return pollComfyVideoResult(ctx, baseURL, queued.PromptID, "24", "MiniMax H3")
+	return pollComfyVideoResult(ctx, baseURL, queued.PromptID, outputNode, modelName)
 }
 
 func comfyMiniMaxDimensions(ratio, resolution string) (int, int) {
@@ -154,7 +170,7 @@ func validMiniMaxFrameCount(seconds int) int {
 	return frames + (5-frames%17)%17
 }
 
-func buildComfyMiniMaxPrompt(images, videos, audios []string, text string, width, height, length int, seed int64) map[string]any {
+func buildComfyMiniMaxPrompt(images, videos, audios []string, text string, width, height, length int, seed int64, quality string) map[string]any {
 	nodes := map[string]any{}
 	for i, image := range images {
 		nodes[fmt.Sprint(i+1)] = map[string]any{"class_type": "LoadImage", "inputs": map[string]any{"image": image}}
@@ -169,7 +185,12 @@ func buildComfyMiniMaxPrompt(images, videos, audios []string, text string, width
 		nodes[fmt.Sprint(40+i)] = map[string]any{"class_type": "LoadAudio", "inputs": map[string]any{"audio": audio}}
 	}
 	nodes["10"] = map[string]any{"class_type": "UNETLoader", "inputs": map[string]any{"unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors", "weight_dtype": "default"}}
-	nodes["11"] = map[string]any{"class_type": "LoraLoaderModelOnly", "inputs": map[string]any{"model": []any{"10", 0}, "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "strength_model": 0.8}}
+	nodes["11"] = map[string]any{"class_type": "LoraLoaderModelOnly", "inputs": map[string]any{"model": []any{"10", 0}, "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "strength_model": 1.0}}
+	// H3 video and audio use different sigma clocks. Applying the official
+	// shifts before both the guider and scheduler, then sampling with the
+	// dual-clock Euler sampler, prevents the 4-step Turbo audio blast/noise
+	// failure without adding another denoise pass.
+	nodes["25"] = map[string]any{"class_type": "MiniMaxH3SigmaShift", "inputs": map[string]any{"model": []any{"11", 0}, "shift_video": 12.0, "shift_audio": 3.0}}
 	nodes["12"] = map[string]any{"class_type": "CLIPLoader", "inputs": map[string]any{"clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "type": "minimax", "device": "default"}}
 	nodes["13"] = map[string]any{"class_type": "VAELoader", "inputs": map[string]any{"vae_name": "minimax_h3_video_vae_fp16.safetensors"}}
 	nodes["14"] = map[string]any{"class_type": "VAELoader", "inputs": map[string]any{"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}}
@@ -187,14 +208,107 @@ func buildComfyMiniMaxPrompt(images, videos, audios []string, text string, width
 	}
 	nodes["15"] = map[string]any{"class_type": "MiniMaxH3ReferenceToVideo", "inputs": conditioning}
 	nodes["16"] = map[string]any{"class_type": "RandomNoise", "inputs": map[string]any{"noise_seed": seed}}
-	nodes["17"] = map[string]any{"class_type": "BasicGuider", "inputs": map[string]any{"model": []any{"11", 0}, "conditioning": []any{"15", 0}}}
-	nodes["18"] = map[string]any{"class_type": "KSamplerSelect", "inputs": map[string]any{"sampler_name": "er_sde"}}
-	nodes["19"] = map[string]any{"class_type": "BasicScheduler", "inputs": map[string]any{"model": []any{"11", 0}, "scheduler": "simple", "steps": 4, "denoise": 1.0}}
+	nodes["17"] = map[string]any{"class_type": "BasicGuider", "inputs": map[string]any{"model": []any{"25", 0}, "conditioning": []any{"15", 0}}}
+	nodes["18"] = map[string]any{"class_type": "MiniMaxH3DualClockEulerSampler", "inputs": map[string]any{}}
+	nodes["19"] = map[string]any{"class_type": "BasicScheduler", "inputs": map[string]any{"model": []any{"25", 0}, "scheduler": "simple", "steps": 4, "denoise": 1.0}}
 	nodes["20"] = map[string]any{"class_type": "SamplerCustomAdvanced", "inputs": map[string]any{"noise": []any{"16", 0}, "guider": []any{"17", 0}, "sampler": []any{"18", 0}, "sigmas": []any{"19", 0}, "latent_image": []any{"15", 1}}}
-	nodes["21"] = map[string]any{"class_type": "VAEDecode", "inputs": map[string]any{"samples": []any{"20", 0}, "vae": []any{"13", 0}}}
-	nodes["22"] = map[string]any{"class_type": "VAEDecodeAudio", "inputs": map[string]any{"samples": []any{"20", 0}, "vae": []any{"14", 0}}}
+	finalLatent := []any{"20", 0}
+	profile := strings.TrimSpace(quality)
+	if profile == "均衡二采" || profile == "高质二采" {
+		steps, denoise := 2, 0.18
+		if profile == "高质二采" {
+			steps, denoise = 4, 0.25
+		}
+		nodes["70"] = map[string]any{"class_type": "MiniMaxH3SigmaShift", "inputs": map[string]any{"model": []any{"10", 0}, "shift_video": 12.0, "shift_audio": 3.0}}
+		nodes["71"] = map[string]any{"class_type": "BasicGuider", "inputs": map[string]any{"model": []any{"70", 0}, "conditioning": []any{"15", 0}}}
+		nodes["72"] = map[string]any{"class_type": "BasicScheduler", "inputs": map[string]any{"model": []any{"70", 0}, "scheduler": "beta", "steps": steps, "denoise": denoise}}
+		nodes["73"] = map[string]any{"class_type": "RandomNoise", "inputs": map[string]any{"noise_seed": seed + 1}}
+		nodes["74"] = map[string]any{"class_type": "SamplerCustomAdvanced", "inputs": map[string]any{"noise": []any{"73", 0}, "guider": []any{"71", 0}, "sampler": []any{"18", 0}, "sigmas": []any{"72", 0}, "latent_image": []any{"20", 0}}}
+		finalLatent = []any{"74", 0}
+	}
+	nodes["21"] = map[string]any{"class_type": "VAEDecode", "inputs": map[string]any{"samples": finalLatent, "vae": []any{"13", 0}}}
+	nodes["22"] = map[string]any{"class_type": "VAEDecodeAudio", "inputs": map[string]any{"samples": finalLatent, "vae": []any{"14", 0}}}
 	nodes["23"] = map[string]any{"class_type": "CreateVideo", "inputs": map[string]any{"images": []any{"21", 0}, "audio": []any{"22", 0}, "fps": 24.0, "bit_depth": 8}}
 	nodes["24"] = map[string]any{"class_type": "SaveVideo", "inputs": map[string]any{"video": []any{"23", 0}, "filename_prefix": "video/ccy-canvas/MiniMax_H3_T2V_Ref2V_Turbo", "format": "auto", "codec": "auto"}}
+	return nodes
+}
+
+func buildComfyMiniMaxDirectorPrompt(images, videos, audios []string, text string, width, height, duration int, seed int64, quality string) map[string]any {
+	nodes := map[string]any{}
+	timelineJSON, _ := json.Marshal(map[string]any{
+		"version":   5,
+		"frameRate": 24,
+		"output": map[string]any{
+			"mode":                    "fixed",
+			"width":                   width,
+			"height":                  height,
+			"continuityEnabled":       true,
+			"continuityOverlapFrames": 22,
+		},
+	})
+	for i, image := range images {
+		nodes[fmt.Sprint(i+1)] = map[string]any{"class_type": "LoadImage", "inputs": map[string]any{"image": image}}
+	}
+	for i, video := range videos {
+		loadID, componentsID := fmt.Sprint(30+i*2), fmt.Sprint(31+i*2)
+		nodes[loadID] = map[string]any{"class_type": "LoadVideo", "inputs": map[string]any{"file": video}}
+		nodes[componentsID] = map[string]any{"class_type": "GetVideoComponents", "inputs": map[string]any{"video": []any{loadID, 0}}}
+	}
+	for i, audio := range audios {
+		nodes[fmt.Sprint(40+i)] = map[string]any{"class_type": "LoadAudio", "inputs": map[string]any{"audio": audio}}
+	}
+	nodes["50"] = map[string]any{"class_type": "UNETLoader", "inputs": map[string]any{"unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors", "weight_dtype": "default"}}
+	nodes["51"] = map[string]any{"class_type": "LoraLoaderModelOnly", "inputs": map[string]any{"model": []any{"50", 0}, "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", "strength_model": 1.0}}
+	nodes["52"] = map[string]any{"class_type": "CLIPLoader", "inputs": map[string]any{"clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "type": "minimax", "device": "default"}}
+	nodes["53"] = map[string]any{"class_type": "VAELoader", "inputs": map[string]any{"vae_name": "minimax_h3_video_vae_fp16.safetensors"}}
+	nodes["54"] = map[string]any{"class_type": "VAELoader", "inputs": map[string]any{"vae_name": "minimax_h3_audio_vae_fp32.safetensors"}}
+
+	segmentSeconds := 5
+	segmentCount := max(1, (duration+segmentSeconds-1)/segmentSeconds)
+	combineInputs := map[string]any{}
+	for i := 0; i < segmentCount; i++ {
+		groupID := fmt.Sprint(100 + i)
+		remaining := duration - i*segmentSeconds
+		clipDuration := min(segmentSeconds, remaining)
+		groupInputs := map[string]any{"prompt": text, "duration_sec": float64(clipDuration)}
+		classType := "MiniMaxH3DirectorGroupReferenceToVideo"
+		for j := range images {
+			groupInputs[fmt.Sprintf("ref_images.ref_image_%d", j)] = []any{fmt.Sprint(j + 1), 0}
+		}
+		for j := range videos {
+			componentsID := fmt.Sprint(31 + j*2)
+			groupInputs[fmt.Sprintf("ref_videos.ref_video_%d", j)] = []any{componentsID, 0}
+			groupInputs[fmt.Sprintf("ref_video_audios.ref_video_audio_%d", j)] = []any{componentsID, 1}
+		}
+		for j := range audios {
+			groupInputs[fmt.Sprintf("ref_audios.ref_audio_%d", j)] = []any{fmt.Sprint(40 + j), 0}
+		}
+		nodes[groupID] = map[string]any{"class_type": classType, "inputs": groupInputs}
+		combineInputs[fmt.Sprintf("groups.group_%d", i)] = []any{groupID, 0}
+	}
+	nodes["150"] = map[string]any{"class_type": "MiniMaxH3DirectorGroupsCombine", "inputs": combineInputs}
+
+	directorInputs := map[string]any{
+		"model": []any{"51", 0}, "video_vae": []any{"53", 0}, "audio_vae": []any{"54", 0}, "clip": []any{"52", 0},
+		"task_type": "t2v — 文生视频(Text to Video)", "global_prompt": text, "bd_grp_sample": "采样设置", "cfg": 1.0, "seed": seed,
+		"frame_rate": 24.0, "width": width, "height": height, "ref_max_size": max(width, height), "total_frames": validMiniMaxFrameCount(duration), "timeline_data": string(timelineJSON),
+		"bd_grp_advanced": "高级采样", "steps": 4, "sampler": "euler", "scheduler": "simple", "shift_video": 12.0, "shift_audio": 3.0,
+		"bd_grp_perf": "性能", "clear_vram_between_segments": true, "export_source_images": false,
+	}
+	directorInputs["task_type"] = "r2v — 参考主体生视频(Reference to Video)"
+	directorInputs["r2v_groups"] = []any{"150", 0}
+	if strings.TrimSpace(quality) == "均衡二采" || strings.TrimSpace(quality) == "高质二采" {
+		steps, denoise := 2, 0.18
+		if strings.TrimSpace(quality) == "高质二采" {
+			steps, denoise = 4, 0.25
+		}
+		nodes["151"] = map[string]any{"class_type": "BasicScheduler", "inputs": map[string]any{"model": []any{"50", 0}, "scheduler": "beta", "steps": steps, "denoise": denoise}}
+		nodes["152"] = map[string]any{"class_type": "MiniMaxH3DirectorRefine", "inputs": map[string]any{"mode": "refine", "upscale_method": "lanczos", "latent_upscale_model": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors", "sampler": "euler", "passes": 1, "refine_model": []any{"50", 0}, "sigmas": []any{"151", 0}, "seed_mode": "inherit", "aspect_ratio": "跟随导演台", "megapixels": 1.0, "width": width, "height": height, "skip_fl2v": true, "confirm_first_pass": false}}
+		directorInputs["refine"] = []any{"152", 0}
+	}
+	nodes["153"] = map[string]any{"class_type": "MiniMaxH3Director", "inputs": directorInputs}
+	nodes["154"] = map[string]any{"class_type": "CreateVideo", "inputs": map[string]any{"images": []any{"153", 0}, "audio": []any{"153", 1}, "fps": []any{"153", 2}, "bit_depth": 8}}
+	nodes["190"] = map[string]any{"class_type": "SaveVideo", "inputs": map[string]any{"video": []any{"154", 0}, "filename_prefix": "video/ccy-canvas/MiniMax_H3_Director", "format": "auto", "codec": "auto"}}
 	return nodes
 }
 
