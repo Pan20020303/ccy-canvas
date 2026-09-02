@@ -1183,7 +1183,7 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 		}
 		apiKey := ""
 		if c.EncryptedAPIKey == "" {
-			if !isComfyLocalImageProvider(&c, req.Model) && !isComfyZImageProvider(&c, req.Model) && !isComfyMiniMaxH3Provider(&c, req.Model) && !isComfyWanAnimate2Provider(&c, req.Model) && !isComfyCosyVoice3Provider(&c, req.Model) && !isComfyStableAudio3SFXProvider(&c, req.Model) && !isComfyQwen3VoiceDesignProvider(&c, req.Model) {
+			if !isComfyLocalImageProvider(&c, req.Model) && !isComfyZImageProvider(&c, req.Model) && !isComfyLTX25Provider(&c, req.Model) && !isComfyMiniMaxH3Provider(&c, req.Model) && !isComfyWanAnimate2Provider(&c, req.Model) && !isComfyCosyVoice3Provider(&c, req.Model) && !isComfyStableAudio3SFXProvider(&c, req.Model) && !isComfyQwen3VoiceDesignProvider(&c, req.Model) {
 				continue
 			}
 		} else {

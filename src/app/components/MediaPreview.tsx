@@ -6,7 +6,7 @@ import type {} from 'yet-another-react-lightbox/plugins/video';
 import Plyr from 'plyr';
 import plyrIcons from '../../../node_modules/plyr/dist/plyr.svg?url';
 import { Download, Maximize, Pencil, RotateCcw, Scissors, Sparkles, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { toRenderableMediaUrl } from '../reference-media';
+import { extractOriginalMediaUrl, isProxyMediaUrl, toRenderableMediaUrl } from '../reference-media';
 import { fitMedia } from './media-preview-utils';
 import 'yet-another-react-lightbox/styles.css';
 import 'plyr/dist/plyr.css';
@@ -46,34 +46,95 @@ export function PreviewVideo({ src, zh, rect, onDimensions }: {
   onDimensions: (width: number, height: number) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const sources = useMemo(() => {
+    const original = extractOriginalMediaUrl(src);
+    return Array.from(new Set([toRenderableMediaUrl(src), original].filter(Boolean)));
+  }, [src]);
+  const [sourceIndex, setSourceIndex] = useState(0);
+  const [retryRound, setRetryRound] = useState(0);
+  const [retryPending, setRetryPending] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dims, setDims] = useState({ width: 16, height: 9 });
   const dimensionsCallback = useRef(onDimensions);
   dimensionsCallback.current = onDimensions;
+  const activeSource = sources[Math.min(sourceIndex, Math.max(0, sources.length - 1))] ?? '';
+  // Bust only our own proxy/local cache. Never mutate a third-party signed URL:
+  // adding a query parameter can invalidate its signature.
+  const requestSource = retryRound > 0 && (isProxyMediaUrl(activeSource) || !/^https?:\/\//i.test(activeSource))
+    ? `${activeSource}${activeSource.includes('?') ? '&' : '?'}_ccy_retry=${retryRound}`
+    : activeSource;
+
+  useEffect(() => {
+    setSourceIndex(0);
+    setRetryRound(0);
+    setRetryPending(false);
+    setAttempt(0);
+    setError(false);
+    setLoading(true);
+  }, [src]);
+
+  const advanceSource = () => {
+    setLoading(true);
+    setError(false);
+    if (sourceIndex < sources.length - 1) {
+      setSourceIndex(index => index + 1);
+      return;
+    }
+    if (retryRound < 3) {
+      setRetryRound(round => round + 1);
+      setRetryPending(true);
+      return;
+    }
+    setLoading(false);
+    setError(true);
+  };
+
+  useEffect(() => {
+    if (!retryPending) return;
+    const delay = [0, 1000, 2500, 5000][retryRound] ?? 5000;
+    const timer = window.setTimeout(() => {
+      setSourceIndex(0);
+      setAttempt(value => value + 1);
+      setRetryPending(false);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [retryPending, retryRound]);
+
   useEffect(() => {
     const container = host.current;
-    if (!container) return;
+    if (!container || retryPending || !requestSource) return;
     setError(false);
     setLoading(true);
     const video = document.createElement('video');
-    video.src = src;
+    if (isProxyMediaUrl(requestSource)) video.crossOrigin = 'use-credentials';
     video.controls = true;
     video.playsInline = true;
-    video.preload = 'auto';
+    // Metadata is sufficient to present a usable player. Loading an entire
+    // large video here made several open previews compete for bandwidth and
+    // caused Chromium to report spurious stalls.
+    video.preload = 'metadata';
     container.appendChild(video);
     const metadata = () => {
       if (video.videoWidth && video.videoHeight) {
         setDims({ width: video.videoWidth, height: video.videoHeight });
         dimensionsCallback.current(video.videoWidth, video.videoHeight);
       }
+      setLoading(false);
+      setError(false);
     };
     const ready = () => { setLoading(false); setError(false); };
-    const failed = () => { setError(true); setLoading(false); };
+    const failed = () => advanceSource();
     video.addEventListener('loadedmetadata', metadata);
     video.addEventListener('loadeddata', ready);
+    video.addEventListener('canplay', ready);
     video.addEventListener('error', failed);
+    // Attach every listener before assigning src. Cached/local media can reach
+    // metadata very quickly; assigning src first occasionally lost the event
+    // and left the full-screen preview spinning forever.
+    video.src = requestSource;
+    video.load();
     const player = new Plyr(video, {
       iconUrl: plyrIcons,
       loadSprite: true,
@@ -98,25 +159,34 @@ export function PreviewVideo({ src, zh, rect, onDimensions }: {
       } : undefined,
     });
     const stalled = window.setTimeout(() => {
-      if (video.readyState < 2) failed();
-    }, 30000);
+      // A slow first metadata/range response sometimes never emits `error`.
+      if (video.readyState === HTMLMediaElement.HAVE_NOTHING) failed();
+    }, 25_000);
     return () => {
       clearTimeout(stalled);
       video.removeEventListener('loadedmetadata', metadata);
       video.removeEventListener('loadeddata', ready);
+      video.removeEventListener('canplay', ready);
       video.removeEventListener('error', failed);
       video.pause();
-      player.destroy();
+      try { player.destroy(); } catch { /* Plyr may already be partially torn down. */ }
       video.removeAttribute('src');
       video.load();
       container.replaceChildren();
     };
-  }, [src, zh, attempt]);
+  }, [attempt, requestSource, retryPending, zh]);
   const size = fitMedia(dims.width, dims.height, rect.width, rect.height);
   return <div className="ccy-preview-video-stage" onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
     <div className="ccy-preview-video-host" ref={host} style={{ width: size.width, height: size.height, visibility: error ? 'hidden' : undefined }} />
-    {loading && <div className="ccy-preview-loading" role="status">{zh ? '正在加载视频…' : 'Loading video…'}</div>}
-    {error && <LoadError zh={zh} onRetry={() => setAttempt(n => n + 1)} />}
+    {loading && <div className="ccy-preview-loading" role="status">{zh ? (retryPending ? '连接波动，正在自动重试…' : '正在加载视频…') : (retryPending ? 'Connection interrupted, retrying…' : 'Loading video…')}</div>}
+    {error && <LoadError zh={zh} onRetry={() => {
+      setSourceIndex(0);
+      setRetryRound(0);
+      setRetryPending(false);
+      setError(false);
+      setLoading(true);
+      setAttempt(n => n + 1);
+    }} />}
   </div>;
 }
 

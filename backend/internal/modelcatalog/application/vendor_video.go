@@ -18,6 +18,9 @@ import (
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
+	if isComfyLTX25Provider(pc, req.Model) {
+		return s.generateVideoComfyLTX25(ctx, baseURL, req)
+	}
 	if isComfyWanAnimate2Provider(pc, req.Model) {
 		return s.generateVideoComfyWanAnimate2(ctx, baseURL, req)
 	}

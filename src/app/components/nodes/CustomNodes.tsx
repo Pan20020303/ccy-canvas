@@ -1,4 +1,4 @@
-import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ZImageParamsControls } from './ZImageParamsControls';
 import { LocalImageParamsControls } from './LocalImageParamsControls';
@@ -6,6 +6,7 @@ import { ReferenceLimitsBar, resolveReferenceLimits } from './ReferenceLimitsBar
 import { requestMediaPreviewAction, useMediaPreviewAction } from '../media-preview-utils';
 import VideoTrimDialog, { type VideoTrimSelection } from '../VideoTrimDialog';
 import { trimLocalVideo } from '../../api/video-edit';
+import { lazyWithChunkRecovery } from '../../chunk-recovery';
 
 import type { LocalImageSettings } from '../../local-image-params';
 import type { ZImageParams } from '../../zimage-params';
@@ -3541,7 +3542,7 @@ function NodeErrorBanner({ error }: { error: string }) {
   );
 }
 
-const MediaPreview = lazy(() => import('../MediaPreview'));
+const MediaPreview = lazyWithChunkRecovery('media-preview', () => import('../MediaPreview'));
 
 const PreviewModal = ({ kind, src, onClose, nodeId }: { kind: 'image' | 'video'; src: string; onClose: () => void; nodeId?: string }) => {
   const language = useStore(state => state.language);

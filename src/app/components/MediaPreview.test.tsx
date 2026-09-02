@@ -17,7 +17,7 @@ function mount(element: React.ReactNode) {
  const host=document.createElement('div');document.body.append(host);root=createRoot(host);act(() => root!.render(element));return host;
 }
 function click(label: string) { const b=[...document.querySelectorAll('button')].find(e=>e.textContent?.includes(label)); expect(b).toBeTruthy();act(() => b!.click()); }
-afterEach(() => { if(root) act(() => root!.unmount());root=undefined;document.body.replaceChildren();vi.restoreAllMocks();mocks.options.length=0;mocks.destroy.mockClear(); });
+afterEach(() => { if(root) act(() => root!.unmount());root=undefined;document.body.replaceChildren();vi.useRealTimers();vi.restoreAllMocks();mocks.options.length=0;mocks.destroy.mockClear(); });
 it('fits loaded images and retries the exact same URL without changing signatures', () => {
  mount(<MediaPreview kind="image" src="data:image/png;base64,AA==" onClose={()=>{}} onDownload={async()=>{}} />);
  const img=document.querySelector('img')!;
@@ -39,6 +39,7 @@ it('routes edit/upscale actions and prevents duplicate downloads', async () => {
  expect(document.body.textContent).toContain('下载原文件');
 });
 it('initializes locally hosted player controls, reports metadata and destroys on retry/close', () => {
+ vi.useFakeTimers();
  vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
  vi.spyOn(HTMLMediaElement.prototype,'load').mockImplementation(()=>{});
  const dimensions=vi.fn();
@@ -52,7 +53,34 @@ it('initializes locally hosted player controls, reports metadata and destroys on
  Object.defineProperties(video,{videoWidth:{value:720},videoHeight:{value:1280}});
  act(()=>video.dispatchEvent(new Event('loadedmetadata')));
  expect(dimensions).toHaveBeenCalledWith(720,1280);
- act(()=>video.dispatchEvent(new Event('error')));expect(document.body.textContent).toContain('素材加载失败');
- click('重新加载');expect(mocks.destroy).toHaveBeenCalledTimes(1);expect(document.querySelector('video')).not.toBe(video);
- act(()=>root!.unmount());root=undefined;expect(mocks.destroy).toHaveBeenCalledTimes(2);expect(document.querySelector('video')).toBeNull();
+ // Transient failures recover automatically with three bounded backoff rounds;
+ // only a persistent fourth failure asks the user to retry manually.
+ let current=video;
+ for(const delay of [1000,2500,5000]) {
+  act(()=>current.dispatchEvent(new Event('error')));
+  expect(document.body.textContent).toContain('正在自动重试');
+  act(()=>vi.advanceTimersByTime(delay));
+  const replacement=document.querySelector('video')!;
+  expect(replacement).not.toBe(current);
+  current=replacement;
+ }
+ act(()=>current.dispatchEvent(new Event('error')));
+ expect(document.body.textContent).toContain('素材加载失败');
+ const destroyedBeforeRetry=mocks.destroy.mock.calls.length;
+ click('重新加载');expect(mocks.destroy.mock.calls.length).toBeGreaterThan(destroyedBeforeRetry);expect(document.querySelector('video')).not.toBe(current);
+ const destroyedBeforeClose=mocks.destroy.mock.calls.length;
+ act(()=>root!.unmount());root=undefined;expect(mocks.destroy.mock.calls.length).toBeGreaterThan(destroyedBeforeClose);expect(document.querySelector('video')).toBeNull();
+});
+
+it('falls back from the authenticated proxy to the original public video before retrying', () => {
+ vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
+ vi.spyOn(HTMLMediaElement.prototype,'load').mockImplementation(()=>{});
+ mount(<PreviewVideo src="https://media.example/video.mp4" zh rect={{width:1000,height:600}} onDimensions={()=>{}}/>);
+ const proxy=document.querySelector('video')!;
+ expect(proxy.getAttribute('src')).toContain('/api/app/proxy-media?url=');
+ act(()=>proxy.dispatchEvent(new Event('error')));
+ const direct=document.querySelector('video')!;
+ expect(direct).not.toBe(proxy);
+ expect(direct.getAttribute('src')).toBe('https://media.example/video.mp4');
+ expect(document.body.textContent).not.toContain('素材加载失败');
 });

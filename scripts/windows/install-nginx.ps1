@@ -153,7 +153,12 @@ http {
 
         # Cache headers for the SPA entry document itself — never cache, so deploys go live instantly.
         location = /index.html {
-            add_header Cache-Control "no-store, must-revalidate";
+            add_header Cache-Control "no-cache";
+        }
+
+        # Version check file — never cache so clients detect new releases.
+        location = /version.json {
+            add_header Cache-Control "no-cache";
         }
     }
 }

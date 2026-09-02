@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import clsx from 'clsx';
 import {
@@ -45,9 +45,10 @@ import { DestructiveConfirmDialog } from './ui/destructive-confirm-dialog';
 import { useStore } from '../store';
 import logoUrl from '../../imports/logo.png';
 import { UserAvatar } from './UserAvatar';
+import { lazyWithChunkRecovery } from '../chunk-recovery';
 
 // 3D 挂牌（three + rapier 物理）体积不小 — 懒加载，只在首页首帧后拉取。
-const Lanyard = lazy(() => import('./reactbits/Lanyard'));
+const Lanyard = lazyWithChunkRecovery('home-lanyard', () => import('./reactbits/Lanyard'));
 
 /** Shared BorderGlow tuning — cool silver light on BORDERLESS cards
  *  (reference style): no resting border, the glow only materializes on hover. */

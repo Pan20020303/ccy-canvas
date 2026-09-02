@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -81,15 +81,16 @@ import { RemotePresenceLayer } from './RemotePresenceLayer';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
 import { updatePresence } from '../collab/presence-store';
 import { useCanvasSync } from '../collab/canvas-sync';
+import { lazyWithChunkRecovery } from '../chunk-recovery';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
 // 打开导演台时按需加载,首屏 0 影响.
-const DirectorStageOverlay = lazy(() =>
+const DirectorStageOverlay = lazyWithChunkRecovery('director-stage', () =>
   import('./nodes/DirectorStageOverlay').then((m) => ({ default: m.DirectorStageOverlay })),
 );
 
 // 图层编辑器同样按需加载:打开时才拉代码,关闭即卸载。
-const LayerEditorOverlay = lazy(() =>
+const LayerEditorOverlay = lazyWithChunkRecovery('layer-editor', () =>
   import('./nodes/LayerEditorOverlay').then((m) => ({ default: m.LayerEditorOverlay })),
 );
 
@@ -98,9 +99,9 @@ const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 import {collectDownloadItems,type DownloadItem} from '../batch-download';
-const BatchDownloadPanel=lazy(()=>import('./BatchDownloadPanel'));
+const BatchDownloadPanel=lazyWithChunkRecovery('batch-download',()=>import('./BatchDownloadPanel'));
 
-const VideoEditorHost = lazy(() => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
+const VideoEditorHost = lazyWithChunkRecovery('video-editor', () => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
 type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode' | 'videoEditorNode';
 type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
 type ContextMenuState = {

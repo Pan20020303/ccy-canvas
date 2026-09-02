@@ -72,6 +72,14 @@ describe("model templates", () => {
     expect(local?.resolutionOptions).toEqual(["480p", "768p"]);
   });
 
+  it("exposes the local LTX-2.5 production range", () => {
+    const local = getModelTemplate("ltx-2.5-distilled-av-local");
+    expect(local?.durationRange).toEqual({ min: 3, max: 15, step: 1, defaultValue: 5 });
+    expect(local?.durationOptions).toBeUndefined();
+    expect(local?.referenceModes).toEqual(["text-to-video", "multi-image"]);
+    expect(local?.referenceImageRange).toEqual({ min: 0, max: 6 });
+  });
+
   it("matches the ManjuAPI Grok Imagine video contracts", () => {
     const text = getModelTemplate("grok-imagine-video");
     expect(text).toMatchObject({

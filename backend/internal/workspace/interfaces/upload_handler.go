@@ -20,8 +20,9 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxUploadSize = 50 * 1024 * 1024 // 50 MB
-const maxProxySize = 100 * 1024 * 1024 // 100 MB
+const maxUploadSize = 50 * 1024 * 1024        // 50 MB
+const maxProxySize = 100 * 1024 * 1024        // 100 MB for images and unknown files
+const maxProxyAVSize = 2 * 1024 * 1024 * 1024 // 2 GB for seekable video/audio
 
 // RegisterUploadRoutes registers file upload and media proxy endpoints.
 func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
@@ -101,23 +102,14 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			}
 		}
 		filename := fmt.Sprintf("%s%s", uuid.New().String(), ext)
-		key := fmt.Sprintf("%s/%s", dateDir, filename)
-		url, err := assetstore.Save(r.Context(), key, file, contentType)
+		log.Printf("[upload] saving %s/%s (%s)", dateDir, filename, contentType)
+		url, err := assetstore.Save(r.Context(), fmt.Sprintf("%s/%s", dateDir, filename), file, contentType)
 		if err != nil {
-			// 之前这里静默吞错(生产 500 无从排查):必须落日志,并降级到
-			// 本地磁盘 —— 对象存储(COS/OSS)故障时上传不该整体瘫痪。
-			log.Printf("[upload] primary store save failed (key=%s): %v — falling back to local disk", key, err)
-			if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
-				httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file (storage error, see server log)"})
-				return
-			}
-			url, err = assetstore.SaveLocal(r.Context(), key, file, contentType)
-			if err != nil {
-				log.Printf("[upload] local fallback also failed (key=%s): %v", key, err)
-				httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file (storage error, see server log)"})
-				return
-			}
+			log.Printf("[upload] SAVE FAILED: %v", err)
+			httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to save file"})
+			return
 		}
+		log.Printf("[upload] saved -> %s", url)
 
 		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{
 			"url":          url,
@@ -346,14 +338,18 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		// Cache misses stream to the browser and cache simultaneously. This must
 		// happen after response headers are prepared so first paint is not held
 		// hostage by a multi-megabyte image or video download.
+		proxyLimit := int64(maxProxySize)
+		if strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") {
+			proxyLimit = int64(maxProxyAVSize)
+		}
 		if caching {
 			w.Header().Set("X-Cache", "MISS")
-			if cerr := cache.storeWhileServing(cacheKey, ct, w, io.LimitReader(body, maxProxySize)); cerr != nil {
+			if cerr := cache.storeWhileServing(cacheKey, ct, w, io.LimitReader(body, proxyLimit)); cerr != nil {
 				log.Printf("[proxy-media] streaming cache fill failed: %v", cerr)
 			}
 			return
 		}
-		io.Copy(w, io.LimitReader(body, maxProxySize))
+		io.Copy(w, io.LimitReader(body, proxyLimit))
 	}
 }
 

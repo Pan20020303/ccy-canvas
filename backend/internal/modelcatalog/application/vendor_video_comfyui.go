@@ -125,7 +125,7 @@ func (s *Service) generateVideoComfyMiniMaxH3(ctx context.Context, baseURL strin
 	if json.Unmarshal(responseBody, &queued) != nil || queued.PromptID == "" {
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("ComfyUI returned no prompt_id: %s", string(responseBody[:min(len(responseBody), 800)])))
 	}
-	return pollComfyMiniMaxResult(ctx, baseURL, queued.PromptID)
+	return pollComfyVideoResult(ctx, baseURL, queued.PromptID, "24", "MiniMax H3")
 }
 
 func comfyMiniMaxDimensions(ratio, resolution string) (int, int) {
@@ -285,7 +285,7 @@ func readComfyReference(ctx context.Context, raw string, index int) ([]byte, str
 	return nil, "", fmt.Errorf("unsupported reference image URL")
 }
 
-func pollComfyMiniMaxResult(ctx context.Context, baseURL, promptID string) (*GenerateResult, error) {
+func pollComfyVideoResult(ctx context.Context, baseURL, promptID, outputNode, modelName string) (*GenerateResult, error) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -332,9 +332,9 @@ func pollComfyMiniMaxResult(ctx context.Context, baseURL, promptID string) (*Gen
 			if entry.Status.Status != "success" {
 				return nil, apperror.New(apperror.CodeInternal, "ComfyUI generation ended without success")
 			}
-			output := entry.Outputs["24"]
+			output := entry.Outputs[outputNode]
 			if len(output.Images) == 0 {
-				return nil, apperror.New(apperror.CodeInternal, "ComfyUI completed without a video")
+				return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("ComfyUI %s completed without a video", modelName))
 			}
 			item := output.Images[0]
 			viewURL := baseURL + "/view?" + url.Values{"filename": {item.Filename}, "subfolder": {item.Subfolder}, "type": {item.Type}}.Encode()
@@ -354,4 +354,8 @@ func pollComfyMiniMaxResult(ctx context.Context, baseURL, promptID string) (*Gen
 			return &GenerateResult{Type: "url", Content: staged.StagingURL}, nil
 		}
 	}
+}
+
+func pollComfyMiniMaxResult(ctx context.Context, baseURL, promptID string) (*GenerateResult, error) {
+	return pollComfyVideoResult(ctx, baseURL, promptID, "24", "video")
 }

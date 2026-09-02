@@ -1,6 +1,7 @@
 package assetstore
 
 import (
+	"log"
 	"context"
 	"fmt"
 	"io"
@@ -119,6 +120,7 @@ func Default() (Store, error) {
 
 func fromEnv() (Store, error) {
 	backend := strings.ToLower(strings.TrimSpace(os.Getenv("STORAGE_BACKEND")))
+	log.Printf("[assetstore] STORAGE_BACKEND=%s, OSS_BUCKET=%s", backend, os.Getenv("OSS_BUCKET"))
 	if backend == "" || backend == "local" {
 		return localStore{root: envOrDefault("UPLOAD_DIR", "uploads")}, nil
 	}

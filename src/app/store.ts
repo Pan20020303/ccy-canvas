@@ -4071,7 +4071,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         prompt: resolvedPrompt,
         size: aspectRatio,
         resolution: serviceType === 'image' || serviceType === 'video' ? resolution : undefined,
-        quality: serviceType === 'image' ? quality : undefined,
+        // Quality is capability-scoped, not image-only: local LTX-2.5 uses it
+        // for 极速 / 标准 / 高质量 workflow selection.
+        quality: activeTemplate?.supportsQuality ? quality : undefined,
         edit_operation: genParams?.editOperation,
         mask_image: genParams?.maskImage,
         output_count: activeTemplate?.localImageKind ? 1 : genParams?.outputCount,

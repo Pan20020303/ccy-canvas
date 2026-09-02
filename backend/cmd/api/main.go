@@ -30,6 +30,7 @@ import (
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
+	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/presence"
 	"ccy-canvas/backend/internal/shared/httpx"
 	skillsapp "ccy-canvas/backend/internal/skills/application"
@@ -301,9 +302,19 @@ func main() {
 		}
 	}()
 
+	// /admin/shutdown triggers the same graceful-shutdown path as SIGTERM:
+	// cancels shutdownCtx, which drains in-flight requests (up to 25s),
+	// stops the reaper, and shuts down the Asynq worker.
+	router.Post("/admin/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("shutdown triggered via HTTP endpoint")
+		stop()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router}
 	go func() {
-		log.Printf("listening on %s", cfg.HTTPAddr)
+		s, err := assetstore.Default()
+	log.Printf("listening on %s | storage=%s(%T) err=%v", cfg.HTTPAddr, os.Getenv("STORAGE_BACKEND"), s, err)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

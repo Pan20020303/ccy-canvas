@@ -149,6 +149,7 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:          []string{"App", "Canvas"},
 		Security:      userSecurity,
 		DefaultStatus: http.StatusOK,
+		MaxBodyBytes:  50 * 1024 * 1024, // 50 MB — 画布数据可能很大
 	}, h.saveCanvas)
 
 	huma.Register(api, huma.Operation{

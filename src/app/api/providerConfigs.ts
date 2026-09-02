@@ -609,6 +609,33 @@ const COMFYUI_MINIMAX_H3_9REF_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const COMFYUI_LTX25_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "quality", "reference_images", "reference_mode", "seed"],
+  aspect_ratio_options: ["16:9", "9:16", "1:1"],
+  resolution_options: ["480p", "720p"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_resolution: true,
+  supports_duration: true,
+  supports_quality: true,
+  quality_options: ["极速", "标准", "高质量"],
+  defaults: { duration: 5, aspect_ratio: "16:9", resolution: "480p", quality: "标准", input_reference_min: 0, input_reference_max: 6 },
+  models: {
+    "ltx-2.5-distilled-av-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "quality", "reference_images", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p", "720p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      supports_quality: true,
+      quality_options: ["极速", "标准", "高质量"],
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "480p", quality: "标准", input_reference_min: 0, input_reference_max: 6 },
+    },
+  },
+  vendor_models: [{ modelName: "ltx-2.5-distilled-av-local", name: "LTX-2.5 22B Distilled · 本地音视频", type: "video" }],
+};
+
 const COMFYUI_WAN_ANIMATE2_SCHEMA: ModelParameterSchema = {
   allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "reference_images", "reference_video", "reference_mode", "seed"],
   aspect_ratio_options: ["16:9", "9:16", "1:1"],
@@ -1088,6 +1115,18 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   video: [
+    {
+      vendor: "ComfyUI",
+      label: "ComfyUI · LTX-2.5 本地文生/多图参考",
+      baseURL: "http://127.0.0.1:8188",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["ltx-2.5-distilled-av-local"],
+      submitEndpoint: "/prompt",
+      queryEndpoint: "/history/{taskId}",
+      parameterSchema: COMFYUI_LTX25_SCHEMA,
+      iconKey: "comfyui",
+    },
     {
       vendor: "ComfyUI",
       label: "ComfyUI · Wan Animate 2 本地动作复刻",

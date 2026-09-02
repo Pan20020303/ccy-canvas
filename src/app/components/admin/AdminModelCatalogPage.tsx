@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { gsap } from "gsap";
 import {
   Bold,
@@ -78,8 +78,9 @@ import { Button } from "../ui/button";
 import { ModelBrandIcon } from "../ModelBrandIcon";
 import { AdminShell } from "./AdminShell";
 import { ChannelHealthBadge } from "./ChannelHealthBadge";
+import { lazyWithChunkRecovery } from "../../chunk-recovery";
 
-const ProviderCodeEditorModal = lazy(() => import("./ProviderCodeEditorModal"));
+const ProviderCodeEditorModal = lazyWithChunkRecovery("provider-code-editor", () => import("./ProviderCodeEditorModal"));
 
 const SERVICE_LABELS: Record<ServiceType, string> = {
   text: "文本生成",

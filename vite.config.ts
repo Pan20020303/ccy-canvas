@@ -51,6 +51,13 @@ export default defineConfig(({ mode }) => {
     ],
     // 3D model assets (React Bits Lanyard card) imported as URLs.
     assetsInclude: ["**/*.glb"],
+    build: {
+      // Do not delete hashed chunks from the preceding release. Users often
+      // keep a canvas tab open while a new build is deployed; that tab still
+      // references the old lazy MediaPreview/Editor filenames. Retaining them
+      // prevents a double-click from turning into a 404 application crash.
+      emptyOutDir: false,
+    },
     server: {
       port: 5173,
       proxy: {
