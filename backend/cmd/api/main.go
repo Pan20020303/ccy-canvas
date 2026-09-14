@@ -21,6 +21,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
 	"ccy-canvas/backend/internal/platform/adminaudit"
+	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/cache"
 	"ccy-canvas/backend/internal/platform/config"
@@ -30,7 +31,6 @@ import (
 	"ccy-canvas/backend/internal/platform/httpapi"
 	"ccy-canvas/backend/internal/platform/password"
 	"ccy-canvas/backend/internal/platform/session"
-	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/presence"
 	"ccy-canvas/backend/internal/shared/httpx"
 	skillsapp "ccy-canvas/backend/internal/skills/application"
@@ -129,6 +129,7 @@ func main() {
 		WithCredits(creditChargerAdapter{svc: creditService})
 	var redisCache *cache.JSONCache
 	if cfg.RedisAddr != "" {
+		catalogService = catalogService.WithComfyWorkerRedis(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		redisCache = cache.NewJSONCache(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB, "ccy")
 		catalogService = catalogService.WithCache(redisCache)
 		log.Printf("[cache] Redis cache enabled: %s db=%d policy=%s", cfg.RedisAddr, cfg.RedisDB, cfg.ChannelPolicy)
@@ -200,14 +201,8 @@ func main() {
 	workspacehttp.RegisterAssetRoutes(router, sessionManager, queries)
 	// Collaboration support (invite-by-username user lookup).
 	workspacehttp.RegisterCollabRoutes(router, sessionManager, queries)
-	fileServer := http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads")))
-	router.Get("/uploads/*", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=31536000")
-		// Prevent MIME sniffing of stored assets — defense-in-depth alongside
-		// the upload-time content sniffing that rejects active document types.
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		fileServer.ServeHTTP(w, r)
-	})
+	localMedia := assetstore.NewLocalMediaHandler(os.Getenv("UPLOAD_DIR"))
+	router.Get("/uploads/*", localMedia.ServeHTTP)
 
 	// Existing chi identity routes (login / register / logout / me / invitations).
 	identityHandler.Routes(router)
@@ -314,7 +309,7 @@ func main() {
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router}
 	go func() {
 		s, err := assetstore.Default()
-	log.Printf("listening on %s | storage=%s(%T) err=%v", cfg.HTTPAddr, os.Getenv("STORAGE_BACKEND"), s, err)
+		log.Printf("listening on %s | storage=%s(%T) err=%v", cfg.HTTPAddr, os.Getenv("STORAGE_BACKEND"), s, err)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}
@@ -379,6 +374,10 @@ type taskQueueAdapter struct {
 
 func (a taskQueueAdapter) Enabled() bool {
 	return a.q != nil && a.q.Enabled()
+}
+
+func (a taskQueueAdapter) RemoveCancelledTask(ctx context.Context, serviceType, id string) error {
+	return a.q.RemoveCancelledTask(ctx, serviceType, id)
 }
 
 func (a taskQueueAdapter) Enqueue(ctx context.Context, p modelhttp.TaskGenerationPayload) (string, error) {

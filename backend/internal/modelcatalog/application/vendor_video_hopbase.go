@@ -21,10 +21,21 @@ const (
 	hopBaseAssetPath       = "/v1/sd/assets"
 )
 
+// HopBase's async submit occasionally holds the HTTP response while the paid
+// task has already been accepted upstream. Aborting that POST after a short
+// client timeout creates an orphan: the provider keeps generating, but CCY
+// never receives the task id and cannot reconcile the late success. Keep the
+// non-idempotent submit alive for the same budget as video polling; the worker
+// context remains the outer hard deadline.
+func hopBaseVideoSubmitTimeout() time.Duration {
+	return videoGenerationTimeout()
+}
+
 type hopBaseSeedanceCapabilities struct {
 	is25        bool
 	maxImages   int
 	maxVideos   int
+	maxAudios   int
 	resolutions map[string]struct{}
 }
 
@@ -48,20 +59,23 @@ func hopBaseSeedanceCapabilitiesFor(model string) (hopBaseSeedanceCapabilities, 
 	}
 	switch model {
 	case "dreamina-seedance-2-5-260628":
-		return hopBaseSeedanceCapabilities{is25: true, maxImages: 30, maxVideos: 10, resolutions: set("480p", "720p")}, true
+		return hopBaseSeedanceCapabilities{is25: true, maxImages: 30, maxVideos: 10, maxAudios: 10, resolutions: set("480p", "720p")}, true
 	case "doubao-seedance-2-0-260128-a":
-		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, resolutions: set("480p", "720p", "1080p")}, true
+		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, maxAudios: 3, resolutions: set("480p", "720p", "1080p")}, true
 	case "dreamina-seedance-2-0-hc", "dreamina-seedance-2-0-ep", "dreamina-seedance-2-0-260128":
-		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, resolutions: set("480p", "720p", "1080p", "4k")}, true
+		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, maxAudios: 3, resolutions: set("480p", "720p", "1080p", "4k")}, true
 	case "dreamina-seedance-2-0-fast-hc", "dreamina-seedance-2-0-fast-ep", "dreamina-seedance-2-0-fast-260128",
 		"dreamina-seedance-2-0-mini-hc", "dreamina-seedance-2-0-mini-ep", "dreamina-seedance-2-0-mini-260615":
-		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, resolutions: set("480p", "720p")}, true
+		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, maxAudios: 3, resolutions: set("480p", "720p")}, true
 	default:
 		return hopBaseSeedanceCapabilities{}, false
 	}
 }
 
-func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	if err := validateHopBaseReferences(ctx, req); err != nil {
+		return nil, err
+	}
 	caps, ok := hopBaseSeedanceCapabilitiesFor(req.Model)
 	if !ok {
 		return nil, apperror.New(apperror.CodeInvalidInput, "HopBase 当前仅支持已登记的 Seedance 2.5 / 2.0 型号")
@@ -100,11 +114,18 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 
 	mode := strings.ToLower(strings.TrimSpace(req.ReferenceMode))
 	videoRefs := collectArkReferenceVideos(req)
+	audioRefs := collectHopBaseReferenceAudios(req)
 	if len(req.ReferenceImages) > caps.maxImages {
 		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("型号 %s 最多支持 %d 张参考图", req.Model, caps.maxImages))
 	}
 	if len(videoRefs) > caps.maxVideos {
 		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("型号 %s 最多支持 %d 个参考视频", req.Model, caps.maxVideos))
+	}
+	if len(audioRefs) > caps.maxAudios {
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("型号 %s 最多支持 %d 个参考音频", req.Model, caps.maxAudios))
+	}
+	if !caps.is25 && len(audioRefs) > 0 && len(req.ReferenceImages) == 0 && len(videoRefs) == 0 {
+		return nil, apperror.New(apperror.CodeInvalidInput, "Seedance 2.0 音频参考必须同时提供图片或视频参考")
 	}
 	if (mode == "start_end" || mode == "first_frame" || mode == "start_frame") && len(req.ReferenceImages) > 2 {
 		return nil, apperror.New(apperror.CodeInvalidInput, "首帧/首尾帧模式最多支持 2 张图片")
@@ -119,20 +140,33 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 		duration = -1
 	}
 
-	content := make([]map[string]any, 0, 1+len(req.ReferenceImages)+len(videoRefs))
+	content := make([]map[string]any, 0, 1+len(req.ReferenceImages)+len(videoRefs)+len(audioRefs))
 	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
 		content = append(content, map[string]any{"type": "text", "text": prompt})
 	}
 	for i, raw := range req.ReferenceImages {
 		assetURL := strings.TrimSpace(raw)
+		// Seedance 2.5 has no asset-library route. It takes public image URLs
+		// directly; keep the established asset flow for 2.0 only. The 2.5
+		// provider's real-person reference restriction is not bypassed here.
+		if caps.is25 && strings.HasPrefix(assetURL, "asset://") {
+			return nil, apperror.New(apperror.CodeInvalidInput, "Seedance 2.5 不支持 asset:// 素材引用，请使用受支持的公开图片 URL")
+		}
 		if !strings.HasPrefix(assetURL, "asset://") {
-			publicURL, err := arkReferenceImageURL(ctx, raw)
+			downloadableURL, err := hopBaseReferenceMediaURL(ctx, raw)
+			if err != nil {
+				return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 地址处理失败", i+1), err)
+			}
+			publicURL, err := arkReferenceImageURL(ctx, downloadableURL)
 			if err != nil {
 				return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
 			}
-			assetURL, err = s.createAndActivateHopBaseImageAsset(ctx, baseURL, apiKey, publicURL)
-			if err != nil {
-				return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("参考图 #%d 上传 HopBase 素材库失败", i+1), err)
+			assetURL = publicURL
+			if !caps.is25 {
+				assetURL, err = s.createAndActivateHopBaseImageAsset(ctx, baseURL, apiKey, publicURL)
+				if err != nil {
+					return nil, apperror.Wrap(apperror.CodeInternal, fmt.Sprintf("参考图 #%d 上传 HopBase 素材库失败", i+1), err)
+				}
 			}
 		}
 		role := "reference_image"
@@ -150,12 +184,23 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 		})
 	}
 	for i, raw := range videoRefs {
-		url, err := arkReferenceMediaURL(ctx, raw)
+		url, err := hopBaseReferenceMediaURL(ctx, raw)
 		if err != nil {
 			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考视频 #%d 处理失败", i+1), err)
 		}
 		content = append(content, map[string]any{
 			"type": "video_url", "video_url": map[string]any{"url": url}, "role": "reference_video",
+		})
+	}
+	for i, raw := range audioRefs {
+		audioURL, err := hopBaseReferenceMediaURL(ctx, raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考音频 #%d 处理失败", i+1), err)
+		}
+		// Local WAV/MP3 size and duration were checked before any transfer;
+		// the provider remains authoritative for external URL metadata.
+		content = append(content, map[string]any{
+			"type": "audio_url", "audio_url": map[string]any{"url": audioURL}, "role": "reference_audio",
 		})
 	}
 	if len(content) == 0 {
@@ -194,7 +239,7 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := safehttp.Client(30 * time.Second)
+	client := safehttp.Client(hopBaseVideoSubmitTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
@@ -216,7 +261,43 @@ func (s *Service) generateVideoHopBase(ctx context.Context, _ *domain.ProviderCo
 	if taskID == "" {
 		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase submit returned no task id: %s", string(respBody[:min(len(respBody), 500)])))
 	}
+	if s.repo != nil && req.GenerationLogID != "" {
+		providerID := ""
+		if pc != nil {
+			providerID = pc.ID
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := s.repo.SetGenerationLogUpstreamTask(persistCtx, req.GenerationLogID, providerID, taskID); err != nil {
+			// Do not fail an already-paid generation because diagnostic recovery
+			// metadata could not be saved. The normal poll still proceeds.
+			fmt.Printf("[modelcatalog] failed to persist HopBase task id for log %s: %v\n", req.GenerationLogID, err)
+		}
+		cancel()
+	}
 	return s.pollHopBaseVideoTask(ctx, baseURL, apiKey, taskID)
+}
+
+// Accept either frontend wire shape while preserving order and avoiding a
+// duplicated first sample when a client sends both the single and list fields.
+func collectHopBaseReferenceAudios(req GenerateRequest) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(req.ReferenceAudios)+1)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(req.ReferenceAudio)
+	for _, value := range req.ReferenceAudios {
+		add(value)
+	}
+	return out
 }
 
 func (s *Service) createAndActivateHopBaseImageAsset(ctx context.Context, baseURL, apiKey, publicURL string) (string, error) {

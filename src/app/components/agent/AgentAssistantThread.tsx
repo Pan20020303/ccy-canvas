@@ -25,6 +25,7 @@ import {
   ThreadListPrimitive,
   ThreadPrimitive,
   groupPartByType,
+  useAssistantDataUI,
   useExternalStoreRuntime,
   useMessage,
   useThreadListItem,
@@ -38,6 +39,8 @@ import { ArrowDown, Check, ChevronRight, Copy, MessageSquareQuote, Plus, Sparkle
 
 import { DotMatrix } from "./ui/dot-matrix";
 import type { AgentConversationTurn } from "../agent-conversation";
+import { runStepsToThreadParts, type CanvasOperationPart } from "../../agent-timeline";
+import { CanvasOperationIcon, presentCanvasOperation } from "./canvas-operation-presenter";
 
 // 与 AgentRunPanel 共享的运行步骤形状(仅取本组件需要的字段,避免循环依赖)。
 export type ThreadToolStep = {
@@ -63,6 +66,7 @@ export function buildAgentThreadMessages(
   runSteps: ThreadRunStep[],
   streamingReply: string,
   running: boolean,
+  zh = true,
 ): ThreadMessageLike[] {
   const messages: ThreadMessageLike[] = history.map((turn, index) => ({
     id: `h-${index}`,
@@ -87,23 +91,18 @@ export function buildAgentThreadMessages(
   // assistant-ui keys leaf parts by their array index. A late tool call used to be
   // inserted before an already-mounted text part, which made the text renderer
   // observe a tool-call context and throw `MessagePartText can only be used...`.
-  const timelineParts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
-  for (const step of runSteps) {
-    if (step.kind === "thought") {
-      const s = step as ThreadThoughtStep;
-      if (s.content.trim()) timelineParts.push({ type: "reasoning", text: s.content });
-    } else if (step.kind === "tool") {
-      const inv = (step as ThreadToolStep).invocation;
-      timelineParts.push({
-        type: "tool-call",
-        toolCallId: inv.id,
-        toolName: inv.name,
-        argsText: inv.args || "{}",
-        // running → result 留空(卡片显示进行中);结束后填结果/错误。
-        ...(inv.status === "running" ? {} : { result: inv.output ?? "", isError: inv.status === "error" }),
-      });
-    }
-  }
+  // 当前运行 → 一条带结构化 parts 的 assistant 消息(思考/工具/画布/流式文本)。
+  // Keep the live execution timeline separate from the streamed reply.
+  // assistant-ui keys leaf parts by their array index. A late tool call used to be
+  // inserted before an already-mounted text part, which made the text renderer
+  // observe a tool-call context and throw `MessagePartText can only be used...`.
+  //
+  // 映射规则集中在 agent-timeline.runStepsToThreadParts（含"相邻思考合并"与
+  // "画布变更插进时间线"），这样呈现逻辑只有一份、可单测。
+  const timelineParts = runStepsToThreadParts(runSteps, presentCanvasOperation, zh) as Exclude<
+    ThreadMessageLike["content"],
+    string
+  >[number][];
   if (timelineParts.length > 0) {
     const runMessage: ThreadMessageLike = {
       id: "current-run-steps",
@@ -476,8 +475,44 @@ const groupChainOfThought = groupPartByType({
   "tool-call": ["group-thought", "group-tool"],
 });
 
+/**
+ * 时间线里的画布变更卡。
+ *
+ * 呈现细节复用 canvas-operation-presenter（与面板底部的汇总卡同一套文案/图标），
+ * 所以这里只负责排版，不重复实现"add_node 该显示成什么"。
+ */
+export function CanvasOpCard({ data }: { data: CanvasOperationPart["data"] }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-emerald-400/15 bg-emerald-500/[0.05] px-2.5 py-1.5">
+      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-white/[0.05] text-emerald-300/80">
+        <CanvasOperationIcon entity={data.entity as never} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-1 text-[9px]">
+          <span className="font-medium text-emerald-300/85">{data.action}</span>
+          <span className="text-neutral-600">·</span>
+          <span className="text-neutral-500">{data.detail}</span>
+          {data.revision != null ? (
+            <span className="rounded border border-white/10 px-1 text-neutral-500">rev {data.revision}</span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] text-neutral-300" title={data.title}>
+          {data.title}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function makeAssistantMessage(zh: boolean): FC {
   return function AssistantMessage() {
+    // 注册画布变更卡的命名渲染器（assistant-ui 的官方 data-part 扩展点）。
+    // 必须在消息组件内部注册：useAssistantDataUI 依赖 useAui() 上下文。
+    useAssistantDataUI({
+      name: "canvas-op",
+      render: (props: { data?: CanvasOperationPart["data"] }) =>
+        props?.data ? <CanvasOpCard data={props.data} /> : null,
+    });
     return (
       // 气泡只在用户侧(DeepSeek 式):assistant 回复保持全宽平铺,阅读面积最大。
       <MessagePrimitive.Root className="group/msg flex flex-col items-start">
@@ -504,6 +539,11 @@ function makeAssistantMessage(zh: boolean): FC {
                         {children}
                       </ToolGroupBlock>
                     );
+                  case "data":
+                    // data part（含 canvas-op）由 useAssistantDataUI 注册的命名渲染器
+                    // 负责渲染，见 makeAssistantMessage 里的 canvas-op 注册。
+                    // 这里返回 null，避免与注册渲染器重复渲染出两张卡。
+                    return null;
                   case "text":
                     return (
                       <MarkdownTextPrimitive

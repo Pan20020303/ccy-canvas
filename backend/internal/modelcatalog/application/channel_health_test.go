@@ -204,6 +204,9 @@ func (r *healthFakeRepo) ListGenerationAttemptsByLog(_ context.Context, _ string
 func (r *healthFakeRepo) UpdateGenerationLogResult(_ context.Context, _, _, _, _ string, _ int32, _ bool) error {
 	panic("nope")
 }
+func (r *healthFakeRepo) SetGenerationLogUpstreamTask(context.Context, string, string, string) error {
+	return nil
+}
 func (r *healthFakeRepo) SetGenerationLogResultURLs(context.Context, string, string) error {
 	panic("nope")
 }

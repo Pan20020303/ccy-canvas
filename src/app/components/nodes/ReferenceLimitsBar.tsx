@@ -1,4 +1,4 @@
-import { REFERENCE_MODE_SPECS, type ReferenceModeKey, type ReferenceRequirementOverride } from '../../reference-modes';
+import { referenceRequirements, type ReferenceModeKey, type ReferenceRequirementOverride } from '../../reference-modes';
 
 type Range = { min: number; max: number };
 export type ReferenceLimits = { images: Range; videos: Range; audios: Range };
@@ -12,11 +12,7 @@ export function resolveReferenceLimits({ mode, override, imageRange, suffixRequi
 }): ReferenceLimits | null {
   const none = { min: 0, max: 0 };
   if (suffixRequires) return { ...suffixRequires, audios: none };
-  if (mode) return {
-    ...REFERENCE_MODE_SPECS[mode].requires,
-    ...override,
-    audios: mode === 'all-in-one' ? { min: 0, max: 3 } : none,
-  };
+  if (mode) return referenceRequirements(mode, override);
   return imageRange ? { images: imageRange, videos: none, audios: none } : null;
 }
 

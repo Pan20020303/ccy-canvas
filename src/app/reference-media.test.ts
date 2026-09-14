@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   clearReferencePayloadValue,
@@ -8,9 +8,40 @@ import {
   isPublicHttpAssetUrl,
   resolveBackendAssetUrl,
   setReferencePayloadValue,
+  toRenderableMediaUrl,
+  localMediaThumbnailWidth,
+  isLocalMediaThumbnailUrl,
 } from "./reference-media";
 
 describe("reference media helpers", () => {
+  it("requests fixed-tier local thumbnails but leaves original download URLs unchanged", () => {
+    expect(toRenderableMediaUrl('/uploads/photo.png', { thumbWidth: 720 })).toBe('/uploads/photo.png?w=768');
+    expect(toRenderableMediaUrl('/uploads/photo.png', { thumbWidth: 640 })).toBe('/uploads/photo.png?w=768');
+    expect(toRenderableMediaUrl('/uploads/photo.png')).toBe('/uploads/photo.png');
+    expect(toRenderableMediaUrl('/other/photo.png', { thumbWidth: 720 })).toBe('/other/photo.png');
+    expect(localMediaThumbnailWidth(99999)).toBe(1280);
+    expect(localMediaThumbnailWidth(NaN)).toBeNull();
+  });
+
+  it("identifies derivative requests and invalidates old version hints when changing tier", () => {
+    expect(isLocalMediaThumbnailUrl('/uploads/photo.png?w=768&v=old')).toBe(true);
+    expect(isLocalMediaThumbnailUrl('/uploads/photo.png')).toBe(false);
+    expect(toRenderableMediaUrl('/uploads/photo.png?w=768&v=old', { thumbWidth: 256 })).toBe('/uploads/photo.png?w=256');
+  });
+
+  it("uses same-origin absolute uploads locally without redirecting foreign uploads to this server", () => {
+    vi.stubGlobal('window', { location: { origin: 'http://canvas.local' } });
+    try {
+      expect(toRenderableMediaUrl('http://canvas.local/uploads/photo.png', { thumbWidth: 720 })).toBe('http://canvas.local/uploads/photo.png?w=768');
+      expect(toRenderableMediaUrl('https://foreign.example/uploads/photo.png', { thumbWidth: 720 })).toContain('/api/app/proxy-media?url=');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("only appends a finite thumbnail hint and retains the original signed URL", () => {
+    const source = 'https://example.com/photo.png?signature=a%2Bb';
+    expect(toRenderableMediaUrl(source, { thumbWidth: 720 })).toBe(`/api/app/proxy-media?url=${encodeURIComponent(source)}&w=720`);
+    expect(toRenderableMediaUrl(source, { thumbWidth: Infinity })).not.toContain('&w=');
+  });
   it("maps image mime types to reference image nodes", () => {
     expect(getReferenceNodeTypeFromMimeType("image/png")).toBe("referenceImageNode");
   });

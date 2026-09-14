@@ -1,71 +1,64 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { ImageOff } from 'lucide-react';
 import clsx from 'clsx';
 
-import { toRenderableMediaUrl } from '../reference-media';
-import { reportDeadMedia, isCertainlyDeadSrc } from '../dead-media';
+import { extractOriginalMediaUrl, toRenderableMediaUrl } from '../reference-media';
 
-/**
- * Self-healing + self-cleaning thumbnail for history / asset tiles.
- *
- * - Empty src → placeholder only, NEVER reported dead. A blank url usually
- *   means the persist layer stripped a heavy data:/blob: value locally while
- *   the server still holds the real copy (hydrate will restore it) — deleting
- *   on sight destroyed exactly those assets.
- * - Load error → retries ONCE with an ALTERNATE url (raw src if the first
- *   attempt was proxied, else a cache-busted reload); a second failure marks
- *   it dead.
- * - When an entry is dead AND we're online, `onDead()` fires so the caller can
- *   auto-remove the unloadable entry (list + backend). Guarded by
- *   `navigator.onLine` plus a per-session budget so a transient outage can't
- *   nuke the whole library.
- */
-export function MediaThumb({
-  src,
-  alt,
-  className,
-  onDead,
-  thumbWidth = 640,
-}: {
+type ThumbProps = {
   src: string;
   alt?: string;
   className?: string;
+  /** @deprecated Preview errors never delete records; this callback is ignored. */
   onDead?: () => void;
-  /** Request a downsized WebP thumbnail from the proxy (OSS images only; other
-   *  sources fall back to the original). Set 0 to always load full-res. */
+  /** Thumbnail size hint; local images use fixed cached tiers. */
   thumbWidth?: number;
-}) {
-  const primary = useMemo(() => (src ? toRenderableMediaUrl(src, { thumbWidth }) : ''), [src, thumbWidth]);
-  const fallback = useMemo(() => {
-    if (!src) return '';
-    if (primary !== src) return src; // proxied first — retry direct
-    return `${primary}${primary.includes('?') ? '&' : '?'}mtretry=1`;
-  }, [primary, src]);
-  const [attempt, setAttempt] = useState(0);
-  const [dead, setDead] = useState(false);
+};
 
-  if (dead || !primary) {
+/** Failed previews retain the tile and allow an explicit retry. The keyed
+ * child also clears a previous failure when hydration replaces the source. */
+export function MediaThumb({ src, alt, className, thumbWidth = 640 }: ThumbProps) {
+  const primary = toRenderableMediaUrl(src, { thumbWidth });
+  return <RetryableThumb key={primary} primary={primary} original={extractOriginalMediaUrl(src)} alt={alt} className={className} />;
+}
+
+export function MediaVideoThumb({ src, alt, className }: Omit<ThumbProps, 'thumbWidth'>) {
+  const primary = toRenderableMediaUrl(src);
+  return <RetryableThumb key={primary} video primary={primary} original={extractOriginalMediaUrl(src)} alt={alt} className={className} />;
+}
+
+function RetryableThumb({ primary, original, alt, className, video = false }: {
+  primary: string; original: string; alt?: string; className?: string; video?: boolean;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const retryLoad = () => { setAttempt(0); setFailed(false); setRetry(value => value + 1); };
+  if (failed || !primary) {
     return (
-      <div className={clsx('flex items-center justify-center bg-black/40 text-neutral-600', className)}>
+      <div
+        className={clsx('flex items-center justify-center bg-black/40 text-neutral-600', className)}
+        role={failed ? 'button' : undefined}
+        tabIndex={failed ? 0 : undefined}
+        aria-label={failed ? `${alt || '素材'}加载失败，点击重试` : (alt || '暂无预览')}
+        title={failed ? '素材加载失败，点击重试；原记录已保留' : undefined}
+        onClick={failed ? event => { event.stopPropagation(); retryLoad(); } : undefined}
+        onKeyDown={failed ? event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault(); event.stopPropagation(); retryLoad();
+          }
+        } : undefined}
+      >
         <ImageOff className="h-6 w-6" />
       </div>
     );
   }
-
-  return (
-    <img
-      key={attempt}
-      src={attempt === 0 ? primary : fallback}
-      alt={alt}
-      className={className}
-      onError={() => {
-        if (attempt === 0) {
-          setAttempt(1);
-          return;
-        }
-        setDead(true);
-        reportDeadMedia(isCertainlyDeadSrc(src), () => onDead?.());
-      }}
-    />
+  // Never append a cache-busting query: it can invalidate signatures or corrupt
+  // data:/blob: sources. Remount the exact resource for same-URL retries.
+  const source = attempt === 0 ? primary : (original || primary);
+  const onError = () => { if (attempt === 0) setAttempt(1); else setFailed(true); };
+  return video ? (
+    <video key={`${retry}:${attempt}`} src={source} aria-label={alt} className={className} muted playsInline preload="metadata" onError={onError} />
+  ) : (
+    <img key={`${retry}:${attempt}`} src={source} alt={alt} className={className} loading="lazy" decoding="async" onError={onError} />
   );
 }

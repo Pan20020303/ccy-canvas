@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X, Image as ImageIcon, Video as VideoIcon, Type } from 'lucide-react';
 import clsx from 'clsx';
+import { toast } from 'sonner';
 import { toRenderableMediaUrl } from '../reference-media';
 import { useStore, ASSET_CATEGORIES, rehostToStableUrl, type SavedAssetCategory } from '../store';
 
@@ -61,8 +62,11 @@ export function SaveAssetDialog() {
         kind,
         text: kind === 'text' ? text : undefined,
       });
+      toast.info(language === 'zh' ? '已加入素材库，正在同步；可在素材库查看结果。' : 'Added locally. Sync status is available in the library.');
       close();
       setAssetLibraryOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : (language === 'zh' ? '素材尚未保存，请重试。' : 'Asset was not saved. Please retry.'));
     } finally {
       setSaving(false);
     }

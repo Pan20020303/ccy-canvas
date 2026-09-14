@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, CheckCircle2, Loader2, Megaphone, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 
 import { listAnnouncements, type Announcement } from '../api/announcements';
+import { cancelTask, listRecentTasks, type TaskItem } from '../api/tasks';
+import { generationTaskLabel, isActiveGenerationTask, mergeTaskUpdate, subscribeTaskUpdates } from '../task-events';
 import { useAuth } from '../auth/AuthProvider';
 import { t } from '../i18n';
 import { useStore } from '../store';
@@ -19,7 +21,7 @@ const isAfter = (a: string, b: string) => {
 };
 
 export const TaskQueue = () => {
-  const { language, tasks } = useStore();
+  const language = useStore((state) => state.language);
   const { user } = useAuth();
   const dict = t[language];
   const [open, setOpen] = useState(false);
@@ -27,6 +29,77 @@ export const TaskQueue = () => {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [annLoading, setAnnLoading] = useState(false);
   const [lastRead, setLastRead] = useState('');
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [taskError, setTaskError] = useState('');
+  const [taskLoading, setTaskLoading] = useState(false);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const [taskRefresh, setTaskRefresh] = useState(0);
+  const taskRevision = useRef(0);
+  const refreshTasks = useCallback(() => setTaskRefresh(value => value + 1), []);
+
+  // The tray consumes persisted server tasks, not the unused legacy UI array.
+  // No fake percent: queued/running/persisting are real backend phases.
+  useEffect(() => {
+    setTasks([]);
+    setTaskError('');
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let stopped = false;
+    let pending = false;
+    const refresh = async () => {
+      if (stopped || pending || (typeof document !== 'undefined' && document.hidden)) return;
+      pending = true;
+      const revision = taskRevision.current;
+      setTaskLoading(true);
+      try {
+        const next = await listRecentTasks(50);
+        if (!stopped && revision === taskRevision.current) { setTasks(next); setTaskError(''); }
+      } catch (error) {
+        if (!stopped) setTaskError(error instanceof Error ? error.message : (language === 'zh' ? '任务列表暂不可用' : 'Tasks unavailable'));
+      } finally {
+        pending = false;
+        if (!stopped) setTaskLoading(false);
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), open && tab === 'tasks' ? 8000 : 30000);
+    const onVisible = () => { if (!document.hidden) void refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const unsubscribe = subscribeTaskUpdates(task => {
+      if (stopped) return;
+      taskRevision.current += 1;
+      // Late responses from a previous signed-in user must not inject rows
+      // into this user's tray. New rows arrive through the scoped list API.
+      setTasks(current => current.map(item => item.id === task.id ? mergeTaskUpdate(item, task) : item));
+    });
+    return () => { stopped = true; clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); unsubscribe(); };
+  }, [user?.id, open, tab, language, taskRefresh]);
+
+  const locateTask = async (task: TaskItem) => {
+    const state = useStore.getState();
+    if (task.project_id && state.activeBackendProjectId !== task.project_id) {
+      if (!await state.switchBackendProject(task.project_id)) return;
+    }
+    if (!useStore.getState().nodes.some(node => node.id === task.node_id)) {
+      setTaskError(language === 'zh' ? '该任务的节点不在当前画布中，任务记录和结果仍保留。' : 'The node is unavailable; the task and result are retained.');
+      return;
+    }
+    useStore.getState().requestCanvasFocus(task.node_id);
+    setOpen(false);
+  };
+
+  const cancelQueuedTask = async (task: TaskItem) => {
+    if (cancelling) return;
+    setCancelling(task.id);
+    try {
+      const result = await cancelTask(task.id);
+      setTaskError(result.cancelled ? '' : (result.task.cancel_reason || (language === 'zh' ? '任务未取消，将继续跟踪。' : 'Task continues; tracking remains active.')));
+    } catch (error) {
+      setTaskError(error instanceof Error ? error.message : (language === 'zh' ? '未能确认取消，任务仍在跟踪' : 'Cancellation unconfirmed; still tracking'));
+    } finally { setCancelling(null); }
+  };
 
   const storageKey = readKey(user?.id ?? 'anon');
 
@@ -67,7 +140,7 @@ export const TaskQueue = () => {
   }, [open, tab, latest, lastRead, storageKey]);
 
   const visibleTasks = tasks;
-  const active = visibleTasks.filter((task) => task.status === 'generating').length;
+  const active = visibleTasks.filter((task) => isActiveGenerationTask(task.status)).length;
 
   const handleToggle = () => {
     setOpen((value) => {
@@ -157,7 +230,9 @@ export const TaskQueue = () => {
               </div>
             ) : (
               <div className="flex-1 space-y-2 overflow-y-auto p-3">
-                {visibleTasks.length === 0 ? (
+                {taskError ? <div role="alert" className="text-xs text-rose-300">{taskError}<button type="button" onClick={refreshTasks} className="ml-2 underline">{language === 'zh' ? '重试' : 'Retry'}</button></div> : null}
+                {taskLoading && visibleTasks.length === 0 ? <Loader2 className="mx-auto h-4 w-4 animate-spin text-neutral-500" /> : null}
+                {!taskLoading && !taskError && visibleTasks.length === 0 ? (
                   <div className="py-6 text-center text-xs text-neutral-500">{dict.empty_queue}</div>
                 ) : (
                   visibleTasks.map((task) => (
@@ -165,41 +240,38 @@ export const TaskQueue = () => {
                       key={task.id}
                       className={clsx(
                         'flex flex-col rounded-xl border p-3 transition',
-                        task.status === 'failed'
+                          ['failed', 'error', 'dead'].includes(task.status)
                           ? 'border-rose-500/20 bg-rose-500/5'
                           : 'border-white/5 bg-white/[0.03]',
                       )}
                     >
                       <div className="mb-2 flex items-center justify-between">
                         <span className="text-xs font-medium capitalize text-neutral-300">
-                          {task.type} {language === 'zh' ? '生成' : 'Generation'}
+                          {task.model || task.service_type}
                         </span>
-                        {task.status === 'generating' ? (
+                        {isActiveGenerationTask(task.status) ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-500" />
                         ) : null}
-                        {task.status === 'completed' ? (
+                        {task.status === 'success' ? (
                           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
                         ) : null}
-                        {task.status === 'failed' ? (
+                        {['failed', 'error', 'dead'].includes(task.status) ? (
                           <XCircle className="h-3.5 w-3.5 text-rose-400" />
                         ) : null}
                       </div>
 
-                      {task.status === 'generating' ? (
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40">
-                          <div
-                            className="h-1.5 rounded-full bg-cyan-500 transition-all duration-300 ease-out"
-                            style={{ width: `${task.progress}%` }}
-                          />
-                        </div>
-                      ) : (
-                        <span className="text-[10px] text-neutral-500">
-                          {task.status === 'completed' ? dict.completed : dict.failed}
-                        </span>
-                      )}
+                      <span className="truncate text-[10px] text-neutral-500" title={task.node_id}>{task.project_name || task.project_id || (language === 'zh' ? '未关联项目' : 'No project')} · {task.node_id}</span>
+                      <span className="text-[10px] text-neutral-500">{generationTaskLabel(task.status, language === 'zh')}{task.duration_ms > 0 ? ` · ${(task.duration_ms / 1000).toFixed(1)}s` : ''}</span>
+                      {task.error_msg ? <span className="break-words text-[10px] text-rose-300">{task.error_msg}</span> : null}
+                      <div className="mt-2 flex items-center gap-3 text-[10px] text-neutral-400">
+                        <button type="button" onClick={() => void locateTask(task)}>{language === 'zh' ? '定位节点' : 'Locate node'}</button>
+                        {task.can_cancel ? <button type="button" disabled={Boolean(cancelling)} onClick={() => void cancelQueuedTask(task)}>{cancelling === task.id ? (language === 'zh' ? '确认取消中…' : 'Cancelling…') : (language === 'zh' ? '取消排队' : 'Cancel queued task')}</button> : null}
+                        {isActiveGenerationTask(task.status) && !task.can_cancel ? <span title={task.cancel_reason}>{language === 'zh' ? '继续跟踪' : 'Tracking'}</span> : null}
+                      </div>
                     </div>
                   ))
                 )}
+                {visibleTasks.length >= 50 ? <div className="text-[10px] text-neutral-500">{language === 'zh' ? '显示最近 50 项，进行中的任务优先。' : 'Showing 50 tasks; active tasks first.'}</div> : null}
               </div>
             )}
           </div>

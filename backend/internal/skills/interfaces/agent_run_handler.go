@@ -35,6 +35,33 @@ type AgentRunRouter struct {
 	catalogSvc *modelapp.Service
 	sessions   session.Manager
 	taskQueue  AgentTaskEnqueuer
+	// terminalSink 负责写 job 终态。默认 nil 时走 finishAgentJob（真实 SQL）；
+	// 单测可注入内存实现，从而在没有数据库的情况下覆盖失败/成功路径 ——
+	// 否则这些路径除了连库没有别的测法（q 为 nil 会直接 panic）。
+	terminalSink agentTerminalSink
+}
+
+// agentTerminalSink 是"写 job 终态"的窄边界：只需知道 job、汇总统计、错误，
+// 以及终态事件的载荷（done 事件带 steps，前端会显示步数）。
+// 真实实现是 finishAgentJob；测试实现只记录调用。
+type agentTerminalSink func(ctx context.Context, runID pgtype.UUID, stats skillsapp.RunStats, runErr error, startedAt time.Time, terminalData any) error
+
+// WithTerminalSink 注入自定义终态写入器（仅用于测试）。
+func (rt *AgentRunRouter) WithTerminalSink(sink agentTerminalSink) *AgentRunRouter {
+	rt.terminalSink = sink
+	return rt
+}
+
+// finishJob 是终态写入的唯一入口：有注入用注入，否则走真实 SQL。
+// terminalData 为 nil 时交给 finishAgentJob 自己按成败决定默认载荷。
+func (rt *AgentRunRouter) finishJob(ctx context.Context, runID pgtype.UUID, stats skillsapp.RunStats, runErr error, startedAt time.Time, terminalData any) error {
+	if rt.terminalSink != nil {
+		return rt.terminalSink(ctx, runID, stats, runErr, startedAt, terminalData)
+	}
+	if terminalData == nil {
+		return rt.finishAgentJob(runID, stats, startedAt, runErr)
+	}
+	return rt.finishAgentJob(runID, stats, startedAt, runErr, terminalData)
 }
 
 func NewAgentRunRouter(q *sqlc.Queries, executor *skillsapp.Executor, catalog *modelapp.Service, sessions session.Manager) *AgentRunRouter {

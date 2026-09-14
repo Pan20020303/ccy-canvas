@@ -26,6 +26,11 @@ describe("formatReferenceRequirement", () => {
     expect(formatReferenceRequirement(wanRequirement, "en"))
       .toBe("This model needs 1 identity image and 1 motion video");
   });
+
+  it("describes optional mixed-reference limits instead of hiding them", () => {
+    expect(formatReferenceRequirement({ images: { min: 0, max: 30 }, videos: { min: 0, max: 10 }, audios: { min: 0, max: 10 } }, "zh"))
+      .toBe("该模型最多支持 30 张图片、10 条视频、10 条音频");
+  });
 });
 
 describe("happyHorseSuffixSatisfied", () => {
@@ -60,6 +65,17 @@ describe("happyHorseSuffixSatisfied", () => {
 });
 
 describe("isModeSatisfied", () => {
+  it("validates all media limits with model-specific Seedance 2.5 overrides", () => {
+    const override = { images: { min: 0, max: 30 }, videos: { min: 0, max: 10 }, audios: { min: 0, max: 10 } };
+    expect(isModeSatisfied("all-in-one", { images: 30, videos: 10, audios: 10 }, override)).toBe(true);
+    for (const counts of [{ images: 31, videos: 0, audios: 0 }, { images: 0, videos: 11, audios: 0 }, { images: 0, videos: 0, audios: 11 }]) {
+      expect(isModeSatisfied("all-in-one", counts, override)).toBe(false);
+    }
+    expect(isModeSatisfied("all-in-one", { images: 9, videos: 3, audios: 3 })).toBe(true);
+    expect(isModeSatisfied("all-in-one", { images: 0, videos: 0, audios: 4 })).toBe(false);
+    expect(isModeSatisfied("first-last", { images: 1, videos: 0, audios: 1 })).toBe(false);
+  });
+
   it("first-last needs 1-2 images and no videos", () => {
     expect(isModeSatisfied("first-last", { images: 0, videos: 0 })).toBe(false);
     expect(isModeSatisfied("first-last", { images: 1, videos: 0 })).toBe(true);

@@ -1,155 +1,96 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useStoreApi } from "@xyflow/react";
 
 import ccyLogo from "../../imports/logo.png";
 import { rememberMediaDims } from "../media-dims";
-import { toRenderableMediaUrl } from "../reference-media";
+import { collectImagePreloadTargets, runImagePreloadQueue } from "../canvas-media-preload";
 import { useStore } from "../store";
 
-/**
- * Canvas entry gate. When entering a project, we show a brief fade-in overlay
- * that ACTUALLY does work: it waits for the canvas snapshot to load, then
- * preloads every node's image (warming the browser cache AND measuring each
- * one). For any node that is MISSING its stored dimensions, it writes them back
- * (updateNodeData) so the box is deterministic forever after — for the owner
- * that persists into the snapshot, so even read-only visitors load correct
- * sizes and nothing ever re-measures. It also fills the in-memory
- * mediaDimCache, so with onlyRenderVisibleElements a node that scrolls back into
- * view remounts at the right size instead of jumping.
- *
- * By the time it fades out the canvas reveals with correct node sizes and
- * images that pop in instantly — no measure-then-jump, no blank-then-load.
- * The gate is bounded (never blocks longer than MAX_PRELOAD_MS) but the
- * preloads keep running in the background afterwards, so the cache/persist
- * finish even on a large canvas.
- */
-const MAX_PRELOAD_MS = 6000;
-// Hard ceiling on step 1 (waiting for the canvas snapshot fetch) so a slow or
-// stalled getCanvas can never leave the user stuck on the loading gate forever.
+// The overlay reflects snapshot hydration only. Media warming never holds it
+// open, and never blocks pointer input. Keep the existing visual treatment.
 const MAX_SYNC_WAIT_MS = 8000;
-const MIN_VISIBLE_MS = 550;
 const FADE_MS = 500;
+const projectKeyOf = (state: ReturnType<typeof useStore.getState>) =>
+  state.activeBackendProjectId ?? `${state.activeSpaceId}:${state.activeProjectId}`;
 
-type MediaTarget = { nodeId: string; url: string; hasDims: boolean };
-
-function collectMediaTargets(nodes: any[]): MediaTarget[] {
-  const out: MediaTarget[] = [];
-  const seen = new Set<string>();
-  for (const n of nodes) {
-    const d = n?.data ?? {};
-    const hasDims = Number(d.mediaWidth) > 0 && Number(d.mediaHeight) > 0;
-    for (const url of [d.url, d.poster, d.thumbnail]) {
-      if (typeof url === "string" && /^(https?:|\/)/.test(url)) {
-        const key = `${n.id}:${url}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          out.push({ nodeId: n.id, url, hasDims });
-        }
-      }
-    }
-  }
-  return out;
-}
-
-function preload(target: MediaTarget): Promise<void> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    let settled = false;
-    const done = () => {
-      if (!settled) {
-        settled = true;
-        resolve();
-      }
-    };
-    img.onload = () => {
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      if (w > 0 && h > 0) {
-        rememberMediaDims(target.url, w, h);
-        // Persist dims back onto the node when it had none, so the box is
-        // deterministic on every future load (owner → saved snapshot; anyone
-        // → no re-measure). Guard on hasDims to avoid needless writes.
-        if (!target.hasDims) {
-          const node = useStore.getState().nodes.find((n) => n.id === target.nodeId);
-          const nd = node?.data as Record<string, unknown> | undefined;
-          if (nd && nd.url === target.url && !(Number(nd.mediaWidth) > 0 && Number(nd.mediaHeight) > 0)) {
-            useStore.getState().updateNodeData(target.nodeId, { mediaWidth: w, mediaHeight: h });
-          }
-        }
-      }
-      done();
-    };
-    img.onerror = done; // videos / broken urls — skip
-    // thumbWidth 与画布节点(ResilientImage thumbWidth=720)一致 —— 预热的必须
-    // 是节点真正要请求的那个 URL,否则预热全图、节点拉缩略图,缓存互不命中。
-    img.src = toRenderableMediaUrl(target.url, { thumbWidth: 720 }); // same request the node will make
-  });
-}
-
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+/** Mounted inside ReactFlowProvider so the one-shot prefetch reads actual
+ * viewport geometry without subscribing every thumbnail to pan/zoom. */
 export function CanvasLoader() {
-  const activeId = useStore((s) => s.activeBackendProjectId);
+  const projectKey = useStore(projectKeyOf);
+  const syncing = useStore(state => state.backendSyncing);
+  const flowStore = useStoreApi();
   const [visible, setVisible] = useState(true);
   const [mounted, setMounted] = useState(true);
   const [progress, setProgress] = useState(0);
-  const runRef = useRef(0);
 
   useEffect(() => {
-    const runId = ++runRef.current;
-    let cancelled = false;
-    setMounted(true);
-    setVisible(true);
-    setProgress(0);
-    const start = Date.now();
-
-    const stale = () => cancelled || runId !== runRef.current;
-
-    const run = async () => {
-      // 1) Wait for the snapshot fetch to finish (backendSyncing flips false) —
-      //    BOUNDED so a slow/stalled getCanvas can never hang the gate forever
-      //    on «加载画布…». After the deadline we reveal the canvas anyway; it
-      //    fills in when the fetch eventually resolves.
-      const syncDeadline = Date.now() + MAX_SYNC_WAIT_MS;
-      while (!stale() && useStore.getState().backendSyncing && Date.now() < syncDeadline) {
-        await wait(60);
-      }
-      if (stale()) return;
-
-      // 2) Preload media — warm the browser + dimension caches, persist dims.
-      //    The promises keep resolving in the background even after the gate
-      //    lifts, so a large canvas still finishes prewarming.
-      const targets = collectMediaTargets(useStore.getState().nodes as any[]);
-      if (targets.length > 0) {
-        let loaded = 0;
-        await Promise.race([
-          Promise.all(
-            targets.map((t) =>
-              preload(t).then(() => {
-                loaded += 1;
-                if (!stale()) setProgress(Math.round((loaded / targets.length) * 100));
-              }),
-            ),
-          ),
-          wait(MAX_PRELOAD_MS),
-        ]);
-      }
-      if (stale()) return;
-
-      // 3) Honor the minimum so the fade is a graceful reveal, not a flash.
-      const elapsed = Date.now() - start;
-      if (elapsed < MIN_VISIBLE_MS) await wait(MIN_VISIBLE_MS - elapsed);
-      if (stale()) return;
-
+    const controller = new AbortController();
+    let frame = 0;
+    let fadeTimer: ReturnType<typeof setTimeout> | undefined;
+    let syncTimer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeViewport: (() => void) | undefined;
+    const reveal = () => {
+      setProgress(100);
       setVisible(false);
-      await wait(FADE_MS);
-      if (!stale()) setMounted(false);
+      fadeTimer = setTimeout(() => setMounted(false), FADE_MS);
     };
-    void run();
-
+    if (syncing) {
+      setMounted(true); setVisible(true); setProgress(0);
+      syncTimer = setTimeout(reveal, MAX_SYNC_WAIT_MS);
+    } else {
+      reveal();
+      // Let ReactFlow apply the restored graph/fitView before sampling the
+      // viewport. The canvas is already usable while these frames elapse.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (controller.signal.aborted) return;
+          const state = useStore.getState();
+          if (projectKeyOf(state) !== projectKey || state.backendSyncing) return;
+          const flow = flowStore.getState();
+          // Moving/resizing the viewport makes the remaining entry candidates
+          // stale. Stop this optional queue; visible nodes load themselves.
+          unsubscribeViewport = flowStore.subscribe((next, previous) => {
+            if (next.width !== previous.width || next.height !== previous.height ||
+              next.transform.some((value, index) => value !== previous.transform[index])) controller.abort();
+          });
+          const targets = collectImagePreloadTargets(state.nodes.map(node => {
+            const internal = flow.nodeLookup.get(node.id);
+            return { ...node, measured: internal?.measured ?? node.measured };
+          }), { x: flow.transform[0], y: flow.transform[1], zoom: flow.transform[2], width: flow.width, height: flow.height });
+          for (const node of state.nodes) {
+            const data = node.data;
+            if (Number(data.mediaWidth) > 0 && Number(data.mediaHeight) > 0) {
+              rememberMediaDims(data.url, Number(data.mediaWidth), Number(data.mediaHeight));
+            }
+          }
+          void runImagePreloadQueue(targets, {
+            signal: controller.signal,
+            onLoaded: (target, dimensions) => {
+              if (!target.measureOriginal || controller.signal.aborted) return;
+              const current = useStore.getState();
+              if (projectKeyOf(current) !== projectKey || current.backendSyncing) return;
+              rememberMediaDims(target.sourceUrl, dimensions.width, dimensions.height);
+              for (const owner of target.owners) {
+                rememberMediaDims(owner.url, dimensions.width, dimensions.height);
+                if (!owner.measureOriginal) continue;
+                const data = useStore.getState().nodes.find(node => node.id === owner.nodeId)?.data;
+                if (data?.url === owner.url && !(Number(data.mediaWidth) > 0 && Number(data.mediaHeight) > 0)) {
+                  useStore.getState().updateNodeData(owner.nodeId, { mediaWidth: dimensions.width, mediaHeight: dimensions.height });
+                }
+              }
+            },
+          }).finally(() => unsubscribeViewport?.());
+        });
+      });
+    }
     return () => {
-      cancelled = true;
+      controller.abort();
+      unsubscribeViewport?.();
+      cancelAnimationFrame(frame);
+      if (fadeTimer) clearTimeout(fadeTimer);
+      if (syncTimer) clearTimeout(syncTimer);
     };
-  }, [activeId]);
+  }, [projectKey, syncing, flowStore]);
 
   if (!mounted) return null;
 
@@ -159,7 +100,7 @@ export function CanvasLoader() {
       style={{
         opacity: visible ? 1 : 0,
         transition: `opacity ${FADE_MS}ms ease-out`,
-        pointerEvents: visible ? "auto" : "none",
+        pointerEvents: "none",
       }}
       aria-hidden={!visible}
       aria-label="加载画布"
@@ -173,7 +114,7 @@ export function CanvasLoader() {
         <div
           className="ccy-canvas-loader-track"
           role="progressbar"
-          aria-label="画布资源加载进度"
+          aria-label="画布加载进度"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress}

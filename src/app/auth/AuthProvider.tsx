@@ -176,6 +176,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       async logout() {
         await apiClient.post("/api/auth/logout");
+        bindStorageToUser('');
         setUser(null);
         setCreditSummary(null);
       },

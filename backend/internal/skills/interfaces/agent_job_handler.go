@@ -312,6 +312,22 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	if override := strings.TrimSpace(req.Model); override != "" {
 		catalogModel = override
 	}
+
+	// Harness 后端：把这一轮交给 Node 侧 agent bridge（DeepSeek Harness）。
+	// 由 agents.metadata.agentRuntime == "harness" 开启（见 agent_harness_handler.go
+	// 里为什么不用 strategy/runtime 列）。
+	//
+	// 必须放在"解析模型 endpoint"**之前**：DSH 用的是它自己的凭据
+	// （dsh 的 credentials），与 ccy 的 provider catalog 无关。放在后面的话，
+	// 模型名在 catalog 里解析不到的 agent（实测有：model=volcengine:...）会直接
+	// 报"所选模型暂不可用"，harness 根本轮不上。
+	//
+	// 注意：harness 路径自己也会调用 persistSuccessfulTurn，否则会话消息/tool_log/
+	// 记忆/标题都不会写，前端历史里第二轮就看不到第一轮。
+	if agentUsesHarness(agent) {
+		return rt.executeHarnessAgentJob(ctx, job, agent, conversation, req, emit)
+	}
+
 	resolved, err := rt.catalogSvc.ResolveModelEndpoints(ctx, catalogModel)
 	if err != nil {
 		publicErr := apperror.New(apperror.CodeInvalidInput, "所选模型暂不可用，请更换后重试")
@@ -440,31 +456,48 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if req.Message != "" && stats.FinalReply != "" {
-		_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-			ConversationID: conversation.ID, Role: "user", Content: req.Message,
-		})
-		if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
-			_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-				ConversationID: conversation.ID, Role: "tool_log", Content: transcript,
-			})
-		}
-		_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-			ConversationID: conversation.ID, Role: "assistant", Content: stats.FinalReply,
-		})
-		skillsapp.PersistTurnMemory(persistCtx, rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID,
-			formatUUID(conversation.ID), req.Message, stats.FinalReply)
-		nextTitle := conversation.Title
-		if nextTitle == "" || nextTitle == agent.Name {
-			nextTitle = truncateForTitle(req.Message)
-		}
-		_, _ = rt.q.TouchAgentConversation(persistCtx, sqlc.TouchAgentConversationParams{ID: conversation.ID, Title: nextTitle})
-	}
+	rt.persistSuccessfulTurn(persistCtx, job, agent, conversation, req, stats)
 	if terminalEvent == "" {
 		terminalEvent = skillsapp.EventDone
 		terminalData = map[string]int{"steps": stats.Steps}
 	}
 	return rt.finishAgentJob(job.ID, stats, startedAt, nil, terminalData)
+}
+
+// persistSuccessfulTurn 写入一轮成功对话的会话消息、工具记录、记忆与标题。
+//
+// 抽出来的原因：本地 runner 与 harness（桥接）两条路径都必须做这件事。
+// 原先只写在本地路径末尾，harness 分支提前返回会整段跳过 —— 症状是前端历史里
+// 第二轮看不到第一轮、tool_log 断链、首轮标题不生成。
+func (rt *AgentRunRouter) persistSuccessfulTurn(
+	ctx context.Context,
+	job sqlc.AgentRunJob,
+	agent sqlc.Agent,
+	conversation sqlc.AgentConversation,
+	req agentRunRequest,
+	stats skillsapp.RunStats,
+) {
+	if req.Message == "" || stats.FinalReply == "" {
+		return
+	}
+	_, _ = rt.q.InsertAgentConversationMessage(ctx, sqlc.InsertAgentConversationMessageParams{
+		ConversationID: conversation.ID, Role: "user", Content: req.Message,
+	})
+	if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
+		_, _ = rt.q.InsertAgentConversationMessage(ctx, sqlc.InsertAgentConversationMessageParams{
+			ConversationID: conversation.ID, Role: "tool_log", Content: transcript,
+		})
+	}
+	_, _ = rt.q.InsertAgentConversationMessage(ctx, sqlc.InsertAgentConversationMessageParams{
+		ConversationID: conversation.ID, Role: "assistant", Content: stats.FinalReply,
+	})
+	skillsapp.PersistTurnMemory(ctx, rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID,
+		formatUUID(conversation.ID), req.Message, stats.FinalReply)
+	nextTitle := conversation.Title
+	if nextTitle == "" || nextTitle == agent.Name {
+		nextTitle = truncateForTitle(req.Message)
+	}
+	_, _ = rt.q.TouchAgentConversation(ctx, sqlc.TouchAgentConversationParams{ID: conversation.ID, Title: nextTitle})
 }
 
 func (rt *AgentRunRouter) persistAgentEvent(runID pgtype.UUID, event string, data any) {

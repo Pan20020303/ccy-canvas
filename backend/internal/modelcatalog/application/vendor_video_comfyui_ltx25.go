@@ -78,7 +78,7 @@ func (s *Service) generateVideoComfyLTX25(ctx context.Context, baseURL string, r
 	if json.Unmarshal(responseBody, &queued) != nil || queued.PromptID == "" {
 		return nil, apperror.New(apperror.CodeInternal, "ComfyUI returned no prompt_id for LTX-2.5")
 	}
-	return pollComfyVideoResult(ctx, baseURL, queued.PromptID, "41", "LTX-2.5")
+	return pollComfyVideoResult(ctx, baseURL, queued.PromptID, "41", "LTX-2.5", maxRuntimeForRequest(req), comfyVideoQueueWaitTimeout())
 }
 
 func comfyLTX25Dimensions(ratio, resolution string) (int, int) {

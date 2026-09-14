@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"regexp"
@@ -388,6 +389,26 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	cfg, err := s.repo.GetProviderConfigByID(ctx, providerID)
 	if err != nil || cfg == nil {
 		return ChannelTestReport{}, err
+	}
+	// ComfyUI's native API has no /models endpoint and normally has no API
+	// key. Probe the same /queue endpoint used by the LAN scheduler so the
+	// admin's connectivity button verifies the real routing path.
+	if strings.EqualFold(strings.TrimSpace(cfg.Vendor), "ComfyUI") {
+		started := time.Now()
+		scheduler := s.comfyWorkers
+		if scheduler == nil {
+			scheduler = newComfyWorkerPoolScheduler()
+		}
+		running, pending, probeErr := scheduler.probeQueue(ctx, cfg.BaseURL)
+		report := ChannelTestReport{LatencyMs: int(time.Since(started).Milliseconds())}
+		if probeErr != nil {
+			report.ErrorMsg = probeErr.Error()
+			return report, nil
+		}
+		report.OK = true
+		report.HTTPStatus = http.StatusOK
+		report.ErrorMsg = fmt.Sprintf("queue running=%d pending=%d", running, pending)
+		return report, nil
 	}
 	if cfg.EncryptedAPIKey == "" {
 		return ChannelTestReport{OK: false, ErrorMsg: "no API key configured"}, nil

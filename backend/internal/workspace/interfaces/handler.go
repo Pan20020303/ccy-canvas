@@ -509,7 +509,8 @@ type saveCanvasInput struct {
 		Nodes json.RawMessage `json:"nodes" doc:"ReactFlow nodes array"`
 		Edges json.RawMessage `json:"edges" doc:"ReactFlow edges array"`
 		// Optional for backward compatibility: older clients don't send it.
-		Groups json.RawMessage `json:"groups,omitempty" doc:"Canvas group rectangles"`
+		Groups          json.RawMessage `json:"groups,omitempty" doc:"Canvas group rectangles"`
+		ExpectedVersion *int32          `json:"expected_version,omitempty" minimum:"0" doc:"Version loaded by the editor; zero for a new canvas"`
 	}
 }
 
@@ -538,7 +539,13 @@ func (h *Handler) saveCanvas(ctx context.Context, input *saveCanvasInput) (*save
 		return nil, huma.Error403Forbidden("访问者为只读，无法保存画布")
 	}
 
-	snap, err := h.repo.UpsertCanvasSnapshot(ctx, input.ID, claims.UserID, input.Body.Nodes, input.Body.Edges, input.Body.Groups)
+	if input.Body.ExpectedVersion == nil {
+		return nil, huma.Error409Conflict("画布保存协议已更新，请保留当前编辑并刷新客户端后重试；未覆盖服务器内容")
+	}
+	snap, err := h.repo.SaveCanvasSnapshotVersioned(ctx, input.ID, claims.UserID, input.Body.Nodes, input.Body.Edges, input.Body.Groups, *input.Body.ExpectedVersion)
+	if errors.Is(err, infrastructure.ErrCanvasVersionConflict) {
+		return nil, huma.Error409Conflict("画布已被另一窗口更新，当前编辑仍保留在本窗口；请先备份当前编辑再重新加载，未覆盖服务器内容")
+	}
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to save canvas", err)
 	}

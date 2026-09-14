@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -142,6 +143,8 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 		}
 
 		update := insertAgentParamsToUpdate(existing.ID, params)
+		// 种子不拥有 agentRuntime（管理侧的"走哪个运行时"开关），写回前先合并回来。
+		update.Metadata = withPreservedAgentRuntime(existing.Metadata, update.Metadata)
 		// 技能绑定是运营配置(管理员/脚本随时增删),seed 不拥有它 ——
 		// 否则每次后端重启都会把 skill_ids 抹回空数组,绑定"莫名消失"。
 		update.SkillIDs = existing.SkillIDs
@@ -184,6 +187,46 @@ func (seed CreatorSuiteAgentSeed) toInsertParams() (sqlc.InsertAgentParams, erro
 		Runtime:         defaultRuntime(seed.Runtime),
 		Metadata:        metadata,
 	}, nil
+}
+
+// agentRuntimeMetadataKey 是放在 agents.metadata 里的"后端选择"标记
+// （"harness" = 交给 DeepSeek Harness 桥接执行）。
+//
+// 它是**运维/管理侧**的设置，不属于种子内容，所以种子 upsert 必须保留它 ——
+// 早期实现用 `Metadata: params.Metadata` 整体覆盖，导致每次 API 重启都把开关冲掉
+// （实测：设了 17/17，重启几次后变回 0/17，表现就是"改了没用"）。
+const agentRuntimeMetadataKey = "agentRuntime"
+
+// withPreservedAgentRuntime 让种子写回的 metadata 保留管理侧已有的 agentRuntime。
+func withPreservedAgentRuntime(currentMetadata []byte, seedMetadata []byte) []byte {
+	if len(currentMetadata) == 0 || len(seedMetadata) == 0 {
+		return seedMetadata
+	}
+	var current map[string]any
+	if err := json.Unmarshal(currentMetadata, &current); err != nil {
+		return seedMetadata
+	}
+	preserved, ok := current[agentRuntimeMetadataKey]
+	if !ok {
+		return seedMetadata
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(seedMetadata, &seeded); err != nil {
+		return seedMetadata
+	}
+	// 已经是同一个值就不用动（也能让 agentSeedMatches 收敛，避免每轮都无条件改写）。
+	if existing, ok := seeded[agentRuntimeMetadataKey]; ok && fmt.Sprint(existing) == fmt.Sprint(preserved) {
+		return seedMetadata
+	}
+	if seeded == nil {
+		seeded = map[string]any{}
+	}
+	seeded[agentRuntimeMetadataKey] = preserved
+	merged, err := json.Marshal(seeded)
+	if err != nil {
+		return seedMetadata
+	}
+	return merged
 }
 
 func insertAgentParamsToUpdate(id pgtype.UUID, params sqlc.InsertAgentParams) sqlc.UpdateAgentParams {

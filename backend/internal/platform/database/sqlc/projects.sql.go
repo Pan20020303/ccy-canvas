@@ -263,6 +263,63 @@ func (q *Queries) ListProjectsByOwner(ctx context.Context, ownerID pgtype.UUID) 
 	return items, nil
 }
 
+const saveCanvasSnapshotVersioned = `-- name: SaveCanvasSnapshotVersioned :one
+INSERT INTO canvas_snapshots (project_id, user_id, nodes, edges, groups, version)
+SELECT $1, $2, $3, $4, $5, 1
+WHERE $6::integer = 0 OR EXISTS (SELECT 1 FROM canvas_snapshots WHERE project_id = $1)
+ON CONFLICT (project_id) DO UPDATE
+  SET nodes = EXCLUDED.nodes,
+      edges = EXCLUDED.edges,
+      groups = EXCLUDED.groups,
+      version = canvas_snapshots.version + 1,
+      user_id = EXCLUDED.user_id
+  WHERE canvas_snapshots.version = $6::integer
+RETURNING id, project_id, user_id, nodes, edges, groups, version, created_at
+`
+
+type SaveCanvasSnapshotVersionedParams struct {
+	ProjectID       pgtype.UUID `json:"project_id"`
+	UserID          pgtype.UUID `json:"user_id"`
+	Nodes           []byte      `json:"nodes"`
+	Edges           []byte      `json:"edges"`
+	Groups          []byte      `json:"groups"`
+	ExpectedVersion int32       `json:"expected_version"`
+}
+
+type SaveCanvasSnapshotVersionedRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Nodes     []byte             `json:"nodes"`
+	Edges     []byte             `json:"edges"`
+	Groups    []byte             `json:"groups"`
+	Version   int32              `json:"version"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) SaveCanvasSnapshotVersioned(ctx context.Context, arg SaveCanvasSnapshotVersionedParams) (SaveCanvasSnapshotVersionedRow, error) {
+	row := q.db.QueryRow(ctx, saveCanvasSnapshotVersioned,
+		arg.ProjectID,
+		arg.UserID,
+		arg.Nodes,
+		arg.Edges,
+		arg.Groups,
+		arg.ExpectedVersion,
+	)
+	var i SaveCanvasSnapshotVersionedRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Nodes,
+		&i.Edges,
+		&i.Groups,
+		&i.Version,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const updateProjectCover = `-- name: UpdateProjectCover :one
 UPDATE projects
 SET cover_url = $2, updated_at = now()

@@ -1099,7 +1099,13 @@ func (r *fakeRepository) ListProviderConfigs(context.Context) ([]domain.Provider
 	return r.providerConfigs, nil
 }
 
-func (r *fakeRepository) GetProviderConfigByID(context.Context, string) (*domain.ProviderConfig, error) {
+func (r *fakeRepository) GetProviderConfigByID(_ context.Context, id string) (*domain.ProviderConfig, error) {
+	for i := range r.providerConfigs {
+		if r.providerConfigs[i].ID == id {
+			config := r.providerConfigs[i]
+			return &config, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -1139,6 +1145,9 @@ func (r *fakeRepository) UpdateGenerationLogResult(_ context.Context, _ string, 
 	r.lastLogResult = resultURL
 	r.lastLogError = errMsg
 	r.lastLogCacheHit = cacheHit
+	return nil
+}
+func (r *fakeRepository) SetGenerationLogUpstreamTask(context.Context, string, string, string) error {
 	return nil
 }
 func (r *fakeRepository) SetGenerationLogResultURLs(_ context.Context, _ string, resultURLsJSON string) error {

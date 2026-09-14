@@ -551,6 +551,14 @@ func (r *Repository) UpdateGenerationLogResult(ctx context.Context, logID, statu
 	})
 }
 
+func (r *Repository) SetGenerationLogUpstreamTask(ctx context.Context, logID, providerID, taskID string) error {
+	pgID, err := parsePgUUID(logID)
+	if err != nil {
+		return err
+	}
+	return r.q.SetGenerationLogUpstreamTask(ctx, pgID, providerID, taskID)
+}
+
 func (r *Repository) SetGenerationLogResultURLs(ctx context.Context, logID, resultURLsJSON string) error {
 	pgID, err := parsePgUUID(logID)
 	if err != nil {

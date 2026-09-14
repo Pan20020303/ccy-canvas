@@ -138,12 +138,12 @@ http {
             proxy_buffering off;
         }
 
-        # Uploaded files
+        # Uploaded files: preserve the backend's per-response cache policy.
+        # Thumbnail lookup redirects and original fallbacks must stay no-store.
         location /uploads/ {
             proxy_pass http://ccy_canvas_backend;
             proxy_set_header Host `$host;
-            expires 30d;
-            add_header Cache-Control "public, immutable";
+            expires off;
         }
 
         # SPA fallback — every unknown route returns index.html so React Router takes over.

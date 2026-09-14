@@ -55,7 +55,7 @@ import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/Age
 import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
 import { pickVisionModel } from "./nodes/director-blocking";
 import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
-import { presentCanvasOperation, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
+import { presentCanvasOperation, CanvasOperationIcon, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
 import { GenerationBatch } from "./agent/generation-batch";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
@@ -2329,17 +2329,6 @@ function QuestionnaireCard({
       </div>
     </div>
   );
-}
-
-function CanvasOperationIcon({ entity }: { entity: CanvasOperationEntity }) {
-  const Icon = entity === "text" ? MessageSquarePlus
-    : entity === "image" ? ImageIcon
-    : entity === "video" ? Film
-    : entity === "audio" ? Music2
-    : entity === "connection" ? GitBranch
-    : entity === "task" ? Play
-    : Sparkles;
-  return <Icon className="h-3.5 w-3.5" />;
 }
 
 function CanvasOperationsCard({ steps, zh }: { steps: CanvasRunStep[]; zh: boolean }) {

@@ -28,8 +28,22 @@ func TestTextTaskUsesBoundedQueueRetries(t *testing.T) {
 }
 
 func TestMiniMaxDirectorGetsLongVideoBudget(t *testing.T) {
+	t.Setenv("VIDEO_TASK_MAX_QUEUE_SECONDS", "43200")
 	p := GenerationPayload{ServiceType: "video", Model: "minimax-h3-director-local"}
-	if got := timeoutForGenerationPayload(p); got != 3*time.Hour {
-		t.Fatalf("director timeout = %s, want 3h", got)
+	if got := timeoutForGenerationPayload(p); got != 15*time.Hour {
+		t.Fatalf("director hard timeout = %s, want 15h (12h queue + 3h execution)", got)
+	}
+}
+
+func TestComfyVideoQueueDoesNotConsumeExecutionBudget(t *testing.T) {
+	t.Setenv("VIDEO_TASK_MAX_RUNTIME_SECONDS", "1800")
+	t.Setenv("VIDEO_TASK_MAX_QUEUE_SECONDS", "7200")
+	p := GenerationPayload{ServiceType: "video", Model: "minimax-h3-t2v-ref2v-turbo-local"}
+	if got := timeoutForGenerationPayload(p); got != 150*time.Minute {
+		t.Fatalf("Comfy video hard timeout = %s, want 2h queue + 30m execution", got)
+	}
+	cloud := GenerationPayload{ServiceType: "video", Model: "dreamina-seedance-2-5"}
+	if got := timeoutForGenerationPayload(cloud); got != 30*time.Minute {
+		t.Fatalf("cloud video timeout = %s, want execution-only 30m", got)
 	}
 }

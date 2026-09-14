@@ -11,6 +11,7 @@ import { TaskQueue } from "./TaskQueue";
 import { CollaborationControls } from "./CollaborationControls";
 import { CreditLedgerModal } from "./CreditLedgerModal";
 import { UserAvatar } from "./UserAvatar";
+import { CanvasRecoveryPanel } from "./CanvasRecoveryPanel";
 
 // 英文切换暂时下线:i18n 词条覆盖率过低(大量面板仍是中文),切到英文是
 // 最差的半成品中间态。先藏按钮止损,待覆盖补齐后翻回 true 即可恢复。
@@ -237,12 +238,18 @@ export const Navbar = () => {
   );
 };
 
-/** 画布保存状态指示器:让静默的保存失败可见,断网时告警,恢复后自动重试。
- *  只在画布项目激活时出现;正常「已保存」态短暂显示后隐去,不占视觉。 */
-const SaveStatusIndicator = ({ language }: { language: "zh" | "en" }) => {
+/** Save failures remain visible; conflicts pause retries and expose recovery.
+ * Saved notices fade, while a retained local snapshot keeps its recovery entry. */
+export const SaveStatusIndicator = ({ language }: { language: "zh" | "en" }) => {
   const status = useStore((s) => s.canvasSaveStatus);
   const retry = useStore((s) => s.retryCanvasSave);
   const activeProject = useStore((s) => s.activeBackendProjectId);
+  const readOnly = useStore((s) => s.backendProjects.find(project => project.id === s.activeBackendProjectId)?.my_role === 'visitor');
+  const conflict = useStore((s) => s.canvasSaveConflict);
+  const saveError = useStore((s) => s.canvasSaveError);
+  const recovery = useStore((s) => s.canvasRecovery);
+  const recoveryError = useStore((s) => s.canvasRecoveryError);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
   const [showSaved, setShowSaved] = useState(false);
   const zh = language === "zh";
@@ -251,7 +258,9 @@ const SaveStatusIndicator = ({ language }: { language: "zh" | "en" }) => {
     const goOnline = () => {
       setOnline(true);
       // 恢复网络后自动重试上次失败的保存,不必等用户下一次编辑。
-      if (useStore.getState().canvasSaveStatus === "error") useStore.getState().retryCanvasSave();
+      const state = useStore.getState();
+      const visitor = state.backendProjects.find(project => project.id === state.activeBackendProjectId)?.my_role === 'visitor';
+      if (state.canvasSaveStatus === "error" && !state.canvasSaveConflict && !visitor) state.retryCanvasSave();
     };
     const goOffline = () => setOnline(false);
     window.addEventListener("online", goOnline);
@@ -270,31 +279,41 @@ const SaveStatusIndicator = ({ language }: { language: "zh" | "en" }) => {
     }
   }, [status]);
 
-  if (!activeProject) return null;
+  useEffect(() => {
+    if ((!readOnly && (status === 'error' || conflict)) || recoveryError) setPanelOpen(true);
+  }, [status, conflict, recoveryError, readOnly]);
+
+  if (!activeProject && !recovery && !recoveryError) return null;
   const base = "flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] transition";
 
-  if (!online) {
-    return (
-      <div data-testid="save-status" data-status="offline" className={`${base} bg-amber-500/15 text-amber-300`} title={zh ? "网络已断开,你的修改暂未保存;恢复后会自动重试" : "Offline — changes not saved yet; will retry when back online"}>
-        <CloudOff className="h-3 w-3" />
-        <span>{zh ? "离线 · 未保存" : "Offline · unsaved"}</span>
-      </div>
-    );
+  const hasSaveProblem = !readOnly && (conflict || status === 'error' || !online);
+  if (hasSaveProblem || recovery || recoveryError) {
+    const stateLabel = hasSaveProblem ? (conflict ? 'conflict' : !online ? 'offline' : 'error') : 'recovery';
+    const label = stateLabel === 'conflict' ? (zh ? '保存冲突' : 'Save conflict')
+      : stateLabel === 'offline' ? (zh ? '离线 · 未保存' : 'Offline · unsaved')
+      : stateLabel === 'error' ? (zh ? '保存失败' : 'Save failed')
+      : (zh ? '本地恢复' : 'Local recovery');
+    return <div className="relative">
+      <button type="button" data-testid="save-status" data-status={stateLabel} aria-expanded={panelOpen} aria-controls="canvas-recovery-panel"
+        onClick={() => setPanelOpen(open => !open)} title={hasSaveProblem && saveError ? saveError : label}
+        className={`${base} ${hasSaveProblem || recoveryError ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-500/25' : 'bg-white/[0.06] text-neutral-300 hover:bg-white/10'}`}>
+        {stateLabel === 'offline' ? <CloudOff className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}<span>{label}</span>
+      </button>
+      {panelOpen ? <CanvasRecoveryPanel zh={zh} online={online} readOnly={readOnly} activeProject={Boolean(activeProject)} conflict={conflict}
+        saveError={saveError} recovery={recovery} recoveryError={recoveryError} onRetry={retry}
+        onSaveBackup={() => useStore.getState().saveCanvasRecovery()} onDownload={() => useStore.getState().downloadCanvasRecovery()}
+        onReload={() => useStore.getState().reloadActiveCanvas()} onRestore={() => useStore.getState().restoreCanvasRecoveryCopy()}
+        onClose={() => setPanelOpen(false)} /> : null}
+    </div>;
   }
+  if (readOnly) return null;
+
   if (status === "saving") {
     return (
       <div data-testid="save-status" data-status="saving" className={`${base} bg-white/[0.04] text-neutral-400`}>
         <Loader2 className="h-3 w-3 animate-spin" />
         <span>{zh ? "保存中…" : "Saving…"}</span>
       </div>
-    );
-  }
-  if (status === "error") {
-    return (
-      <button type="button" data-testid="save-status" data-status="error" onClick={() => retry()} className={`${base} bg-rose-500/15 text-rose-300 hover:bg-rose-500/25`} title={zh ? "保存失败,点击重试" : "Save failed — click to retry"}>
-        <AlertTriangle className="h-3 w-3" />
-        <span>{zh ? "保存失败 · 重试" : "Save failed · retry"}</span>
-      </button>
     );
   }
   if (status === "saved" && showSaved) {

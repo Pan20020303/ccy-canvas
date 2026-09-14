@@ -242,11 +242,14 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		}
 	}()
 
-	// Flip queued → running so frontend sees movement before the call
-	// returns. Errors here are non-fatal; the final outcome write in
-	// GenerateInline still happens.
-	if err := w.queries.MarkGenerationLogRunning(ctx, logUUID); err != nil {
-		log.Printf("[tasks] mark running failed for %s: %v", p.LogID, err)
+	// Competes atomically with queued cancellation. Never call a provider if
+	// cancellation won, or if the database cannot confirm execution ownership.
+	claimed, err := w.queries.ClaimGenerationExecution(ctx, logUUID)
+	if err != nil {
+		return fmt.Errorf("claim generation execution: %w", err)
+	}
+	if !claimed {
+		return nil
 	}
 
 	// Hand off to the model catalog. GenerateInline runs the upstream call

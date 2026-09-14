@@ -8,7 +8,7 @@ import {
   groupHistoryByDate,
   type HistoryAssetsTab,
 } from "../history-assets";
-import { useStore, type HistoryItem } from "../store";
+import { type HistoryItem } from "../store";
 import { MediaThumb } from "./MediaThumb";
 
 const MEDIA_TABS: HistoryAssetsTab[] = ["image", "video", "audio"];
@@ -33,7 +33,6 @@ export function HistoryImagePickerModal({
   onConfirm: (selectedItems: HistoryItem[]) => void;
 }) {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
-  const removeHistoryItems = useStore((s) => s.removeHistoryItems);
   const [activeTab, setActiveTab] = useState<HistoryAssetsTab>("image");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
@@ -161,7 +160,6 @@ export function HistoryImagePickerModal({
                                   src={assetUrl}
                                   alt={item.title}
                                   className="h-full w-full object-cover"
-                                  onDead={item.mediaType === "image" ? () => removeHistoryItems([item.id]) : undefined}
                                 />
                                 <div className="absolute left-3 top-3 rounded-md border border-white/15 bg-black/45 p-0.5 text-neutral-100 backdrop-blur">
                                   {selected ? <Check className="h-4 w-4" /> : <div className="h-4 w-4" />}

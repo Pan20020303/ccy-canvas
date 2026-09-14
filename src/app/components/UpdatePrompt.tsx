@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Sparkles, X } from "lucide-react";
 
 import { CURRENT_VERSION, type Release } from "../version";
+import { useStore } from "../store";
 
 /**
  * Watches for a newly deployed frontend build and shows a NON-blocking card
@@ -20,6 +21,8 @@ const POLL_MS = 3 * 60 * 1000;
 export function UpdatePrompt() {
   const [release, setRelease] = useState<Release | null>(null);
   const dismissedRef = useRef<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     // Only meaningful in a real build — dev uses HMR and has no version.json.
@@ -70,6 +73,20 @@ export function UpdatePrompt() {
     dismissedRef.current = release.version; // stay quiet until an even newer build
     setRelease(null);
   };
+  const update = async () => {
+    if (updating) return;
+    setUpdating(true);
+    setUpdateError(null);
+    try {
+      if (!await useStore.getState().prepareCanvasPageReload()) {
+        setUpdateError('更新已暂停：本地备份失败。请从“保存与恢复”下载快照后再刷新。');
+        return;
+      }
+      window.location.reload();
+    } catch {
+      setUpdateError('更新已暂停，当前编辑仍保留。请先保存或下载本地快照。');
+    } finally { setUpdating(false); }
+  };
 
   return createPortal(
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[200] flex justify-end p-4 sm:inset-x-auto sm:right-4">
@@ -108,6 +125,7 @@ export function UpdatePrompt() {
           </ul>
         ) : null}
 
+        {updateError ? <p role="alert" className="mt-3 px-4 text-xs text-rose-300">{updateError}</p> : null}
         <div className="mt-3 flex items-center justify-end gap-2 border-t border-white/8 px-4 py-2.5">
           <button
             type="button"
@@ -118,10 +136,11 @@ export function UpdatePrompt() {
           </button>
           <button
             type="button"
-            onClick={() => window.location.reload()}
+            disabled={updating}
+            onClick={() => void update()}
             className="rounded-md bg-violet-500 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-violet-400"
           >
-            刷新更新
+            {updating ? '备份中…' : '备份并刷新更新'}
           </button>
         </div>
       </div>

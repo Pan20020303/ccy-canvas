@@ -124,6 +124,8 @@ export function AssetLibraryModal() {
   const openSaveAssetDialog = useStore((s) => s.openSaveAssetDialog);
   const requestCanvasFocus = useStore((s) => s.requestCanvasFocus);
   const saveAsset = useStore((s) => s.saveAsset);
+  const assetSync = useStore((s) => s.assetSync);
+  const retryAssetSync = useStore((s) => s.retryAssetSync);
   const backendProjects = useStore((s) => s.backendProjects);
   const activeBackendProjectId = useStore((s) => s.activeBackendProjectId);
   const assetFolders = useStore((s) => s.assetFolders);
@@ -139,7 +141,6 @@ export function AssetLibraryModal() {
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [libKind, setLibKind] = useState<KindFilter>('all');
   const [canvasKind, setCanvasKind] = useState<KindFilter>('image');
-  const [hydrated, setHydrated] = useState(false);
 
   // 右上工具条状态
   const [zoom, setZoom] = useState(45); // 0..100 → 卡片列宽
@@ -166,7 +167,7 @@ export function AssetLibraryModal() {
 
   useEffect(() => {
     if (!isOpen) return;
-    void Promise.resolve(hydrateAssets()).then(() => setHydrated(true)).catch(() => { /* keep auto-delete disarmed */ });
+    void Promise.resolve(hydrateAssets()).catch(() => { /* keep existing assets available on fetch failure */ });
     void hydrateAssetFolders();
     setTab('library');
     setCategory('all');
@@ -261,6 +262,7 @@ export function AssetLibraryModal() {
 
   const handleCreateFolder = () => {
     const f = createAssetFolder(zh ? '新建文件夹' : 'New folder');
+    if (!f) return;
     // 立即进入重命名,方便直接改名。
     setRenamingFolderId(f.id);
     setRenameDraft(f.name);
@@ -329,15 +331,17 @@ export function AssetLibraryModal() {
     } else {
       // 画布资产:批量存入素材库
       const items = canvasAssets.filter((a) => selected.has(a.nodeId));
-      items.forEach((a) => saveAsset({
-        name: a.name,
-        category: 'other',
-        kind: a.kind === 'world' ? 'image' : a.kind,
-        thumbnail: a.thumb,
-        url: a.url,
-        text: a.text,
-      }));
-      toast.success(zh ? `已存入素材库 ${items.length} 项` : `Saved ${items.length} to library`);
+      let added = 0;
+      let failure = '';
+      for (const a of items) {
+        try {
+          saveAsset({ name: a.name, category: 'other', kind: a.kind === 'world' ? 'image' : a.kind,
+            thumbnail: a.thumb, url: a.url, text: a.text });
+          added++;
+        } catch (error) { failure = error instanceof Error ? error.message : String(error); }
+      }
+      if (added) toast.info(zh ? `已加入 ${added} 项，等待同步` : `${added} added locally; awaiting sync`);
+      if (failure) toast.error(failure);
     }
     clearBatch();
   };
@@ -615,6 +619,20 @@ export function AssetLibraryModal() {
           </div>
         )}
 
+        {tab === 'library' && (assetSync.pending > 0 || assetSync.error) ? (
+          <div role="status" className="mx-6 mb-3 flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-neutral-300">
+            <div className="min-w-0 flex-1">
+              {assetSync.error || (assetSync.syncing
+                ? (zh ? `正在同步 ${assetSync.pending} 项操作…` : `Syncing ${assetSync.pending} operations…`)
+                : (zh ? `${assetSync.pending} 项仅在本机，等待同步` : `${assetSync.pending} local changes await sync`))}
+            </div>
+            <button type="button" disabled={assetSync.syncing} onClick={() => { void retryAssetSync(); }}
+              className="shrink-0 rounded-md border border-white/10 px-2 py-1 transition hover:bg-white/8 disabled:opacity-40">
+              {assetSync.syncing ? (zh ? '同步中' : 'Syncing') : (zh ? '重试同步' : 'Retry sync')}
+            </button>
+          </div>
+        ) : null}
+
         {/* ─── Content ─────────────────────────────────────────────── */}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
           {tab === 'library' ? (
@@ -669,7 +687,6 @@ export function AssetLibraryModal() {
                       onMoveOut={folderView !== null ? () => moveAssetToFolder(asset.id, '') : undefined}
                       onDelete={() => removeAsset(asset.id)}
                       onHover={(v) => setHoverItem(v ? { kind: asset.kind, url: asset.url, thumb: asset.thumbnail || asset.url, name: asset.name, text: asset.text } : null)}
-                      onDeadThumb={hydrated ? () => removeAsset(asset.id) : undefined}
                     />
                   );
                 })}
@@ -753,7 +770,7 @@ export function AssetLibraryModal() {
 
 function AssetCard({
   zh, name, kind, thumb, url, text, badge, batchMode, selected, livePreview, dragId,
-  onCardClick, onView, onLocate, onDelete, onSave, onMoveOut, onHover, onDeadThumb,
+  onCardClick, onView, onLocate, onDelete, onSave, onMoveOut, onHover,
 }: {
   zh: boolean;
   name: string;
@@ -773,7 +790,6 @@ function AssetCard({
   onSave?: () => void;
   onMoveOut?: () => void;
   onHover: (v: boolean) => void;
-  onDeadThumb?: () => void;
 }) {
   const isImageLike = kind === 'image' || kind === 'world';
   return (
@@ -791,7 +807,7 @@ function AssetCard({
       <button type="button" onClick={onCardClick} className="block w-full text-left">
         <div className="relative aspect-square overflow-hidden bg-black/40">
           {isImageLike && (thumb || url) ? (
-            <MediaThumb src={thumb || url} alt="" className="h-full w-full object-cover" onDead={onDeadThumb} />
+            <MediaThumb src={thumb || url} alt="" className="h-full w-full object-cover" />
           ) : kind === 'video' ? (
             <>
               {/* 视频封面:优先 poster 缩略图,没有就用 <video> 首帧(#t 定位到

@@ -64,17 +64,42 @@ describe("ManjuAPI MiniMax H3 provider template", () => {
 });
 
 describe("local MiniMax H3 provider template", () => {
-  it("offers dual-clock short video and the long-video Director profiles", () => {
+  it("offers the native, Director, U09 dual-stage, and drama workbench profiles", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("minimax-h3-director-local"));
     expect(template?.models).toEqual([
       "minimax-h3-t2v-ref2v-turbo-local",
       "minimax-h3-director-local",
+      "minimax-h3-u09-redraw-dual-fast-local",
+      "minimax-h3-u09-no-codec-dual-upscale-local",
+      "minimax-h3-drama-workbench-local",
     ]);
-    expect(template?.parameterSchema?.quality_options).toEqual(["极速", "均衡二采", "高质二采"]);
+    expect(template?.parameterSchema?.quality_options).toEqual(["极速", "官方8步", "音画分采8步", "均衡二采", "高质二采"]);
     expect(template?.parameterSchema?.models?.["minimax-h3-director-local"]?.defaults).toMatchObject({
       duration: 30,
       aspect_ratio: "9:16",
       input_reference_max: 9,
+    });
+    expect(template?.parameterSchema?.models?.["minimax-h3-u09-redraw-dual-fast-local"]?.quality_options).toEqual([
+      "平衡 8+3步",
+      "精细 12+4步",
+    ]);
+    expect(template?.parameterSchema?.models?.["minimax-h3-u09-no-codec-dual-upscale-local"]?.quality_options).toEqual([
+      "原生 20+3步",
+      "精细 24+4步",
+    ]);
+  });
+
+  it("offers separate audio/video sampling only for the short-video profile without changing defaults", () => {
+    const schema = VENDOR_TEMPLATES.video.find((item) => item.models.includes("minimax-h3-t2v-ref2v-turbo-local"))?.parameterSchema;
+    expect(schema?.quality_options).toContain("音画分采8步");
+    expect(schema?.defaults?.quality).toBe("极速");
+    expect(schema?.models?.["minimax-h3-t2v-ref2v-turbo-local"]).toMatchObject({
+      quality_options: ["极速", "官方8步", "音画分采8步", "均衡二采", "高质二采"],
+      defaults: { quality: "极速" },
+    });
+    expect(schema?.models?.["minimax-h3-director-local"]).toMatchObject({
+      quality_options: ["极速", "均衡二采", "高质二采"],
+      defaults: { quality: "极速" },
     });
   });
 });

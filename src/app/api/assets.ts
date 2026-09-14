@@ -2,9 +2,8 @@ import { apiClient } from "./client";
 import type { SavedAsset, AssetFolder } from "../store";
 
 // Server-side persistence for the user asset library (素材库 / 我的素材, previously
-// localStorage-only). All calls are user-scoped on the backend and best-effort
-// from the store's perspective — callers swallow errors so a backend hiccup
-// never blocks the local-first UX. Mirrors api/history.ts.
+// localStorage-only). Calls are user-scoped; the store's durable operation
+// journal retains failed writes and serializes retries by entity id.
 
 export type AssetQuery = {
   category?: string;

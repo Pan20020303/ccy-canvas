@@ -17,6 +17,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// SetGenerationLogUpstreamTask records the provider-side async task as soon
+// as submit succeeds. Keeping it inside request_payload avoids a schema
+// migration while still making a late provider success recoverable.
+func (q *Queries) SetGenerationLogUpstreamTask(ctx context.Context, id pgtype.UUID, providerID, taskID string) error {
+	_, err := q.db.Exec(ctx, `
+UPDATE generation_logs
+SET request_payload = COALESCE(request_payload, '{}'::jsonb) ||
+    jsonb_build_object('_upstream_provider_id', $2::text, '_upstream_task_id', $3::text)
+WHERE id = $1`, id, providerID, taskID)
+	return err
+}
+
 // ─── Insert queued task with full request payload ─────────────────────
 
 type InsertGenerationLogQueuedParams struct {
@@ -309,6 +321,7 @@ func (q *Queries) LoadGenerationAsset(ctx context.Context, id pgtype.UUID) (Load
 type ListActiveGenerationsForUserRow struct {
 	ID          pgtype.UUID        `json:"id"`
 	NodeID      string             `json:"node_id"`
+	ProjectID   string             `json:"project_id"`
 	ServiceType string             `json:"service_type"`
 	Model       string             `json:"model"`
 	Prompt      string             `json:"prompt"`
@@ -427,7 +440,7 @@ func (q *Queries) MarkGenerationLogFailed(ctx context.Context, id pgtype.UUID, e
 }
 
 const listActiveGenerationsForUser = `
-SELECT id, node_id, service_type, model, prompt, status, result_url, error_msg, asynq_task_id, created_at
+SELECT id, node_id, COALESCE(request_payload->>'project_id', request_payload->>'ProjectID', ''), service_type, model, prompt, status, result_url, error_msg, asynq_task_id, created_at
 FROM generation_logs
 WHERE user_id = $1
   AND status IN ('pending', 'queued', 'running', 'retrying', 'persisting')
@@ -444,7 +457,7 @@ func (q *Queries) ListActiveGenerationsForUser(ctx context.Context, userID pgtyp
 	items := []ListActiveGenerationsForUserRow{}
 	for rows.Next() {
 		var i ListActiveGenerationsForUserRow
-		if err := rows.Scan(&i.ID, &i.NodeID, &i.ServiceType, &i.Model, &i.Prompt, &i.Status, &i.ResultUrl, &i.ErrorMsg, &i.AsynqTaskID, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.NodeID, &i.ProjectID, &i.ServiceType, &i.Model, &i.Prompt, &i.Status, &i.ResultUrl, &i.ErrorMsg, &i.AsynqTaskID, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

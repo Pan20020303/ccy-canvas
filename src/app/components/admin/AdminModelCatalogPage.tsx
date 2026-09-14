@@ -861,6 +861,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
   const [priority, setPriority] = useState(0);
   const [isDefault, setIsDefault] = useState(false);
   const [creditCost, setCreditCost] = useState(1);
+	const [computePool, setComputePool] = useState("");
+	const [workerName, setWorkerName] = useState("");
+	const [maxConcurrency, setMaxConcurrency] = useState(1);
   const [parameterSchemaText, setParameterSchemaText] = useState("{}");
   const [saving, setSaving] = useState(false);
   const [previewingTS, setPreviewingTS] = useState(false);
@@ -892,6 +895,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       setPriority(config.priority || 0);
       setIsDefault(Boolean(config.is_default));
       setCreditCost(config.credit_cost ?? config.parameter_schema?.credit_cost ?? 1);
+		setComputePool(config.parameter_schema?.compute_pool ?? "");
+		setWorkerName(config.parameter_schema?.worker_name ?? "");
+		setMaxConcurrency(Math.max(1, Number(config.parameter_schema?.max_concurrency) || 1));
       setParameterSchemaText(JSON.stringify(config.parameter_schema ?? {}, null, 2));
     } else {
       setServiceType("image");
@@ -912,6 +918,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       setPriority(0);
       setIsDefault(false);
       setCreditCost(1);
+		setComputePool("");
+		setWorkerName("");
+		setMaxConcurrency(1);
       setParameterSchemaText("{}");
     }
     setError("");
@@ -934,6 +943,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
     setSubmitEndpoint(tpl.submitEndpoint ?? "");
     setQueryEndpoint(tpl.queryEndpoint ?? "");
     setParameterSchemaText(JSON.stringify(tpl.parameterSchema ?? {}, null, 2));
+		setComputePool(tpl.parameterSchema?.compute_pool ?? "");
+		setWorkerName(tpl.parameterSchema?.worker_name ?? "");
+		setMaxConcurrency(Math.max(1, Number(tpl.parameterSchema?.max_concurrency) || 1));
   };
 
   const handlePreviewTSImport = async () => {
@@ -957,6 +969,9 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
       setModelListText((preview.model_list ?? []).join("\n"));
       setDefaultModel(preview.default_model || preview.model_list?.[0] || "");
       setParameterSchemaText(JSON.stringify(preview.parameter_schema ?? {}, null, 2));
+		setComputePool(preview.parameter_schema?.compute_pool ?? "");
+		setWorkerName(preview.parameter_schema?.worker_name ?? "");
+		setMaxConcurrency(Math.max(1, Number(preview.parameter_schema?.max_concurrency) || 1));
       setIconKey(preview.icon?.key || "");
       setIconUrl(preview.icon?.url || "");
     } catch (err) {
@@ -1015,7 +1030,17 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
           ? { ...prev, name: prev.name ?? modelName, modelName, type }
           : { name: modelName, modelName, type };
       });
-      parameterSchema = { ...schemaObj, vendor_models: vendorModels, vendor_all_models: vendorModels } as ProviderConfigPayload["parameter_schema"];
+		const nextSchema: Record<string, unknown> = { ...schemaObj, vendor_models: vendorModels, vendor_all_models: vendorModels };
+		if (computePool.trim()) {
+			nextSchema.compute_pool = computePool.trim();
+			nextSchema.worker_name = workerName.trim() || name.trim();
+			nextSchema.max_concurrency = Math.max(1, Math.round(maxConcurrency) || 1);
+		} else {
+			delete nextSchema.compute_pool;
+			delete nextSchema.worker_name;
+			delete nextSchema.max_concurrency;
+		}
+		parameterSchema = nextSchema as ProviderConfigPayload["parameter_schema"];
     }
     const capabilities = Array.from(new Set<ServiceType>([serviceType, ...parsedModels.map((item) => item.type)]));
 
@@ -1199,6 +1224,23 @@ function ConfigModal({ config, open, onClose, onSaved }: ConfigModalProps) {
               <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example-newapi.com/v1" className={FIELD_INPUT} />
               <p className="mt-2 text-xs text-neutral-500">建议填写到 /v1；后端会对普通根域名自动补 /v1。</p>
             </Field>
+			{vendor.trim().toLowerCase() === "comfyui" || baseUrl.includes(":8188") ? (
+				<div className="rounded-md border border-emerald-400/15 bg-emerald-500/[0.045] p-4">
+					<p className="mb-3 text-xs font-medium text-emerald-200">局域网算力节点</p>
+					<div className="grid grid-cols-[1fr_1fr_140px] gap-3">
+						<Field label="算力池 ID">
+							<input value={computePool} onChange={(event) => setComputePool(event.target.value)} placeholder="例如 minimax-h3-lan" className={FIELD_INPUT} />
+						</Field>
+						<Field label="节点名称">
+							<input value={workerName} onChange={(event) => setWorkerName(event.target.value)} placeholder="例如 4090-工作站" className={FIELD_INPUT} />
+						</Field>
+						<Field label="并发槽位">
+							<input value={maxConcurrency} onChange={(event) => setMaxConcurrency(Math.max(1, Number(event.target.value) || 1))} type="number" min={1} max={16} className={FIELD_INPUT} />
+						</Field>
+					</div>
+					<p className="mt-2 text-[11px] leading-5 text-neutral-500">把多台 ComfyUI 配置为相同算力池 ID，画布仍只选择这个模型；后端会读取各节点 /queue，把新任务交给当前负载最低的机器。单卡通常填 1。</p>
+				</div>
+			) : null}
             {showCustomEndpoints ? (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="提交端点"><input value={submitEndpoint} onChange={(event) => setSubmitEndpoint(event.target.value)} className={FIELD_INPUT} /></Field>

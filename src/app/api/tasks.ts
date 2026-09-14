@@ -1,9 +1,13 @@
 import { apiClient } from "./client";
+import { publishTaskUpdate, taskAccountSession } from "../task-events";
 
 export type TaskItem = {
   id: string;
   node_id: string;
   project_id?: string;
+  project_name?: string;
+  can_cancel?: boolean;
+  cancel_reason?: string;
   service_type: string;
   model: string;
   status: "pending" | "success" | "error" | string;
@@ -37,6 +41,27 @@ export function batchTasksByNodeIds(nodeIds: string[]): Promise<TaskItem[]> {
  *  a localStorage wipe or a switch to a different browser (F10). */
 export function listActiveTasks(): Promise<TaskItem[]> {
   return apiClient.get<TaskItem[]>("/api/app/tasks/active");
+}
+
+/** Durable user-scoped history, with active tasks before recent terminal tasks. */
+export function listRecentTasks(limit = 50): Promise<TaskItem[]> {
+  return apiClient.get<TaskItem[]>(`/api/app/tasks/recent?limit=${Math.max(1, Math.min(200, Math.trunc(limit)))}`);
+}
+
+export type CancelTaskResult = {
+  task: TaskItem;
+  cancelled: boolean;
+  /** Machine-readable outcome; the task's cancel_reason is user-facing. */
+  reason: "cancelled" | "already_cancelled" | "already_finished" | "already_started" | "unsupported";
+};
+
+/** A failed request leaves the task untouched. Only a server-confirmed result
+ *  is broadcast to task tracking; aborting a browser request is not cancellation. */
+export async function cancelTask(id: string): Promise<CancelTaskResult> {
+  const accountSession = taskAccountSession();
+  const result = await apiClient.post<CancelTaskResult>(`/api/app/tasks/${encodeURIComponent(id)}/cancel`, {});
+  if (accountSession === taskAccountSession()) publishTaskUpdate(result.task);
+  return result;
 }
 
 /** Recent automation-only task history, including completed/failed rows.

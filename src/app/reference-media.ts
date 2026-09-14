@@ -65,6 +65,33 @@ export function isTransientBrowserMediaUrl(url?: string | null): boolean {
 
 const PROXY_MEDIA_PATH = "/api/app/proxy-media";
 
+/** Local derivatives use four fixed longest-edge tiers. 640/720 share 768 so
+ * gallery and canvas previews reuse the same browser and server cache. */
+export function localMediaThumbnailWidth(width?: number): number | null {
+  if (typeof width !== 'number' || !Number.isFinite(width) || width < 1) return null;
+  return [256, 512, 768, 1280].find(tier => width <= tier) ?? 1280;
+}
+
+export function isLocalMediaThumbnailUrl(url?: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url, 'http://localhost');
+    return parsed.pathname.startsWith('/uploads/') && parsed.searchParams.has('w');
+  } catch { return false; }
+}
+
+function localUploadAddress(url: string): URL | null {
+  try {
+    if (url.startsWith('/uploads/')) return new URL(url, 'http://localhost');
+    const parsed = new URL(url);
+    if (!parsed.pathname.startsWith('/uploads/')) return null;
+    const pageOrigin = typeof window === 'undefined' ? null : window.location.origin;
+    const base = apiBaseUrlPrefix();
+    const apiOrigin = base ? new URL(base, pageOrigin ?? 'http://localhost').origin : null;
+    return parsed.origin === pageOrigin || parsed.origin === apiOrigin ? parsed : null;
+  } catch { return null; }
+}
+
 function apiBaseUrlPrefix(): string {
   return (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 }
@@ -107,22 +134,30 @@ export function extractOriginalMediaUrl(url?: string | null): string {
  *  double-wrap-safe: data:/blob: and relative paths pass through unchanged,
  *  and any remote http(s) URL — including one that is already wrapped in
  *  proxy-media — collapses to exactly one proxy layer. */
-export function toRenderableMediaUrl(url?: string | null, opts?: { thumbWidth?: number }): string {
-  if (!url) {
+export function toRenderableMediaUrl(url?: unknown, opts?: { thumbWidth?: number }): string {
+  if (typeof url !== "string" || !url) {
     return "";
   }
   if (isTransientBrowserMediaUrl(url)) {
     return url;
   }
   const origin = extractOriginalMediaUrl(url);
+  const local = localUploadAddress(origin);
+  if (local) {
+    const width = localMediaThumbnailWidth(opts?.thumbWidth);
+    if (!width) return origin;
+    if (local.searchParams.get('w') !== String(width)) local.searchParams.delete('v');
+    local.searchParams.set('w', String(width));
+    return origin.startsWith('/') ? `${local.pathname}${local.search}${local.hash}` : local.toString();
+  }
   if (!/^https?:\/\//i.test(origin)) {
-    // Relative path (e.g. /uploads/..) — leave as-is for the page/backend to serve.
+    // Other relative and transient sources retain their original addressing.
     return origin;
   }
-  // Optional thumbnail hint: the media proxy downsizes our own OSS images to a
-  // small WebP (`?w=`), cutting bytes for gallery/canvas tiles. It's ignored for
-  // non-OSS or non-image sources, so passing it is always safe.
-  const thumb = opts?.thumbWidth && opts.thumbWidth > 0 ? `&w=${Math.round(opts.thumbWidth)}` : "";
+  // Remote proxy hints remain provider-dependent; local /uploads images use
+  // the fixed-tier derivative path above. Unsupported formats retain originals.
+  const width = opts?.thumbWidth;
+  const thumb = typeof width === "number" && Number.isFinite(width) && width >= 1 ? `&w=${Math.round(width)}` : "";
   return `${apiBaseUrlPrefix()}${PROXY_MEDIA_PATH}?url=${encodeURIComponent(origin)}${thumb}`;
 }
 

@@ -758,6 +758,7 @@ describe("workspace control bar state", () => {
 
     try {
       const { useStore } = await loadStore();
+      useStore.setState({ activeBackendProjectId: "stream-project" });
       useStore.getState().updateNodeData("2", {
         status: "running",
         taskId: undefined,
@@ -771,6 +772,7 @@ describe("workspace control bar state", () => {
         data: JSON.stringify({
           task_id: "task-stream-lost-binding",
           node_id: "2",
+          project_id: "stream-project",
           service_type: "image",
           status: "success",
           result_url: "https://example.com/stream-result.png",
@@ -823,12 +825,24 @@ describe("workspace control bar state", () => {
           }),
         } as Response);
       }
+      if (url === "/api/app/tasks/task-batch-lost-binding") {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify({ data: {
+            id: "task-batch-lost-binding", node_id: "2", project_id: "batch-project",
+            service_type: "image", model: "gpt-image-2", status: "success",
+            result_url: "https://example.com/batch-result.png", error_msg: "", duration_ms: 161000, created_at: taskCreatedAt,
+          }, request_id: "req-scoped-task" }),
+        } as Response);
+      }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
 
     try {
       const { useStore } = await loadStore();
+      useStore.setState({ activeBackendProjectId: "batch-project" });
       useStore.getState().updateNodeData("2", {
         status: "running",
         taskId: undefined,
@@ -1710,6 +1724,68 @@ describe("workspace control bar state", () => {
       reversePromptDraft: "draft content",
       customTitle: "自定义标题",
     });
+  });
+});
+
+describe("Seedance 2.5 reference submission", () => {
+  const model = "dreamina-seedance-2-5-260628";
+  const fixture = () => [
+    { id: "sd-target", type: "videoNode", position: { x: 0, y: 0 }, data: { generationParams: {
+      model, vendor: "HopBase", referenceVariant: "all-in-one", referenceImages: ["/uploads/stale.png"], referenceAudios: ["/uploads/stale.mp3"],
+    } } },
+    ...["image-b", "audio-b", "image-a", "audio-a"].map(id => ({ id, type: id.startsWith("image") ? "referenceImageNode" : "referenceAudioNode", position: { x: 0, y: 0 }, data: { url: `/uploads/${id}.${id.startsWith("image") ? "png" : "mp3"}` } })),
+  ];
+  const connections = () => ["audio-a", "image-a", "audio-b", "image-b"].map(source => ({ id: source, source, target: "sd-target" }));
+
+  it("submits each kind in connection order and ignores an imported stale snapshot", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400, headers: new Headers({ "content-type": "application/json" }), text: async () => JSON.stringify({ error: "offline fixture" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.setState({ nodes: fixture(), edges: connections() } as never);
+    await useStore.getState().runNode("sd-target", { prompt: "@图片1 对应 @音频1，@图片2 对应 @音频2", model });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      reference_images: ["/uploads/image-a.png", "/uploads/image-b.png"],
+      reference_audios: ["/uploads/audio-a.mp3", "/uploads/audio-b.mp3"],
+      prompt: "@图片1 对应 @音频1，@图片2 对应 @音频2",
+    });
+  });
+
+  it.each(["@图片3", "@音频3", "@视频1", "@图片0"])("rejects %s before making any request", async prompt => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Unexpected network access"));
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.setState({ nodes: fixture(), edges: connections(), language: "zh" } as never);
+    await useStore.getState().runNode("sd-target", { prompt, model });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useStore.getState().nodes[0].data.error).toContain("参考编号与实际素材不符");
+  });
+
+  it("blocks unfinished connected media instead of silently shifting indices", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Unexpected network access"));
+    vi.stubGlobal("fetch", fetchMock);
+    const nodes = fixture().map(n => n.id === "image-a" ? { ...n, data: {} } : n);
+    useStore.setState({ nodes, edges: connections(), language: "zh" } as never);
+    await useStore.getState().runNode("sd-target", { prompt: "使用@图片1的角色和@音频1的声音", model });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useStore.getState().nodes[0].data.error).toContain("尚无可用输出");
+  });
+
+  it("disconnects the final audio without reviving old params and restores both with undo", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Unexpected network access"));
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.setState({ nodes: fixture(), edges: [connections()[0]], language: "zh" } as never);
+    useStore.getState().onEdgesChange([{ type: "remove", id: "audio-a" }]);
+    expect(useStore.getState().nodes[0].data.generationParams).toMatchObject({ referenceInputSource: "connections" });
+    expect(useStore.getState().nodes[0].data.generationParams).not.toHaveProperty("referenceAudios");
+    await useStore.getState().runNode("sd-target", { prompt: "使用@音频1", model });
+    expect(fetchMock).not.toHaveBeenCalled();
+    useStore.getState().undoCanvas();
+    expect(useStore.getState().edges).toHaveLength(1);
+    expect(useStore.getState().nodes[0].data.generationParams).toHaveProperty("referenceAudios");
   });
 });
 

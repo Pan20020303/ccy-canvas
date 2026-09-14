@@ -6,7 +6,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "npx vitest run"
+    "test": "npx vitest run",
+    "agent-bridge": "node scripts/agent-bridge/server.mjs",
+    "agent-bridge:smoke": "node scripts/agent-bridge/smoke.mjs",
+    "agent-bridge:integration": "node scripts/agent-bridge/integration.mjs"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.26",

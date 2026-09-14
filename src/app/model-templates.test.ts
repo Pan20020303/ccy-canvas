@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { VENDOR_TEMPLATES } from "./api/providerConfigs";
 import {
   buildModelRequestBody,
   getModelTemplate,
@@ -70,7 +71,28 @@ describe("model templates", () => {
     expect(local?.referenceModes).toEqual(["text-to-video", "multi-image", "three-view", "all-in-one"]);
     expect(local?.referenceImageRange).toEqual({ min: 1, max: 9 });
     expect(local?.resolutionOptions).toEqual(["480p", "768p"]);
-    expect(local?.qualityOptions).toEqual(["极速", "均衡二采", "高质二采"]);
+    expect(local?.qualityOptions).toEqual(["极速", "官方8步", "音画分采8步", "均衡二采", "高质二采"]);
+  });
+
+  it.each(["provider", "model"] as const)("preserves separate H3 audio/video sampling through the %s schema", (schemaLevel) => {
+    const model = "minimax-h3-t2v-ref2v-turbo-local";
+    const schema = VENDOR_TEMPLATES.video.find((item) => item.models.includes(model))?.parameterSchema;
+    expect(schema).toBeDefined();
+    const template = getModelTemplate(model, {
+      service_type: "video",
+      vendor: "ComfyUI",
+      parameter_schema: schemaLevel === "provider" ? { ...schema, models: undefined } : schema,
+    });
+
+    expect(template?.supportsQuality).toBe(true);
+    expect(template?.qualityOptions).toContain("音画分采8步");
+    expect(template?.defaults?.quality).toBe("极速");
+    expect(buildModelRequestBody(template, "测试对白与环境声", {
+      model,
+      quality: "音画分采8步",
+      resolution: "768p",
+      durationSeconds: 5,
+    })).toMatchObject({ model, quality: "音画分采8步", size: "768p", duration: 5 });
   });
 
   it("exposes the local MiniMax H3 long-video Director", () => {
@@ -81,6 +103,23 @@ describe("model templates", () => {
       qualityOptions: ["极速", "均衡二采", "高质二采"],
       referenceImageRange: { min: 1, max: 9 },
       defaults: { resolution: "480p", aspectRatio: "9:16", quality: "极速" },
+    });
+  });
+
+  it("exposes both U09 dual-stage workflows and the drama workbench", () => {
+    expect(getModelTemplate("minimax-h3-u09-redraw-dual-fast-local")).toMatchObject({
+      durationRange: { min: 1, max: 15, step: 1, defaultValue: 5 },
+      qualityOptions: ["平衡 8+3步", "精细 12+4步"],
+      defaults: { resolution: "768p" },
+    });
+    expect(getModelTemplate("minimax-h3-u09-no-codec-dual-upscale-local")).toMatchObject({
+      durationRange: { min: 1, max: 15, step: 1, defaultValue: 5 },
+      qualityOptions: ["原生 20+3步", "精细 24+4步"],
+      defaults: { resolution: "768p" },
+    });
+    expect(getModelTemplate("minimax-h3-drama-workbench-local")).toMatchObject({
+      durationRange: { min: 15, max: 120, step: 5, defaultValue: 30 },
+      referenceImageRange: { min: 1, max: 9 },
     });
   });
 
@@ -132,6 +171,9 @@ describe("model templates", () => {
     expect(template?.aspectRatioOptions).toContain("adaptive");
     expect(template?.durationRange).toEqual({ min: 4, max: 30, step: 1, defaultValue: 5 });
     expect(template?.referenceImageRange).toEqual({ min: 1, max: 30 });
+    expect(template?.referenceRequirements?.["all-in-one"]).toEqual({
+      images: { min: 0, max: 30 }, videos: { min: 0, max: 10 }, audios: { min: 0, max: 10 },
+    });
     expect(template?.referenceModes).toContain("video-edit");
   });
 

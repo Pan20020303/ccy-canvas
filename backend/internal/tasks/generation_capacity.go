@@ -79,7 +79,7 @@ func (g *generationCapacity) acquire(ctx context.Context, req modelapp.GenerateR
 	}
 	key, token := g.prefix+family, uuid.NewString()
 	ttl := timeoutForServiceType(req.ServiceType) + time.Minute
-	if strings.EqualFold(strings.TrimSpace(req.Model), "minimax-h3-director-local") {
+	if isLongRunningMiniMaxModel(req.Model) {
 		ttl = 3*time.Hour + time.Minute
 	}
 	if deadline, ok := ctx.Deadline(); ok {

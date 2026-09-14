@@ -29,8 +29,7 @@ import {
   type HistoryAssetsTab,
 } from "../history-assets";
 import { toRenderableMediaUrl } from "../reference-media";
-import { reportDeadMedia, isCertainlyDeadSrc } from "../dead-media";
-import { MediaThumb } from "./MediaThumb";
+import { MediaThumb, MediaVideoThumb } from "./MediaThumb";
 import { useStore, type HistoryItem } from "../store";
 
 const TAB_LABELS: Record<HistoryAssetsTab, { zh: string; en: string }> = {
@@ -383,15 +382,13 @@ export const HistoryAssetsModal = () => {
                                   src={assetUrl}
                                   alt={item.title}
                                   className={`${layout.previewClassName} h-full w-full object-cover`}
-                                  onDead={() => removeHistoryItems([item.id])}
                                 />
                               ) : null}
                               {item.mediaType === "video" && assetUrl ? (
-                                <video
-                                  src={toRenderableMediaUrl(assetUrl)}
+                                <MediaVideoThumb
+                                  src={assetUrl}
+                                  alt={item.title}
                                   className={`${layout.previewClassName} h-full w-full object-cover`}
-                                  muted
-                                  onError={() => reportDeadMedia(isCertainlyDeadSrc(assetUrl), () => removeHistoryItems([item.id]))}
                                 />
                               ) : null}
                               {item.mediaType === "audio" ? (

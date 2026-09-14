@@ -74,8 +74,9 @@ type Handler struct {
 	// tasks is optional. When non-nil and .Enabled() is true, generation
 	// requests are persisted + enqueued instead of running inline. Empty
 	// REDIS_ADDR at boot leaves this nil and behavior is unchanged.
-	tasks TaskEnqueuer
-	cache Cache
+	tasks        TaskEnqueuer
+	cache        Cache
+	taskControls taskControlQueries
 }
 
 // NewHandler creates a new model catalog Handler.
@@ -541,6 +542,17 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:        []string{"App", "Generation"},
 		Security:    userSecurity,
 	}, h.listRecentAutomationTasks)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-recent-tasks", Method: http.MethodGet,
+		Path: "/api/app/tasks/recent", Summary: "List durable tasks for the current user",
+		Tags: []string{"App", "Generation"}, Security: userSecurity,
+	}, h.listRecentTasks)
+	huma.Register(api, huma.Operation{
+		OperationID: "cancel-queued-task", Method: http.MethodPost,
+		Path: "/api/app/tasks/{id}/cancel", Summary: "Cancel a not-yet-started durable task and refund its reserve atomically",
+		Tags: []string{"App", "Generation"}, Security: userSecurity,
+	}, h.cancelTask)
 }
 
 // --- Admin: Provider handlers ---
@@ -1474,16 +1486,20 @@ type generateOutput struct {
 // prompt/cost fields — they're not needed for status updates and adding
 // them would leak more user data than necessary across the network.
 type TaskItem struct {
-	ID          string `json:"id"`
-	NodeID      string `json:"node_id"`
-	ProjectID   string `json:"project_id,omitempty"`
-	ServiceType string `json:"service_type"`
-	Model       string `json:"model"`
-	Status      string `json:"status"`
-	ResultURL   string `json:"result_url"`
-	ErrorMsg    string `json:"error_msg"`
-	DurationMs  int    `json:"duration_ms"`
-	CreatedAt   string `json:"created_at"`
+	ID           string   `json:"id"`
+	NodeID       string   `json:"node_id"`
+	ProjectID    string   `json:"project_id,omitempty"`
+	ServiceType  string   `json:"service_type"`
+	Model        string   `json:"model"`
+	Status       string   `json:"status"`
+	ResultURL    string   `json:"result_url"`
+	ResultURLs   []string `json:"result_urls,omitempty"`
+	ProjectName  string   `json:"project_name,omitempty"`
+	CanCancel    bool     `json:"can_cancel"`
+	CancelReason string   `json:"cancel_reason,omitempty"`
+	ErrorMsg     string   `json:"error_msg"`
+	DurationMs   int      `json:"duration_ms"`
+	CreatedAt    string   `json:"created_at"`
 }
 
 type getTaskByIDInput struct {
@@ -1584,15 +1600,15 @@ func (h *Handler) getTaskByID(ctx context.Context, input *getTaskByIDInput) (*ta
 	if err := taskID.Scan(input.ID); err != nil {
 		return nil, huma.Error400BadRequest("Invalid task id")
 	}
-	row, err := h.q.GetGenerationLogByIDForUser(ctx, sqlc.GetGenerationLogByIDForUserParams{
-		ID:     taskID,
-		UserID: userID,
-	})
-	if err != nil {
+	row, err := h.q.GetTaskControlForUser(ctx, taskID, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, huma.Error404NotFound("Task not found")
 	}
+	if err != nil {
+		return nil, huma.Error503ServiceUnavailable("Task status temporarily unavailable")
+	}
 	out := &taskOutput{}
-	out.Body.Data = toTaskItem(row)
+	out.Body.Data = controlTaskItem(row)
 	if h.cache != nil {
 		if isActiveTaskStatus(out.Body.Data.Status) {
 			h.cache.Set(ctx, taskCacheKey(userIDStr, input.ID), out.Body.Data, 2*time.Second)
@@ -1636,6 +1652,7 @@ func (h *Handler) listActiveTasks(ctx context.Context, _ *struct{}) (*batchTasks
 		out.Body.Data = append(out.Body.Data, TaskItem{
 			ID:          formatPgUUID(row.ID),
 			NodeID:      row.NodeID,
+			ProjectID:   row.ProjectID,
 			ServiceType: row.ServiceType,
 			Model:       row.Model,
 			Status:      row.Status,
@@ -1852,6 +1869,12 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		}
 	}
 
+	// Provider-specific local checks must precede any credit reservation,
+	// generation log, queue submission, or remote media transfer.
+	if err := h.svc.PreflightGeneration(ctx, req); err != nil {
+		return nil, toHTTPError(err)
+	}
+
 	// ─── Per-generation credit reserve ─────────────────────────────
 	// Resolve the per-model price and reserve it up-front so we can hard
 	// block (402) before doing any work. A terminal failure later refunds
@@ -1878,6 +1901,7 @@ func (h *Handler) generate(ctx context.Context, input *generateInput) (*generate
 		}
 		req.CreditCost = cost
 		req.CreditScope = scope
+		req.CreditReserved = h.svc.CreditChargingEnabled()
 	}
 
 	// ─── Asynq durable path ────────────────────────────────────────

@@ -34,10 +34,17 @@ for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
 start "" ccy-canvas-api.exe
 
 echo.
+echo [4] Starting Agent Bridge (DeepSeek Harness runtime) ...
+REM agent 的新内核：不开这个，开了 agentRuntime=harness 的智能体会报
+REM "智能体桥接服务不可用"。必须和 API 同机（DSH SDK 只支持 stdio）。
+call "C:\ccy迁移\code\ccy-canvas\start-agent-bridge.bat"
+
+echo.
 echo ========================================
 echo   All services started!
 echo   Frontend:  http://localhost
 echo   API:       http://localhost:9090
+echo   Bridge:    http://127.0.0.1:39300  (agent 运行时 + /inspector 检视页)
 echo   LAN:       http://192.168.110.150
 echo ========================================
 echo.

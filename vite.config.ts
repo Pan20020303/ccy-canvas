@@ -4,6 +4,8 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+import { canvasDevBridge } from "./scripts/canvas-cli/vite-canvas-dev";
+
 // Newest release (version + 大白话 notes) from src/app/releases.json. The build
 // writes it to dist/version.json so a running (older) tab can detect a fresh
 // deploy, show what changed, and offer to reload.
@@ -31,10 +33,17 @@ export default defineConfig(({ mode }) => {
 
   const release = currentRelease();
 
+  // 画布 dev 桥接：让 DSH/CLI 改出来的 canvas patch 实时回灌到浏览器画布。
+  // 关掉它：CCY_CANVAS_AGENT_BRIDGE=off npx vite
+  const canvasBridgeEnabled = (process.env.CCY_CANVAS_AGENT_BRIDGE ?? "").toLowerCase() !== "off";
+
   return {
     plugins: [
       react(),
       tailwindcss(),
+      ...(canvasBridgeEnabled
+        ? [canvasDevBridge({ workspace: process.env.CCY_CANVAS_WORKSPACE ?? ".canvas-agent-workspace" })]
+        : []),
       {
         // Emit dist/version.json (newest release: version + notes) so deployed
         // tabs can poll it, show what changed, and prompt to reload.

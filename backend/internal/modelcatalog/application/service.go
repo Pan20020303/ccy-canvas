@@ -131,6 +131,7 @@ type Repository interface {
 	// Generation log lifecycle — needed by the detached task runner so the
 	// goroutine can write its own outcome even after the client has hung up.
 	UpdateGenerationLogResult(ctx context.Context, logID, status, resultURL, errMsg string, durationMs int32, cacheHit bool) error
+	SetGenerationLogUpstreamTask(ctx context.Context, logID, providerID, taskID string) error
 	// SetGenerationLogResultURLs stores the full ordered result list
 	// (JSON-encoded []string) when one generation yields multiple assets
 	// (wan2.7 组图 / n>1). Requires migration 022.
@@ -183,7 +184,13 @@ type AssetPersistEnqueuer interface {
 type Service struct {
 	repo          Repository
 	encryptionKey []byte
-	cache         Cache
+	// comfyWorkers coordinates the short gap between choosing a LAN ComfyUI
+	// worker and that worker exposing the submitted prompt in GET /queue.  The
+	// authoritative load still comes from each ComfyUI instance; this in-memory
+	// reservation only prevents two concurrent requests in this API process
+	// from both observing the same worker as idle.
+	comfyWorkers *comfyWorkerPoolScheduler
+	cache        Cache
 	// eventBus is optional — when set, the detached task goroutine
 	// publishes TaskEvent on completion so SSE-subscribed clients get
 	// realtime updates instead of waiting for the 8s recovery poller.
@@ -386,7 +393,11 @@ func (s *Service) RefundCredits(ctx context.Context, userID, projectID, scope st
 
 // NewService creates a new model catalog Service.
 func NewService(repo Repository, encryptionKey []byte) *Service {
-	return &Service{repo: repo, encryptionKey: encryptionKey}
+	return &Service{
+		repo:          repo,
+		encryptionKey: encryptionKey,
+		comfyWorkers:  newComfyWorkerPoolScheduler(),
+	}
 }
 
 const (
@@ -1109,6 +1120,9 @@ type GenerateRequest struct {
 	// Persisted in request_payload so the worker/reaper can refund the exact
 	// amount on a terminal failure.
 	CreditCost int32
+	// Records an actual successful reserve, rather than a configured price.
+	// Cancellation only refunds new paid tasks with this durable proof.
+	CreditReserved bool `json:"credit_reserved,omitempty"`
 	// CreditScope is the authoritative account selected at reserve time:
 	// "personal" or "project". Persisting it prevents refunds from changing
 	// destination when collaboration settings change while a task is running.
@@ -1140,21 +1154,20 @@ type candidateChannel struct {
 	apiKey  string
 }
 
-// buildCandidates returns the first enabled provider that could serve req,
-// in the existing priority order. We intentionally avoid automatic
-// fallback/switching here; a failure is surfaced back to the caller and the
-// admin UI can alarm on repeated errors instead of the router silently
-// rerouting elsewhere.
+// buildCandidates returns the enabled provider(s) that can serve req in the
+// existing priority order. Legacy providers still return exactly one entry.
+// A ComfyUI config opts into LAN scheduling by declaring the same non-empty
+// parameter_schema.compute_pool as its peers; selecting any member then means
+// "use this pool", while the concrete worker is chosen immediately before
+// submission from live GET /queue load.
 func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, error) {
 	configs, err := s.repo.ListProviderConfigs(context.Background())
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to list configs", err)
 	}
+	matches := make([]candidateChannel, 0, len(configs))
 	for i := range configs {
 		c := configs[i]
-		if req.ProviderConfigID != "" && c.ID != req.ProviderConfigID {
-			continue
-		}
 		if c.Status != "enabled" {
 			continue
 		}
@@ -1198,9 +1211,42 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 			baseURL: strings.TrimRight(c.BaseURL, "/"),
 			apiKey:  apiKey,
 		}
-		return []candidateChannel{cand}, nil
+		matches = append(matches, cand)
 	}
-	return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
+	if len(matches) == 0 {
+		return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
+	}
+
+	anchor := 0
+	if req.ProviderConfigID != "" {
+		anchor = -1
+		for i := range matches {
+			if matches[i].cfg.ID == req.ProviderConfigID {
+				anchor = i
+				break
+			}
+		}
+		if anchor < 0 {
+			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
+		}
+	}
+
+	poolID := comfyWorkerPoolID(matches[anchor].cfg)
+	if poolID == "" {
+		return []candidateChannel{matches[anchor]}, nil
+	}
+	pooled := make([]candidateChannel, 0, len(matches))
+	// Keep the selected/first config at the front. Besides preserving pricing
+	// resolution, this is the deterministic fallback when every health probe
+	// is unavailable.
+	pooled = append(pooled, matches[anchor])
+	for i := range matches {
+		if i == anchor || !strings.EqualFold(comfyWorkerPoolID(matches[i].cfg), poolID) {
+			continue
+		}
+		pooled = append(pooled, matches[i])
+	}
+	return pooled, nil
 }
 
 func providerSupportsCapability(c domain.ProviderConfig, serviceType string) bool {
@@ -1361,10 +1407,21 @@ func maxRuntimeForType(serviceType string) time.Duration {
 }
 
 func maxRuntimeForRequest(req GenerateRequest) time.Duration {
-	if strings.EqualFold(strings.TrimSpace(req.Model), comfyMiniMaxH3DirectorModel) {
+	if isComfyMiniMaxH3LongRunningModel(req.Model) {
 		return 3 * time.Hour
 	}
 	return maxRuntimeForType(req.ServiceType)
+}
+
+// maxWallClockForRequest is the outer safety deadline. For ComfyUI video
+// generation, the prompt can legitimately spend hours in ComfyUI's own queue;
+// that wait is separate from the provider-execution budget above.
+func maxWallClockForRequest(req GenerateRequest) time.Duration {
+	runtime := maxRuntimeForRequest(req)
+	if isComfyQueuedVideoRequest(req) {
+		return runtime + comfyVideoQueueWaitTimeout()
+	}
+	return runtime
 }
 
 type generatedAssetPersistenceOutcome struct {
@@ -1539,7 +1596,7 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 	// to the browser, but the upstream task can keep running and write its
 	// outcome to generation_logs. Stage 2 will surface those late results
 	// to the UI; Stage 1's contract is "no more lost generations".
-	detachedCtx, cancelDetached := context.WithTimeout(context.Background(), maxRuntimeForRequest(req))
+	detachedCtx, cancelDetached := context.WithTimeout(context.Background(), maxWallClockForRequest(req))
 
 	type genResult struct {
 		result *GenerateResult
@@ -1777,6 +1834,16 @@ func staleGenerationBudgetForStatus(serviceType, status string) time.Duration {
 	if serviceType == "image" && (status == "queued" || status == "pending" || status == "retrying") {
 		return 24 * time.Hour
 	}
+	// A video row is marked running when the durable worker owns it, before its
+	// prompt necessarily reaches the front of ComfyUI's upstream queue. Keep the
+	// reaper from treating legitimate queue wait as abandoned execution.
+	if serviceType == "video" && (status == "queued" || status == "pending" || status == "running" || status == "retrying") {
+		maxVideoExecution := maxRuntimeForType("video")
+		if maxVideoExecution < 3*time.Hour {
+			maxVideoExecution = 3 * time.Hour // H3 Director's execution allowance
+		}
+		return comfyVideoQueueWaitTimeout() + 2*maxVideoExecution + 30*time.Minute
+	}
 	return staleGenerationBudget(serviceType)
 }
 
@@ -1839,7 +1906,22 @@ func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateCh
 	if len(candidates) == 0 {
 		return nil, apperror.New(apperror.CodeInvalidInput, "No provider candidate available")
 	}
-	c := candidates[0]
+	workerScheduler := s.comfyWorkers
+	if workerScheduler == nil {
+		workerScheduler = newComfyWorkerPoolScheduler()
+	}
+	c, release, selectErr := workerScheduler.selectWorker(ctx, candidates)
+	if selectErr != nil {
+		return nil, selectErr
+	}
+	defer release()
+	// Keep the selected worker visible to the persistence stage, which must
+	// fetch /view from the same ComfyUI host that produced the output.
+	candidates[0] = c
+	if len(candidates) > 1 {
+		log.Printf("[comfy-pool] log_id=%s pool=%s worker_id=%s worker=%q base_url=%s",
+			req.GenerationLogID, comfyWorkerPoolID(c.cfg), c.cfg.ID, comfyWorkerName(c.cfg), c.baseURL)
+	}
 	ctx = withProviderRetryObserver(ctx, func(event providerRetryEvent) {
 		if !event.WillRetry || event.Err == nil {
 			return
@@ -1940,6 +2022,7 @@ func (s *Service) publishTaskEventWithStatus(req GenerateRequest, result *Genera
 	s.eventBus.Publish(req.UserID, TaskEvent{
 		TaskID:         req.GenerationLogID,
 		NodeID:         req.NodeID,
+		ProjectID:      req.ProjectID,
 		ServiceType:    req.ServiceType,
 		Status:         status,
 		ResultURL:      resultURL,
@@ -2555,14 +2638,11 @@ func providerRequestErrorMessage(err error) string {
 }
 
 func videoGenerationTimeout() time.Duration {
-	// Track the video task's hard runtime ceiling minus a safety margin. The
-	// ceiling (maxRuntimeForType("video"), default 30m, env-tunable via
-	// VIDEO_TASK_MAX_RUNTIME_SECONDS) is ALSO the detached-context and asynq
-	// task timeout, so deriving the poll budget from it keeps the two from
-	// diverging. Previously this was a fixed 900s (15m) while the ceiling was
-	// 30m — a Seedance clip that finished upstream after ~15–20m was reported
-	// "timed out after polling" and its already-charged result was lost. Now
-	// polling runs almost the full window before giving up.
+	// Track a cloud video task's execution ceiling minus a safety margin.
+	// Local ComfyUI video uses its own queue-aware poller: queue wait is
+	// measured separately and only queue_running starts this execution budget.
+	// Previously this was a fixed 900s (15m) while the ceiling was 30m — a
+	// Seedance clip that finished after ~15–20m was reported as timed out.
 	budget := maxRuntimeForType("video") - videoPollSafetyMargin
 	if budget < time.Minute {
 		budget = time.Minute

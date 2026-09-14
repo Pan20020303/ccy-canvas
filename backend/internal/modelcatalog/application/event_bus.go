@@ -13,6 +13,7 @@ import (
 type TaskEvent struct {
 	TaskID      string `json:"task_id"`
 	NodeID      string `json:"node_id"`
+	ProjectID   string `json:"project_id,omitempty"`
 	ServiceType string `json:"service_type"`
 	Status      string `json:"status"`     // "success" or "error"
 	ResultURL   string `json:"result_url"` // empty on error

@@ -19,7 +19,8 @@ import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import type { ServiceType } from './model-config';
 import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
-import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
+import { batchTasksByNodeIds, getTask, listActiveTasks, cancelTask, type TaskItem } from './api/tasks';
+import { publishTaskUpdate, subscribeTaskUpdates, taskAccountSession, invalidateTaskAccountSession } from './task-events';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
 import {
   saveAssetToServer, deleteAssetsFromServer, listAssetsFromServer,
@@ -27,14 +28,19 @@ import {
 } from './api/assets';
 import type { BackendProject } from './api/projects';
 import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
+import { downloadRecoverySnapshot, readCanvasRecovery, removeCanvasRecovery, writeCanvasRecovery, type CanvasRecoverySnapshot } from './canvas-recovery';
+import { setChunkReloadSafety } from './chunk-recovery';
 import {
   buildCanvasClipboardSelection,
   remapClipboardSelectionForPaste,
   type CanvasClipboardSelection,
 } from './canvas-clipboard';
 import { computeGroupBounds } from './group-routing';
+import { canvasDocumentToken, retainCanvasArrayToken } from './canvas-document-token';
+import { createAssetSyncJournal, type AssetMutation, type AssetSyncState } from './asset-sync';
 import { clearReferencePayloadValue, getReferencePayloadValue, isPublicHttpAssetUrl, isTransientBrowserMediaUrl, resolveBackendAssetUrl } from './reference-media';
 import { getModelTemplate } from './model-templates';
+import { isSeedance25Model, orderedReferenceConnections, reconcileReferenceConnectionEdits, seedanceReferenceIndexIssues, usesConnectedReferenceInputs } from './reference-connections';
 import { buildZImageParams, type ZImageParams } from './zimage-params';
 import { buildLocalImageParams, type LocalImageSettings } from './local-image-params';
 import {
@@ -236,6 +242,8 @@ export type NodeGenerationParams = {
   referenceVideos?: string[];
   referenceAudio?: string;
   referenceAudios?: string[];
+  /** Connected media remains authoritative after the last wire is removed. */
+  referenceInputSource?: 'connections';
   // Video reference variant (Seedance 2.0 tabs). Drives the prompt panel's
   // reference-slot layout; passed through to the backend as a hint about
   // how upstream media should be interpreted.
@@ -319,14 +327,22 @@ type AppState = {
    *  homepage) — never touches the live canvas. */
   refreshBackendProjects: () => Promise<void>;
   createBackendProject: (name: string) => Promise<BackendProject | null>;
-  switchBackendProject: (id: string) => Promise<void>;
+  switchBackendProject: (id: string) => Promise<boolean>;
   /** Re-fetch the active project's canvas from the backend WITHOUT saving the
    *  current (stale) state first — used after a version restore so the restored
    *  snapshot isn't clobbered by the outgoing nodes. */
   reloadActiveCanvas: () => Promise<void>;
-  saveCanvasToBackend: (options?: { keepalive?: boolean; force?: boolean }) => Promise<void>;
+  saveCanvasToBackend: (options?: { keepalive?: boolean; force?: boolean }) => Promise<boolean>;
   canvasSaveStatus: 'idle' | 'saving' | 'saved' | 'error';
   canvasSaveError: string | null;
+  canvasSaveConflict: boolean;
+  canvasRecovery: CanvasRecoverySnapshot | null;
+  canvasRecoveryError: string | null;
+  hasUnsavedCanvasChanges: () => boolean;
+  saveCanvasRecovery: () => Promise<boolean>;
+  prepareCanvasPageReload: () => Promise<boolean>;
+  downloadCanvasRecovery: () => boolean;
+  restoreCanvasRecoveryCopy: () => Promise<boolean>;
   retryCanvasSave: () => void;
   spaceMembers: SpaceMember[];
   invitations: AdminInvitation[];
@@ -365,13 +381,15 @@ type AppState = {
   bringNodeToFront: (nodeId: string) => void;
   sendNodeToBack: (nodeId: string) => void;
   savedAssets: SavedAsset[];
+  assetSync: AssetSyncState;
+  retryAssetSync: () => Promise<boolean>;
   saveAsset: (asset: Omit<SavedAsset, 'id' | 'createdAt'>) => SavedAsset;
   removeAsset: (id: string) => void;
   hydrateAssets: () => void;
   // 素材库文件夹(后端持久化)。
   assetFolders: AssetFolder[];
   hydrateAssetFolders: () => void;
-  createAssetFolder: (name: string) => AssetFolder;
+  createAssetFolder: (name: string) => AssetFolder | null;
   renameAssetFolder: (id: string, name: string) => void;
   deleteAssetFolder: (id: string) => void;
   /** 把素材移动到某文件夹('' = 移回根)。就地改 folderId 并回写后端。 */
@@ -424,8 +442,8 @@ type AppState = {
    *  也一起切换,让面板里看到的提示词跟图对上. */
   setActiveVersion: (nodeId: string, versionId: string) => void;
   updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
-  runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean }) => Promise<void>;
-  cancelNode: (nodeId: string) => void;
+  runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean; checkOnly?: boolean; expectedInputs?: string }) => Promise<void>;
+  cancelNode: (nodeId: string) => Promise<void>;
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
   /** 图层编辑器:当前打开的 layerEditorNode id(null = 关闭)。 */
   layerEditorNodeId: string | null;
@@ -444,7 +462,8 @@ type AppState = {
   setLastVideoParams: (params: LastVideoParams) => void;
   /** 待确认的生成请求队列 —— 弹窗一次确认一个;做成队列是因为批量流程
    *  (如分镜派生)会连续调用 runNode,单槽会互相覆盖丢单。 */
-  pendingRunConfirm: Array<{ nodeId: string; payload: { prompt: string; model?: string } }>;
+  pendingRunConfirm: Array<{ nodeId: string; payload: { prompt: string; model?: string }; checkOnly?: boolean; expectedInputs?: string;
+    preview?: { prompt: string; projectId: string | null; provider: string; images: string[]; videos: string[]; audios: string[]; parameters: Record<string, unknown> } }>;
   setPendingRunConfirm: (v: Array<{ nodeId: string; payload: { prompt: string; model?: string } }>) => void;
   shortcuts: Record<string, string>;
   setShortcut: (action: string, combo: string) => void;
@@ -911,6 +930,22 @@ const seedInvitations: AdminInvitation[] = [
 
 const runAborters: Record<string, AbortController> = {};
 const runTokens: Record<string, string> = {};
+
+// Node IDs can be retained when a canvas is copied. Async generation work
+// belongs to the initiating account/space/project, not whichever canvas is open.
+function captureTaskContext(getStore: () => AppState) {
+  const initial = getStore();
+  const owner = storageUserId;
+  const epoch = taskAccountSession();
+  return () => {
+    const current = getStore();
+    return owner === storageUserId && epoch === taskAccountSession()
+      && initial.activeBackendProjectId === current.activeBackendProjectId
+      && initial.activeProjectId === current.activeProjectId
+      && initial.activeSpaceId === current.activeSpaceId
+      && initial.activeSpaceType === current.activeSpaceType;
+  };
+}
 // 智能体面板宽度边界:最窄保证 composer 控件不换行,最宽给大屏留出画布空间。
 const AGENT_PANEL_MIN_WIDTH = 380;
 const AGENT_PANEL_MAX_WIDTH = 860;
@@ -973,11 +1008,11 @@ function isLikelyExpiringMediaUrl(url: string): boolean {
  *  node's url in place — guarded so a stale swap can't clobber a newer run.
  *  `force`（事件带 asset_temporary=true）时跳过 URL 启发式：无签名参数/需鉴权
  *  的上游临时 URL 启发式认不出来，正是「生成成功但没有返图」的来源。 */
-function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: (updater: (state: AppState) => Partial<AppState>) => void, force = false) {
+function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: (updater: (state: AppState) => Partial<AppState>) => void, force = false, canApply = () => true) {
   if (!/^https?:\/\//i.test(appliedUrl)) return; // 相对 /uploads 等本地 URL 已经持久
   if (!force && !isLikelyExpiringMediaUrl(appliedUrl)) return;
   void rehostToStableUrl(appliedUrl).then((stable) => {
-    if (!stable || stable === appliedUrl) return;
+    if (!canApply() || !stable || stable === appliedUrl) return;
     setStore((state) => {
       const nodes = state.nodes.map((node) => {
         if (node.id !== nodeId) return node;
@@ -1037,6 +1072,28 @@ function buildExtraImageNodes(sourceNode: Node | undefined, existing: Node[], ur
 /** Apply a task lookup result back onto its node. Called from the poller
  *  for each non-pending row the backend returns. */
 function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (!task.id || !task.node_id) return;
+  if (task.project_id && task.project_id !== getStore().activeBackendProjectId) return;
+  const boundNode = getStore().nodes.find(node => node.id === task.node_id);
+  // Legacy unscoped events may update an exact task binding, never claim a
+  // same-ID node in another project. Scoped lookup/polling recovers missed events.
+  if (!task.project_id && boundNode?.data.taskId !== task.id) return;
+  if (boundNode?.data.taskId === task.id && boundNode.data.status === 'cancelled') return;
+  if (task.status === 'cancelled' || task.status === 'canceled') {
+    // Cancellation is terminal only after server confirmation. Keep its task
+    // identity so delayed queued events cannot reattach or restart tracking.
+    if (!boundNode || boundNode.data.taskId !== task.id) return;
+    trackedTaskNodes.delete(task.node_id);
+    setStore(state => {
+      const nodes = state.nodes.map(node => node.id === task.node_id
+        ? { ...node, data: { ...node.data, status: 'cancelled', taskId: task.id, taskPhase: 'cancelled', queuedAfterTimeout: false, error: undefined } }
+        : node);
+      const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+      return { nodes, projectStateById, activeRun: state.activeRun?.nodeId === task.node_id ? null : state.activeRun,
+        ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+    });
+    return;
+  }
   const normalizedStatus = normalizeTaskStatus(task.status);
   if (normalizedStatus !== 'success' && normalizedStatus !== 'error') {
     if (normalizedStatus === 'active') {
@@ -1229,7 +1286,9 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   // 临时 URL 启发式认不出，会以「生成成功但没有返图」的裂图收场。
   if (normalizedStatus === 'success' && task.result_url
     && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
-    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore, task.asset_temporary === true);
+    const isCurrentContext = captureTaskContext(getStore);
+    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore, task.asset_temporary === true,
+      () => isCurrentContext() && getStore().nodes.find(node => node.id === task.node_id)?.data.taskId === task.id);
   }
   // 历史资产: the QUEUED delivery path never recorded history — addHistory only
   // ran in runNode's synchronous success block, so with the task queue enabled
@@ -1263,6 +1322,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
  *  Silent on network errors — a failed poll just leaves nodes in their
  *  current 'running' state until the next tick. */
 async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  const isCurrentContext = captureTaskContext(getStore);
   // Reconcile the tracked set with what's actually in the store: keep
   // actively running nodes and queued-after-timeout nodes that may have
   // been restored as idle from a saved canvas snapshot.
@@ -1278,6 +1338,7 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
     .filter((n) => {
       const data = n.data as Record<string, unknown>;
       const status = data?.status;
+      if (status === 'cancelled') return false;
       if (status === 'running' || status === 'generating') return true;
       if (data?.queuedAfterTimeout === true) return true;
       const taskId = typeof data?.taskId === 'string' ? (data.taskId as string) : '';
@@ -1335,9 +1396,15 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
   }
 
   const results = await Promise.all(requests);
+  if (!isCurrentContext()) return;
   for (const tasks of results) {
     for (const task of tasks) {
-      applyTaskResultToNode(task, getStore, setStore);
+      // Older batch projections omit project_id. Resolve the precise task
+      // before binding an unscoped row to a copied canvas node.
+      const resolved = !task.project_id && nodes.find(node => node.id === task.node_id)?.data.taskId !== task.id
+        ? await getTask(task.id).catch(() => null) : task;
+      if (!isCurrentContext()) return;
+      if (resolved) publishTaskUpdate(resolved);
     }
   }
 }
@@ -1366,6 +1433,7 @@ function ensureTaskPollerStarted(getStore: () => AppState, setStore: (updater: (
 type TaskEventPayload = {
   task_id: string;
   node_id: string;
+  project_id?: string;
   service_type: string;
   status: string;
   result_url: string;
@@ -1381,10 +1449,11 @@ let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   // Reuse the poller's per-task application — they share semantics.
-  applyTaskResultToNode(
+  publishTaskUpdate(
     {
       id: event.task_id,
       node_id: event.node_id,
+      project_id: event.project_id,
       service_type: event.service_type,
       model: '',
       status: event.status,
@@ -1395,13 +1464,12 @@ function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState,
       created_at: '',
       asset_temporary: event.asset_temporary,
     },
-    getStore,
-    setStore,
   );
 }
 
 function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   if (taskEventSource) return;
+  const accountEpoch = taskAccountSession();
 
   const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
   const url = `${apiBaseUrl}/api/app/tasks/stream`;
@@ -1412,6 +1480,7 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   }
 
   taskEventSource.onopen = () => {
+    if (accountEpoch !== taskAccountSession()) return;
     if (sseReconnectTimer) {
       clearTimeout(sseReconnectTimer);
       sseReconnectTimer = null;
@@ -1419,6 +1488,7 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   };
 
   taskEventSource.onmessage = (msg) => {
+    if (accountEpoch !== taskAccountSession()) return;
     try {
       const event = JSON.parse(msg.data) as TaskEventPayload;
       if (event && typeof event === 'object' && event.node_id) {
@@ -1430,6 +1500,7 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   };
 
   taskEventSource.onerror = () => {
+    if (accountEpoch !== taskAccountSession()) return;
     // Browser EventSource auto-retries by default, but if the server
     // closed cleanly (4xx/auth) the connection goes back to CLOSED and
     // never reopens. Close + reopen with backoff to cover both cases.
@@ -1475,14 +1546,17 @@ function applyActiveTasksToNodes(
   try {
     const appliedNodeIds = new Set<string>();
     const nodes = getStore().nodes;
-    for (const task of tasks) {
+    const scopedTasks = tasks.filter(task => task.project_id
+      ? task.project_id === getStore().activeBackendProjectId
+      : nodes.some(node => node.id === task.node_id && node.data.taskId === task.id));
+    for (const task of scopedTasks) {
       const node = nodes.find((n) => n.id === task.node_id);
       if (!node) continue; // node not loaded yet — caller retries on change
       appliedNodeIds.add(task.node_id);
       trackedTaskNodes.add(task.node_id);
     }
     if (appliedNodeIds.size === 0) return appliedNodeIds;
-    const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
+    const taskByNode = new Map(scopedTasks.map((t) => [t.node_id, t]));
     setStore((state) => {
       const nodes = state.nodes.map((node) => {
         const task = taskByNode.get(node.id);
@@ -1527,13 +1601,14 @@ async function hydrateActiveTasks(
 ) {
   if (activeTasksHydrated) return;
   activeTasksHydrated = true;
+  const accountEpoch = taskAccountSession();
   let tasks: TaskItem[];
   try {
     tasks = await listActiveTasks();
   } catch {
     return; // best-effort; the poller still covers locally-running nodes
   }
-  if (!tasks || tasks.length === 0) return;
+  if (accountEpoch !== taskAccountSession() || !tasks || tasks.length === 0) return;
 
   const pending = new Map(tasks.map((t) => [t.node_id, t]));
   const applied = applyActiveTasksToNodes([...pending.values()], getStore, setStore);
@@ -1543,6 +1618,7 @@ async function hydrateActiveTasks(
   // Some target nodes haven't loaded yet (canvas snapshot is async). Re-apply
   // as the store changes, then give up after a bounded window.
   const unsubscribe = useStore.subscribe(() => {
+    if (accountEpoch !== taskAccountSession()) { unsubscribe(); return; }
     if (pending.size === 0) { unsubscribe(); return; }
     const applied = applyActiveTasksToNodes([...pending.values()], getStore, setStore);
     for (const id of applied) pending.delete(id);
@@ -1552,6 +1628,7 @@ async function hydrateActiveTasks(
 }
 
 let storageUserId = '';
+let assetLibraryOwner = '';
 
 function storageKey(name: string): string {
   return storageUserId ? `${name}-${storageUserId}` : name;
@@ -1863,6 +1940,17 @@ export function bindStorageToUser(userId: string) {
   // would land in the NEW user's slot with the OLD user's data.
   flushPendingPersist();
   storageUserId = userId;
+  invalidateTaskAccountSession();
+  // Close the previous account's stream; an already queued browser callback
+  // still carries its old epoch and is ignored.
+  taskEventSource?.close();
+  taskEventSource = null;
+  if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+  sseReconnectTimer = null;
+  activeTasksHydrated = false;
+  trackedTaskNodes.clear();
+  ensureTaskStreamStarted(useStore.getState, useStore.setState as never);
+  void hydrateActiveTasks(useStore.getState, useStore.setState as never);
   const rehydrated = useStore.persist.rehydrate();
   // 独立小键在整仓 rehydrate 之后覆盖,保证大 blob 里的旧值压不过它。
   if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') {
@@ -1906,21 +1994,11 @@ function resolveReferenceTransportUrl(data: Record<string, unknown>, payloadValu
 }
 
 function collectUpstreamReferenceMedia(nodes: Node[], edges: Edge[], targetNodeId: string): UpstreamReferenceMedia {
-  const upstreamIds = new Set(
-    edges
-      .filter((edge) => edge.target === targetNodeId)
-      .map((edge) => edge.source),
-  );
-
   const imageUrls: string[] = [];
   const videoUrls: string[] = [];
   const audioUrls: string[] = [];
 
-  for (const node of nodes) {
-    if (!upstreamIds.has(node.id)) {
-      continue;
-    }
-
+  for (const { node } of orderedReferenceConnections(nodes, edges, targetNodeId)) {
     const data = (node.data ?? {}) as Record<string, unknown>;
 
     // 导演台 / 构图预览节点没有 data.url —— 它们的"输出"是构图快照。
@@ -2097,8 +2175,8 @@ function extensionForBlobType(type: string): string {
  * `/uploads` and other same-origin URLs are already durable and pass through.
  *
  * Retries once on a transient failure. On FINAL failure it returns the original
- * URL and logs loudly (no longer a silent fallback) — the dead-media cleanup
- * (client onError → auto-delete) is the backstop for anything that still 404s.
+ * URL and logs the failure. Preview errors retain the original asset and offer
+ * retry; they must never delete an asset-library or history record.
  */
 export async function rehostToStableUrl(url: string): Promise<string> {
   if (!url) return url;
@@ -2128,7 +2206,7 @@ export async function rehostToStableUrl(url: string): Promise<string> {
       return await attempt(); // one retry for a transient network/proxy blip
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn('[rehostToStableUrl] re-host failed after retry; keeping original URL (cleanup will prune if dead)', err);
+      console.warn('[rehostToStableUrl] re-host failed after retry; keeping original URL for retry', err);
       return url;
     }
   }
@@ -2141,16 +2219,113 @@ async function persistGeneratedMediaUrl(result: GenerateResult): Promise<string>
   return rehostToStableUrl(result.content);
 }
 
-// Signature of the last successfully-saved backend canvas payload — lets the
-// debounced autosave skip re-PUTting an unchanged multi-MB canvas.
+// Identity of the last saved immutable document. Never stringify the graph
+// merely to ask whether it is dirty (this runs on every drag frame).
 let lastSavedCanvasSignature = '';
+let canvasSaveInFlight: Promise<boolean> | null = null;
+type CanvasDraft = { snapshot: CanvasRecoverySnapshot; signature: string; owner: string; persisted: Promise<boolean>; durable: boolean | null };
+const canvasDrafts = new Map<string, CanvasDraft>();
+const protectedRecoveryIds = new Set<string>();
+let recoveryClock = 0;
 
-// Client ids currently being deleted server-side. hydrateAssets filters these
-// out so a delete-then-reopen race can't resurrect a just-removed asset before
-// the DELETE commits. Cleared once the DELETE settles (server no longer has it).
-const pendingAssetDeletes = new Set<string>();
-// Backfill of local-only assets to the server runs once per session.
-let assetsBackfilledThisSession = false;
+function canvasNodesForSave(nodes: Node[]): Node[] {
+  return nodes.map(n => {
+    const { selected: _selected, dragging: _dragging, measured: _measured, resizing: _resizing, ...persistent } = n;
+    const data = n.data as Record<string, unknown> | undefined;
+    return data?.status === 'running' || data?.status === 'generating'
+      ? { ...persistent, data: { ...data, status: 'running', queuedAfterTimeout: true, error: undefined } }
+      : persistent;
+  });
+}
+
+function canvasSignature(projectId: string, nodes: Node[], edges: Edge[], groups: Group[]): string {
+  return canvasDocumentToken(projectId, nodes, edges, groups);
+}
+
+function draftKey(projectId: string, owner = storageUserId): string { return `${owner}:${projectId}`; }
+
+function recoverySnapshot(state: AppState): CanvasRecoverySnapshot {
+  recoveryClock = Math.max(Date.now(), recoveryClock + 1);
+  return JSON.parse(JSON.stringify({
+    format: 'ccy-canvas-recovery-v1',
+    id: `${recoveryClock}-${Math.random().toString(36).slice(2)}`,
+    projectId: state.activeBackendProjectId!,
+    projectName: state.backendProjects.find(project => project.id === state.activeBackendProjectId)?.name || '画布',
+    baseVersion: state.canvasRevision,
+    savedAt: recoveryClock,
+    nodes: state.nodes, edges: state.edges, groups: state.groups,
+  })) as CanvasRecoverySnapshot;
+}
+
+/** Called before awaiting an in-flight save: the latest draft gets a
+ * synchronous recovery attempt even when pagehide cannot start another PUT. */
+function stageCanvasRecovery(state: AppState): CanvasDraft {
+  const owner = storageUserId;
+  const key = draftKey(state.activeBackendProjectId!, owner);
+  const signature = canvasSignature(state.activeBackendProjectId!, state.nodes, state.edges, state.groups);
+  const previous = canvasDrafts.get(key);
+  if (previous?.signature === signature && previous.durable !== false) return previous;
+  const snapshot = recoverySnapshot(state);
+  const record: CanvasDraft = { snapshot, signature, owner, durable: null, persisted: Promise.resolve(false) };
+  record.persisted = writeCanvasRecovery(owner, snapshot).then(async () => {
+    record.durable = true;
+    if (previous && !protectedRecoveryIds.has(previous.snapshot.id)) {
+      await previous.persisted;
+      await removeCanvasRecovery(owner, previous.snapshot.id);
+    }
+    return true;
+  }, () => { record.durable = false; return false; });
+  canvasDrafts.set(key, record);
+  return record;
+}
+
+const recoveryFailureMessage = '本地恢复副本未能写入（存储空间不足或浏览器禁用存储）。请下载本地快照后再离开；当前编辑仍保留。';
+
+const assetJournals = new Map<string, ReturnType<typeof createAssetSyncJournal>>();
+const localOnlyAssets = new Map<string, { assets: Set<string>; folders: Set<string>; readErrors: { assets?: string; folders?: string } }>();
+function assetLocalOnly(owner: string) {
+  let missing = localOnlyAssets.get(owner);
+  if (!missing) { missing = { assets: new Set(), folders: new Set(), readErrors: {} }; localOnlyAssets.set(owner, missing); }
+  return missing;
+}
+function publishAssetSync(owner: string, status: AssetSyncState) {
+  if (owner !== storageUserId) return;
+  const missing = assetLocalOnly(owner);
+  useStore.setState({ assetSync: { ...status, pending: status.pending + missing.assets.size + missing.folders.size,
+    error: status.error || missing.readErrors.assets || missing.readErrors.folders || null } });
+}
+function assetSyncFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : '素材同步失败，请重试。';
+  useStore.setState(state => ({ assetSync: { ...state.assetSync, error: message } }));
+  toast.error(message);
+}
+function assetJournal(owner = storageUserId) {
+  if (!owner) throw new Error('请登录当前账号后再保存素材。');
+  let journal = assetJournals.get(owner);
+  if (!journal) {
+    journal = createAssetSyncJournal({ owner, currentOwner: () => storageUserId, storage: localStorage,
+      send: async operation => {
+        if (operation.entity === 'asset') {
+          if (operation.action === 'save') await saveAssetToServer(operation.value);
+          else await deleteAssetsFromServer([operation.id]);
+        } else if (operation.action === 'save') await saveAssetFolderToServer(operation.value);
+        else await deleteAssetFolderFromServer(operation.id);
+      }, onChange: status => publishAssetSync(owner, status) });
+    assetJournals.set(owner, journal);
+  }
+  return journal;
+}
+function applyAssetMutation(mutation: AssetMutation) {
+  const owner = storageUserId;
+  const journal = assetJournal(owner);
+  journal.enqueue(mutation);
+  const missing = assetLocalOnly(owner);
+  (mutation.entity === 'asset' ? missing.assets : missing.folders).delete(mutation.action === 'save' ? mutation.value.id : mutation.id);
+  useStore.setState(state => journal.overlay(state.savedAssets, state.assetFolders));
+  void journal.flush().then(ok => {
+    if (!ok && owner === storageUserId && journal.status().error) toast.error('素材尚未同步，操作已保留，请在素材库重试。');
+  });
+}
 
 /** 当前打开的后端项目里「我」是否只读(访问者)。协作画布:访问者只读,不能写。 */
 function computeActiveProjectReadOnly(state: AppState): boolean {
@@ -2210,7 +2385,16 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           removedIds.add(change.id);
         }
       }
-      const nodes = applyNodeChanges(changes, state.nodes);
+      const changedNodes = applyNodeChanges(changes, state.nodes);
+      const edges = removedIds.size === 0 ? state.edges
+        : state.edges.filter(edge => !removedIds.has(edge.source) && !removedIds.has(edge.target));
+      const nodes = removedIds.size === 0 ? changedNodes
+        : reconcileReferenceConnectionEdits(changedNodes, state.edges, edges, state.nodes);
+      if (changes.every(change => change.type === 'select'
+        || (change.type === 'dimensions' && !change.setAttributes)
+        || (change.type === 'position' && !change.position))) {
+        retainCanvasArrayToken(state.nodes, nodes);
+      }
       // Sync groups: drop removed members; delete groups that become empty.
       const groups = removedIds.size === 0
         ? state.groups
@@ -2227,9 +2411,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       if (!captured && removedIds.size === 0) {
         return { nodes, groups };
       }
-      const projectStateById = syncActiveProjectState(state, { nodes, groups }).projectStateById;
+      const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
       return {
         nodes,
+        edges,
         groups,
         undoStack,
         // A fresh edit invalidates the redo stack (standard undo/redo).
@@ -2257,11 +2442,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   onEdgesChange: (changes: EdgeChange[]) => {
     set((state) => {
+      if (changes.every(change => change.type === 'select')) {
+        const edges = applyEdgeChanges(changes, state.edges);
+        retainCanvasArrayToken(state.edges, edges);
+        return { edges };
+      }
       const edges = sanitizeCanvasEdges(applyEdgeChanges(changes, state.edges));
+      const nodes = reconcileReferenceConnectionEdits(state.nodes, state.edges, edges);
       const captured = shouldCaptureEdgeChangesForUndo(changes);
       const undoStack = captured ? pushUndoState(state) : state.undoStack;
-      const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
+      const projectStateById = syncActiveProjectState(state, { nodes, edges }).projectStateById;
       return {
+        nodes,
         edges,
         undoStack,
         redoStack: captured ? [] : state.redoStack,
@@ -2277,9 +2469,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       if (getCanvasConnectionIssue(state.edges, connection)) return {};
       const decoratedConnection = { ...connection, type: 'flow' };
       const edges = addEdge(decoratedConnection, state.edges);
+      const nodes = reconcileReferenceConnectionEdits(state.nodes, state.edges, edges);
       const undoStack = pushUndoState(state);
-      const projectStateById = syncActiveProjectState(state, { edges }).projectStateById;
+      const projectStateById = syncActiveProjectState(state, { nodes, edges }).projectStateById;
       return {
+        nodes,
         edges,
         undoStack,
         projectStateById,
@@ -2481,6 +2675,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   canvasHydrated: false,
   canvasSaveStatus: 'idle',
   canvasSaveError: null,
+  canvasSaveConflict: false,
+  canvasRecovery: null,
+  canvasRecoveryError: null,
 
   refreshBackendProjects: async () => {
     try {
@@ -2510,6 +2707,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       // Load canvas for the restored/first project.
       try {
         const canvas = await getCanvas(first.id);
+        const recovery = await readCanvasRecovery(storageUserId, first.id);
+        if (recovery) protectedRecoveryIds.add(recovery.id);
         set((state) => {
           const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : state.nodes;
           const nodes = rawNodes.map((n) => {
@@ -2522,6 +2721,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : state.edges);
           // Older snapshots have no groups field — keep whatever is local then.
           const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : state.groups;
+          lastSavedCanvasSignature = canvasSignature(first.id, nodes, edges, groups);
           const projectStateById = {
             ...state.projectStateById,
             [first.id]: createCanvasSnapshot(nodes, edges, groups),
@@ -2534,6 +2734,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             activeBackendProjectId: first.id,
             canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
             canvasHydrated: true, // backend canvas is now the source of truth → auto-save is safe
+            canvasSaveStatus: 'saved', canvasSaveError: null, canvasSaveConflict: false,
+            canvasRecovery: recovery, canvasRecoveryError: null,
             projectStateById,
             undoStack: [],
             copiedCanvasSelection: null,
@@ -2552,17 +2754,24 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   },
 
   createBackendProject: async (name) => {
+    if (get().backendSyncing) return null;
+    if (!await get().saveCanvasToBackend()) return null;
+    if (get().hasUnsavedCanvasChanges()) return null;
     try {
       const project = await apiCreateProject(name);
+      const nodes: Node[] = [], edges: Edge[] = [], groups: Group[] = [];
+      lastSavedCanvasSignature = canvasSignature(project.id, nodes, edges, groups);
       set((state) => ({
         backendProjects: [project, ...state.backendProjects],
         activeBackendProjectId: project.id,
         canvasRevision: 0,
         activeProjectId: project.id,
         canvasHydrated: true, // freshly created empty project — safe to auto-save
-        nodes: [],
-        edges: [],
-        groups: [],
+        canvasSaveStatus: 'saved', canvasSaveError: null, canvasSaveConflict: false,
+        canvasRecovery: null, canvasRecoveryError: null,
+        nodes,
+        edges,
+        groups,
         undoStack: [],
         copiedCanvasSelection: null,
         projectStateById: {
@@ -2577,20 +2786,19 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   },
 
   switchBackendProject: async (id) => {
-    const state = get();
-    // Save current canvas first.
-    if (state.activeBackendProjectId) {
-      try {
-        await saveCanvas(state.activeBackendProjectId, state.nodes, state.edges, state.groups);
-      } catch {
-        // Non-fatal — continue switching.
-      }
-    }
-    // Switching: disable auto-save until the target canvas has loaded, so a
-    // 2s auto-save can't write the outgoing/stale nodes into the new project.
-    set({ activeBackendProjectId: id, canvasRevision: 0, canvasHydrated: false, backendSyncing: true });
+    const outgoing = get();
+    if (id === outgoing.activeBackendProjectId && outgoing.canvasHydrated) return true;
+    if (outgoing.backendSyncing) return false;
+    set({ backendSyncing: true });
     try {
+      // Edits made while the first request was in flight also have to be saved.
+      do {
+        if (!await get().saveCanvasToBackend()) return false;
+      } while (get().hasUnsavedCanvasChanges());
+      set({ canvasHydrated: false });
       const canvas = await getCanvas(id);
+      const recovery = await readCanvasRecovery(storageUserId, id);
+      if (recovery) protectedRecoveryIds.add(recovery.id);
       const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
       const nodes = rawNodes.map((n) => {
         const d = n.data as Record<string, unknown> | undefined;
@@ -2601,6 +2809,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       });
       const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : []);
       const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
+      lastSavedCanvasSignature = canvasSignature(id, nodes, edges, groups);
       set((state) => {
         const projectStateById = {
           ...state.projectStateById,
@@ -2613,18 +2822,20 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           undoStack: [],
           copiedCanvasSelection: null,
           activeProjectId: id,
+          activeBackendProjectId: id,
           canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
           canvasHydrated: true,
+          canvasSaveStatus: 'saved', canvasSaveError: null, canvasSaveConflict: false,
+          canvasRecovery: recovery, canvasRecoveryError: null,
           projectStateById,
           ...syncActiveSpaceSnapshot(state, { projectStateById }),
         };
       });
-    } catch {
-      // Canvas fetch failed (network / auth / 5xx) — NOT a new empty project
-      // (those resolve with an empty canvas). Show an empty canvas but keep
-      // auto-save OFF (canvasHydrated stays false) so we don't overwrite the
-      // un-fetched backend snapshot.
-      set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
+      return true;
+    } catch (error) {
+      // A failed target load must not discard or relabel the outgoing editor.
+      set({ canvasHydrated: outgoing.canvasHydrated, canvasSaveError: `项目未切换：${error instanceof Error ? error.message : String(error)}` });
+      return false;
     } finally {
       set({ backendSyncing: false });
     }
@@ -2632,79 +2843,200 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   reloadActiveCanvas: async () => {
     const id = get().activeBackendProjectId;
-    if (!id) return;
-    // Freeze auto-save while re-fetching so the debounce can't write stale nodes.
-    set({ canvasHydrated: false, backendSyncing: true });
+    if (!id || get().backendSyncing) return;
+    const wasHydrated = get().canvasHydrated;
+    set({ backendSyncing: true });
     try {
-      const canvas = await getCanvas(id);
-      const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
-      const nodes = rawNodes.map((n) => {
-        const d = n.data as Record<string, unknown> | undefined;
-        if (d?.status === 'running' || d?.status === 'generating') {
-          return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
+      if (canvasSaveInFlight) await canvasSaveInFlight;
+      if (get().hasUnsavedCanvasChanges()) {
+        if (!await get().saveCanvasRecovery()) return;
+        const draft = canvasDrafts.get(draftKey(id));
+        if (draft) {
+          protectedRecoveryIds.add(draft.snapshot.id);
+          set({ canvasRecovery: draft.snapshot });
         }
-        return n;
-      });
+      }
+      // No stale autosave may race the explicit server reload.
+      set({ canvasHydrated: false });
+      const canvas = await getCanvas(id);
+      if (get().activeBackendProjectId !== id) return;
+      // Capture edits made during the fetch as well. saveCanvasRecovery does
+      // not require hydration: it is a local backup, never a server write.
+      while (canvasSignature(id, get().nodes, get().edges, get().groups) !== lastSavedCanvasSignature && !computeActiveProjectReadOnly(get())) {
+        const before = get();
+        if (!await get().saveCanvasRecovery()) return;
+        const draft = canvasDrafts.get(draftKey(id));
+        if (draft) { protectedRecoveryIds.add(draft.snapshot.id); set({ canvasRecovery: draft.snapshot }); }
+        if (get().nodes === before.nodes && get().edges === before.edges && get().groups === before.groups) break;
+      }
+      const nodes = canvasNodesForSave(Array.isArray(canvas.nodes) ? canvas.nodes as Node[] : []);
       const edges = sanitizeCanvasEdges(Array.isArray(canvas.edges) ? (canvas.edges as Edge[]) : []);
       const groups = Array.isArray(canvas.groups) ? (canvas.groups as Group[]) : [];
-      // Reset the saved signature so the reloaded canvas is treated as clean and
-      // the next real edit (not this reload) is what triggers the next save.
-      // Empty never equals a real signature (which always embeds project id + JSON).
-      lastSavedCanvasSignature = '';
+      lastSavedCanvasSignature = canvasSignature(id, nodes, edges, groups);
+      canvasDrafts.delete(draftKey(id)); // the protected recovery now stands on its own
       set((state) => {
         const projectStateById = { ...state.projectStateById, [id]: createCanvasSnapshot(nodes, edges, groups) };
         return {
           nodes, edges, groups, undoStack: [], copiedCanvasSelection: null,
           canvasRevision: Number.isSafeInteger(canvas.version) ? canvas.version : 0,
           canvasHydrated: true, projectStateById,
+          canvasSaveStatus: 'saved', canvasSaveError: null, canvasSaveConflict: false,
           ...syncActiveSpaceSnapshot(state, { projectStateById }),
         };
       });
-    } catch {
-      set({ canvasHydrated: true });
+    } catch (error) {
+      set({ canvasSaveStatus: 'error', canvasSaveError: `重新加载失败，当前编辑仍保留：${error instanceof Error ? error.message : String(error)}` });
     } finally {
-      set({ backendSyncing: false });
+      set({ backendSyncing: false, canvasHydrated: get().canvasHydrated || wasHydrated });
     }
   },
 
-  saveCanvasToBackend: async (options) => {
-    const { activeBackendProjectId, canvasHydrated, nodes, edges, groups } = get();
-    if (!activeBackendProjectId) return;
-    // Defense-in-depth: never persist before the backend canvas has loaded,
-    // so a refresh can't write the heavy-stripped localStorage canvas over
-    // the full backend snapshot. (Switching projects saves the *outgoing*
-    // canvas via saveCanvas() directly, which is intentionally not gated.)
-    if (!canvasHydrated) return;
-    const cleanNodes = nodes.map((n) => {
-      const d = n.data as Record<string, unknown> | undefined;
-      if (d?.status === 'running' || d?.status === 'generating') {
-        return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
-      }
-      return n;
-    });
-    // Skip identical payloads: the debounced autosave fires on many benign
-    // triggers, and re-PUTting a multi-MB unchanged canvas wastes bandwidth
-    // and backend writes. (The payload deliberately stays FULL fidelity —
-    // the backend snapshot is the un-stripped source of truth.)
-    const payloadSignature = `${activeBackendProjectId}:${JSON.stringify(cleanNodes)}:${JSON.stringify(edges)}:${JSON.stringify(groups)}`;
-    // force=true (manual retry) bypasses the identical-payload skip so a
-    // previously FAILED save can be re-attempted even though nothing changed.
-    if (!options?.force && payloadSignature === lastSavedCanvasSignature) return;
-    set({ canvasSaveStatus: 'saving' });
+  hasUnsavedCanvasChanges: () => {
+    const state = get();
+    return Boolean(state.activeBackendProjectId && state.canvasHydrated && !computeActiveProjectReadOnly(state)
+      && canvasSignature(state.activeBackendProjectId, state.nodes, state.edges, state.groups) !== lastSavedCanvasSignature);
+  },
+
+  saveCanvasRecovery: async () => {
+    const state = get();
+    if (!state.activeBackendProjectId || computeActiveProjectReadOnly(state)) return true;
     try {
-      const savedCanvas = await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
-      lastSavedCanvasSignature = payloadSignature;
-      set({
-        canvasRevision: Number.isSafeInteger(savedCanvas.version) ? savedCanvas.version : get().canvasRevision,
-        canvasSaveStatus: 'saved',
-        canvasSaveError: null,
-      });
-    } catch (err) {
-      // No longer silent: surface the failure so the user knows their work
-      // isn't persisted. The signature is intentionally NOT updated, so the
-      // next edit (or a manual retry) re-attempts the save.
-      set({ canvasSaveStatus: 'error', canvasSaveError: err instanceof Error ? err.message : String(err) });
+      const draft = stageCanvasRecovery(state);
+      const durable = await draft.persisted;
+      if (get().activeBackendProjectId === state.activeBackendProjectId) {
+        set({ canvasRecoveryError: durable ? null : recoveryFailureMessage,
+          ...(get().canvasSaveConflict || get().canvasSaveStatus === 'error' ? { canvasRecovery: draft.snapshot } : {}) });
+      }
+      return durable;
+    } catch {
+      set({ canvasRecoveryError: recoveryFailureMessage });
+      return false;
     }
+  },
+
+  prepareCanvasPageReload: async () => {
+    // A frontend update must preserve work even if an ordinary PUT is still
+    // in flight. Do not wait for that request or assume it will survive unload.
+    while (get().hasUnsavedCanvasChanges()) {
+      const before = get();
+      let draft: CanvasDraft;
+      try { draft = stageCanvasRecovery(before); }
+      catch { set({ canvasRecoveryError: recoveryFailureMessage }); return false; }
+      protectedRecoveryIds.add(draft.snapshot.id);
+      const durable = await draft.persisted;
+      set({ canvasRecovery: draft.snapshot, canvasRecoveryError: durable ? null : recoveryFailureMessage });
+      if (!durable) return false;
+      if (get().nodes === before.nodes && get().edges === before.edges && get().groups === before.groups) break;
+    }
+    return true;
+  },
+
+  downloadCanvasRecovery: () => {
+    const state = get();
+    const snapshot = state.hasUnsavedCanvasChanges() ? recoverySnapshot(state) : state.canvasRecovery;
+    if (!snapshot) return false;
+    const downloaded = downloadRecoverySnapshot(snapshot);
+    if (!downloaded) set({ canvasRecoveryError: '下载未能启动，请保留此页面后重试。' });
+    return downloaded;
+  },
+
+  restoreCanvasRecoveryCopy: async () => {
+    const current = get();
+    if (current.backendSyncing) return false;
+    const snapshot = current.canvasSaveConflict && current.hasUnsavedCanvasChanges()
+      ? recoverySnapshot(current) : current.canvasRecovery;
+    if (!snapshot) return false;
+    // A retained older draft must never displace newer edits without a backup.
+    if (current.hasUnsavedCanvasChanges() && !await current.saveCanvasRecovery()) return false;
+    set({ backendSyncing: true });
+    try {
+      if (canvasSaveInFlight) await canvasSaveInFlight;
+      const project = await apiCreateProject(`${snapshot.projectName.slice(0, 70)}（恢复副本）`);
+      // Recovery is an editing operation. It must not restart copied jobs.
+      const nodes = snapshot.nodes.map(node => {
+        const data = node.data as Record<string, unknown>;
+        return data?.status === 'running' || data?.status === 'generating'
+          ? { ...node, data: { ...data, status: 'idle', queuedAfterTimeout: false, taskId: undefined, error: undefined } }
+          : node;
+      });
+      const saved = await saveCanvas(project.id, nodes, snapshot.edges, snapshot.groups, { expectedVersion: 0 });
+      // Preserve edits made while the recovery copy was being uploaded, too.
+      if (!await get().prepareCanvasPageReload()) return false;
+      protectedRecoveryIds.add(snapshot.id);
+      lastSavedCanvasSignature = canvasSignature(project.id, nodes, snapshot.edges, snapshot.groups);
+      set(state => {
+        const projectStateById = { ...syncActiveProjectState(state).projectStateById,
+          [project.id]: createCanvasSnapshot(nodes, snapshot.edges, snapshot.groups) };
+        return { backendProjects: [project, ...state.backendProjects], activeProjectId: project.id,
+          activeBackendProjectId: project.id, canvasRevision: saved.version, canvasHydrated: true,
+          nodes, edges: snapshot.edges, groups: snapshot.groups, projectStateById,
+          undoStack: [], redoStack: [], copiedCanvasSelection: null,
+          canvasSaveStatus: 'saved', canvasSaveError: null, canvasSaveConflict: false,
+          canvasRecovery: null, canvasRecoveryError: null,
+          ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+      });
+      return true;
+    } catch (error) {
+      set({ canvasSaveError: `恢复副本失败，原画布与本地快照仍保留：${error instanceof Error ? error.message : String(error)}` });
+      return false;
+    } finally { set({ backendSyncing: false }); }
+  },
+
+  saveCanvasToBackend: async (options) => {
+    const initial = get();
+    const projectId = initial.activeBackendProjectId;
+    if (!projectId || !initial.canvasHydrated) return true;
+    if (computeActiveProjectReadOnly(initial)) return true;
+    const signature = canvasSignature(projectId, initial.nodes, initial.edges, initial.groups);
+    if (!options?.force && signature === lastSavedCanvasSignature) return true;
+    let draft: CanvasDraft;
+    try { draft = stageCanvasRecovery(initial); }
+    catch { set({ canvasRecoveryError: recoveryFailureMessage }); return false; }
+    void draft.persisted.then(durable => {
+      if (get().activeBackendProjectId === projectId && !durable) set({ canvasRecoveryError: recoveryFailureMessage });
+    });
+    // A conflict cannot be fixed by retrying the old base version. Keep the
+    // latest local draft until the user downloads, reloads, or makes a copy.
+    if (initial.canvasSaveConflict) {
+      set({ canvasRecovery: draft.snapshot });
+      return false;
+    }
+    if (canvasSaveInFlight) {
+      await canvasSaveInFlight;
+      if (get().activeBackendProjectId !== projectId) return false;
+      return get().saveCanvasToBackend(options);
+    }
+    const { nodes, edges, groups, canvasRevision: expectedVersion } = initial;
+    set({ canvasSaveStatus: 'saving', canvasSaveError: null });
+    const operation = (async () => {
+      try {
+        const savedEdges = edges.map(({ selected: _selected, ...edge }) => edge);
+        const savedCanvas = await saveCanvas(projectId, canvasNodesForSave(nodes), savedEdges, groups, { ...options, expectedVersion });
+        lastSavedCanvasSignature = signature;
+        if (get().activeBackendProjectId === projectId) {
+          const clean = canvasSignature(projectId, get().nodes, get().edges, get().groups) === signature;
+          set({ canvasRevision: Number.isSafeInteger(savedCanvas.version) ? savedCanvas.version : get().canvasRevision,
+            canvasSaveStatus: clean ? 'saved' : 'idle', canvasSaveError: null, canvasSaveConflict: false,
+            ...(clean ? { canvasRecoveryError: null } : {}),
+            ...(get().canvasRecovery?.id === draft.snapshot.id && !protectedRecoveryIds.has(draft.snapshot.id) ? { canvasRecovery: null } : {}) });
+        }
+        await draft.persisted;
+        if (!protectedRecoveryIds.has(draft.snapshot.id)) await removeCanvasRecovery(draft.owner, draft.snapshot.id);
+        if (canvasDrafts.get(draftKey(projectId, draft.owner)) === draft) canvasDrafts.delete(draftKey(projectId, draft.owner));
+        return true;
+      } catch (err) {
+        if (get().activeBackendProjectId === projectId) {
+          const latest = stageCanvasRecovery(get());
+          const durable = await latest.persisted;
+          set({ canvasSaveStatus: 'error', canvasSaveError: err instanceof Error ? err.message : String(err),
+            canvasSaveConflict: err instanceof ApiClientError && err.status === 409,
+            canvasRecovery: latest.snapshot, canvasRecoveryError: durable ? null : recoveryFailureMessage });
+        }
+        return false;
+      }
+    })();
+    canvasSaveInFlight = operation;
+    try { return await operation; } finally { if (canvasSaveInFlight === operation) canvasSaveInFlight = null; }
   },
 
   retryCanvasSave: () => {
@@ -2781,9 +3113,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const doomed = new Set(nodeIds);
       if (doomed.size === 0) return {};
 
-      const nodes = state.nodes.filter((node) => !doomed.has(node.id));
-      if (nodes.length === state.nodes.length) return {};
+      const remainingNodes = state.nodes.filter((node) => !doomed.has(node.id));
+      if (remainingNodes.length === state.nodes.length) return {};
       const edges = state.edges.filter((edge) => !doomed.has(edge.source) && !doomed.has(edge.target));
+      const nodes = reconcileReferenceConnectionEdits(remainingNodes, state.edges, edges, state.nodes);
       const groups = state.groups
         .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }))
         .filter((group) => group.nodeIds.length > 0);
@@ -3106,108 +3439,125 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
   }),
   savedAssets: [],
+  assetSync: { pending: 0, syncing: false, error: null },
   saveAsset: (asset) => {
     const created: SavedAsset = {
+      ...asset,
       id: `asset-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       createdAt: Date.now(),
-      ...asset,
     };
-    // Prepend to the LIVE list without heavy-stripping siblings — stripping is a
-    // persist-only concern (partialize). Blanking a sibling's in-memory data:/blob:
-    // url here would make its tile render empty and trip the auto-clean cascade.
-    set((state) => ({ savedAssets: [created, ...state.savedAssets] }));
-    // Persist to the backend (best-effort) so the library survives a localStorage
-    // wipe and follows the user across devices. Local-first: never blocks UI.
-    void saveAssetToServer(created).catch(() => {});
+    // Durable journal write precedes the optimistic library update. Keep the
+    // synchronous return contract; dialogs can catch a storage/media error.
+    applyAssetMutation({ entity: 'asset', action: 'save', value: created });
     return created;
   },
   removeAsset: (id) => {
-    pendingAssetDeletes.add(id);
-    void deleteAssetsFromServer([id]).catch(() => {}).finally(() => pendingAssetDeletes.delete(id));
-    // Only filter out the target — never heavy-strip surviving rows (see saveAsset).
-    set((state) => ({ savedAssets: state.savedAssets.filter((asset) => asset.id !== id) }));
+    try { applyAssetMutation({ entity: 'asset', action: 'delete', id, name: get().savedAssets.find(a => a.id === id)?.name }); }
+    catch (error) { assetSyncFailure(error); }
   },
   hydrateAssets: async () => {
-    let remote: SavedAsset[];
+    const owner = storageUserId;
     try {
-      remote = await listAssetsFromServer();
-    } catch {
-      return; // best-effort; keep whatever is local
-    }
-    set((state) => {
-      // Merge server assets with any local-only ones, newest-first, dedup by id.
-      // Skip ids with an in-flight DELETE so a racing hydrate can't resurrect a
-      // just-removed asset.
-      const byId = new Map<string, SavedAsset>();
-      for (const it of remote) if (!pendingAssetDeletes.has(it.id)) byId.set(it.id, it);
-      for (const it of state.savedAssets) if (!byId.has(it.id)) byId.set(it.id, it);
-      const savedAssets = Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
-      // One-time (per session) backfill: push local-only assets with DURABLE media
-      // up to the server so pre-existing local libraries land in the DB. Skip
-      // empty / blob: (dead) and data: (heavy inline — would bloat the TEXT column;
-      // it was never re-hosted) urls. Idempotent via the (user_id, client_id) upsert.
-      if (!assetsBackfilledThisSession) {
-        assetsBackfilledThisSession = true;
-        const serverIds = new Set(remote.map((it) => it.id));
-        for (const it of savedAssets) {
-          if (serverIds.has(it.id)) continue;
-          const media = it.url || it.thumbnail || '';
-          if (!media || media.startsWith('blob:') || media.startsWith('data:')) continue;
-          void saveAssetToServer(it).catch(() => {});
-        }
+      const journal = assetJournal(owner);
+      set(state => journal.overlay(state.savedAssets, state.assetFolders));
+      publishAssetSync(owner, journal.status());
+      const revision = journal.revision();
+      const remote = await listAssetsFromServer();
+      // A save/delete acknowledged during this GET makes its response stale.
+      if (owner !== storageUserId || revision !== journal.revision()) return;
+      const byId = new Map(remote.map(asset => [asset.id, asset]));
+      const missing = assetLocalOnly(owner);
+      delete missing.readErrors.assets;
+      missing.assets.clear();
+      for (const asset of get().savedAssets) if (!byId.has(asset.id)) {
+        byId.set(asset.id, asset);
+        if (!journal.hasPending('asset', asset.id)) missing.assets.add(asset.id);
       }
-      return { savedAssets };
-    });
+      set(state => journal.overlay([...byId.values()], state.assetFolders));
+      publishAssetSync(owner, journal.status());
+    } catch (error) { if (owner === storageUserId) {
+      assetLocalOnly(owner).readErrors.assets = error instanceof Error ? error.message : '素材读取失败，请重试。';
+      assetSyncFailure(error);
+    } }
   },
   assetFolders: [],
   hydrateAssetFolders: async () => {
-    let remote: AssetFolder[];
+    const owner = storageUserId;
     try {
-      remote = await listAssetFoldersFromServer();
-    } catch {
-      return; // best-effort; keep local
-    }
-    set((state) => {
-      const byId = new Map<string, AssetFolder>();
-      for (const f of remote) byId.set(f.id, f);
-      for (const f of state.assetFolders) if (!byId.has(f.id)) byId.set(f.id, f);
-      return { assetFolders: Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt) };
-    });
+      const journal = assetJournal(owner);
+      set(state => journal.overlay(state.savedAssets, state.assetFolders));
+      publishAssetSync(owner, journal.status());
+      const revision = journal.revision();
+      const remote = await listAssetFoldersFromServer();
+      if (owner !== storageUserId || revision !== journal.revision()) return;
+      const byId = new Map(remote.map(folder => [folder.id, folder]));
+      const missing = assetLocalOnly(owner);
+      delete missing.readErrors.folders;
+      missing.folders.clear();
+      for (const folder of get().assetFolders) if (!byId.has(folder.id)) {
+        byId.set(folder.id, folder);
+        if (!journal.hasPending('folder', folder.id)) missing.folders.add(folder.id);
+      }
+      set(state => journal.overlay(state.savedAssets, [...byId.values()]));
+      publishAssetSync(owner, journal.status());
+    } catch (error) { if (owner === storageUserId) {
+      assetLocalOnly(owner).readErrors.folders = error instanceof Error ? error.message : '文件夹读取失败，请重试。';
+      assetSyncFailure(error);
+    } }
+  },
+  retryAssetSync: async () => {
+    const owner = storageUserId;
+    try {
+      const journal = assetJournal(owner);
+      const missing = assetLocalOnly(owner);
+      let localError: unknown;
+      // Legacy local-only libraries are preserved and sent only after this
+      // explicit retry. Folders precede their members; never auto-backfill.
+      for (const folder of get().assetFolders) if (missing.folders.has(folder.id) && !journal.hasPending('folder', folder.id)) {
+        journal.enqueue({ entity: 'folder', action: 'save', value: folder });
+        missing.folders.delete(folder.id);
+      }
+      for (const asset of get().savedAssets) if (missing.assets.has(asset.id) && !journal.hasPending('asset', asset.id)) {
+        try {
+          journal.enqueue({ entity: 'asset', action: 'save', value: asset });
+          missing.assets.delete(asset.id);
+        } catch (error) { localError = error; }
+      }
+      const ok = await journal.flush();
+      if (owner !== storageUserId) return false;
+      if (ok) {
+        await Promise.all([get().hydrateAssets(), get().hydrateAssetFolders()]);
+        if (owner !== storageUserId) return false;
+        if (localError) { assetSyncFailure(localError); return false; }
+        return !get().assetSync.error && get().assetSync.pending === 0;
+      }
+      return false;
+    } catch (error) { if (owner === storageUserId) assetSyncFailure(error); return false; }
   },
   createAssetFolder: (name) => {
-    const created: AssetFolder = {
-      id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: name.trim() || '新建文件夹',
-      createdAt: Date.now(),
-    };
-    set((state) => ({ assetFolders: [created, ...state.assetFolders] }));
-    void saveAssetFolderToServer(created).catch(() => {});
-    return created;
+    const created: AssetFolder = { id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: name.trim() || '新建文件夹', createdAt: Date.now() };
+    try { applyAssetMutation({ entity: 'folder', action: 'save', value: created }); return created; }
+    catch (error) { assetSyncFailure(error); return null; }
   },
   renameAssetFolder: (id, name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    let next: AssetFolder | undefined;
-    set((state) => {
-      const assetFolders = state.assetFolders.map((f) => (f.id === id ? (next = { ...f, name: trimmed }) : f));
-      return { assetFolders };
-    });
-    if (next) void saveAssetFolderToServer(next).catch(() => {});
+    const folder = get().assetFolders.find(f => f.id === id);
+    if (!folder || !name.trim()) return;
+    try { applyAssetMutation({ entity: 'folder', action: 'save', value: { ...folder, name: name.trim() } }); }
+    catch (error) { assetSyncFailure(error); }
   },
   deleteAssetFolder: (id) => {
-    void deleteAssetFolderFromServer(id).catch(() => {});
-    // 删文件夹不删素材:把里面的素材移回根目录(前端就地,后端 DELETE 一并处理)。
-    set((state) => ({
-      assetFolders: state.assetFolders.filter((f) => f.id !== id),
-      savedAssets: state.savedAssets.map((a) => (a.folderId === id ? { ...a, folderId: '' } : a)),
-    }));
+    try { applyAssetMutation({ entity: 'folder', action: 'delete', id, name: get().assetFolders.find(f => f.id === id)?.name }); }
+    catch (error) { assetSyncFailure(error); }
   },
   moveAssetToFolder: (assetId, folderId) => {
-    let moved: SavedAsset | undefined;
-    set((state) => ({
-      savedAssets: state.savedAssets.map((a) => (a.id === assetId ? (moved = { ...a, folderId }) : a)),
-    }));
-    if (moved) void saveAssetToServer(moved).catch(() => {});
+    const asset = get().savedAssets.find(a => a.id === assetId);
+    if (!asset) return;
+    if (folderId && !get().assetFolders.some(f => f.id === folderId)) {
+      assetSyncFailure(new Error('目标文件夹已不存在，请重新选择。')); return;
+    }
+    try { applyAssetMutation({ entity: 'asset', action: 'save', value: { ...asset, folderId } }); }
+    catch (error) { assetSyncFailure(error); }
   },
   // ─── 协作:操作日志(会话态;协作标记/成员/权限由后端持久化)───────────────
   collabActivityByProject: {},
@@ -3644,48 +3994,34 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
-    // 访问者(协作只读)不能生成 —— 前端早退并清掉调用方的乐观 running 态。
+    // 访问者(协作只读)不能生成；检查输入也不能改变已有任务状态。
     // 后端 generate 也按项目角色二次拦截(带 project_id),双保险。
     if (computeActiveProjectReadOnly(get())) {
       toast.warning(get().language === 'zh' ? '你是访问者(只读),无法生成' : 'Read-only (visitor): generation is disabled');
-      const optimistic = get().nodes.find((n) => n.id === nodeId);
-      if (optimistic && (optimistic.data as Record<string, unknown>)?.status === 'running') {
-        get().updateNodeData(nodeId, { status: undefined, error: undefined, queuedAfterTimeout: false });
-      }
       return;
     }
-    // 使用偏好「生成前确认」:先挂起请求弹确认窗,确认按钮带 skipConfirm
-    // 重入。放在最前面 —— 确认之前不 abort 旧请求、不产生任何生成状态。
-    if (get().confirmBeforeGenerate && !payload?.skipConfirm) {
-      set((state) => ({
-        pendingRunConfirm: [
-          ...state.pendingRunConfirm.filter((p) => p.nodeId !== nodeId),
-          { nodeId, payload: { prompt: payload.prompt, model: payload.model } },
-        ],
-      }));
-      // 撤掉调用方的乐观 running 态 —— 提交按钮会先把节点置成 running 再
-      // 调 runNode,这里不清掉的话确认之前节点就空转生成动画(没有真任务,
-      // 轮询也永远不会来收尾)。
-      const optimistic = get().nodes.find((n) => n.id === nodeId);
-      if (optimistic && (optimistic.data as Record<string, unknown>)?.status === 'running') {
-        get().updateNodeData(nodeId, { status: undefined, error: undefined, queuedAfterTimeout: false });
-      }
-      return;
-    }
-    // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
-    // 不能直接 return，否则用户会看到按钮只闪一下但没有任何生成状态。
-    if (runAborters[nodeId]) {
-      runAborters[nodeId]?.abort();
-      delete runAborters[nodeId];
-    }
-    const runToken = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
-      ? crypto.randomUUID()
-      : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    runTokens[nodeId] = runToken;
-    const isCurrentRun = () => runTokens[nodeId] === runToken;
     const state = get();
     // Determine service type from the node type.
     const currentNode = state.nodes.find((n) => n.id === nodeId);
+    if (!currentNode) return;
+    const isRunContextCurrent = captureTaskContext(get);
+    const runKey = JSON.stringify([taskAccountSession(), storageUserId, state.activeSpaceId,
+      state.activeSpaceType, state.activeProjectId, state.activeBackendProjectId, nodeId]);
+    const reportInputIssue = (error: string) => {
+      // Inspecting a draft must not replace the state of an existing task.
+      if (payload.checkOnly || currentNode.data.taskId && ['running', 'generating'].includes(String(currentNode.data.status))) {
+        toast.error(error);
+        return;
+      }
+      // Validation is task feedback, not a document edit: preserve the user's undo order.
+      set((state) => {
+        const nodes = state.nodes.map((node) => node.id === nodeId
+          ? { ...node, data: { ...node.data, status: 'error', error } }
+          : node);
+        const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+        return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+      });
+    };
     const nodeType = currentNode?.type ?? '';
     const serviceTypeMap: Record<string, string> = {
       textNode: 'text',
@@ -3697,7 +4033,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const serviceType = serviceTypeMap[nodeType] ?? 'text';
 
     const genParams = (currentNode?.data as Record<string, unknown> | undefined)?.generationParams as NodeGenerationParams | undefined;
-    const rawReferenceMedia = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length || genParams?.referenceAudio || genParams?.referenceAudios?.length
+    const hasExplicitReferences = genParams?.referenceImages?.length || genParams?.referenceVideo || genParams?.referenceVideos?.length || genParams?.referenceAudio || genParams?.referenceAudios?.length;
+    const rawReferenceMedia = hasExplicitReferences && !usesConnectedReferenceInputs(currentNode, state.nodes, state.edges)
       ? {
           imageUrls: genParams.referenceImages ?? [],
           videoUrls: [
@@ -3729,18 +4066,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const error = language === 'zh'
         ? '当前模型需要公网可访问的参考图。请确认后端已启用 OSS/COS 并重新上传图片，或移除本地/旧上传引用后再生成。'
         : 'This model needs public reference image URLs. Ensure OSS/COS is enabled in the backend, then re-upload the image or remove local/stale references before generating.';
-      set((snapshot) => {
-      const nodes = snapshot.nodes.map((node) => node.id === nodeId
-          ? { ...node, data: { ...node.data, status: 'error', error } }
-          : node);
-      const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
-      return {
-        activeRun: null,
-        nodes,
-        projectStateById,
-        ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
-      };
-    });
+      reportInputIssue(error);
       return;
     }
     // "Connect = auto-reference": prepend the plain-text content of any upstream
@@ -3753,6 +4079,26 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const effectivePrompt = upstreamText && !payload.prompt.includes(upstreamText)
       ? (payload.prompt.trim() ? `${upstreamText}\n\n${payload.prompt}` : upstreamText)
       : payload.prompt;
+    const referenceIndexIssues = serviceType === 'video' ? seedanceReferenceIndexIssues(payload.model, effectivePrompt, {
+      images: referenceMedia.imageUrls.length,
+      videos: referenceMedia.videoUrls.length,
+      audios: referenceMedia.audioUrls.length,
+    }) : [];
+    // A connected unfinished/empty media node must not silently shift later indices.
+    const connectedInputs = !hasExplicitReferences || usesConnectedReferenceInputs(currentNode, state.nodes, state.edges)
+      ? orderedReferenceConnections(state.nodes, state.edges, nodeId) : [];
+    const incompleteInputs = connectedInputs.filter(ref => ref.kind === 'image').length > referenceMedia.imageUrls.length
+      || connectedInputs.filter(ref => ref.kind === 'video').length > referenceMedia.videoUrls.length
+      || connectedInputs.filter(ref => ref.kind === 'audio').length > referenceMedia.audioUrls.length;
+    if (referenceIndexIssues.length || incompleteInputs) {
+      const error = incompleteInputs
+        ? (get().language === 'zh' ? '已连接的参考素材尚无可用输出。请完成素材上传或上游节点，再检查图片、视频和音频编号。' : 'A connected reference has no usable output. Complete its upload or upstream node, then check the image, video and audio indices.')
+        : get().language === 'zh'
+        ? `参考编号与实际素材不符：${referenceIndexIssues.map(issue => `${issue.token}（该类实际 ${issue.available} 个）`).join('、')}。请检查连线和提示词编号。`
+        : `Reference indices do not match the submitted media: ${referenceIndexIssues.map(issue => `${issue.token} (${issue.available} available)`).join(', ')}. Check connections and prompt indices.`;
+      reportInputIssue(error);
+      return;
+    }
     const shouldStripMentions = serviceType === 'video'
       || serviceType === 'audio'
       || (serviceType === 'image' && referenceMedia.imageUrls.length > 0);
@@ -3797,7 +4143,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     // Get aspectRatio (used as size ratio) and resolution from generation params.
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
-    const requestTemplate = getModelTemplate(payload.model ?? '');
+    const requestTemplate = getModelTemplate(payload.model ?? '', referenceProvider);
     const aspectRatio = requestTemplate?.supportsZImageParams || requestTemplate?.localImageKind
       ? (requestTemplate.aspectRatioOptions?.find(option => option === genParams?.aspectRatio?.trim()) ?? requestTemplate.defaults?.aspectRatio ?? '1:1')
       : genParams?.aspectRatio ?? 'auto';
@@ -3848,7 +4194,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // which then errors with "needs 1+ image" — wrong for text-only.
     let resolvedReferenceMode: string | undefined;
     if (serviceType === 'video') {
-      const template = getModelTemplate(payload.model ?? '');
+      const template = requestTemplate;
       const declared = template?.referenceModes;
       if (declared && declared.length > 0) {
         const counts = {
@@ -3889,17 +4235,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                   ? `该模型需要 ${modelRange.min}～${modelRange.max} 张参考图`
                   : `This model needs ${modelRange.min}-${modelRange.max} reference images`)
                 : (lang === 'zh' ? spec.disabledHint.zh : spec.disabledHint.en));
-            set((snapshot) => {
-          const nodes = snapshot.nodes.map((node) => node.id === nodeId
-              ? { ...node, data: { ...node.data, status: 'error', error: hint } }
-              : node);
-          const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
-          return {
-            nodes,
-            projectStateById,
-            ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
-          };
-        });
+            reportInputIssue(hint);
             return;
           }
           resolvedReferenceMode = spec.backendMode;
@@ -3913,10 +4249,44 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         const hint = get().language === 'zh'
           ? (maxImages ? 'FLUX.2 Klein 最多接入 4 张参考图片，不支持视频或音频参考。' : 'Krea-2 当前仅支持文生图和 Darkbrush LoRA；多图参考请选 FLUX.2 Klein。')
           : `This model accepts 0–${maxImages} reference images and no video/audio.`;
-        get().updateNodeData(nodeId, { status: 'error', error: hint });
+        reportInputIssue(hint);
         return;
       }
     }
+
+    // Resolve and validate the same inputs before preview/confirmation. A
+    // changed input must be reviewed again instead of submitting an old summary.
+    const preview = {
+      prompt: resolvedPrompt, projectId: state.activeBackendProjectId,
+      provider: referenceProvider?.name ?? referenceProvider?.vendor ?? '',
+      images: referenceMedia.imageUrls, videos: referenceMedia.videoUrls, audios: referenceMedia.audioUrls,
+      parameters: { model: payload.model, provider_config_id: referenceProvider?.id, service_type: serviceType,
+        aspectRatio, resolution, quality: requestTemplate?.supportsQuality ? quality : undefined,
+        duration: genParams?.durationSeconds, referenceMode: resolvedReferenceMode,
+        // Include every submitted setting in the approval guard; the UI shows
+        // the compact effective values above and the remaining settings below.
+        seed: requestTemplate?.supportsSeed ? genParams?.seed : undefined },
+    };
+    const expectedInputs = JSON.stringify({ preview, settings: genParams });
+    const changedAfterReview = Boolean(payload.expectedInputs && payload.expectedInputs !== expectedInputs);
+    if (payload.checkOnly || (state.confirmBeforeGenerate && !payload.skipConfirm) || changedAfterReview) {
+      set(snapshot => ({ pendingRunConfirm: [...snapshot.pendingRunConfirm.filter(p => p.nodeId !== nodeId),
+        { nodeId, payload: { prompt: payload.prompt, model: payload.model }, preview, expectedInputs, checkOnly: payload.checkOnly }] }));
+      if (changedAfterReview) toast.info(state.language === 'zh' ? '输入已发生变化，请核对更新后的提交内容。' : 'Inputs changed. Review the updated submission.');
+      if (!runAborters[runKey] && !currentNode.data.taskId && currentNode.data.status === 'running') {
+        get().updateNodeData(nodeId, { status: undefined, error: undefined, queuedAfterTimeout: false });
+      }
+      return;
+    }
+    // Input inspection never aborts a running request. Ownership changes only
+    // after validation and any requested confirmation have completed.
+    runAborters[runKey]?.abort();
+    delete runAborters[runKey];
+    const runToken = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+      ? crypto.randomUUID() : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    runTokens[runKey] = runToken;
+    const ownsRunToken = () => runTokens[runKey] === runToken;
+    const isCurrentRun = () => ownsRunToken() && isRunContextCurrent();
 
     // Set status to running — clear error but keep old url/content until new result arrives.
     // runningStartedAt is persisted on the node so NodeLoadingTimer can
@@ -3940,7 +4310,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const durationSeconds = genParams?.durationSeconds ?? undefined;
 
     const aborter = new AbortController();
-    runAborters[nodeId] = aborter;
+    runAborters[runKey] = aborter;
 
     // ── Text nodes: token-by-token SSE streaming into data.content ──────────
     // Text generation streams live via POST /api/app/text/stream instead of the
@@ -3952,6 +4322,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     if (serviceType === 'text') {
       const streamTimeout = setTimeout(() => aborter.abort(), Math.max(generationTimeoutMs, 120000));
       const streamWrite = (patch: Record<string, unknown>) => set((s) => {
+        if (!isCurrentRun()) return s;
         const nodes = s.nodes.map((n) => (n.id === nodeId ? { ...n, data: { ...(n.data ?? {}), ...patch } } : n));
         const projectStateById = syncActiveProjectState(s, { nodes }).projectStateById;
         return { nodes, projectStateById, ...syncActiveSpaceSnapshot(s, { projectStateById }) };
@@ -3966,20 +4337,20 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       try {
         // 视觉文本模型(如 qwen3.7-plus)才把连入的参考图一并发过去;纯文本模型
         // (gpt/deepseek/qwen3.7-max…)不带图,后端仍走纯文本 content(零回归)。
-        const visionImages = getModelTemplate(payload.model ?? '')?.supportsVision
+        const visionImages = requestTemplate?.supportsVision
           ? referenceMedia.imageUrls
           : [];
         const resp = await generateStream({
           model: payload.model ?? '',
           prompt: resolvedPrompt,
           node_id: nodeId,
-          project_id: get().activeBackendProjectId ?? undefined,
+          project_id: state.activeBackendProjectId ?? undefined,
           image_urls: visionImages.length > 0 ? visionImages : undefined,
         }, aborter.signal);
         if (!resp.ok) {
           let msg = zhFail();
           try { const j = await resp.json(); if (j?.error) msg = String(j.error); } catch { /* non-JSON */ }
-          if (resp.status === 402) toast.warning(msg, { id: 'insufficient-credits' });
+          if (resp.status === 402 && isCurrentRun()) toast.warning(msg, { id: 'insufficient-credits' });
           fail(msg);
           return;
         }
@@ -4036,7 +4407,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         fail(err instanceof Error ? err.message : zhFail());
       } finally {
         clearTimeout(streamTimeout);
-        if (runAborters[nodeId] === aborter) delete runAborters[nodeId];
+        if (ownsRunToken()) {
+          delete runAborters[runKey];
+          delete runTokens[runKey];
+        }
       }
       return;
     }
@@ -4063,7 +4437,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const result = await apiGenerate({
         node_id: nodeId,
-        project_id: get().activeBackendProjectId ?? undefined,
+        project_id: state.activeBackendProjectId ?? undefined,
         request_id: requestId,
         provider_config_id: referenceProvider?.id,
         service_type: serviceType,
@@ -4160,7 +4534,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         });
         if (result.task_id) {
           void getTask(result.task_id)
-            .then((task) => applyTaskResultToNode(task, get, set as never))
+            .then((task) => {
+              if (isRunContextCurrent() && get().nodes.find(node => node.id === nodeId)?.data.taskId === result.task_id) {
+                applyTaskResultToNode(task, get, set as never);
+              }
+            })
             .catch((err) => {
               // eslint-disable-next-line no-console
               console.warn('[runNode] initial queued task lookup failed', { taskId: result.task_id, error: err });
@@ -4271,6 +4649,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
         };
       });
+      if (!isCurrentRun()) return;
       trackedTaskNodes.delete(nodeId);
 
       // Add to history for the file manager panel.
@@ -4333,29 +4712,31 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       }
     } finally {
       clearTimeout(timeout);
-      if (isCurrentRun()) {
-        delete runAborters[nodeId];
-        delete runTokens[nodeId];
+      if (ownsRunToken()) {
+        delete runAborters[runKey];
+        delete runTokens[runKey];
       }
     }
   },
-  cancelNode: (nodeId) => {
-    runAborters[nodeId]?.abort();
-    delete runAborters[nodeId];
-    set((state) => {
-      // 一并清掉任务引用：留着 taskId 的话轮询协调器会把节点重新挂回任务、
-      // 孤儿恢复还会在完成时把结果塞回来 — 取消就白点了。
-      const nodes = state.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'idle', taskId: undefined, queuedAfterTimeout: false, taskPhase: undefined } }
-        : node);
-      const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
-      return {
-        activeRun: state.activeRun?.nodeId === nodeId ? null : state.activeRun,
-        nodes,
-        projectStateById,
-        ...syncActiveSpaceSnapshot(state, { projectStateById }),
-      };
-    });
+  cancelNode: async (nodeId) => {
+    const isCurrentContext = captureTaskContext(get);
+    const node = get().nodes.find(item => item.id === nodeId);
+    const taskId = typeof node?.data.taskId === 'string' ? node.data.taskId : '';
+    if (!taskId) {
+      toast.info(get().language === 'zh' ? '正在确认任务编号，暂不能取消；任务仍会继续跟踪。' : 'Waiting for the server task ID. Task tracking remains active.');
+      return;
+    }
+    try {
+      const result = await cancelTask(taskId);
+      if (!isCurrentContext()) return;
+      applyTaskResultToNode(result.task, get, set as never);
+      if (!result.cancelled && result.reason !== 'already_cancelled') {
+        toast.info(result.task.cancel_reason || (get().language === 'zh' ? '任务已开始或已结束，保留真实状态与结果。' : 'The task has started or finished. Its status and result are retained.'));
+      }
+    } catch (error) {
+      if (!isCurrentContext()) return;
+      toast.error(get().language === 'zh' ? '取消未确认，任务仍在跟踪。请稍后重试。' : 'Cancellation was not confirmed. Tracking continues; please retry.');
+    }
   },
 
   shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -4459,12 +4840,19 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     return sanitizePersistedAppState(persistedState);
   },
-  merge: (persistedState, currentState) => ({
-    ...currentState,
-    ...(persistedState && typeof persistedState === 'object'
-      ? sanitizePersistedAppState(persistedState as Partial<AppState>)
-      : {}),
-  }),
+  merge: (persistedState, currentState) => {
+    const changedAssetOwner = assetLibraryOwner !== storageUserId;
+    assetLibraryOwner = storageUserId;
+    return {
+      ...currentState,
+      // A new account with no persisted library must not inherit the previous
+      // account's live assets. Existing per-user saved libraries still merge.
+      ...(changedAssetOwner ? { savedAssets: [], assetFolders: [], assetSync: { pending: 0, syncing: false, error: null } } : {}),
+      ...(persistedState && typeof persistedState === 'object'
+        ? sanitizePersistedAppState(persistedState as Partial<AppState>)
+        : {}),
+    };
+  },
   partialize: (state) => {
     // During a drag/resize gesture, skip the expensive strip/clone pass and
     // reuse the last snapshot — the debounced storage discards intermediate
@@ -4508,6 +4896,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
 /** 组件订阅:当前打开的协作项目里我是否只读(访问者)。用于禁用/隐藏画布写入口。 */
 export const useActiveProjectReadOnly = (): boolean => useStore(computeActiveProjectReadOnly);
+
+setChunkReloadSafety(() => useStore.getState().prepareCanvasPageReload());
+const unsubscribeTaskUpdates = subscribeTaskUpdates(task => applyTaskResultToNode(task, useStore.getState, useStore.setState as never));
+if (import.meta.hot) import.meta.hot.dispose(unsubscribeTaskUpdates);
 
 // Boot the recovery poller once the store exists. Safe to call before any
 // runNode: it just ticks every 8s and finds nothing to do until a node

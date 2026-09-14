@@ -20,6 +20,7 @@ import {
 
 import { t } from '../i18n';
 import { useStore } from '../store';
+import { requestCanvasUpload } from '../canvas-commands';
 import { AssetLibraryModal } from './AssetLibraryModal';
 import { Dock, DockItem } from './reactbits/Dock';
 
@@ -144,6 +145,8 @@ export const Toolbar = () => {
               one filled control in the dock. */}
           <button
             onClick={() => toggle('add')}
+            aria-label={language === 'zh' ? '添加节点' : 'Add node'}
+            aria-expanded={open === 'add'}
             className={`group relative flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition-all ${
               open === 'add' ? 'bg-neutral-200 text-black' : 'bg-white text-black hover:bg-neutral-200'
             }`}
@@ -250,7 +253,7 @@ export const Toolbar = () => {
               </div>
               <div className="my-2 h-px bg-white/10" />
               <PanelTitle>{language === 'zh' ? '临时资源' : 'Temp Resources'}</PanelTitle>
-              <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-neutral-200 transition hover:bg-white/5">
+              <button type="button" onClick={() => { setOpen(null); requestCanvasUpload(); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-neutral-200 transition hover:bg-white/5">
                 <Upload className="h-4 w-4 shrink-0 text-neutral-400" />
                 <span className="flex min-w-0 flex-col">
                   <span className="text-sm">{language === 'zh' ? '上传本地' : 'Upload local'}</span>

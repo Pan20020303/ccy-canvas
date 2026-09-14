@@ -1,6 +1,25 @@
+import { Film, GitBranch, ImageIcon, MessageSquarePlus, Music2, Play, Sparkles } from "lucide-react";
+
 import type { CanvasPatch } from "../../api/agent-run";
 
 export type CanvasOperationEntity = "text" | "image" | "video" | "audio" | "node" | "connection" | "task";
+
+/**
+ * 画布操作的类型图标。
+ *
+ * 放在这里而不是各组件里：面板底部的汇总卡、线程时间线里的画布卡、将来的检视页
+ * 都要用同一套图标；之前只有 AgentRunPanel 私有，接入线程时会出现第二套。
+ */
+export function CanvasOperationIcon({ entity }: { entity: CanvasOperationEntity }) {
+  const Icon = entity === "text" ? MessageSquarePlus
+    : entity === "image" ? ImageIcon
+    : entity === "video" ? Film
+    : entity === "audio" ? Music2
+    : entity === "connection" ? GitBranch
+    : entity === "task" ? Play
+    : Sparkles;
+  return <Icon className="h-3.5 w-3.5" />;
+}
 
 export type CanvasOperationPresentation = {
   action: string;

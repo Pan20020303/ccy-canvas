@@ -80,7 +80,8 @@ type AgentRunPayload struct {
 // Queue is the producer-side helper. Wraps an *asynq.Client and exposes
 // a minimal Enqueue API the HTTP handler can call.
 type Queue struct {
-	client *asynq.Client
+	client    *asynq.Client
+	inspector cancelledTaskInspector
 }
 
 // NewQueue builds a Queue from a Redis address. Caller is responsible
@@ -90,12 +91,12 @@ func NewQueue(redisAddr, redisPassword string, redisDB int) *Queue {
 	if redisAddr == "" {
 		return nil
 	}
-	client := asynq.NewClient(asynq.RedisClientOpt{
+	opt := asynq.RedisClientOpt{
 		Addr:     redisAddr,
 		Password: redisPassword,
 		DB:       redisDB,
-	})
-	return &Queue{client: client}
+	}
+	return &Queue{client: asynq.NewClient(opt), inspector: asynq.NewInspector(opt)}
 }
 
 // Enabled reports whether the queue is wired up. Handlers use this to
@@ -108,6 +109,9 @@ func (q *Queue) Enabled() bool {
 func (q *Queue) Close() error {
 	if q == nil || q.client == nil {
 		return nil
+	}
+	if q.inspector != nil {
+		_ = q.inspector.Close()
 	}
 	return q.client.Close()
 }
@@ -129,10 +133,9 @@ func queueNameForServiceType(serviceType string) string {
 	}
 }
 
-// timeoutForServiceType matches the existing maxRuntimeForType budgets
-// in modelcatalog/application/service.go. Asynq enforces this as a hard
-// upper bound on a single attempt; transient failures still get
-// retry-loop time on top via Asynq's built-in backoff.
+// timeoutForServiceType is the actual provider-execution budget. Queue time
+// must not consume this budget; ComfyUI-backed video tasks add a separate
+// upstream queue allowance in timeoutForGenerationPayload below.
 func timeoutForServiceType(serviceType string) time.Duration {
 	switch serviceType {
 	case "text":
@@ -148,11 +151,50 @@ func timeoutForServiceType(serviceType string) time.Duration {
 	}
 }
 
-func timeoutForGenerationPayload(p GenerationPayload) time.Duration {
-	if strings.EqualFold(strings.TrimSpace(p.Model), "minimax-h3-director-local") {
-		return 3 * time.Hour
+func queueWaitTimeoutForServiceType(serviceType string) time.Duration {
+	if !strings.EqualFold(strings.TrimSpace(serviceType), "video") {
+		return 0
 	}
-	return timeoutForServiceType(p.ServiceType)
+	return taskTimeoutFromEnv("VIDEO_TASK_MAX_QUEUE_SECONDS", 12*time.Hour)
+}
+
+func isComfyQueuedVideoModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "minimax-h3-t2v-ref2v-turbo-local",
+		"minimax-h3-ref2v-9ref-turbo-local",
+		"minimax-h3-director-local",
+		"minimax-h3-u09-redraw-dual-fast-local",
+		"minimax-h3-u09-no-codec-dual-upscale-local",
+		"minimax-h3-drama-workbench-local",
+		"ltx-2.5-distilled-av-local",
+		"wan-animate-2-motion-local":
+		return true
+	default:
+		return false
+	}
+}
+
+func timeoutForGenerationPayload(p GenerationPayload) time.Duration {
+	executionBudget := timeoutForServiceType(p.ServiceType)
+	if isLongRunningMiniMaxModel(p.Model) {
+		executionBudget = 3 * time.Hour
+	}
+	if strings.EqualFold(strings.TrimSpace(p.ServiceType), "video") && isComfyQueuedVideoModel(p.Model) {
+		return executionBudget + queueWaitTimeoutForServiceType(p.ServiceType)
+	}
+	return executionBudget
+}
+
+func isLongRunningMiniMaxModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "minimax-h3-director-local",
+		"minimax-h3-u09-redraw-dual-fast-local",
+		"minimax-h3-u09-no-codec-dual-upscale-local",
+		"minimax-h3-drama-workbench-local":
+		return true
+	default:
+		return false
+	}
 }
 
 // maxRetryForServiceType caps queue-level retries. Text generation is cheap

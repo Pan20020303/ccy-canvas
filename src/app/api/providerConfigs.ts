@@ -235,6 +235,12 @@ export type ModelParameterSchema = {
   /** Per-call price in credits (config-level; per-model overrides live in
    *  models.<name>.credit_cost). */
   credit_cost?: number;
+	/** Optional LAN ComfyUI worker-pool metadata. Configs with the same
+	 * compute_pool are one logical provider; the backend picks a healthy,
+	 * least-loaded worker immediately before submission. */
+	compute_pool?: string;
+	worker_name?: string;
+	max_concurrency?: number;
   allowed_parameters?: string[];
   defaults?: Record<string, unknown>;
   vendor_id?: string;
@@ -590,7 +596,7 @@ const COMFYUI_MINIMAX_H3_9REF_SCHEMA: ModelParameterSchema = {
   supports_resolution: true,
   supports_duration: true,
   supports_quality: true,
-  quality_options: ["极速", "均衡二采", "高质二采"],
+  quality_options: ["极速", "官方8步", "音画分采8步", "均衡二采", "高质二采"],
   defaults: {
     duration: 3,
     aspect_ratio: "16:9",
@@ -608,7 +614,7 @@ const COMFYUI_MINIMAX_H3_9REF_SCHEMA: ModelParameterSchema = {
       supports_resolution: true,
       supports_duration: true,
       supports_quality: true,
-      quality_options: ["极速", "均衡二采", "高质二采"],
+      quality_options: ["极速", "官方8步", "音画分采8步", "均衡二采", "高质二采"],
       defaults: { duration: 3, aspect_ratio: "16:9", resolution: "480p", quality: "极速" },
     },
     "minimax-h3-director-local": {
@@ -622,7 +628,47 @@ const COMFYUI_MINIMAX_H3_9REF_SCHEMA: ModelParameterSchema = {
       quality_options: ["极速", "均衡二采", "高质二采"],
       defaults: { duration: 30, aspect_ratio: "9:16", resolution: "480p", quality: "极速", input_reference_min: 0, input_reference_max: 9 },
     },
+    "minimax-h3-u09-redraw-dual-fast-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "quality", "reference_images", "reference_video", "reference_videos", "reference_audio", "reference_audios", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p", "768p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      supports_quality: true,
+      quality_options: ["平衡 8+3步", "精细 12+4步"],
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "768p", quality: "平衡 8+3步", input_reference_min: 0, input_reference_max: 9 },
+    },
+    "minimax-h3-u09-no-codec-dual-upscale-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "quality", "reference_images", "reference_video", "reference_videos", "reference_audio", "reference_audios", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p", "768p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      supports_quality: true,
+      quality_options: ["原生 20+3步", "精细 24+4步"],
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "768p", quality: "原生 20+3步", input_reference_min: 0, input_reference_max: 9 },
+    },
+    "minimax-h3-drama-workbench-local": {
+      allowed_parameters: ["model", "prompt", "duration", "aspect_ratio", "resolution", "quality", "reference_images", "reference_video", "reference_videos", "reference_audio", "reference_audios", "reference_mode", "seed"],
+      aspect_ratio_options: ["16:9", "9:16", "1:1"],
+      resolution_options: ["480p", "768p"],
+      supports_aspect_ratio: true,
+      supports_resolution: true,
+      supports_duration: true,
+      supports_quality: true,
+      quality_options: ["极速", "均衡二采", "高质二采"],
+      defaults: { duration: 30, aspect_ratio: "9:16", resolution: "480p", quality: "极速", input_reference_min: 0, input_reference_max: 9 },
+    },
   },
+  vendor_models: [
+    { modelName: "minimax-h3-t2v-ref2v-turbo-local", name: "MiniMax H3 · 本地原生/参考生成", type: "video" },
+    { modelName: "minimax-h3-director-local", name: "MiniMax H3 · 导演台连续生成", type: "video" },
+    { modelName: "minimax-h3-u09-redraw-dual-fast-local", name: "MiniMax H3 · U09 二采重绘双模型极速版", type: "video" },
+    { modelName: "minimax-h3-u09-no-codec-dual-upscale-local", name: "MiniMax H3 · U09 无编解码二采放大", type: "video" },
+    { modelName: "minimax-h3-drama-workbench-local", name: "MiniMax H3 · 短剧工作台", type: "video" },
+  ],
 };
 
 const COMFYUI_LTX25_SCHEMA: ModelParameterSchema = {
@@ -1161,7 +1207,13 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "http://127.0.0.1:8188",
       apiSpec: "custom",
       protocol: "native",
-      models: ["minimax-h3-t2v-ref2v-turbo-local", "minimax-h3-director-local"],
+      models: [
+        "minimax-h3-t2v-ref2v-turbo-local",
+        "minimax-h3-director-local",
+        "minimax-h3-u09-redraw-dual-fast-local",
+        "minimax-h3-u09-no-codec-dual-upscale-local",
+        "minimax-h3-drama-workbench-local",
+      ],
       submitEndpoint: "/prompt",
       queryEndpoint: "/history/{taskId}",
       parameterSchema: COMFYUI_MINIMAX_H3_9REF_SCHEMA,

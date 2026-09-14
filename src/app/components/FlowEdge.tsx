@@ -1,6 +1,8 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
+import { memo } from 'react';
 import { X } from 'lucide-react';
 import { useStore } from '../store';
+import { canvasQueries } from '../canvas-selectors';
 
 /** Unified canvas edge.
  *  - Default: a single faint white bezier line, no arrowhead — matches the
@@ -11,7 +13,7 @@ import { useStore } from '../store';
  *    overlay flows along the curve so you can spot the live wire at a glance.
  *  - Selected: brightest, plus a ✕ button at the midpoint to delete the
  *    connection (edges also die with Backspace/Delete). */
-export function FlowEdge({
+export const FlowEdge = memo(function FlowEdge({
   id,
   source,
   target,
@@ -34,8 +36,8 @@ export function FlowEdge({
 
   // Light up the line while either endpoint is actively producing output.
   const active = useStore((state) => {
-    const src = state.nodes.find((n) => n.id === source);
-    const tgt = state.nodes.find((n) => n.id === target);
+    const src = canvasQueries.node(state.nodes, source);
+    const tgt = canvasQueries.node(state.nodes, target);
     const isRunning = (n: typeof src) => {
       const s = (n?.data as { status?: string } | undefined)?.status;
       return s === 'running' || s === 'generating';
@@ -46,7 +48,7 @@ export function FlowEdge({
   // Brighten wires attached to the current node selection (boolean selector —
   // the edge only re-renders when the flag actually flips).
   const linkedToSelection = useStore((state) =>
-    state.nodes.some((n) => n.selected && (n.id === source || n.id === target)),
+    Boolean(canvasQueries.node(state.nodes, source)?.selected || canvasQueries.node(state.nodes, target)?.selected),
   );
 
   // 白天模式下白色描边隐形 — stroke 是内联样式，CSS 覆盖不到，按主题取色。
@@ -103,4 +105,4 @@ export function FlowEdge({
       ) : null}
     </>
   );
-}
+});

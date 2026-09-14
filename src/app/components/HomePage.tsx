@@ -196,7 +196,7 @@ export function HomePage() {
     setBusyId(projectId);
     try {
       if (hasBackend) {
-        if (projectId !== activeBackendProjectId) await switchBackendProject(projectId);
+        if (projectId !== activeBackendProjectId && !await switchBackendProject(projectId)) return;
       } else if (projectId !== activeProjectId) {
         switchProject(projectId);
       }
@@ -222,7 +222,7 @@ export function HomePage() {
     try {
       const created = await apiUseTemplate(templateId);
       await refreshBackendProjects();
-      if (created?.id) await switchBackendProject(created.id);
+      if (created?.id && !await switchBackendProject(created.id)) return;
       navigate('/app');
     } catch { /* 失败保持在首页 */ } finally {
       setBusyId(null);
@@ -248,8 +248,8 @@ export function HomePage() {
     try {
       if (hasBackend || user) {
         const created = await createBackendProject(zh ? '未命名项目' : 'Untitled Project');
-        if (!created) createProject(zh ? '未命名项目' : undefined);
-        else if (openFolderId) {
+        if (!created) return;
+        if (openFolderId) {
           // Creating inside a folder files the new project there directly.
           await apiUpdateProject(created.id, { folder_id: openFolderId }).catch(() => {});
           await refreshBackendProjects();

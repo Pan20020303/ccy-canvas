@@ -43,6 +43,7 @@ export type ReferenceModeSpec = {
   requires: {
     images: { min: number; max: number };
     videos: { min: number; max: number };
+    audios?: { min: number; max: number };
   };
   /** How this mode maps onto the backend's reference_mode field. */
   backendMode: BackendReferenceMode;
@@ -141,12 +142,12 @@ export const REFERENCE_MODE_SPECS: Record<ReferenceModeKey, ReferenceModeSpec> =
   "all-in-one": {
     key: "all-in-one",
     label: { zh: "全能参考", en: "All-in-one" },
-    requires: { images: { min: 0, max: 9 }, videos: { min: 0, max: 3 } },
+    requires: { images: { min: 0, max: 9 }, videos: { min: 0, max: 3 }, audios: { min: 0, max: 3 } },
     backendMode: "image_reference",
     slots: [],
     disabledHint: {
-      zh: "全能参考可混合图片与视频引用",
-      en: "All-in-one mixes image and video references",
+      zh: "全能参考可混合图片、视频与音频引用",
+      en: "All-in-one mixes image, video and audio references",
     },
   },
   "video-edit": {
@@ -215,11 +216,22 @@ export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
   "wan-group",
 ];
 
-export type ReferenceInputCounts = { images: number; videos: number };
+export type ReferenceInputCounts = { images: number; videos: number; audios?: number };
 export type ReferenceRequirementOverride = {
   images?: { min: number; max: number };
   videos?: { min: number; max: number };
+  audios?: { min: number; max: number };
 };
+
+/** Shared by visible limits and submit-time validation. */
+export function referenceRequirements(key: ReferenceModeKey, override?: ReferenceRequirementOverride) {
+  const spec = REFERENCE_MODE_SPECS[key];
+  return {
+    images: override?.images ?? spec.requires.images,
+    videos: override?.videos ?? spec.requires.videos,
+    audios: override?.audios ?? spec.requires.audios ?? { min: 0, max: 0 },
+  };
+}
 
 /** Human-readable model-specific requirement, used when a model tightens the
  * shared mode contract (for example Wan Animate 2 requires both identity image
@@ -243,7 +255,18 @@ export function formatReferenceRequirement(
   };
   append(override.images, "张角色参考图", "identity image");
   append(override.videos, "条动作视频", "motion video");
-  if (parts.length === 0) return undefined;
+  append(override.audios, "条参考音频", "audio reference");
+  if (parts.length === 0) {
+    const limits = [
+      [override.images, language === "zh" ? "张图片" : "images"],
+      [override.videos, language === "zh" ? "条视频" : "videos"],
+      [override.audios, language === "zh" ? "条音频" : "audio clips"],
+    ] as const;
+    const allowed = limits.filter(([range]) => range && range.max > 0)
+      .map(([range, unit]) => `${range!.max} ${unit}`);
+    if (!allowed.length) return undefined;
+    return language === "zh" ? `该模型最多支持 ${allowed.join("、")}` : `This model allows up to ${allowed.join(", ")}`;
+  }
   return language === "zh"
     ? `该模型需要连接 ${parts.join(" 和 ")}`
     : `This model needs ${parts.join(" and ")}`;
@@ -257,13 +280,15 @@ export function isModeSatisfied(
 ): boolean {
   const spec = REFERENCE_MODE_SPECS[key];
   if (!spec) return false;
-  const images = override?.images ?? spec.requires.images;
-  const videos = override?.videos ?? spec.requires.videos;
+  const { images, videos, audios } = referenceRequirements(key, override);
+  const audioCount = counts.audios ?? 0;
   return (
     counts.images >= images.min &&
     counts.images <= images.max &&
     counts.videos >= videos.min &&
-    counts.videos <= videos.max
+    counts.videos <= videos.max &&
+    audioCount >= audios.min &&
+    audioCount <= audios.max
   );
 }
 

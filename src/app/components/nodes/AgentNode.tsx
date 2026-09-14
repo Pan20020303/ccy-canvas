@@ -3,9 +3,8 @@ import { Handle, Position } from "@xyflow/react";
 import { Bot, Send, Square } from "lucide-react";
 import clsx from "clsx";
 
-import type { Edge, Node } from "@xyflow/react";
-
-import { advanceCanvasPatchRevision, runAgent, type AgentSSEEvent } from "../../api/agent-run";
+import { runAgent, type AgentSSEEvent } from "../../api/agent-run";
+import { createCanvasPatchApplier } from "../../canvas-patch-apply";
 import {
   listAgentConversationHistory,
   listAgents,
@@ -30,13 +29,6 @@ export function AgentNode({ id, data, selected }: any) {
   const updateNodeData = useStore((s) => s.updateNodeData);
   const nodes = useStore((s) => s.nodes);
   const edges = useStore((s) => s.edges);
-  const addNode = useStore((s) => s.addNode);
-  const onConnect = useStore((s) => s.onConnect);
-  const updateNd = useStore((s) => s.updateNodeData);
-  const runNd = useStore((s) => s.runNode);
-  const moveNodeTo = useStore((s) => s.moveNodeTo);
-  const deleteNodes = useStore((s) => s.deleteNodes);
-  const createGroup = useStore((s) => s.createGroup);
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -46,7 +38,26 @@ export function AgentNode({ id, data, selected }: any) {
   const [conversationHistory, setConversationHistory] = useState<AgentConversationTurn[]>([]);
   const [loadedHistoryAgentId, setLoadedHistoryAgentId] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
-  const canvasPatchRevisionRef = useRef<number | null>(null);
+  // patch 应用规则与线上面板共用一份实现（见 canvas-patch-apply.ts）。
+  const patchApplier = useRef(
+    createCanvasPatchApplier({
+      addNode: (node) => useStore.getState().addNode(node),
+      onConnect: (connection) =>
+        useStore.getState().onConnect({
+          source: connection.source,
+          target: connection.target,
+          sourceHandle: connection.sourceHandle ?? null,
+          targetHandle: connection.targetHandle ?? null,
+        }),
+      updateNodeData: (nodeId, patch) => useStore.getState().updateNodeData(nodeId, patch),
+      moveNodeTo: (nodeId, position) => useStore.getState().moveNodeTo(nodeId, position),
+      deleteNodes: (nodeIds) => useStore.getState().deleteNodes(nodeIds),
+      createGroup: (nodeIds, name) => useStore.getState().createGroup(nodeIds, name),
+      runNode: (nodeId, payload) => useStore.getState().runNode(nodeId, payload),
+      getNode: (nodeId) => useStore.getState().nodes.find((candidate) => candidate.id === nodeId),
+      backendModels: useStore.getState().backendModels,
+    }),
+  ).current;
 
   useEffect(() => {
     void Promise.all([listAgents(), listSkills()])
@@ -84,7 +95,7 @@ export function AgentNode({ id, data, selected }: any) {
     setActiveSkillName(outbound.invokedSkillName);
     setEvents([]);
     setRunning(true);
-    canvasPatchRevisionRef.current = useStore.getState().canvasRevision;
+    patchApplier.reset(useStore.getState().canvasRevision);
     abortRef.current = await runAgent(
       agentId,
       {
@@ -101,54 +112,12 @@ export function AgentNode({ id, data, selected }: any) {
           setConversationHistory((prev) => completeAgentConversationTurn(prev, rawGoal, event.data.content, HISTORY_LIMIT));
         }
         if (event.type === "canvas_patch") {
-          const patch = event.data;
-          const revisionResult = advanceCanvasPatchRevision(canvasPatchRevisionRef.current, patch);
-          if (!revisionResult.accepted) {
+          const result = patchApplier.applyPatch(event.data);
+          if (!result.applied) {
             setEvents((prev) => [...prev, {
               type: "error",
-              data: { message: `${revisionResult.reason}。该操作未应用，请重新发起任务。` },
+              data: { message: `${result.reason}。该操作未应用，请重新发起任务。` },
             }]);
-            return;
-          }
-          canvasPatchRevisionRef.current = revisionResult.nextRevision;
-          switch (patch.op) {
-            case "add_node":
-              addNode(patch.node as Node);
-              break;
-            case "add_edge": {
-              const edge = patch.edge as Edge;
-              onConnect({
-                source: edge.source,
-                target: edge.target,
-                sourceHandle: edge.sourceHandle ?? null,
-                targetHandle: edge.targetHandle ?? null,
-              });
-              break;
-            }
-            case "patch_node_data":
-              updateNd(patch.node_id, patch.patch);
-              break;
-            case "move_node":
-              moveNodeTo(patch.node_id, patch.position);
-              break;
-            case "delete_node":
-              deleteNodes([patch.node_id]);
-              break;
-            case "create_group":
-              createGroup(patch.node_ids, patch.name);
-              break;
-            case "run_node": {
-              if (typeof patch.model === "string" && patch.model.trim()) {
-                updateNd(patch.node_id, { model: patch.model.trim() });
-              }
-              const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
-              const nodeData = (node?.data ?? {}) as Record<string, string>;
-              const prompt = typeof patch.prompt === "string" ? patch.prompt : (nodeData.promptDraft ?? nodeData.content ?? "");
-              if (prompt.trim()) {
-                void runNd(patch.node_id, { prompt, model: patch.model });
-              }
-              break;
-            }
           }
         }
         if (event.type === "done" || event.type === "error") {

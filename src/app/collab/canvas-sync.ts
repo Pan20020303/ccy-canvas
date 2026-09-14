@@ -203,6 +203,7 @@ export function useCanvasSync(): void {
   const activeId = useStore((s) => s.activeBackendProjectId);
   const readOnly = useActiveProjectReadOnly();
   const canvasHydrated = useStore((s) => s.canvasHydrated);
+  const canvasSaveConflict = useStore((s) => s.canvasSaveConflict);
   const applyRemoteCanvasDelta = useStore((s) => s.applyRemoteCanvasDelta);
   const nodes = useStore((s) => s.nodes);
   const edges = useStore((s) => s.edges);
@@ -223,6 +224,9 @@ export function useCanvasSync(): void {
 
     const stop = startCanvasStream(activeId, (fromUid, delta) => {
       if (fromUid === uid) return; // echo suppression
+      // Freeze this editor's draft on CAS conflict. Incoming last-write-wins
+      // deltas must not replace the local edits offered for recovery.
+      if (useStore.getState().canvasSaveConflict) return;
       applyRemoteCanvasDelta(delta);
       // Rebaseline from the post-apply store state so the publish diff below
       // does NOT re-broadcast what we just applied (prevents ping-pong).
@@ -236,10 +240,11 @@ export function useCanvasSync(): void {
   // Publish local edits (debounced diff vs baseline). Visitors never broadcast.
   useEffect(() => {
     if (!CANVAS_SYNC_ENABLED) return;
-    if (!activeId || !uid || readOnly || !canvasHydrated) return;
+    if (!activeId || !uid || readOnly || !canvasHydrated || canvasSaveConflict) return;
     const t = setTimeout(() => {
       const base = baselineRef.current;
       const s = useStore.getState();
+      if (s.canvasSaveConflict) return;
       // diffAgainstBaseline OPTIMISTICALLY advances the baseline. If the POST
       // fails (network, 4 MB cap), re-dirty the delta's ids so the next diff
       // recomputes + retries them — otherwise the advanced baseline would hide
@@ -254,5 +259,5 @@ export function useCanvasSync(): void {
       });
     }, 250);
     return () => clearTimeout(t);
-  }, [nodes, edges, groups, activeId, uid, readOnly, canvasHydrated]);
+  }, [nodes, edges, groups, activeId, uid, readOnly, canvasHydrated, canvasSaveConflict]);
 }

@@ -29,6 +29,15 @@ it('preserves all-in-one image/video/audio badges even with zero inputs', () => 
   expect(render(limits, { images: 10, videos: 4, audios: 4 }, 'video')).toContain('音频参考最多 3，当前 4');
 });
 
+it('shows and validates the Seedance 2.5 mixed-reference limits', () => {
+  const template = getModelTemplate('dreamina-seedance-2-5-260628', { vendor: 'HopBase', service_type: 'video' });
+  const limits = resolveReferenceLimits({ mode: 'all-in-one', override: template?.referenceRequirements?.['all-in-one'] });
+  const html = render(limits, empty, 'video');
+  for (const chip of ['图片 ≤ 30', '视频 ≤ 10', '音频 ≤ 10']) expect(html).toContain(chip);
+  expect(render(limits, { images: 30, videos: 10, audios: 10 }, 'video')).not.toContain('role="status"');
+  expect(render(limits, { images: 0, videos: 0, audios: 11 }, 'video')).toContain('音频参考最多 10，当前 11');
+});
+
 it('honors model-specific mode overrides and first-frame mode changes', () => {
   const limits = resolveReferenceLimits({ mode: 'motion-mimic', override: getModelTemplate('wan-animate-2-motion-local')?.referenceRequirements?.['motion-mimic'] });
   expect(limits?.images).toEqual({ min: 1, max: 1 });

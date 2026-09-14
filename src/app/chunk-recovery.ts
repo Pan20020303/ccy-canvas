@@ -2,6 +2,13 @@ import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 
 const RELOAD_PREFIX = 'ccy:chunk-reload:';
 const RELOAD_GUARD_MS = 30_000;
+let reloadSafety: (() => Promise<boolean>) | undefined;
+
+export function setChunkReloadSafety(prepare: () => Promise<boolean>): void { reloadSafety = prepare; }
+
+export async function canSafelyReloadChunks(): Promise<boolean> {
+  return reloadSafety ? reloadSafety() : true;
+}
 
 export function isDynamicImportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '');
@@ -40,7 +47,7 @@ export function lazyWithChunkRecovery<T extends ComponentType<any>>(
       if (typeof window !== 'undefined') window.sessionStorage.removeItem(`${RELOAD_PREFIX}${key}`);
       return loaded;
     } catch (error) {
-      if (isDynamicImportError(error) && requestChunkReload(key)) {
+      if (isDynamicImportError(error) && await canSafelyReloadChunks() && requestChunkReload(key)) {
         // Navigation is imminent. Keep Suspense pending so React Router never
         // replaces the canvas with its full-page default error boundary.
         return await new Promise<never>(() => {});
