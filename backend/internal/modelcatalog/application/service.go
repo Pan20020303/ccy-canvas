@@ -2154,7 +2154,7 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -2655,7 +2655,7 @@ func (s *Service) generateImageViaChatCompletions(ctx context.Context, pc *domai
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2743,7 +2743,7 @@ func (s *Service) generateImageApimart(ctx context.Context, pc *domain.ProviderC
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2811,7 +2811,7 @@ func (s *Service) generateImageMidjourneyApimart(ctx context.Context, pc *domain
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -2892,7 +2892,7 @@ func (s *Service) generateImageTextOnly(ctx context.Context, pc *domain.Provider
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -3026,7 +3026,7 @@ func (s *Service) generateImageEdit(ctx context.Context, pc *domain.ProviderConf
 	client := newProviderHTTPClient(imageGenerationTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, body.Bytes())
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 

@@ -31,9 +31,10 @@ type Tool interface {
 // so the browser reflects the same mutations in real time.
 
 type CanvasState struct {
-	mu    sync.RWMutex
-	Nodes []CanvasNode `json:"nodes"`
-	Edges []CanvasEdge `json:"edges"`
+	mu     sync.RWMutex
+	Nodes  []CanvasNode  `json:"nodes"`
+	Edges  []CanvasEdge  `json:"edges"`
+	Groups []CanvasGroup `json:"groups,omitempty"`
 	// emit lets tools push events back to the SSE stream.
 	emit func(string, any)
 	// idCounter for deterministic node IDs when the agent doesn't supply one.
@@ -83,9 +84,13 @@ type spatialCell struct {
 }
 
 type CanvasNode struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Position XY     `json:"position"`
+	ID        string      `json:"id"`
+	Type      string      `json:"type"`
+	Position  XY          `json:"position"`
+	Width     float64     `json:"width,omitempty"`
+	Height    float64     `json:"height,omitempty"`
+	Measured  *CanvasSize `json:"measured,omitempty"`
+	Draggable *bool       `json:"draggable,omitempty"`
 	// Always serialize `data` (no omitempty) so the React Flow node always
 	// has a `.data` object to read — node renderers blow up on undefined.
 	Data map[string]any `json:"data"`
@@ -438,68 +443,50 @@ func (t *listNodesTool) Execute(_ context.Context, _ json.RawMessage) (string, e
 	return string(raw), nil
 }
 
-// BuildCanvasOverview renders a compact, complete snapshot of the canvas to
-// inject into the agent's system prompt. Giving the model the full node list
-// up-front stops it from "exploring" the canvas by calling read_node on every
-// node one-by-one (which floods the run with dozens of tool calls).
+// BuildCanvasOverview provides a bounded semantic snapshot. Detailed content
+// is fetched on demand; geometry stays in the canvas executor by default.
 func BuildCanvasOverview(nodes []CanvasNode, edges []CanvasEdge, groups ...[]CanvasGroup) string {
 	if len(nodes) == 0 {
-		return "【画布快照】当前画布为空（没有任何节点）。创建节点时从 (100, 100) 开始排布,同排节点 x 间距 340、换行 y 间距 280。"
+		return "【画布快照】当前画布为空。create_node 可省略 position 自动摆放，不需要先读坐标。"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "【画布快照】共 %d 个节点、%d 条连线。以下是完整节点清单（id · 类型 · 位置 · 名称 · 产物 · 内容摘要）：\n", len(nodes), len(edges))
-	for _, n := range nodes {
-		name := ""
-		if v, ok := n.Data["sourceName"].(string); ok && v != "" {
-			name = v
-		} else if v, ok := n.Data["customTitle"].(string); ok && v != "" {
-			name = v
-		}
-		hasURL := false
-		if v, ok := n.Data["url"].(string); ok && v != "" {
-			hasURL = true
-		}
-		content := ""
-		if v, ok := n.Data["content"].(string); ok && v != "" {
-			if r := []rune(v); len(r) > 60 {
-				content = string(r[:60]) + "…"
-			} else {
-				content = v
-			}
+	fmt.Fprintf(&b, "【画布快照】共 %d 个节点、%d 条连线。以下是节点 ID、类型、名称及内容摘要；几何由布局工具维护。\n", len(nodes), len(edges))
+	for i, n := range nodes {
+		if i >= 120 {
+			b.WriteString("其余节点已省略，按需使用 find_nodes 查询。\n")
+			break
 		}
 		b.WriteString("- " + n.ID + " · " + n.Type)
-		fmt.Fprintf(&b, " · @(%.0f, %.0f)", n.Position.X, n.Position.Y)
-		if name != "" {
-			b.WriteString(" · " + name)
+		for _, key := range []string{"customTitle", "sourceName", "content"} {
+			if v, ok := n.Data[key].(string); ok && v != "" {
+				r := []rune(v)
+				if len(r) > 60 {
+					v = string(r[:60]) + "…"
+				}
+				b.WriteString(" · " + v)
+			}
 		}
-		if hasURL {
+		if v, ok := n.Data["url"].(string); ok && v != "" {
 			b.WriteString(" · [有产物]")
-		}
-		if content != "" {
-			b.WriteString(" · " + content)
 		}
 		b.WriteString("\n")
 	}
-	// 分组段落:名字 + 包围盒,支撑"放在分组X上面/旁边"这类空间指令。
-	if len(groups) > 0 && len(groups[0]) > 0 {
-		byID := make(map[string]CanvasNode, len(nodes))
-		for _, n := range nodes {
-			byID[n.ID] = n
-		}
-		b.WriteString("【分组】\n")
-		for _, g := range groups[0] {
-			minX, minY, maxX, maxY, count := groupBounds(g, byID)
-			if count == 0 {
-				continue
+	if len(edges) > 0 {
+		b.WriteString("【连线】\n")
+		for i, e := range edges {
+			if i >= 150 {
+				b.WriteString("其余连线按需用 get_subgraph 查询。\n")
+				break
 			}
-			fmt.Fprintf(&b, "- %s(id %s):%d 个成员,包围盒 x∈[%.0f, %.0f] y∈[%.0f, %.0f]\n",
-				g.Name, g.ID, count, minX, maxX, minY, maxY)
+			fmt.Fprintf(&b, "- %s → %s\n", e.Source, e.Target)
 		}
 	}
-	b.WriteString("【空间规则】创建节点必须给出经过推算的坐标：参考上面各节点/分组的真实位置，把新节点放到目标附近的空白处（节点间距至少 340×280）。" +
-		"「放在某分组上面」= x 取该分组包围盒的 x 范围内、y = 包围盒 y 下界 - 300；「右侧」= x = 包围盒 x 上界 + 360。" +
-		"连续创建多个节点时按每行间隔 340、每列间隔 280 排开，不要反复使用同一个坐标；若坐标与已有节点重叠，系统会自动向下避让并在结果里返回实际落点。\n" +
-		"说明：以上已是完整画布快照，你已经掌握画布上的全部节点，**不要逐个调用 read_node 去遍历所有节点**。仅当确实需要某个具体节点的完整 prompt / url 等细节时，才对那一个节点调用 read_node；需要按类型或关键词筛选时用 find_nodes。")
+	if len(groups) > 0 {
+		for _, g := range groups[0] {
+			fmt.Fprintf(&b, "【分组】%s(id %s)，%d 个成员；可直接将分组 ID 用作 placement.anchor_id。\n", g.Name, g.ID, len(g.NodeIDs))
+		}
+	}
+	b.WriteString("【空间规则】用 placement 指定相对关系，用 layout_nodes 进行 row/column/grid/flow 批量布局，算法负责真实尺寸和避让。无需读取、推算或汇报坐标。已有摘要足以回答普通问题，不要为问候或介绍读取画布。")
 	return b.String()
 }
 
@@ -593,11 +580,14 @@ func BuildAskUserTool(emit func(string, any)) Tool { return &askUserTool{emit: e
 // is clear, and (3) offer a multiple-choice question (ask_user) when ambiguous,
 // instead of guessing — and not遍历 the canvas via read_node.
 const AgentInteractionGuide = `【交互准则】
-1. 先用一句话简要分析用户意图（要做什么、涉及画布哪些节点）。
+1. 普通问候、闲聊和知识问题直接简洁回答，不读取画布工具，不主动列举功能、生产流程或节点坐标。
 2. 如果意图明确，直接正常回答或执行，不要画蛇添足地反问。
-3. 如果请求存在多种合理理解或多条可行路径（例如"优化一下""做个视频"这类宽泛需求），不要擅自假设：调用 ask_user 工具，给出 2-4 个具体、互斥的选项（options），allow_custom 设为 true 允许用户补充其他意见；调用后立即结束本轮，等待用户选择。
-4. 已经为你提供了完整的画布快照，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；需要多个节点细节时用 read_nodes，需要分析连线关系时用 get_subgraph，只有需要单个节点完整细节时才用 read_node。
-5. 多步画布操作期间，用 get_canvas_delta(since_revision) 获取增量变化；移动、删除、连线、分组等写操作优先携带最近返回的 expected_revision。发生 revision conflict 时先读取增量再重试。`
+3. 只有缺少关键目标、对象或会造成不可恢复歧义时才调用 ask_user；合理的排版间距、摆放位置交给布局工具，不要让用户填坐标。
+4. 已提供画布摘要，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；需要多个节点细节时用 read_nodes，需要分析连线关系时用 get_subgraph，只有需要单个节点完整细节时才用 read_node。
+5. 工具执行结果已包含最新 revision，无需每一步重复读取节点或坐标。仅在发现状态冲突、目标不明或确需详情时读 get_canvas_delta / read_nodes。
+6. 创建和移动优先用 placement(anchor_id, relation)，排列一组节点用 layout_nodes；算法负责尺寸、坐标、避让。不要用心算坐标替代布局工具，也不要在普通回复里汇报坐标。
+7. 专业任务由你通过 delegate_agent 按需调度，无需让用户选择 Agent。简单请求自己完成，专业顾问返回建议后由你执行画布工具。
+8. 不承诺未实现的能力或未执行的操作。生成图片、视频等仍走现有用户确认流程；布局本身不消耗生成积分。`
 
 const AgentBatchGenerationGuide = `【批量生成可靠性规则】创建 2 个及以上生成节点时，先把用户需求分析为完整清单，再调用 create_generation_batch；不要逐个调用 create_node、set_prompt、run_node。用户给了多条提示词时必须逐条保留，items 数量必须与要求一致，不得静默省略。每个 item 必须有非空、可以独立生成的完整 prompt。同批模型写在 model，只有确实要混用模型时才使用 item.model。单次最多 50 个；超过 50 个才按每批最多 50 个拆分。工具返回后核对 created 是否等于计划数量再汇报。`
 
@@ -605,7 +595,7 @@ type createNodeTool struct{ state *CanvasState }
 
 func (t *createNodeTool) Name() string { return "create_node" }
 func (t *createNodeTool) Description() string {
-	return "Add a new node to the canvas. type ∈ {imageNode, videoNode, textNode, audioNode, referenceImageNode, referenceVideoNode}. Returns the new node id."
+	return "创建画布节点。默认自动摆放；指定 placement.anchor_id（节点或分组 ID）与 relation（right/left/above/below）即可相对摆放，不需要读取或计算坐标。position 仅供用户明确指定精确坐标时使用。返回新节点 ID。"
 }
 func (t *createNodeTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{
@@ -613,24 +603,31 @@ func (t *createNodeTool) Parameters() json.RawMessage {
         "properties":{
           "type":{"type":"string","enum":["imageNode","videoNode","textNode","audioNode","referenceImageNode","referenceVideoNode"]},
           "position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},
+          "placement":{"type":"object","properties":{"anchor_id":{"type":"string"},"relation":{"type":"string","enum":["auto","right","left","above","below"]},"gap":{"type":"number","minimum":0,"maximum":400}}},
           "data":{"type":"object","additionalProperties":true},
           "expected_revision":{"type":"integer","minimum":0,"description":"Optional optimistic-lock revision from get_canvas_delta or a previous mutation result"}
         },
-        "required":["type","position"]
+        "required":["type"]
     }`)
 }
 func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		Type     string         `json:"type"`
-		Position XY             `json:"position"`
-		Data     map[string]any `json:"data"`
-		Expected *uint64        `json:"expected_revision"`
+		Type      string           `json:"type"`
+		Position  *XY              `json:"position"`
+		Placement *CanvasPlacement `json:"placement"`
+		Data      map[string]any   `json:"data"`
+		Expected  *uint64          `json:"expected_revision"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	if p.Data == nil {
 		p.Data = map[string]any{}
+	}
+	switch p.Type {
+	case "imageNode", "videoNode", "textNode", "audioNode", "referenceImageNode", "referenceVideoNode":
+	default:
+		return "", fmt.Errorf("unsupported node type: %s", p.Type)
 	}
 	// Seed sensible defaults so the React renderer doesn't trip over a
 	// completely empty data bag. The agent is welcome to overwrite them.
@@ -656,14 +653,22 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 		return "", err
 	}
 	// 自动避让:模型给的坐标与现有节点重叠时,就近挪到空位。
-	placed := t.state.placeClear(p.Position)
+	placed, err := t.state.resolvePlacementLocked(nodeSize(CanvasNode{Type: p.Type, Data: p.Data}), p.Position, p.Placement, nil)
+	if err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
 	node := CanvasNode{ID: t.state.nextID("ag"), Type: p.Type, Position: placed, Data: p.Data}
 	t.state.addNodeLocked(node)
 	baseRevision, revision := t.state.recordChangeLocked("add_node", []string{node.ID}, nil)
 	t.state.mu.Unlock()
 	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "add_node", "node": node}, baseRevision, revision))
-	// 把实际落点回给模型:连续创建多个节点时它才能基于真实位置继续排布。
-	return canvasMutationResult(revision, map[string]any{"id": node.ID, "position": placed}), nil
+	// 语义操作只返回 ID；显式坐标调用保留实际落点，兼容旧调用方。
+	result := map[string]any{"id": node.ID, "placed": true}
+	if p.Position != nil {
+		result["position"] = placed
+	}
+	return canvasMutationResult(revision, result), nil
 }
 
 type createGenerationBatchTool struct{ state *CanvasState }
@@ -932,12 +937,12 @@ func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, 
 	if strings.TrimSpace(prompt) == "" {
 		return "", fmt.Errorf("node %s has no prompt; call set_prompt before run_node", p.NodeID)
 	}
-	patch := map[string]any{"op": "run_node", "node_id": p.NodeID, "prompt": prompt}
+	patch := map[string]any{"op": "run_node", "node_id": p.NodeID, "prompt": prompt, "requires_confirmation": true}
 	if strings.TrimSpace(p.Model) != "" {
 		patch["model"] = strings.TrimSpace(p.Model)
 	}
 	t.state.emit(EventCanvasPatch, patch)
-	return `{"ok":true,"note":"Submitted to browser for generation"}`, nil
+	return `{"ok":true,"status":"awaiting_browser_confirmation","note":"仅已提交生成建议，未开始也未完成生成。等待用户在画布确认；不要宣称图片或视频已生成。"}`, nil
 }
 
 // ─── Additional canvas tools ─────────────────────────────────────────────────
@@ -984,16 +989,19 @@ func (t *deleteNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 
 type moveNodeTool struct{ state *CanvasState }
 
-func (t *moveNodeTool) Name() string        { return "move_node" }
-func (t *moveNodeTool) Description() string { return "Move a node to a new position on the canvas." }
+func (t *moveNodeTool) Name() string { return "move_node" }
+func (t *moveNodeTool) Description() string {
+	return "相对移动一个节点：优先指定 placement.anchor_id 和 relation，无需坐标；批量排列用 layout_nodes。position 仅用于明确的精确坐标要求。"
+}
 func (t *moveNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},"expected_revision":{"type":"integer","minimum":0}},"required":["node_id","position"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},"placement":{"type":"object","properties":{"anchor_id":{"type":"string"},"relation":{"type":"string","enum":["auto","right","left","above","below"]},"gap":{"type":"number","minimum":0,"maximum":400}}},"expected_revision":{"type":"integer","minimum":0}},"required":["node_id"]}`)
 }
 func (t *moveNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		NodeID   string  `json:"node_id"`
-		Position XY      `json:"position"`
-		Expected *uint64 `json:"expected_revision"`
+		NodeID    string           `json:"node_id"`
+		Position  *XY              `json:"position"`
+		Placement *CanvasPlacement `json:"placement"`
+		Expected  *uint64          `json:"expected_revision"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -1003,7 +1011,22 @@ func (t *moveNodeTool) Execute(_ context.Context, args json.RawMessage) (string,
 		t.state.mu.Unlock()
 		return "", err
 	}
-	found := t.state.moveNodeLocked(p.NodeID, p.Position)
+	node, exists := t.state.nodeLocked(p.NodeID)
+	if !exists {
+		t.state.mu.Unlock()
+		return "", fmt.Errorf("node not found: %s", p.NodeID)
+	}
+	if node.Draggable != nil && !*node.Draggable || node.Data["locked"] == true {
+		t.state.mu.Unlock()
+		return "", fmt.Errorf("node is locked: %s", p.NodeID)
+	}
+	placed, err := t.state.resolvePlacementLocked(nodeSize(*node), p.Position, p.Placement, map[string]bool{p.NodeID: true})
+	if err != nil {
+		t.state.mu.Unlock()
+		return "", err
+	}
+	fromPosition := node.Position
+	found := t.state.moveNodeLocked(p.NodeID, placed)
 	var baseRevision, revision uint64
 	if found {
 		baseRevision, revision = t.state.recordChangeLocked("move_node", []string{p.NodeID}, nil)
@@ -1012,7 +1035,7 @@ func (t *moveNodeTool) Execute(_ context.Context, args json.RawMessage) (string,
 	if !found {
 		return "", fmt.Errorf("node not found: %s", p.NodeID)
 	}
-	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "move_node", "node_id": p.NodeID, "position": p.Position}, baseRevision, revision))
+	t.state.emit(EventCanvasPatch, canvasPatchWithRevision(map[string]any{"op": "move_node", "node_id": p.NodeID, "position": placed, "from_position": fromPosition}, baseRevision, revision))
 	return canvasMutationResult(revision, nil), nil
 }
 
@@ -1137,7 +1160,7 @@ func (t *readNodesTool) Execute(_ context.Context, args json.RawMessage) (string
 			continue
 		}
 		if len(p.Fields) == 0 {
-			nodes = append(nodes, *node)
+			nodes = append(nodes, map[string]any{"id": node.ID, "type": node.Type, "data": node.Data})
 			continue
 		}
 		item := map[string]any{"id": node.ID}
@@ -1457,6 +1480,7 @@ func BuildCanvasTools(state *CanvasState) []Tool {
 		&setPromptTool{state},
 		&runNodeTool{state},
 		&moveNodeTool{state},
+		&layoutNodesTool{state},
 		&deleteNodeTool{state},
 		&createGroupTool{state},
 	}

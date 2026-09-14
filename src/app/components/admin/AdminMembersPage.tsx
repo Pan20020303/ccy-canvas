@@ -307,8 +307,9 @@ export function AdminMembersPage() {
       title="成员管理"
       description="查看和管理所有注册用户，包括角色、状态和积分配额。"
       action={
-        <Button variant="outline" size="sm" onClick={load} disabled={loading} className="border-white/10 text-neutral-300 hover:bg-white/5 gap-1.5">
+        <Button variant="outline" size="sm" onClick={load} disabled={loading} aria-label="刷新成员列表" className="border-white/10 text-neutral-300 hover:bg-white/5 gap-1.5">
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          刷新
         </Button>
       }
     >

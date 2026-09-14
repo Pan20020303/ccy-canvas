@@ -16,6 +16,39 @@ afterEach(() => {
 });
 
 describe("durable agent jobs", () => {
+  it("preserves real SSE failures with their job ID", async () => {
+    vi.stubGlobal("fetch",vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({data:{job_id:"job-failure"}}),{status:202}))
+      .mockResolvedValueOnce(new Response('id: 1\nevent: error\ndata: {"message":"上游 HTTP 422：temperature unsupported; token=private-value"}\n\n',{headers:{"Content-Type":"text/event-stream"}})));
+    const events: AgentSSEEvent[]=[];
+    const stop=await runAgent("test-error-agent",{message:"hi",nodes:[],edges:[]},event=>events.push(event));
+    await vi.waitFor(()=>expect(events.some(e=>e.type==="error")).toBe(true));
+    const error=events.find(e=>e.type==="error");
+    expect(error?.data.message).toContain("temperature unsupported");
+    expect(error?.data.message).not.toContain("private-value");
+    expect(error?.data.job_id).toBe("job-failure");
+    stop();
+  });
+  it("shows normalized create-job errors without raw transport bodies", async () => {
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({error:{code:"INVALID_INPUT",message:"此 Agent 已停用"},"debug":"private-body"}),{status:400})));
+    const events: AgentSSEEvent[]=[];
+    const stop=await runAgent("test-disabled-agent",{message:"hi",nodes:[],edges:[]},event=>events.push(event));
+    await vi.waitFor(()=>expect(events.some(e=>e.type==="error")).toBe(true));
+    expect(events).toContainEqual({type:"error",data:{message:"此 Agent 已停用"}});
+    expect(JSON.stringify(events)).not.toContain("private-body");
+    stop();
+  });
+  it("reconstructs the real failure from persisted task status", async () => {
+    vi.stubGlobal("fetch",vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({data:{job_id:"job-failed-poll"}}),{status:202}))
+      .mockResolvedValueOnce(new Response("",{headers:{"Content-Type":"text/event-stream"}}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({data:{status:"error",error_message:"上游 HTTP 429：insufficient_quota"}}))));
+    const events: AgentSSEEvent[]=[];
+    const stop=await runAgent("test-status-agent",{message:"hi",nodes:[],edges:[]},event=>events.push(event));
+    await vi.waitFor(()=>expect(events.some(e=>e.type==="error")).toBe(true));
+    expect(events).toContainEqual({type:"error",data:{message:"上游 HTTP 429：insufficient_quota",job_id:"job-failed-poll"}});
+    stop();
+  });
   it("accepts contiguous canvas patches and rejects duplicates or gaps", () => {
     const first = advanceCanvasPatchRevision(0, {
       op: "move_node",

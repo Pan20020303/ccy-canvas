@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -21,10 +22,17 @@ type SkillTool struct {
 }
 
 func NewSkillTool(skill sqlc.Skill, executor *Executor) *SkillTool {
+	name := sanitizeToolName(skill.Name)
+	if skill.ID.Valid {
+		if len(name) > 31 {
+			name = name[:31]
+		}
+		name += "_" + fmt.Sprintf("%x", skill.ID.Bytes)
+	}
 	return &SkillTool{
 		skill:    skill,
 		executor: executor,
-		safeName: sanitizeToolName(skill.Name),
+		safeName: name,
 	}
 }
 
@@ -32,7 +40,7 @@ func (t *SkillTool) Name() string { return t.safeName }
 
 func (t *SkillTool) Description() string {
 	if t.skill.Description != "" {
-		return t.skill.Description
+		return t.skill.Name + ": " + t.skill.Description
 	}
 	return "Skill " + t.skill.Name
 }
@@ -90,6 +98,9 @@ func LoadBoundSkills(ctx context.Context, q *sqlc.Queries, skillIDs []pgtype.UUI
 func BuildSkillToolsFromRows(executor *Executor, skills []sqlc.Skill) []Tool {
 	tools := make([]Tool, 0, len(skills))
 	for _, skill := range skills {
+		if !skill.Enabled || skill.Kind == "code" && !IsGuideSkill(skill) {
+			continue
+		}
 		tools = append(tools, NewSkillTool(skill, executor))
 	}
 	return tools

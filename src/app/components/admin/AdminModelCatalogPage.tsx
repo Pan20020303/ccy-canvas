@@ -77,6 +77,8 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ModelBrandIcon } from "../ModelBrandIcon";
 import { AdminShell } from "./AdminShell";
+import { AgentTopology } from "./AgentTopology";
+import { isRunnableAgentSkill } from './agent-capabilities';
 import { ChannelHealthBadge } from "./ChannelHealthBadge";
 
 const ProviderCodeEditorModal = lazy(() => import("./ProviderCodeEditorModal"));
@@ -600,7 +602,7 @@ type MemoryConfigForm = AgentMemorySettings;
 
 const DEFAULT_MEMORY_CONFIG: MemoryConfigForm = {
   messagesPerSummary: 3,
-  shortTermLimit: 5,
+  shortTermLimit: 12,
   summaryMaxLength: 500,
   summaryLimit: 10,
   ragLimit: 3,
@@ -697,7 +699,7 @@ function createAgentDraft(agent: Agent | null, fallbackModel: string, preset?: A
       name: agent.name,
       description: agent.description,
       systemPrompt: agent.system_prompt,
-      model: agent.model || fallbackModel,
+      model: agent.model_name?.split(":").slice(-1)[0] || agent.model || fallbackModel,
       deployKey: agent.deploy_key || preset?.deployKey || "",
       parentDeployKey: agent.parent_deploy_key || "",
       modelName: agent.model_name || "",
@@ -1724,14 +1726,15 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
       action={activePanel === "model-service" ? <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新增服务渠道</Button> : null}
     >
       <div className="space-y-5">
-        {activePanel === "model-service" ? <section className="rounded-[28px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-2xl shadow-black/30">
+        {activePanel === "model-service" ? <section data-admin-card className="admin-model-summary rounded-[28px] border border-white/[0.08] bg-white/[0.035] p-4 shadow-2xl shadow-black/30">
           <div className="flex flex-wrap items-center gap-4">
             <StatCard label="服务渠道" value={configs.length} />
             <StatCard label="已启用渠道" value={enabledCount} />
             <StatCard label="可用模型" value={enabledModelCount} />
-            <div className="relative min-w-[280px] flex-1">
+            <div className="admin-model-search relative min-w-0 flex-1">
               <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-600" />
               <input
+                aria-label="搜索服务渠道"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="h-11 w-full rounded-full border border-white/[0.08] bg-black/20 pl-11 pr-4 text-sm text-white outline-none transition focus:border-white/[0.18] focus:ring-2 focus:ring-white/[0.04]"
@@ -1746,7 +1749,7 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
         </section> : null}
 
         {activePanel === "model-service" ? (
-          <section data-testid="settings-panel-model-service" className="grid min-h-[680px] grid-cols-[330px_1fr] overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
+          <section data-admin-panel data-testid="settings-panel-model-service" className="admin-model-layout grid min-h-[680px] overflow-hidden rounded-[28px] border border-white/[0.10] bg-[#101010]/95 text-neutral-100 shadow-2xl shadow-black/35">
             <aside className="flex min-h-0 flex-col border-r border-white/[0.06] bg-white/[0.025] p-4">
               <div className="mb-3 flex items-center justify-between gap-3 px-1">
                 <div>
@@ -1991,25 +1994,25 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
         ) : null}
 
         {activePanel === "agent-config" ? (
-          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+          <section data-admin-panel className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
             <AdminAgentConfigPanel availableModels={availableTextModels} />
           </section>
         ) : null}
 
         {activePanel === "prompt-manage" ? (
-          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+          <section data-admin-panel className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
             <PromptManagePanel />
           </section>
         ) : null}
 
         {activePanel === "skill-management" ? (
-          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+          <section data-admin-panel className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
             <SkillManagementPanel />
           </section>
         ) : null}
 
         {activePanel === "memory-config" ? (
-          <section className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
+          <section data-admin-panel className="rounded-[28px] border border-white/[0.10] bg-[#101010]/95 p-5 text-neutral-100 shadow-2xl shadow-black/35">
             <MemoryConfigPanel />
           </section>
         ) : null}
@@ -2488,7 +2491,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
     void load();
   }, []);
 
-  const promptSkills = useMemo(() => skills.filter(isPromptTemplateSkill), [skills]);
+  const runnableSkills = useMemo(() => skills.filter((skill) => isRunnableAgentSkill(skill, Boolean(editor?.draft.parentDeployKey))), [skills, editor?.draft.parentDeployKey]);
   const models = availableModels.length ? availableModels : ["gpt-4.1-mini"];
   const firstModel = models[0] || "";
   const presetAgents = useMemo(
@@ -2507,6 +2510,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
       const saved = await adminUpdateAgentUseMode(mode);
       setUseMode(saved.mode);
     } catch (err) {
+      setTab(useMode === 1 ? "advanced" : "ordinary");
+      setUseMode(useMode);
       setError(toAdminErrorSummary(err, "zh"));
     }
   };
@@ -2556,6 +2561,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
       max_output_tokens: editor.draft.maxOutputTokens,
       runtime: editor.draft.runtime.trim() || "generic",
       metadata: {
+        ...editor.agent?.metadata,
         source: "creator-suite",
         display_group: "创作智能体套件",
       },
@@ -2583,7 +2589,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
       <PanelHeader
         icon={<Bot className="h-5 w-5" />}
         title="Agent配置"
-        description="管理创作智能体套件的简易/高级模型路由，并接入本项目真实 Agent CRUD。"
+        description="配置真实运行的主 Agent、子 Agent、模型参数与技能。修改从下一次任务执行起生效。"
         action={
           <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading} className={SETTINGS_PANEL_BUTTON}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -2598,7 +2604,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
             <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-400/15 text-emerald-200">
               <ThumbsUp className="h-5 w-5" />
             </span>
-            <span>使用创作智能体套件预设，可一键填入剧本 Agent、生产 Agent、通用 AI，开箱即用。</span>
+            <span>主 Agent 负责对话和画布；子 Agent 按需独立分析。预设仅建立角色配置，仍需配置真实模型服务。</span>
           </div>
           <div className="flex gap-2">
             <Button type="button" className={SETTINGS_PRIMARY_BUTTON} disabled={saving || loading} onClick={() => void seedPresets()}>
@@ -2613,8 +2619,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
 
       <div className="mt-4 flex gap-2 border-b border-white/[0.08]">
         {[
-          ["ordinary", "简易配置"] as const,
-          ["advanced", "高级配置"] as const,
+          ["ordinary", "子 Agent 继承主模型"] as const,
+          ["advanced", "子 Agent 独立模型"] as const,
         ].map(([value, label]) => (
           <button
             key={value}
@@ -2630,46 +2636,8 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
         ))}
       </div>
 
-      {tab === "ordinary" ? (
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          {loading ? (
-            <div className="col-span-full rounded-lg border border-white/[0.08] bg-white/[0.035] px-5 py-12 text-center text-sm text-neutral-500">Agent 加载中...</div>
-          ) : (
-            presetAgents.map(({ preset, agent }) => (
-              <button
-                key={preset.key}
-                type="button"
-                onClick={() => openEditor(agent, preset)}
-                className={[
-                  "rounded-xl border p-4 text-left shadow-sm transition",
-                  preset.disabled
-                    ? "cursor-not-allowed border-white/[0.05] bg-white/[0.02] opacity-70"
-                    : "border-white/[0.08] bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.055]",
-                ].join(" ")}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.045] text-neutral-200">
-                      {preset.icon === "script" ? <FileText className="h-5 w-5" /> : null}
-                      {preset.icon === "production" ? <Clapperboard className="h-5 w-5" /> : null}
-                      {preset.icon === "general" ? <MessageSquareText className="h-5 w-5" /> : null}
-                      {preset.icon === "tts" ? <Volume2 className="h-5 w-5" /> : null}
-                    </span>
-                    <div className="min-w-0">
-                      <h4 className="text-sm font-semibold text-neutral-100">{preset.name}</h4>
-                      <p className="mt-1 text-xs text-neutral-500">{agent ? "已接入本项目 Agent" : "等待配置"}</p>
-                    </div>
-                  </div>
-                  <span className={agent && !preset.disabled ? "rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300" : preset.disabled ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-xs text-neutral-500" : "rounded-full border border-amber-400/20 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300"}>
-                    {agent && !preset.disabled ? agent.model || preset.modelHint : preset.disabled ? "未开放" : "未配置"}
-                  </span>
-                </div>
-                <p className="mt-3 line-clamp-2 text-xs leading-5 text-neutral-500">{preset.description}</p>
-              </button>
-            ))
-          )}
-        </div>
-      ) : (
+      {loading ? <p className="runtime-muted">正在读取实际 Agent 配置…</p> : <AgentTopology agents={agents} skills={skills} mode={useMode} onEdit={openEditor} />}
+      {tab === "ordinary" ? null : (
         <>
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {loading ? (
@@ -2723,7 +2691,7 @@ function AdminAgentConfigPanel({ availableModels }: { availableModels: string[] 
         <AgentConfigModal
           editor={editor}
           models={models}
-          skills={promptSkills}
+          skills={runnableSkills}
           saving={saving}
           onChange={(draft) => setEditor((current) => (current ? { ...current, draft } : current))}
           onClose={() => {
@@ -3232,60 +3200,37 @@ function MemoryConfigPanel() {
   };
 
   const restore = () => {
-    setForm(DEFAULT_MEMORY_CONFIG);
-    void save(DEFAULT_MEMORY_CONFIG);
+    const next = { ...form, shortTermLimit: 12, deepRetrieveSummaryLimit: 5 };
+    setForm(next);
+    void save(next);
   };
 
-  const clear = () => {
-    setForm(DEFAULT_MEMORY_CONFIG);
-    void save(DEFAULT_MEMORY_CONFIG);
-  };
 
   return (
     <section data-testid="settings-panel-memory-config" className="flex h-full min-h-[620px] flex-col">
       <PanelHeader
         icon={<BrainCircuit className="h-5 w-5" />}
         title="Agent记忆配置"
-        description="沉淀本项目 Agent 记忆策略的后台配置入口。"
+        description="已接入执行链路的上下文与记忆策略；保存后对新任务生效。"
       />
       {loading ? <div className="mt-4 rounded-md border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-sm text-neutral-400">记忆配置加载中...</div> : null}
       {error ? <div className="mt-4 rounded-md border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
       {notice ? <div className="mt-4 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{notice}</div> : null}
-      <div className="mt-4 space-y-4">
-        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
-          <h4 className="text-sm font-semibold text-neutral-100">向量模型配置</h4>
+<div className="mt-4 space-y-4">
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-5">
+          <h4 className="text-sm font-semibold text-neutral-100">已接入运行时</h4>
+          <p className="mt-2 text-xs leading-6 text-neutral-500">短期上下文从服务器会话读取；长期记忆按用户、Agent、项目与工作区隔离。检索在数据库中先匹配关键词，再取最新结果，不以无关记录充数。</p>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <SettingsField label="模型文件路径">
-              <input
-                value={form.modelOnnxFile}
-                onChange={(event) => setForm({ ...form, modelOnnxFile: event.target.value })}
-                className={SETTINGS_INPUT}
-              />
-              <p className="mt-2 text-xs text-neutral-500">data/models/{form.modelOnnxFile}</p>
-            </SettingsField>
-            <SettingsField label="量化类型">
-              <select value={form.modelDtype} onChange={(event) => setForm({ ...form, modelDtype: event.target.value })} className={SETTINGS_SELECT}>
-                {["fp16", "auto", "fp32", "q8", "int8", "uint8", "q4", "bnb4", "q4f16"].map((item) => (
-                  <option key={item} value={item}>{item}</option>
-                ))}
-              </select>
-            </SettingsField>
+            <MemoryNumberField label="最近对话轮数（1–50）" value={form.shortTermLimit} onChange={(value) => setForm({ ...form, shortTermLimit: Math.min(50, Math.max(1,value)) })} />
+            <MemoryNumberField label="记忆检索上限（1–20）" value={form.deepRetrieveSummaryLimit} onChange={(value) => setForm({ ...form, deepRetrieveSummaryLimit: Math.min(20, Math.max(1,value)) })} />
           </div>
         </div>
-        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-4">
-          <h4 className="text-sm font-semibold text-neutral-100">记忆参数</h4>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <MemoryNumberField label="多少条消息触发摘要" value={form.messagesPerSummary} onChange={(value) => setForm({ ...form, messagesPerSummary: value })} />
-            <MemoryNumberField label="短期记忆条数" value={form.shortTermLimit} onChange={(value) => setForm({ ...form, shortTermLimit: value })} />
-            <MemoryNumberField label="摘要最大长度" value={form.summaryMaxLength} onChange={(value) => setForm({ ...form, summaryMaxLength: value })} />
-            <MemoryNumberField label="摘要召回数量" value={form.summaryLimit} onChange={(value) => setForm({ ...form, summaryLimit: value })} />
-            <MemoryNumberField label="RAG 召回数量" value={form.ragLimit} onChange={(value) => setForm({ ...form, ragLimit: value })} />
-            <MemoryNumberField label="深度检索摘要数" value={form.deepRetrieveSummaryLimit} onChange={(value) => setForm({ ...form, deepRetrieveSummaryLimit: value })} />
-          </div>
+        <div className="rounded-lg border border-white/[0.08] bg-white/[0.025] p-5">
+          <h4 className="text-sm font-semibold text-neutral-100">向量检索与自动摘要 · 未接入</h4>
+          <p className="mt-2 text-xs leading-6 text-neutral-500">当前使用关键词检索，不会加载 ONNX 向量模型，也没有自动摘要任务。旧配置保留兼容但不参与执行，不再显示可编辑的无效开关。保存配置不会删除任何记忆。</p>
         </div>
       </div>
-      <div className="mt-auto flex justify-end gap-3 border-t border-white/[0.08] pt-4">
-        <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={clear} disabled={saving}>清空为默认</Button>
+      <div className="mt-auto flex flex-wrap justify-end gap-3 border-t border-white/[0.08] pt-4">
         <Button type="button" variant="secondary" className={SETTINGS_PANEL_BUTTON} onClick={restore} disabled={saving}>恢复默认</Button>
         <Button type="button" onClick={() => void save()} disabled={saving} className={SETTINGS_PRIMARY_BUTTON}>{saving ? "保存中..." : "保存配置"}</Button>
       </div>
@@ -3350,11 +3295,11 @@ function AgentConfigModal({
           <SettingsField label="Agent 名称"><input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className={SETTINGS_INPUT} /></SettingsField>
           <SettingsField label="选择模型">
             {models.length ? (
-              <select value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={SETTINGS_SELECT}>
+              <select value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value, modelName: event.target.value, providerId: "" })} className={SETTINGS_SELECT}>
                 {models.map((model) => <option key={model} value={model}>{model}</option>)}
               </select>
             ) : (
-              <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value })} className={SETTINGS_INPUT} />
+              <input value={draft.model} onChange={(event) => onChange({ ...draft, model: event.target.value, modelName: event.target.value, providerId: "" })} className={SETTINGS_INPUT} />
             )}
           </SettingsField>
         </div>
@@ -3365,14 +3310,14 @@ function AgentConfigModal({
           <SettingsField label="Parent Key">
             <input value={draft.parentDeployKey} onChange={(event) => onChange({ ...draft, parentDeployKey: event.target.value })} className={SETTINGS_INPUT} />
           </SettingsField>
-          <SettingsField label="Runtime">
+          <SettingsField label="角色标识（不切换执行引擎）">
             <input value={draft.runtime} onChange={(event) => onChange({ ...draft, runtime: event.target.value })} className={SETTINGS_INPUT} />
           </SettingsField>
-          <SettingsField label="Model Name">
+          <SettingsField label="实际模型 ID（优先于显示模型）">
             <input value={draft.modelName} onChange={(event) => onChange({ ...draft, modelName: event.target.value })} className={SETTINGS_INPUT} placeholder="provider:model-id" />
           </SettingsField>
-          <SettingsField label="Provider ID">
-            <input value={draft.providerId} onChange={(event) => onChange({ ...draft, providerId: event.target.value })} className={SETTINGS_INPUT} />
+          <SettingsField label="历史厂商标识（实际渠道由模型服务路由）">
+            <input value={draft.providerId} readOnly className={SETTINGS_INPUT} />
           </SettingsField>
           <div className="grid grid-cols-2 gap-2">
             <SettingsField label="Temperature">
@@ -3387,7 +3332,7 @@ function AgentConfigModal({
         <SettingsField label="系统提示词"><textarea value={draft.systemPrompt} onChange={(event) => onChange({ ...draft, systemPrompt: event.target.value })} rows={7} className={`${SETTINGS_INPUT} resize-y font-mono text-xs`} /></SettingsField>
         <SettingsField label="可调用 Skills">
           <div className="flex max-h-32 flex-wrap gap-2 overflow-y-auto rounded-md border border-white/[0.08] bg-white/[0.035] p-3">
-            {skills.length === 0 ? <span className="text-xs text-neutral-500">暂无提示词型 Skill。</span> : null}
+            {skills.length === 0 ? <span className="text-xs text-neutral-500">暂无此角色可调用的已启用 Skill。子 Agent 仅允许读取方法论。</span> : null}
             {skills.map((skill) => (
               <button
                 key={skill.id}

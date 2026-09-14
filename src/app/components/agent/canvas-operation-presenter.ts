@@ -56,6 +56,8 @@ function nodePresentation(node: CanvasPatch & { op: "add_node" }, zh: boolean): 
 
 export function presentCanvasOperation(patch: CanvasPatch, zh: boolean): CanvasOperationPresentation {
   switch (patch.op) {
+    case "move_nodes":
+      return {action:zh ? "已排列" : "Arranged",entity:"node",title:zh ? "自动布局" : "Auto layout",detail:zh ? `${patch.moves.length} 个节点` : `${patch.moves.length} nodes`,nodeId:patch.moves[0]?.node_id};
     case "add_node":
       return nodePresentation(patch, zh);
     case "add_edge":

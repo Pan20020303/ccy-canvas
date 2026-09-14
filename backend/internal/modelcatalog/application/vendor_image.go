@@ -75,36 +75,30 @@ func (s *Service) generateImageDashScope(ctx context.Context, pc *domain.Provide
 	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		if resp.StatusCode == http.StatusNotFound && len(bytes.TrimSpace(respBody)) == 0 {
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf(
-				"Provider HTTP 404 (empty body) at %s — model %q not found. Check (1) API key region matches the model, (2) wan2.7-image subscription is enabled in DashScope console, (3) baseURL ends with /api/v1.",
-				submitURL, req.Model,
-			))
-		}
 		return nil, parseProviderErrorBytes(resp.StatusCode, respBody)
 	}
 
 	var syncResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &syncResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse response: %s", string(respBody[:min(len(respBody), 300)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	// A 200 can still carry a top-level error code on some paths.
 	if code, _ := syncResp["code"].(string); code != "" {
 		msg, _ := syncResp["message"].(string)
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Image generation failed: %s: %s", code, msg))
+		return nil, apperror.ProviderTaskFailure(fmt.Sprintf("%s: %s", code, msg))
 	}
 	output, _ := syncResp["output"].(map[string]interface{})
 	urls := parseDashScopeImageContent(output)
 	if len(urls) > 0 {
 		return &GenerateResult{Type: "url", Content: urls[0], ContentList: urls}, nil
 	}
-	return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task returned no image. Raw: %s", string(respBody[:min(len(respBody), 800)])))
+	return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 }
 
 // buildDashScopeImageContent assembles the input.messages[0].content array:

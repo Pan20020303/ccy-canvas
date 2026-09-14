@@ -292,8 +292,9 @@ describe("AdminModelCatalogPage provider config editor", () => {
     const rendered = await renderPage("agent-config");
     root = rendered.root;
 
-    expect(rendered.host.textContent).toContain("剧本Agent");
-    expect(rendered.host.textContent).toContain("生产Agent");
+    expect(rendered.host.textContent).toContain("暂无主 Agent");
+    expect(rendered.host.textContent).not.toContain("剧本Agent");
+    expect(rendered.host.textContent).not.toContain("生产Agent");
 
     const fillButton = Array.from(rendered.host.querySelectorAll("button")).find((item) =>
       item.textContent?.includes("一键填入"),

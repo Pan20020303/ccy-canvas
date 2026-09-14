@@ -1,4 +1,5 @@
 import { ApiClientError } from "./client";
+import { safeFailureMessage } from "./failure-message";
 
 const SENSITIVE_KEY = /api[_-]?key|authorization|token|password|secret|cookie|session|credential|signature|sig/i;
 
@@ -39,7 +40,15 @@ function enMessageForCode(error: ApiClientError) {
 }
 
 export function toUserMessage(error: unknown, language: "zh" | "en") {
-  if (error instanceof ApiClientError) return language === "zh" ? zhMessageForCode(error) : enMessageForCode(error);
+  if (error instanceof ApiClientError) {
+    // Keep normalized provider reasons; never promote rawBody to a message.
+    if (["UPSTREAM_UNAVAILABLE", "TIMEOUT", "RATE_LIMITED", "INVALID_INPUT", "VALIDATION_ERROR"].includes(error.code)) {
+      const reason = safeFailureMessage(error.message);
+      if (reason) return reason;
+    }
+    if (error.code === "NETWORK_ERROR") return language === "zh" ? "网络连接失败，请检查网络后重试。" : "Network connection failed. Please check your connection.";
+    return language === "zh" ? zhMessageForCode(error) : enMessageForCode(error);
+  }
   return language === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please try again.";
 }
 
@@ -49,7 +58,8 @@ function safeDetails(value: unknown) {
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([key]) => !SENSITIVE_KEY.test(key))
     .slice(0, 6)
-    .map(([key, detail]) => `${key}=${typeof detail === "string" ? detail.slice(0, 80) : String(detail)}`);
+    .filter(([, detail]) => typeof detail === "string" || typeof detail === "number" || typeof detail === "boolean")
+    .map(([key, detail]) => `${key}=${safeFailureMessage(String(detail)).slice(0, 120)}`);
   return entries.join(", ");
 }
 

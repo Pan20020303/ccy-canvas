@@ -45,6 +45,10 @@ func (rt *AgentRunRouter) createAgentJob(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, r, apperror.New(apperror.CodeForbidden, "你没有权限运行此智能体"))
 		return
 	}
+	if !agent.Enabled {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeInvalidInput, "此 Agent 已停用，请在后台启用后重试"))
+		return
+	}
 
 	var req agentRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -83,6 +87,7 @@ func (rt *AgentRunRouter) createAgentJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	runID := formatUUID(job.ID)
+	rt.persistAgentEvent(job.ID, "lifecycle", map[string]string{"status": "queued", "conversation_id": req.ConversationID})
 
 	if rt.taskQueue != nil && rt.taskQueue.Enabled() {
 		if _, err := rt.taskQueue.EnqueueAgentRun(r.Context(), runID); err != nil {
@@ -262,11 +267,42 @@ func (rt *AgentRunRouter) ProcessAgentRun(ctx context.Context, runID string) err
 	if isTerminalAgentJobStatus(job.Status) {
 		return nil
 	}
-	if err := rt.q.MarkAgentRunRunning(ctx, job.ID); err != nil {
-		return err
+	queueCtx, queueCancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer queueCancel()
+	for {
+		state, claimErr := rt.q.ClaimAgentRun(queueCtx, job.ID, job.ConversationID)
+		if claimErr != nil {
+			return claimErr
+		}
+		if state == "claimed" {
+			break
+		}
+		if state != "blocked" {
+			return nil
+		}
+		if rt.taskQueue != nil && rt.taskQueue.Enabled() {
+			return skillsapp.ErrAgentSessionBusy
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-queueCtx.Done():
+			timer.Stop()
+			return rt.finishAgentJob(job.ID, skillsapp.RunStats{}, time.Now(), apperror.New(apperror.CodeConflict, "会话队列等待超时，请检查前一任务状态"))
+		case <-timer.C:
+		}
 	}
+	runCtx, runCancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer runCancel()
+	go rt.watchAgentCancellation(runCtx, runCancel, job.ID)
+	ctx = runCtx
 
-	emit := func(event string, data any) { rt.persistAgentEvent(job.ID, event, data) }
+	emit := func(event string, data any) {
+		// A run with a broken audit writer must not keep executing invisible tools.
+		if err := rt.persistAgentEvent(job.ID, event, data); err != nil {
+			runCancel()
+		}
+	}
+	emit("lifecycle", map[string]string{"status": "running"})
 	var req agentRunRequest
 	if err := json.Unmarshal(job.RequestPayload, &req); err != nil {
 		if finishErr := rt.finishAgentJob(job.ID, skillsapp.RunStats{}, time.Now(), err,
@@ -282,6 +318,9 @@ func (rt *AgentRunRouter) ProcessAgentRun(ctx context.Context, runID string) err
 			return finishErr
 		}
 		return nil
+	}
+	if !agent.Enabled || !agentAccessibleBy(agent, job.UserID) {
+		return rt.finishAgentJob(job.ID, skillsapp.RunStats{}, time.Now(), apperror.New(apperror.CodeConflict, "Agent 已停用或权限已变更"))
 	}
 	conversation, err := rt.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
 		ID: job.ConversationID, UserID: job.UserID, AgentID: job.AgentID,
@@ -316,7 +355,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	if err != nil {
 		publicErr := apperror.New(apperror.CodeInvalidInput, "所选模型暂不可用，请更换后重试")
 		if finishErr := rt.finishAgentJob(job.ID, skillsapp.RunStats{}, startedAt, publicErr,
-			map[string]string{"message": apperror.PublicMessage(publicErr)}); finishErr != nil {
+			apperror.PublicEvent(publicErr)); finishErr != nil {
 			return finishErr
 		}
 		return nil
@@ -329,6 +368,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	}
 
 	canvas := skillsapp.NewCanvasStateAtRevision(req.Nodes, req.Edges, req.CanvasRevision, emit)
+	canvas.Groups = req.Groups
 	tools := []skillsapp.Tool{}
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
@@ -345,8 +385,9 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		}
 	}
 
+	memoryPolicy := skillsapp.LoadMemoryPolicy(ctx, rt.q)
 	historyMessages, err := rt.q.ListAgentConversationMessages(ctx, sqlc.ListAgentConversationMessagesParams{
-		ConversationID: conversation.ID, Limit: 36,
+		ConversationID: conversation.ID, Limit: memoryPolicy.ShortTermLimit * 3,
 	})
 	if err != nil {
 		if finishErr := rt.finishAgentJob(job.ID, skillsapp.RunStats{}, startedAt, err,
@@ -355,13 +396,45 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		}
 		return nil
 	}
+	historyMessages = skillsapp.LimitHistoryTurns(historyMessages, memoryPolicy.ShortTermLimit)
 	boundSkills := skillsapp.LoadBoundSkills(ctx, rt.q, agent.SkillIDs)
+	visibleSkills := boundSkills[:0]
+	for _, skill := range boundSkills {
+		if skill.Scope == "global" || skill.OwnerID == job.UserID {
+			visibleSkills = append(visibleSkills, skill)
+		}
+	}
+	boundSkills = visibleSkills
+	var selectedSkill *sqlc.Skill
+	if req.SkillID != "" {
+		id, parseErr := parseUUID(req.SkillID)
+		if parseErr != nil {
+			return rt.finishAgentJob(job.ID, skillsapp.RunStats{}, startedAt, apperror.New(apperror.CodeConflict, "技能 ID 不正确"))
+		}
+		skill, skillErr := rt.q.GetSkill(ctx, id)
+		if skillErr != nil || !skill.Enabled || skill.Kind != "prompt" || (skill.Scope != "global" && skill.OwnerID != job.UserID) {
+			return rt.finishAgentJob(job.ID, skillsapp.RunStats{}, startedAt, apperror.New(apperror.CodeConflict, "所选技能已停用或无权使用"))
+		}
+		selectedSkill = &skill
+		found := false
+		for _, s := range boundSkills {
+			if s.ID == skill.ID {
+				found = true
+			}
+		}
+		if !found {
+			boundSkills = append(boundSkills, skill)
+		}
+	}
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildSaveMemoryTool(rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID))
-	tools = append(tools, skillsapp.BuildCreatorSuiteSubAgentTools(rt.q, rt.executor, agent)...)
+	tools = append(tools, rt.delegationTools(ctx, agent, job.UserID, emit, req.Model)...)
 	tools = append(tools, skillsapp.BuildAskUserTool(emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
+	if selectedSkill != nil {
+		resolvedMessage, invokedSkill = skillsapp.ResolveSelectedSkillMessage(req.Message, *selectedSkill)
+	}
 	if invokedSkill != "" {
 		emit(skillsapp.EventThought, map[string]string{"content": "已加载技能：" + invokedSkill})
 	}
@@ -416,24 +489,27 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		emit(event, data)
 	}
 	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints, Health: rt.catalogSvc}
+	emitRuntimeSnapshot(agent, route, catalogModel, tools, boundSkills, "canvas-confirmation", emit)
+	emit("context_policy", map[string]any{"history_turn_limit": memoryPolicy.ShortTermLimit, "retrieval_limit": memoryPolicy.RetrieveLimit, "memory_scope": "user+agent+project+workspace", "retrieval": "keyword", "vector_search": false})
 	stats, runErr := runner.RunAdaptive(ctx, skillsapp.RunInput{
-		SystemPrompt: systemPrompt,
-		Model:        catalogModel,
-		UserMessage:  resolvedMessage,
-		History:      toRunHistoryFromMessages(historyMessages),
-		Tools:        tools,
-		Strategy:     agent.Strategy,
-		Thinking:     req.Thinking,
+		SystemPrompt:    systemPrompt,
+		Model:           catalogModel,
+		UserMessage:     resolvedMessage,
+		History:         toRunHistoryFromMessages(historyMessages),
+		Tools:           tools,
+		Strategy:        agent.Strategy,
+		Thinking:        req.Thinking,
+		Temperature:     &route.Temperature,
+		MaxOutputTokens: route.MaxOutputTokens,
 	}, runEmit)
 	if errors.Is(runErr, context.Canceled) {
-		// A worker shutdown may cause Redis to recover the lease. Do not mark
-		// the durable row terminal here; a restarted worker can resume it.
-		return runErr
+		runErr = apperror.New(apperror.CodeConflict, "任务已中断；为避免重复操作，不会自动重放，请检查画布后重试")
 	}
+	emit("usage_total", stats.TotalUsage)
 	if runErr != nil {
 		if terminalEvent == "" {
 			terminalEvent = skillsapp.EventError
-			terminalData = map[string]string{"message": apperror.PublicMessage(runErr)}
+			terminalData = apperror.PublicEvent(runErr)
 		}
 		return rt.finishAgentJob(job.ID, stats, startedAt, runErr, terminalData)
 	}
@@ -441,24 +517,20 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	persistCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if req.Message != "" && stats.FinalReply != "" {
-		_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-			ConversationID: conversation.ID, Role: "user", Content: req.Message,
-		})
+		messages := []sqlc.InsertAgentConversationMessageParams{{Role: "user", Content: req.Message}}
 		if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
-			_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-				ConversationID: conversation.ID, Role: "tool_log", Content: transcript,
-			})
+			messages = append(messages, sqlc.InsertAgentConversationMessageParams{Role: "tool_log", Content: transcript})
 		}
-		_, _ = rt.q.InsertAgentConversationMessage(persistCtx, sqlc.InsertAgentConversationMessageParams{
-			ConversationID: conversation.ID, Role: "assistant", Content: stats.FinalReply,
-		})
-		skillsapp.PersistTurnMemory(persistCtx, rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID,
-			formatUUID(conversation.ID), req.Message, stats.FinalReply)
+		messages = append(messages, sqlc.InsertAgentConversationMessageParams{Role: "assistant", Content: stats.FinalReply})
 		nextTitle := conversation.Title
 		if nextTitle == "" || nextTitle == agent.Name {
 			nextTitle = truncateForTitle(req.Message)
 		}
-		_, _ = rt.q.TouchAgentConversation(persistCtx, sqlc.TouchAgentConversationParams{ID: conversation.ID, Title: nextTitle})
+		if err := rt.q.SaveAgentRunConversation(persistCtx, job.ID, conversation.ID, nextTitle, messages); err != nil {
+			return rt.finishAgentJob(job.ID, stats, startedAt, apperror.New(apperror.CodeConflict, "执行结束但会话保存失败或已取消；不会自动重放，请检查任务记录"))
+		}
+		skillsapp.PersistTurnMemory(persistCtx, rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID,
+			formatUUID(conversation.ID), req.Message, stats.FinalReply)
 	}
 	if terminalEvent == "" {
 		terminalEvent = skillsapp.EventDone
@@ -467,16 +539,17 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	return rt.finishAgentJob(job.ID, stats, startedAt, nil, terminalData)
 }
 
-func (rt *AgentRunRouter) persistAgentEvent(runID pgtype.UUID, event string, data any) {
+func (rt *AgentRunRouter) persistAgentEvent(runID pgtype.UUID, event string, data any) error {
 	raw, err := json.Marshal(data)
 	if err != nil {
-		return
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = rt.q.InsertAgentRunEvent(ctx, sqlc.InsertAgentRunEventParams{
+	_, err = rt.q.InsertAgentRunEvent(ctx, sqlc.InsertAgentRunEventParams{
 		RunID: runID, EventType: event, Data: raw,
 	})
+	return err
 }
 
 func (rt *AgentRunRouter) finishAgentJob(runID pgtype.UUID, stats skillsapp.RunStats, startedAt time.Time, runErr error, terminalData ...any) error {
@@ -488,7 +561,7 @@ func (rt *AgentRunRouter) finishAgentJob(runID pgtype.UUID, stats skillsapp.RunS
 		status = "error"
 		errorMessage = apperror.PublicMessage(runErr)
 		eventType = skillsapp.EventError
-		eventData = map[string]string{"message": errorMessage}
+		eventData = apperror.PublicEvent(runErr)
 	}
 	if len(terminalData) > 0 && terminalData[0] != nil {
 		eventData = terminalData[0]

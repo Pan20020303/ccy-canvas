@@ -1,5 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { useEffect } from "react";
+import { canvasThemeVariables, useCanvasPreferences } from "./canvas-preferences";
+import { CanvasGenerationNotifications } from "./components/settings/CanvasPreferencesRuntime";
 
 import { listAppProviderConfigs } from "./api/providerConfigs";
 import { useAuth } from "./auth/AuthProvider";
@@ -14,7 +16,6 @@ import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
 import { AdminPromptTemplatesPage } from "./components/admin/AdminPromptTemplatesPage";
 import { AgentRunPanel } from "./components/AgentRunPanel";
-import { AutomationWorkspace } from "./components/AutomationWorkspace";
 import { Canvas } from "./components/Canvas";
 import { CanvasLoader } from "./components/CanvasLoader";
 import { HomePage } from "./components/HomePage";
@@ -28,6 +29,7 @@ import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
 
 const Workspace = () => {
+  const canvasPreferences = useCanvasPreferences(state => state.values);
   const setBackendModels = useStore((state) => state.setBackendModels);
   const agentPanelOpen = useStore((state) => state.agentPanelOpen);
   const setAgentPanelOpen = useStore((state) => state.setAgentPanelOpen);
@@ -59,12 +61,13 @@ const Workspace = () => {
   return (
     <div
       className={`relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 selection:bg-cyan-500/30 ${agentPanelResizing ? "" : "transition-[padding] duration-200 ease-out"}`}
-      style={{ paddingRight: agentPanelOpen ? agentPanelWidth : 0 }}
+      style={{ ...canvasThemeVariables(canvasPreferences), paddingRight: agentPanelOpen ? agentPanelWidth : 0 }}
     >
       <Navbar />
       <Toolbar />
       <Canvas />
       <RunTimer />
+      <CanvasGenerationNotifications />
       <Modals />
       <SettingsModal />
       <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
@@ -101,7 +104,7 @@ export const router = createBrowserRouter([
     },
     {
       path: "/__preview/automation",
-      Component: AutomationWorkspace,
+      Component: () => <Navigate to="/home?view=tryon" replace />,
     },
   ] : []),
   {
@@ -136,7 +139,7 @@ export const router = createBrowserRouter([
     path: "/automation",
     Component: () => (
       <ProtectedRoute>
-        <AutomationWorkspace />
+        <Navigate to="/app" replace />
       </ProtectedRoute>
     ),
   },

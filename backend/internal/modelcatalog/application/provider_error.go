@@ -13,9 +13,8 @@ import (
 	"ccy-canvas/backend/internal/shared/apperror"
 )
 
-// readProviderError converts an upstream non-2xx response into an *apperror.
-// Upstream response bodies stay in the private error cause: they can contain
-// request fragments, account information, or vendor implementation details.
+// Transport bodies stay private. Only selected, redacted provider error fields
+// and the actual upstream HTTP status are returned to the caller.
 func readProviderError(resp *http.Response) error {
 	const maxBody = 4 * 1024
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
@@ -101,10 +100,6 @@ func classifyProviderError(status int, upstreamCode string) (apperror.Code, stri
 	}
 }
 
-// parseProviderErrorBytes is the readProviderError logic for callers that
-// have already read the response body (for example, video task submission).
-// It creates one safe public message while preserving a bounded diagnostic as
-// the wrapped cause for server-side logs only.
 func parseProviderErrorBytes(statusCode int, body []byte) error {
 	const maxBody = 4 * 1024
 	trimmed := bytes.TrimSpace(body)

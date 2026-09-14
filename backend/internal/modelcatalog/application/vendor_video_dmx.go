@@ -120,7 +120,7 @@ func (s *Service) generateVideoDMX(ctx context.Context, pc *domain.ProviderConfi
 	client := &http.Client{Timeout: dmxSubmitTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -131,7 +131,7 @@ func (s *Service) generateVideoDMX(ctx context.Context, pc *domain.ProviderConfi
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse submit response: %s", string(respBody[:min(len(respBody), 300)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	// Task id is the top-level "id" (or "request_id" on some responses).
 	taskID, _ := submitResp["id"].(string)
@@ -141,7 +141,7 @@ func (s *Service) generateVideoDMX(ctx context.Context, pc *domain.ProviderConfi
 		}
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	return s.pollVideoDMX(ctx, submitURL, apiKey, taskID)
@@ -159,7 +159,7 @@ func (s *Service) pollVideoDMX(ctx context.Context, submitURL, apiKey, taskID st
 
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 
@@ -167,7 +167,7 @@ func (s *Service) pollVideoDMX(ctx context.Context, submitURL, apiKey, taskID st
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -196,13 +196,13 @@ func (s *Service) pollVideoDMX(ctx context.Context, submitURL, apiKey, taskID st
 			if videoURL != "" {
 				return &GenerateResult{Type: "url", Content: videoURL}, nil
 			}
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task succeeded but no video_url. Raw: %s", string(body[:min(len(body), 800)])))
+			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 		case "failed", "error", "expired", "cancelled", "canceled":
-			return nil, apperror.New(apperror.CodeInvalidInput, dmxFailureMessage(status, detail))
+			return nil, apperror.ProviderTaskFailure(dmxFailureMessage(status, detail))
 		}
 		// queued / running / unknown — keep polling.
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }
 
 // parseDMXPollResponse pulls (video_url, status, detail) out of DMXAPI's nested

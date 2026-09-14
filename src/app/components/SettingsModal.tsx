@@ -3,6 +3,7 @@ import { X, Keyboard, Wrench, Bot, SlidersHorizontal } from 'lucide-react';
 import { useStore, DEFAULT_SHORTCUTS, formatShortcutCombo } from '../store';
 import { SkillsSettingsTab } from './settings/SkillsSettingsTab';
 import { AgentsSettingsTab } from './settings/AgentsSettingsTab';
+import { CanvasSettingsPanel, BackToCanvasSettings } from './settings/CanvasSettingsPanel';
 
 const SECTIONS = [
   { id: 'skills',      icon: Wrench,            zh: '我的技能',   en: 'My Skills'     },
@@ -68,6 +69,14 @@ const ShortcutKey = ({
 };
 
 export const SettingsModal = () => {
+  const open = useStore(state => state.isSettingsOpen);
+  const [advanced, setAdvanced] = useState(false);
+  useEffect(() => { if (!open) setAdvanced(false); }, [open]);
+  if (!open) return null;
+  return advanced ? <AdvancedSettingsModal onBack={() => setAdvanced(false)} /> : <CanvasSettingsPanel onAdvanced={() => setAdvanced(true)} />;
+};
+
+const AdvancedSettingsModal = ({ onBack }: { onBack: () => void }) => {
   const { language, isSettingsOpen, setSettingsOpen, shortcuts, setShortcut, resetShortcuts } = useStore();
   const [section, setSection] = useState('skills');
   const [recording, setRecording] = useState<string | null>(null);
@@ -76,6 +85,7 @@ export const SettingsModal = () => {
   useEffect(() => {
     if (!recording) return;
     const handler = (e: KeyboardEvent) => {
+      e.stopImmediatePropagation();
       if (e.key === 'Escape') { setRecording(null); return; }
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
       e.preventDefault();
@@ -95,7 +105,7 @@ export const SettingsModal = () => {
   const rightCol = entries.slice(mid);
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center" onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') onBack(); }}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSettingsOpen(false)} />
       <div className="relative z-10 flex w-[860px] max-w-[95vw] h-[560px] bg-[#0c0e11] border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
         <aside className="w-44 border-r border-white/5 bg-white/[0.02] py-4">
@@ -119,6 +129,7 @@ export const SettingsModal = () => {
 
         <div className="flex-1 flex flex-col">
           <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+            <BackToCanvasSettings onClick={onBack} />
             <div className="text-sm text-neutral-200">
               {zh ? SECTIONS.find(s => s.id === section)?.zh : SECTIONS.find(s => s.id === section)?.en}
             </div>

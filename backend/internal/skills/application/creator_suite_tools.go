@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -34,14 +35,16 @@ func (t *deepRetrieveTool) Execute(ctx context.Context, args json.RawMessage) (s
 		Limit int32  `json:"limit"`
 	}
 	_ = json.Unmarshal(args, &input)
-	if input.Limit <= 0 || input.Limit > 20 {
-		input.Limit = 5
+	policy := LoadMemoryPolicy(ctx, t.q)
+	if input.Limit <= 0 || input.Limit > policy.RetrieveLimit {
+		input.Limit = policy.RetrieveLimit
 	}
 	rows, err := t.q.ListAgentMemories(ctx, sqlc.ListAgentMemoriesParams{
 		UserID:       t.userID,
 		AgentID:      t.agentID,
 		IsolationKey: t.isolationKey,
 		Limit:        input.Limit,
+		Query:        strings.TrimSpace(input.Query),
 	})
 	if err != nil {
 		return "", err
@@ -51,12 +54,8 @@ func (t *deepRetrieveTool) Execute(ctx context.Context, args json.RawMessage) (s
 		Content   string `json:"content"`
 		CreatedAt string `json:"created_at,omitempty"`
 	}
-	query := strings.ToLower(strings.TrimSpace(input.Query))
 	out := make([]item, 0, len(rows))
 	for _, row := range rows {
-		if query != "" && !strings.Contains(strings.ToLower(row.Content), query) && len(out) > 0 {
-			continue
-		}
 		out = append(out, item{Role: row.Role, Content: row.Content, CreatedAt: row.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00")})
 		if int32(len(out)) >= input.Limit {
 			break
@@ -180,6 +179,46 @@ type subAgentTool struct {
 	name           string
 	description    string
 	childDeployKey string
+	run            func(context.Context, sqlc.Agent, json.RawMessage) (string, error)
+}
+
+// Only direct, enabled, visible children are exposed. Children receive an
+// isolated task, not the parent's transcript or permission to delegate again.
+func BuildDelegationTools(children []sqlc.Agent, run func(context.Context, sqlc.Agent, json.RawMessage) (string, error)) []Tool {
+	result := []Tool{}
+	for _, child := range children {
+		if !child.Enabled {
+			continue
+		}
+		child := child
+		result = append(result, &delegationTool{child: child, run: run})
+	}
+	return result
+}
+
+type delegationTool struct {
+	child sqlc.Agent
+	run   func(context.Context, sqlc.Agent, json.RawMessage) (string, error)
+}
+
+func (t *delegationTool) Name() string { return "delegate_" + fmt.Sprintf("%x", t.child.ID.Bytes) }
+func (t *delegationTool) Description() string {
+	return "委派独立文本分析任务给 " + t.child.Name + ": " + t.child.Description + "。仅在需要该专长时调用；结果由主 Agent 审核后执行画布操作。"
+}
+func (t *delegationTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"instruction":{"type":"string"},"task_context":{"type":"object"},"expected_output":{"type":"string"}},"required":["instruction"],"additionalProperties":false}`)
+}
+func (t *delegationTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var input struct {
+		Instruction string `json:"instruction"`
+	}
+	if json.Unmarshal(args, &input) != nil || strings.TrimSpace(input.Instruction) == "" {
+		return "", fmt.Errorf("子任务指令不能为空")
+	}
+	if t.run == nil {
+		return "", fmt.Errorf("子 Agent 执行器未接入")
+	}
+	return t.run(ctx, t.child, args)
 }
 
 func BuildCreatorSuiteSubAgentTools(q *sqlc.Queries, _ *Executor, agent sqlc.Agent) []Tool {
@@ -222,21 +261,8 @@ func (t *subAgentTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if err != nil {
 		return "", err
 	}
-	var input map[string]any
-	_ = json.Unmarshal(args, &input)
-	route := AgentRouteConfigFromRow(child)
-	payload := map[string]any{
-		"status":           "ready",
-		"child_agent":      child.Name,
-		"child_deploy_key": child.DeployKey,
-		"runtime":          child.Runtime,
-		"model":            ResolveCatalogModelName(route),
-		"system_prompt":    child.SystemPrompt,
-		"instruction":      input["instruction"],
-		"task_context":     input["task_context"],
-		"expected_output":  input["expected_output"],
-		"execution_hint":   "Use this child agent configuration and its bound skills to complete the requested step.",
+	if t.run == nil {
+		return "", fmt.Errorf("子 Agent 执行器未接入，未执行任何子任务")
 	}
-	raw, _ := json.Marshal(payload)
-	return string(raw), nil
+	return t.run(ctx, child, args)
 }

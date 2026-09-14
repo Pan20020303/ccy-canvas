@@ -84,6 +84,7 @@ func (q *Queries) InsertAgentMemory(ctx context.Context, arg InsertAgentMemoryPa
 }
 
 type ListAgentMemoriesParams struct {
+	Query        string      `json:"query"`
 	UserID       pgtype.UUID `json:"user_id"`
 	AgentID      pgtype.UUID `json:"agent_id"`
 	IsolationKey string      `json:"isolation_key"`
@@ -94,12 +95,13 @@ const listAgentMemories = `-- name: ListAgentMemories :many
 SELECT id, user_id, agent_id, isolation_key, role, content, embedding, metadata, summarized, created_at, updated_at
 FROM agent_memories
 WHERE user_id = $1 AND agent_id = $2 AND isolation_key = $3
+  AND ($5::text = '' OR strpos(lower(content), lower($5::text)) > 0)
 ORDER BY created_at DESC
 LIMIT $4
 `
 
 func (q *Queries) ListAgentMemories(ctx context.Context, arg ListAgentMemoriesParams) ([]AgentMemory, error) {
-	rows, err := q.db.Query(ctx, listAgentMemories, arg.UserID, arg.AgentID, arg.IsolationKey, arg.Limit)
+	rows, err := q.db.Query(ctx, listAgentMemories, arg.UserID, arg.AgentID, arg.IsolationKey, arg.Limit, arg.Query)
 	if err != nil {
 		return nil, err
 	}

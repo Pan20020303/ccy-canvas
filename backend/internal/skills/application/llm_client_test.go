@@ -102,7 +102,7 @@ func TestParseSSEObjectArgumentsToolCall(t *testing.T) {
 }
 
 // 残次网关把上游 HTTP 400 原文嵌进 200 SSE 流:整条流零产出时必须上抛
-// 为 "LLM HTTP 4xx" 错误,触发 tool_calls 形态降级重试。
+// 保留实际状态码,触发 tool_calls 形态降级重试。
 func TestParseSSEEmbeddedHTTPErrorSurfaces(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
@@ -116,8 +116,8 @@ func TestParseSSEEmbeddedHTTPErrorSurfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected embedded 4xx to surface as error")
 	}
-	if !strings.Contains(err.Error(), "LLM HTTP 4") {
-		t.Fatalf("error %q should carry the LLM HTTP 4 marker for fallback retry", err)
+	if !isProviderArgumentError(err) || providerErrorStatus(err) != 400 {
+		t.Fatalf("error %q should carry the actual HTTP 400 for fallback retry", err)
 	}
 }
 

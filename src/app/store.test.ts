@@ -219,9 +219,9 @@ describe("workspace project state", () => {
     const group = useStore.getState().groups.at(-1);
     expect(group).toMatchObject({
       nodeIds: ["a", "b"],
-      position: { x: 68, y: 32 },
-      width: 504,
-      height: 340,
+      position: { x: 20, y: -16 },
+      width: 600,
+      height: 436,
     });
   });
 
@@ -290,7 +290,7 @@ describe("workspace project state", () => {
     useStore.getState().moveGroup(groupId!, { x: 48, y: 24 }, { captureUndo: true });
 
     const state = useStore.getState();
-    expect(state.groups.at(-1)?.position).toMatchObject({ x: 116, y: 56 });
+    expect(state.groups.at(-1)?.position).toMatchObject({ x: 68, y: 8 });
     expect(state.nodes.find((node) => node.id === "group-image")?.position).toEqual({ x: 148, y: 124 });
     expect(state.nodes.find((node) => node.id === "group-text")?.position).toEqual({ x: 408, y: 224 });
   });
@@ -566,6 +566,10 @@ describe("workspace control bar state", () => {
 
   it("sends generation requests through the backend app api instead of calling vendors directly", async () => {
     const { useStore } = await loadStore();
+    // This case verifies the blocking error state for a node that has never
+    // produced media. Re-generation failures with an existing result are
+    // covered separately below and intentionally preserve that result.
+    useStore.getState().updateNodeData("2", { url: undefined, output: undefined });
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -589,8 +593,59 @@ describe("workspace control bar state", () => {
     expect((imageNode?.data as Record<string, unknown>)?.error).toContain("backend generation unavailable");
   });
 
+  it("keeps the previous media visible when re-generation fails", async () => {
+    const { useStore } = await loadStore();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({
+        error: { code: "backend_generation_error", message: "second generation failed" },
+      }),
+    }));
+    useStore.getState().updateNodeData("2", {
+      url: "https://example.com/previous.png",
+      output: "https://example.com/previous.png",
+      status: "done",
+    });
+
+    await useStore.getState().runNode("2", { prompt: "try again", model: "gpt-image-2" });
+
+    const data = useStore.getState().nodes.find((node) => node.id === "2")?.data as Record<string, unknown>;
+    expect(data.url).toBe("https://example.com/previous.png");
+    expect(data.status).toBe("done");
+    expect(data.error).toBeUndefined();
+    expect(data.lastGenerationError).toContain("second generation failed");
+  });
+
+  it("clears a stale recoverable failure when switching media versions", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().updateNodeData("2", {
+      url: "https://example.com/current.png",
+      output: "https://example.com/current.png",
+      activeVersionId: "current-version",
+      status: "error",
+      error: "legacy blocking error",
+      lastGenerationError: "latest generation failed",
+      versions: [{
+        id: "previous-version",
+        url: "https://example.com/previous.png",
+        timestamp: 1,
+      }],
+    });
+
+    useStore.getState().setActiveVersion("2", "previous-version");
+
+    const data = useStore.getState().nodes.find((node) => node.id === "2")?.data as Record<string, unknown>;
+    expect(data.url).toBe("https://example.com/previous.png");
+    expect(data.status).toBe("done");
+    expect(data.error).toBeUndefined();
+    expect(data.lastGenerationError).toBeUndefined();
+  });
+
   it("keeps the node and shows an admin contact hint when credits are insufficient", async () => {
     const { useStore } = await loadStore();
+    useStore.getState().updateNodeData("2", { url: undefined, output: undefined });
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 402,

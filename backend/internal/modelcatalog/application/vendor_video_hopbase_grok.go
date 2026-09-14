@@ -129,7 +129,7 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 	client := safehttp.Client(30 * time.Second)
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -139,14 +139,14 @@ func (s *Service) generateVideoHopBaseGrok15(ctx context.Context, _ *domain.Prov
 
 	var submit map[string]any
 	if err := json.Unmarshal(respBody, &submit); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase Grok submit response is invalid: %s", truncateHopBaseGrokBody(respBody, 500)))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	if outputURL := hopBaseVideoOutputURL(submit); outputURL != "" {
 		return &GenerateResult{Type: "url", Content: outputURL}, nil
 	}
 	taskID := hopBaseTaskID(submit)
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase Grok submit returned no task id: %s", truncateHopBaseGrokBody(respBody, 500)))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 	return s.pollHopBaseVideoTask(ctx, baseURL, apiKey, taskID)
 }

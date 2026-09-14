@@ -5,7 +5,7 @@ const GROUP_TITLE_HEIGHT = 36;
 
 type NodeLike = Pick<Node, 'id' | 'position' | 'width' | 'height' | 'measured'>;
 
-export function computeGroupBounds(nodes: NodeLike[]) {
+export function computeGroupBounds(nodes: NodeLike[], padding = GROUP_PADDING) {
   if (!nodes.length) {
     return { x: 0, y: 0, width: 0, height: 0 };
   }
@@ -16,10 +16,10 @@ export function computeGroupBounds(nodes: NodeLike[]) {
   const bottom = Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? node.height ?? 200)));
 
   return {
-    x: left - GROUP_PADDING,
-    y: top - GROUP_PADDING - GROUP_TITLE_HEIGHT,
-    width: right - left + GROUP_PADDING * 2,
-    height: bottom - top + GROUP_PADDING * 2 + GROUP_TITLE_HEIGHT,
+    x: left - padding,
+    y: top - padding - GROUP_TITLE_HEIGHT,
+    width: right - left + padding * 2,
+    height: bottom - top + padding * 2 + GROUP_TITLE_HEIGHT,
   };
 }
 

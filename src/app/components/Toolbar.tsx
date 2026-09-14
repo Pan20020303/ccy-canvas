@@ -20,6 +20,7 @@ import {
 
 import { t } from '../i18n';
 import { useStore } from '../store';
+import { useCanvasPreferences } from '../canvas-preferences';
 import { AssetLibraryModal } from './AssetLibraryModal';
 import { Dock, DockItem } from './reactbits/Dock';
 
@@ -51,6 +52,7 @@ const NODE_OPTIONS: Array<{
 ];
 
 export const Toolbar = () => {
+  const toolbarScale = useCanvasPreferences(state => state.values.bottomToolbarScale);
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const setSettingsOpen = useStore((state) => state.setSettingsOpen);
@@ -137,7 +139,7 @@ export const Toolbar = () => {
   const toggle = (key: PanelKey) => setOpen((current) => (current === key ? null : key));
 
   return (
-    <div ref={rootRef} className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col-reverse items-center gap-3">
+    <div ref={rootRef} style={{ scale: toolbarScale, transformOrigin: 'bottom center' }} className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col-reverse items-center gap-3">
       <Dock className="flex flex-row items-end gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
         <DockItem>
           {/* Primary action — solid white circle (reference proportions), the

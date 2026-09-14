@@ -16,6 +16,7 @@ import (
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
 	"ccy-canvas/backend/internal/shared/apperror"
+	skillsapp "ccy-canvas/backend/internal/skills/application"
 )
 
 // Worker is the consumer side of the Asynq task queue. It owns an
@@ -57,11 +58,18 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 			DB:       redisDB,
 		},
 		asynq.Config{
+			RetryDelayFunc: func(n int, err error, task *asynq.Task) time.Duration {
+				if errors.Is(err, skillsapp.ErrAgentSessionBusy) {
+					return time.Second
+				}
+				return generationRetryDelay(n, err, task)
+			},
+			IsFailure: func(err error) bool {
+				return !errors.Is(err, skillsapp.ErrAgentSessionBusy) && generationIsFailure(err)
+			},
 			// Total worker pool size. Single-replica backend default.
 			// Adjust via env later if you spread workers across machines.
-			Concurrency:    20,
-			RetryDelayFunc: generationRetryDelay,
-			IsFailure:      generationIsFailure,
+			Concurrency: 20,
 			Queues: map[string]int{
 				// Higher weight = more share of the 20 slots.
 				// Video is intentionally low so a 30 min Sora call
