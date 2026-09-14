@@ -125,7 +125,7 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 	report := CreatorSuiteAgentSeedReport{Total: len(seeds)}
 
 	for _, seed := range seeds {
-		existing, err := queries.GetAgentByDeployKey(ctx, seed.DeployKey)
+		_, err := queries.GetAgentByDeployKey(ctx, seed.DeployKey)
 		if err != nil && err != pgx.ErrNoRows {
 			return report, err
 		}
@@ -142,20 +142,9 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 			continue
 		}
 
-		update := insertAgentParamsToUpdate(existing.ID, params)
-		// 种子不拥有 agentRuntime（管理侧的"走哪个运行时"开关），写回前先合并回来。
-		update.Metadata = withPreservedAgentRuntime(existing.Metadata, update.Metadata)
-		// 技能绑定是运营配置(管理员/脚本随时增删),seed 不拥有它 ——
-		// 否则每次后端重启都会把 skill_ids 抹回空数组,绑定"莫名消失"。
-		update.SkillIDs = existing.SkillIDs
-		if agentSeedMatches(existing, update) {
-			report.Existing++
-			continue
-		}
-		if _, err := queries.UpdateAgent(ctx, update); err != nil {
-			return report, err
-		}
-		report.Updated++
+		// Existing agents are operator-owned: startup must not revert prompts,
+		// routes, enablement, relationships, or skill bindings to factory values.
+		report.Existing++
 	}
 
 	return report, nil

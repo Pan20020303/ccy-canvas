@@ -8,6 +8,13 @@ function makeError(options: Partial<ConstructorParameters<typeof ApiClientError>
 }
 
 describe("toUserMessage", () => {
+  it("preserves a normalized provider reason and real status without secrets", () => {
+    const error = makeError({code:"UPSTREAM_UNAVAILABLE", message:"模型渠道认证失败（上游 HTTP 401）：invalid key; token=secret-value"});
+    const message=toUserMessage(error,"zh");
+    expect(message).toContain("HTTP 401");
+    expect(message).toContain("invalid key");
+    expect(message).not.toContain("secret-value");
+  });
   it("maps known codes to safe localized messages", () => {
     expect(toUserMessage(makeError({ code: "UNAUTHENTICATED", status: 401 }), "en")).toBe("Your session has expired. Please sign in again.");
     expect(toUserMessage(makeError({ code: "INSUFFICIENT_CREDITS", status: 402 }), "en")).toBe("Insufficient credits.");

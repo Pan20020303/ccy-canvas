@@ -176,7 +176,7 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 	// Wait before first poll per upstream docs, then poll at a fixed interval.
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(imageTaskPollInitialDelay):
 	}
 
@@ -184,7 +184,7 @@ func (s *Service) pollImageTask(ctx context.Context, baseURL, apiKey, queryPath,
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(imageTaskPollInterval):
 			}
 		}

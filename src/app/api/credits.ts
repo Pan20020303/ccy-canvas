@@ -8,7 +8,9 @@ export type CreditLedgerType =
   | "reserve"
   | "charge"
   | "refund"
-  | "admin_adjustment";
+  | "admin_adjustment"
+  | "project_transfer_out"
+  | "project_refund_in";
 
 export type CreditLedgerEntry = {
   id: string;

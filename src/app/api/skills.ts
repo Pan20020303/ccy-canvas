@@ -198,6 +198,7 @@ export function adminSeedCreatorSuiteAgents(): Promise<CreatorSuiteSeedReport> {
 // ─── Agent run audit log (admin-only) ───────────────────────────────────────
 
 export type AgentRun = {
+  durable?: boolean;
   id: string;
   user_id: string;
   user_name: string;
@@ -208,7 +209,7 @@ export type AgentRun = {
   final_reply: string;
   tool_calls: number;
   steps: number;
-  status: "pending" | "success" | "error" | "cancelled";
+  status: "pending" | "queued" | "running" | "waiting" | "success" | "error" | "cancelled";
   error_msg: string;
   duration_ms: number;
   created_at: string;
@@ -216,6 +217,12 @@ export type AgentRun = {
 
 export function adminListAgentRuns(limit = 100, offset = 0): Promise<AgentRun[]> {
   return apiClient.get<AgentRun[]>(`/api/admin/agent-runs?limit=${limit}&offset=${offset}`);
+}
+
+export type AgentAuditEvent = { id: number; type: string; data: Record<string, unknown>; created_at: string };
+export type AgentAuditPage = { events: AgentAuditEvent[]; cursor: number; has_more: boolean };
+export function adminAgentRunEvents(id: string, after = 0): Promise<AgentAuditPage> {
+  return apiClient.get<AgentAuditPage>(`/api/admin/agent-runs/${encodeURIComponent(id)}/events?after=${after}`);
 }
 
 export type AgentConversationHistoryItem = {

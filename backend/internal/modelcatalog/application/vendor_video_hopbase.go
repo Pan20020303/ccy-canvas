@@ -242,7 +242,7 @@ func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderC
 	client := safehttp.Client(hopBaseVideoSubmitTimeout())
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -252,14 +252,14 @@ func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderC
 
 	var submit map[string]any
 	if err := json.Unmarshal(respBody, &submit); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase submit response is invalid: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	if url := hopBaseVideoOutputURL(submit); url != "" {
 		return &GenerateResult{Type: "url", Content: url}, nil
 	}
 	taskID := hopBaseTaskID(submit)
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase submit returned no task id: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 	if s.repo != nil && req.GenerationLogID != "" {
 		providerID := ""
@@ -496,7 +496,7 @@ func (s *Service) pollHopBaseVideoTask(ctx context.Context, baseURL, apiKey, tas
 	pollURL := resolveProviderURL(baseURL, strings.ReplaceAll(hopBaseVideoQueryPath, "{taskId}", taskID))
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 	var lastBody []byte
@@ -504,7 +504,7 @@ func (s *Service) pollHopBaseVideoTask(ctx context.Context, baseURL, apiKey, tas
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -534,17 +534,13 @@ func (s *Service) pollHopBaseVideoTask(ctx context.Context, baseURL, apiKey, tas
 			if url := hopBaseVideoOutputURL(payload); url != "" {
 				return &GenerateResult{Type: "url", Content: url}, nil
 			}
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("HopBase video completed but no output URL was returned: %s", string(body[:min(len(body), 800)])))
+			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 		case "failed", "error", "failure", "cancelled", "canceled":
-			message := strings.TrimSpace(findStringField(scope, "message", 4))
-			if message == "" {
-				message = string(body[:min(len(body), 500)])
-			}
-			return nil, apperror.New(apperror.CodeInternal, "HopBase video generation failed: "+message)
+			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		}
 	}
 	if len(lastBody) > 0 {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation timed out after polling. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
+		return nil, apperror.Wrap(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交", fmt.Errorf("last polling response: %.800s", lastBody))
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }

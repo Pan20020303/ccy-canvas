@@ -66,6 +66,9 @@ func (e *Executor) Invoke(ctx context.Context, skill sqlc.Skill, inputs json.Raw
 	if len(inputs) == 0 {
 		inputs = []byte("{}")
 	}
+	if IsGuideSkill(skill) {
+		return &Result{Type: "text", Content: GuideUsageRules + "\n\n--- 方法论正文 ---\n\n" + guideContentMD(skill)}, nil
+	}
 	switch skill.Kind {
 	case "http":
 		return e.invokeHTTP(ctx, skill, inputs)

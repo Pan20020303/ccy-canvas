@@ -218,8 +218,8 @@ type AgentUpsertBody struct {
 	ParentDeployKey string          `json:"parent_deploy_key,omitempty"`
 	ModelName       string          `json:"model_name,omitempty"`
 	ProviderID      string          `json:"provider_id,omitempty"`
-	Temperature     float64         `json:"temperature,omitempty"`
-	MaxOutputTokens int32           `json:"max_output_tokens,omitempty"`
+	Temperature     float64         `json:"temperature,omitempty" minimum:"0" maximum:"2"`
+	MaxOutputTokens int32           `json:"max_output_tokens,omitempty" minimum:"0" maximum:"131072"`
 	Runtime         string          `json:"runtime,omitempty"`
 	Metadata        json.RawMessage `json:"metadata,omitempty"`
 }
@@ -810,18 +810,20 @@ func toSkillItem(r sqlc.Skill) SkillItem {
 
 func toAgentItem(r sqlc.Agent) AgentItem {
 	item := AgentItem{
-		ID:           formatUUID(r.ID),
-		Scope:        r.Scope,
-		Name:         r.Name,
-		Description:  r.Description,
-		Avatar:       r.Avatar,
-		SystemPrompt: r.SystemPrompt,
-		Model:        r.Model,
-		CanvasTools:  r.CanvasTools,
-		Strategy:     r.Strategy,
-		Enabled:      r.Enabled,
-		CreatedAt:    formatTime(r.CreatedAt),
-		UpdatedAt:    formatTime(r.UpdatedAt),
+		ID:              formatUUID(r.ID),
+		Scope:           r.Scope,
+		Name:            r.Name,
+		Description:     r.Description,
+		Avatar:          r.Avatar,
+		SystemPrompt:    r.SystemPrompt,
+		Model:           skillsapp.ResolveCatalogModelName(skillsapp.AgentRouteConfigFromRow(r)),
+		DeployKey:       r.DeployKey,
+		ParentDeployKey: r.ParentDeployKey,
+		CanvasTools:     r.CanvasTools,
+		Strategy:        r.Strategy,
+		Enabled:         r.Enabled,
+		CreatedAt:       formatTime(r.CreatedAt),
+		UpdatedAt:       formatTime(r.UpdatedAt),
 	}
 	if r.OwnerID.Valid {
 		item.OwnerID = formatUUID(r.OwnerID)
@@ -835,6 +837,7 @@ func toAgentItem(r sqlc.Agent) AgentItem {
 
 func toAdminAgentItem(r sqlc.Agent) AgentItem {
 	item := toAgentItem(r)
+	item.Model = r.Model
 	item.DeployKey = r.DeployKey
 	item.ParentDeployKey = r.ParentDeployKey
 	item.ModelName = r.ModelName

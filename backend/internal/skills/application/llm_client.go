@@ -86,7 +86,9 @@ type StreamOpts struct {
 	OnReasoning StreamCallback
 	// Thinking 深度思考开关:nil=按模型默认;true/false=显式开/关。
 	// 仅对已知思考类模型下发控制字段(见 applyThinkingControl),不影响其它模型。
-	Thinking *bool
+	Thinking        *bool
+	Temperature     *float64
+	MaxOutputTokens int32
 }
 
 // isQwenHybridThinkingModel 判断百炼 qwen3.7 混合思考模型(qwen3.7-max/plus 及
@@ -290,7 +292,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 	health ChannelHealthReporter,
 ) (*ChatResponse, error) {
 	if len(endpoints) == 0 {
-		return nil, apperror.New(apperror.CodeInvalidInput, "当前模型没有可用渠道，请管理员检查模型服务配置。")
+		return nil, apperror.New(apperror.CodeUpstreamUnavailable, "当前模型没有可用渠道，请在后台检查模型绑定及渠道启用状态")
 	}
 
 	var lastErr error
@@ -308,6 +310,12 @@ func (c *LLMClient) ChatStreamMultiOpts(
 				return resp, nil
 			}
 			lastErr = err
+			if ep.APIKey != "" {
+				publicErr := apperror.Normalize(err)
+				publicErr.Message = strings.ReplaceAll(publicErr.Message, ep.APIKey, "[已脱敏]")
+				err = publicErr
+				lastErr = publicErr
+			}
 			endpointLastErr = err
 			// If the error isn't transient we don't bother retrying the same
 			// endpoint — but we DO continue to the next endpoint if available,
@@ -316,7 +324,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 			if !isTransientStreamError(err) {
 				// Ollama 系网关不认字符串式 tool_calls.arguments(4xx):
 				// 换对象形态对同一 endpoint 降级重试一次。
-				if !triedObjectArgs && hasToolCallHistory(messages) && isLLMHTTP4xxError(err) {
+				if !triedObjectArgs && hasToolCallHistory(messages) && isProviderArgumentError(err) {
 					triedObjectArgs = true
 					objectArgs = true
 					continue
@@ -328,7 +336,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 			}
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, apperror.ProviderRequestFailure(ctx.Err())
 			case <-time.After(time.Duration(attempt*attempt) * 250 * time.Millisecond):
 			}
 		}
@@ -336,7 +344,7 @@ func (c *LLMClient) ChatStreamMultiOpts(
 		// the error string in modelcatalog.ClassifyError; we pass 0 here
 		// because streaming errors typically don't surface a clean status).
 		if health != nil && ep.ProviderID != "" && endpointLastErr != nil {
-			health.OnEndpointFailure(ctx, ep.ProviderID, 0, apperror.Diagnostic(endpointLastErr))
+			health.OnEndpointFailure(ctx, ep.ProviderID, providerErrorStatus(endpointLastErr), apperror.Diagnostic(endpointLastErr))
 		}
 	}
 	return nil, classifyLLMFailure(lastErr, model)
@@ -367,6 +375,12 @@ func (c *LLMClient) doStream(
 	// 严格按模型名 gate,不影响非思考类模型 —— 与 modelcatalog.applyQwenThinkingDefaults
 	// 同规则(包间不互相 import,故此处内联)。
 	applyThinkingControl(body, model, opts.Thinking)
+	if opts.Temperature != nil {
+		body["temperature"] = *opts.Temperature
+	}
+	if opts.MaxOutputTokens > 0 {
+		body["max_tokens"] = opts.MaxOutputTokens
+	}
 	if len(tools) > 0 {
 		body["tools"] = tools
 		body["tool_choice"] = "auto"
@@ -375,7 +389,7 @@ func (c *LLMClient) doStream(
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
-		return nil, err
+		return nil, apperror.Wrap(apperror.CodeUpstreamUnavailable, "模型渠道地址格式不正确，请联系管理员检查配置", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -383,13 +397,13 @@ func (c *LLMClient) doStream(
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("LLM request failed: %w", err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return nil, newLLMHTTPError(resp.StatusCode, string(raw), model)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return nil, newLLMHTTPError(resp.StatusCode, strings.ReplaceAll(string(raw), apiKeyOrSentinel(apiKey), "[已脱敏]"), model)
 	}
 
 	// Some relays don't honour stream:true and just send a regular JSON body.
@@ -398,8 +412,15 @@ func (c *LLMClient) doStream(
 	if !strings.Contains(ct, "event-stream") && !strings.Contains(ct, "text/plain") {
 		return parseOneShot(resp.Body, opts)
 	}
-
-	return parseSSE(resp.Body, opts)
+	reader := bufio.NewReader(resp.Body)
+	if strings.Contains(ct, "text/plain") {
+		// Some relays label regular JSON as text/plain.
+		prefix, _ := reader.Peek(1)
+		if len(prefix) > 0 && prefix[0] == '{' {
+			return parseOneShot(reader, opts)
+		}
+	}
+	return parseSSE(reader, opts)
 }
 
 var (
@@ -431,24 +452,7 @@ func newLLMHTTPError(status int, raw, model string) error {
 		return apperror.Wrap(apperror.CodeRequestTooLarge, message, diagnostic)
 	}
 
-	switch status {
-	case http.StatusBadRequest, http.StatusUnprocessableEntity:
-		return apperror.Wrap(apperror.CodeInvalidInput,
-			fmt.Sprintf("模型服务拒绝了请求（HTTP %d）。通常是内容长度、工具参数或参考素材格式不兼容；请查看任务详情后调整。", status), diagnostic)
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return apperror.Wrap(apperror.CodeUpstreamUnavailable,
-			fmt.Sprintf("模型渠道鉴权失败（HTTP %d），请管理员检查该模型的 API Key 和渠道配置。", status), diagnostic)
-	case http.StatusTooManyRequests:
-		return apperror.WithRetryable(apperror.Wrap(apperror.CodeRateLimited,
-			"模型渠道当前限流（HTTP 429），请稍后重试或切换模型。", diagnostic), true)
-	default:
-		if status >= 500 {
-			return apperror.WithRetryable(apperror.Wrap(apperror.CodeUpstreamUnavailable,
-				fmt.Sprintf("模型渠道返回 HTTP %d，当前渠道暂时不可用；可稍后重试或切换模型。", status), diagnostic), true)
-		}
-		return apperror.Wrap(apperror.CodeUpstreamUnavailable,
-			fmt.Sprintf("模型调用失败（HTTP %d），请检查模型渠道配置。", status), diagnostic)
-	}
+	return apperror.ProviderFailure(status, []byte(raw))
 }
 
 func classifyLLMFailure(err error, model string) error {
@@ -528,7 +532,8 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 			// 在读到 4xx 状态行的瞬间立即终止上抛,让上层换 tool_calls 形态
 			// 降级重试,绝不等一个永远不会结束的流。
 			if fields := strings.Fields(line); len(fields) >= 2 && strings.HasPrefix(fields[0], "HTTP/1.") && strings.HasPrefix(fields[1], "4") {
-				return nil, fmt.Errorf("LLM HTTP 4xx (embedded in stream): %s", line)
+				status, _ := strconv.Atoi(fields[1])
+				return nil, apperror.ProviderFailure(status, nil)
 			}
 			continue
 		}
@@ -538,6 +543,7 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		}
 
 		var chunk struct {
+			Error   json.RawMessage `json:"error"`
 			Choices []struct {
 				Delta struct {
 					Content string `json:"content"`
@@ -564,6 +570,9 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			// Some relays send a final non-JSON line (e.g. error JSON without "data:").
 			continue
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return nil, apperror.ProviderFailure(http.StatusOK, []byte(payload))
 		}
 		// usage 尾包通常 choices 为空 —— 必须在下面的空-choices 跳过之前抓取。
 		if chunk.Usage != nil && chunk.Usage.TotalTokens > 0 {
@@ -616,7 +625,10 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("LLM stream read: %w", err)
+		return nil, apperror.ProviderRequestFailure(err)
+	}
+	if contentBuilder.Len() == 0 && len(toolCalls) == 0 {
+		return nil, apperror.New(apperror.CodeUpstreamUnavailable, "模型服务返回了空响应，没有回复或工具调用，请检查模型是否支持当前对话模式")
 	}
 
 	return &ChatResponse{
@@ -634,9 +646,10 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	onDelta := opts.OnDelta
 	raw, err := io.ReadAll(io.LimitReader(r, 4*1024*1024))
 	if err != nil {
-		return nil, fmt.Errorf("LLM read: %w", err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	var parsed struct {
+		Error   json.RawMessage `json:"error"`
 		Choices []struct {
 			Message struct {
 				Content          string `json:"content"`
@@ -656,10 +669,13 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		Usage Usage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("LLM parse: %w", err)
+		return nil, apperror.Wrap(apperror.CodeUpstreamUnavailable, "模型服务返回的内容不是有效的对话 JSON，请检查接口兼容性", err)
+	}
+	if len(parsed.Error) > 0 && string(parsed.Error) != "null" {
+		return nil, apperror.ProviderFailure(http.StatusOK, raw)
 	}
 	if len(parsed.Choices) == 0 {
-		return nil, errors.New("LLM returned no choices")
+		return nil, apperror.New(apperror.CodeUpstreamUnavailable, "模型服务响应缺少 choices，无法读取回复，请检查接口兼容性")
 	}
 	choice := parsed.Choices[0]
 	if choice.Message.ReasoningContent != "" && opts.OnReasoning != nil {
@@ -702,7 +718,7 @@ func (c *LLMClient) VisionOneShot(
 	prompt string,
 ) (string, error) {
 	if len(endpoints) == 0 {
-		return "", errors.New("no endpoints configured for vision model")
+		return "", apperror.New(apperror.CodeUpstreamUnavailable, "当前视觉模型没有可用渠道，请检查模型绑定及渠道启用状态")
 	}
 	body := map[string]any{
 		"model":  model,
@@ -731,19 +747,19 @@ func (c *LLMClient) VisionOneShot(
 func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, bodyJSON []byte) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.BaseURL+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
-		return "", err
+		return "", apperror.Wrap(apperror.CodeUpstreamUnavailable, "视觉模型渠道地址格式不正确，请检查配置", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+ep.APIKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return "", newLLMHTTPError(resp.StatusCode, string(raw), model)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return "", newLLMHTTPError(resp.StatusCode, strings.ReplaceAll(string(raw), apiKeyOrSentinel(ep.APIKey), "[已脱敏]"), model)
 	}
 	parsed, err := parseOneShot(resp.Body, StreamOpts{})
 	if err != nil {
@@ -761,7 +777,7 @@ func isTransientStreamError(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	msg := err.Error()
+	msg := apperror.Diagnostic(err)
 	transientSnippets := []string{
 		"EOF",
 		"connection reset",
@@ -776,4 +792,27 @@ func isTransientStreamError(err error) bool {
 		}
 	}
 	return false
+}
+
+func apiKeyOrSentinel(key string) string {
+	if key == "" {
+		return "\x00-no-key-\x00"
+	}
+	return key
+}
+
+func providerErrorStatus(err error) int {
+	appErr := apperror.Normalize(err)
+	if appErr != nil {
+		if details, ok := appErr.Details.(map[string]any); ok {
+			status, _ := details["upstream_status"].(int)
+			return status
+		}
+	}
+	return 0
+}
+
+func isProviderArgumentError(err error) bool {
+	status := providerErrorStatus(err)
+	return status == 400 || status == 422
 }

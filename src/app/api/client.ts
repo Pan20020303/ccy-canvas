@@ -160,6 +160,12 @@ function requestCancelled(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+/** Share the safe envelope parser with streaming clients; never throw raw bodies. */
+export async function readApiError(response: Response): Promise<ApiClientError> {
+  const raw = await response.text();
+  return apiErrorFromResponse(response, parseJson(raw), raw);
+}
+
 async function fetchResponse(input: string, init?: RequestInit) {
   const primaryUrl = resolveApiUrl(input);
   const fallbackUrl = inferSameHostBackendUrl(input);

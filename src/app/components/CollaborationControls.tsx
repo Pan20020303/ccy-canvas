@@ -74,7 +74,7 @@ function PresenceAvatars() {
   );
 }
 
-export function CollaborationControls() {
+export function CollaborationControls({ compact = false }: { compact?: boolean }) {
   const language = useStore((s) => s.language);
   const activeProjectId = useStore((s) => s.activeBackendProjectId);
   const backendProjects = useStore((s) => s.backendProjects);
@@ -240,16 +240,16 @@ export function CollaborationControls() {
   return (
     <>
       {isCollab ? (
-        <div className="flex items-center gap-2">
+        <div className={compact ? 'canvas-collaboration-controls' : 'flex items-center gap-2'}>
           {/* 身份 role dropdown */}
           <div className="relative">
             <button
               type="button"
               onClick={() => { setRoleMenuOpen((v) => !v); setPointsMenuOpen(false); }}
-              className={clsx('flex h-9 items-center gap-1.5 px-3 text-[12px] text-neutral-100 transition hover:bg-black/70', pillBase)}
+              className={clsx('flex h-9 items-center gap-1.5 px-3 text-[12px] text-neutral-100 transition hover:bg-black/70', pillBase, compact && 'canvas-action-pill')}
             >
               <Users className="h-3.5 w-3.5 text-neutral-300" />
-              {collabRoleLabel(myRole, zh)}
+              {compact ? (zh ? '协作' : 'Collaborate') : collabRoleLabel(myRole, zh)}
               {roleMenuOpen ? <ChevronUp className="h-3 w-3 opacity-60" /> : <ChevronDown className="h-3 w-3 opacity-60" />}
             </button>
             {roleMenuOpen ? (
@@ -277,11 +277,11 @@ export function CollaborationControls() {
               <button
                 type="button"
                 onClick={() => { setPointsMenuOpen((v) => !v); setRoleMenuOpen(false); }}
-                className={clsx('flex h-9 items-center gap-1 px-3 text-[12px] text-neutral-100 transition hover:bg-black/70', pillBase)}
+                className={clsx('flex h-9 items-center gap-1 px-3 text-[12px] text-neutral-100 transition hover:bg-black/70', pillBase, compact && 'canvas-action-pill')}
                 title={zh ? '项目积分' : 'Project points'}
               >
                 <Zap className="h-3.5 w-3.5 text-amber-400" />
-                <span className="tabular-nums">{projectCreditsLoading && !projectCredits ? '—' : (projectCredits?.current_balance ?? 0)}</span>
+                <span className="tabular-nums">{projectCreditsLoading && !projectCredits ? '—' : (projectCredits?.current_balance ?? '—')}</span>
                 {pointsMenuOpen ? <ChevronUp className="h-3 w-3 opacity-60" /> : <ChevronDown className="h-3 w-3 opacity-60" />}
               </button>
               {pointsMenuOpen ? (
@@ -297,10 +297,10 @@ export function CollaborationControls() {
           ) : null}
 
           {/* 协作中 status — 在线成员彩色头像堆叠(颜色与其光标一致)+ 状态 */}
-          <span className={clsx('flex h-9 items-center gap-2 px-3 text-[12px] text-emerald-300', pillBase)}>
+          {!compact && <span className={clsx('flex h-9 items-center gap-2 px-3 text-[12px] text-emerald-300', pillBase)}>
             <PresenceAvatars />
             {zh ? '协作中' : 'Collaborating'}
-          </span>
+          </span>}
         </div>
       ) : (
         // 未协作:仅创建者可见「协作」入口(成员只有在协作态才会看到该项目)。
@@ -308,7 +308,7 @@ export function CollaborationControls() {
           <button
             type="button"
             onClick={() => setConvertOpen(true)}
-            className={clsx('flex h-9 items-center gap-1.5 px-3.5 text-[12px] text-neutral-100 transition hover:-translate-y-0.5 hover:bg-black/70', pillBase)}
+            className={clsx('flex h-9 items-center gap-1.5 px-3.5 text-[12px] text-neutral-100 transition hover:-translate-y-0.5 hover:bg-black/70', pillBase, compact && 'canvas-action-pill')}
           >
             <Users className="h-3.5 w-3.5 text-neutral-300" />
             {zh ? '协作' : 'Collaborate'}

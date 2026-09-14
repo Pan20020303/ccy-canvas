@@ -1,241 +1,92 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, ArrowLeft, Check, CloudOff, Languages, Loader2, LogOut, Moon, Settings as SettingsIcon, Shield, Sun, User as UserIcon, Zap } from "lucide-react";
-import { gsap } from "gsap";
-
+import { AlertTriangle, ArrowLeft, Check, CloudOff, Crown, FolderOpen, Loader2, Moon, Save, Settings, Sparkles, Sun } from "lucide-react";
+import { toast } from "sonner";
 import { useAuth } from "../auth/AuthProvider";
-import { t } from "../i18n";
 import { useStore } from "../store";
-import logoUrl from "../../imports/logo.png";
 import { TaskQueue } from "./TaskQueue";
 import { CollaborationControls } from "./CollaborationControls";
 import { CreditLedgerModal } from "./CreditLedgerModal";
 import { UserAvatar } from "./UserAvatar";
 import { CanvasRecoveryPanel } from "./CanvasRecoveryPanel";
-
-// 英文切换暂时下线:i18n 词条覆盖率过低(大量面板仍是中文),切到英文是
-// 最差的半成品中间态。先藏按钮止损,待覆盖补齐后翻回 true 即可恢复。
-const SHOW_LANGUAGE_TOGGLE = false;
+import { AccountCenter, type AccountTab } from "./home/AccountCenter";
+import { CanvasSwitcher } from "./canvas-header/CanvasSwitcher";
+import { prepareCanvasNavigation } from "./canvas-header/canvas-navigation";
+import "./home/home.css";
+import "./canvas-header/canvas-header.css";
 
 export const Navbar = () => {
-  const { language, toggleLanguage, setProfileOpen, setSettingsOpen } = useStore();
-  const theme = useStore((s) => s.theme);
-  const setTheme = useStore((s) => s.setTheme);
-  const agentPanelOpen = useStore((s) => s.agentPanelOpen);
-  // 面板宽度可拖拽 —— 让位必须跟随实际宽度(硬编码 480 会在拖宽后被面板压住)。
-  const agentPanelWidth = useStore((s) => s.agentPanelWidth);
-  const agentPanelResizing = useStore((s) => s.agentPanelResizing);
-  const activeProjectId = useStore((s) => s.activeBackendProjectId);
-  const activeProject = useStore((s) => s.backendProjects.find((project) => project.id === s.activeBackendProjectId));
-  const isCollaborativeProject = Boolean(activeProjectId && activeProject?.is_collaborative);
+  const language = useStore(s => s.language);
+  const setProfileOpen = useStore(s => s.setProfileOpen);
+  const setSettingsOpen = useStore(s => s.setSettingsOpen);
+  const panelOpen = useStore(s => s.agentPanelOpen);
+  const panelWidth = useStore(s => s.agentPanelWidth);
+  const panelResizing = useStore(s => s.agentPanelResizing);
+  const project = useStore(s => s.backendProjects.find(p => p.id === s.activeBackendProjectId));
   const { user, creditSummary, logout, refreshCredits } = useAuth();
-  const dict = t[language];
   const navigate = useNavigate();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const zh = language === "zh";
+  const [accountTab, setAccountTab] = useState<AccountTab | null>(null);
   const [ledgerOpen, setLedgerOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const navigationBusy = useRef(false);
 
-  // (theme → <html> sync lives in App.tsx now, so it works on every route.)
-
-  useEffect(() => {
-    const root = rootRef.current;
-
-    if (!root) {
-      return;
-    }
-
-    const mm = gsap.matchMedia();
-    const ctx = gsap.context(() => {
-      mm.add("(prefers-reduced-motion: no-preference)", () => {
-        gsap.from(root, {
-          autoAlpha: 0,
-          y: -12,
-          duration: 0.34,
-          ease: "power2.out",
-        });
-      });
-    }, root);
-
-    return () => {
-      ctx.revert();
-      mm.revert();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!menuOpen || !menuRef.current) {
-      return;
-    }
-
-    const menu = menuRef.current;
-    gsap.fromTo(
-      menu,
-      { autoAlpha: 0, y: -8, scale: 0.98 },
-      { autoAlpha: 1, y: 0, scale: 1, duration: 0.22, ease: "power2.out" },
-    );
-  }, [menuOpen]);
-
-  // Keep the credit pill in sync with server-side balance:
-  //   · refresh whenever the tab regains focus (covers in-flight tasks that
-  //     completed in another tab, or balance changes from admin tools)
-  //   · refresh whenever an in-flight generation settles (activeRun null←non-null)
-  //   · poll once a minute as a low-cost safety net
-  // CRITICAL: these paths use refreshCredits (user + balance ONLY). The full
-  // refresh() reloads models AND projects — which replaced the live canvas
-  // with the first backend project and wiped the undo stack once a minute.
+  // Refresh only the balance, never reload or replace the active canvas.
   useEffect(() => {
     if (!user) return;
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refreshCredits();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    const intervalId = window.setInterval(() => { void refreshCredits(); }, 60_000);
-
-    // Subscribe to activeRun transitions: any "running → idle" edge means
-    // a generation just settled (success / failure / refund), so the
-    // balance probably changed — fetch the new number now instead of
-    // waiting up to a minute for the polling tick.
-    let prevActive = useStore.getState().activeRun;
-    const unsubscribe = useStore.subscribe((state) => {
-      const next = state.activeRun;
-      if (prevActive && !next) void refreshCredits();
-      prevActive = next;
+    const visible = () => { if (document.visibilityState === "visible") void refreshCredits(); };
+    document.addEventListener("visibilitychange", visible);
+    const timer = window.setInterval(() => void refreshCredits(), 60_000);
+    let previous = useStore.getState().activeRun;
+    const unsubscribe = useStore.subscribe(state => {
+      if (previous && !state.activeRun) void refreshCredits();
+      previous = state.activeRun;
     });
-
-    return () => {
-      document.removeEventListener("visibilitychange", onVisible);
-      window.clearInterval(intervalId);
-      unsubscribe();
-    };
+    return () => { document.removeEventListener("visibilitychange", visible); window.clearInterval(timer); unsubscribe(); };
   }, [user, refreshCredits]);
 
-  // Floating layout: the navbar no longer occupies a horizontal strip \u2014 the
-  // canvas runs edge-to-edge under it. The logo and the controls cluster sit
-  // as independent rounded pills that hover over the canvas, so the actual
-  // workspace area is uninterrupted.
-  const pillBase = "rounded-full border border-white/[0.10] bg-black/55 backdrop-blur-xl shadow-[0_10px_32px_-12px_rgba(0,0,0,0.65)]";
-
-  return (
-    <div
-      ref={rootRef}
-      style={{ right: agentPanelOpen ? agentPanelWidth : 0 }}
-      className={`pointer-events-none absolute inset-x-0 top-0 z-50 flex items-start justify-between px-5 pt-4 ${agentPanelResizing ? "" : "transition-[right] duration-200 ease-out"}`}
-    >
-      {/* Left: logo pill + 返回 — both routes back to the project homepage. */}
-      <div className="pointer-events-auto flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => navigate('/home')}
-          title={language === 'zh' ? '返回首页' : 'Back to home'}
-          className={`flex items-center gap-2 ${pillBase} px-3 py-1.5 transition hover:bg-black/70`}
-        >
-          <img src={logoUrl} alt="CCY Canvas" className="h-6 w-6 rounded object-contain" />
-          <span className="text-[13px] font-semibold tracking-wide text-neutral-100">CCY Canvas</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate('/home')}
-          className={`flex h-9 items-center gap-1.5 ${pillBase} px-3 text-[12px] text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          {language === 'zh' ? '返回' : 'Back'}
-        </button>
+  const leave = async (path: string) => {
+    if (navigationBusy.current) return;
+    navigationBusy.current = true;
+    try { await prepareCanvasNavigation(); setAccountTab(null); navigate(path); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "暂时无法离开画布，请重试。"); }
+    finally { navigationBusy.current = false; }
+  };
+  const save = async () => {
+    const state = useStore.getState();
+    if (!state.activeBackendProjectId) { toast.info("当前为本地画布，修改保存在此设备。"); return; }
+    if (project?.my_role === "visitor") { toast.info("当前画布为只读权限。"); return; }
+    if (!state.canvasHydrated || state.backendSyncing) { toast.info("画布尚未加载完成。"); return; }
+    await state.saveCanvasToBackend({ force: true });
+    if (useStore.getState().canvasSaveStatus === "error") toast.error("保存失败，请检查连接后重试。");
+    else toast.success("画布已保存");
+  };
+  return <>
+    <header className="canvas-navbar" data-agent-open={panelOpen} style={{ right: panelOpen ? panelWidth : 0, transition: panelResizing ? "none" : undefined }} aria-label={zh ? "画布导航" : "Canvas navigation"}>
+      <div className="canvas-navbar-content">
+        <CanvasSwitcher onHome={() => void leave("/home")} />
+        <div className="canvas-top-actions">
+          <TaskQueue variant="more" menuActions={[
+            { label: zh ? "保存画布" : "Save canvas", icon: Save, onSelect: save },
+            { label: zh ? "管理画布" : "Manage canvases", icon: FolderOpen, onSelect: () => leave("/home?view=canvases") },
+            { label: zh ? "画布设置" : "Canvas settings", icon: Settings, onSelect: () => setSettingsOpen(true) },
+            { label: zh ? "返回首页" : "Back to home", icon: ArrowLeft, onSelect: () => leave("/home") },
+          ]} />
+          {user && <CollaborationControls compact />}
+          {user ? <>
+            <div className="canvas-billing-pill">
+              {!project?.is_collaborative && <button type="button" className="canvas-credit-button" onClick={() => setLedgerOpen(true)} aria-label={zh ? "查看积分明细" : "Credit details"} title={zh ? `可用积分 ${creditSummary?.current_balance ?? "—"} · 每日额度 ${creditSummary?.daily_quota ?? "—"}，点击查看明细` : "Balance and daily allowance"}>
+                <Sparkles className="canvas-credit-star" size={15} /><span className="canvas-credit-amount">{creditSummary?.current_balance?.toLocaleString() ?? "—"}</span>
+              </button>}
+              <button type="button" className="canvas-membership-button" aria-label={zh ? "开通会员" : "Membership"} title={zh ? "会员订阅尚未开放，点击查看账户权益" : "Subscriptions are not available yet. View account access."} onClick={() => setAccountTab("profile")}><Crown className="canvas-membership-icon" size={15} /><span className="canvas-membership-label">{zh ? "开通会员" : "Membership"}</span></button>
+            </div>
+            <button type="button" className="canvas-account-button" aria-label={zh ? "我的账户" : "My account"} title={user.name} onClick={() => setAccountTab("profile")}><UserAvatar avatar={user.avatar} name={user.name} className="canvas-account-avatar" fallbackClassName="canvas-avatar-fallback" /></button>
+          </> : <button type="button" className="canvas-login-button" onClick={() => navigate("/login")}>{zh ? "登录" : "Log in"}</button>}
+        </div>
       </div>
-
-      {/* Right: controls cluster */}
-      <div className="pointer-events-auto flex items-center gap-2">
-        {/* Icon-only language toggle (reference proportions); the current
-            language lives in the tooltip. Hidden until i18n coverage is complete
-            (SHOW_LANGUAGE_TOGGLE). */}
-        {SHOW_LANGUAGE_TOGGLE ? (
-          <button
-            onClick={toggleLanguage}
-            title={language === "en" ? "Language: EN \u2192 \u4e2d\u6587" : "\u8bed\u8a00: \u4e2d\u6587 \u2192 EN"}
-            className={`flex h-9 w-9 items-center justify-center ${pillBase} text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
-          >
-            <Languages className="h-4 w-4" />
-          </button>
-        ) : null}
-
-        {/* 协作控件:私有→「协作」按钮;协作中→创建者/积分下拉 + 协作中状态。 */}
-        {user ? <SaveStatusIndicator language={language} /> : null}
-
-        {user ? <CollaborationControls /> : null}
-
-        {user && !isCollaborativeProject ? (
-          // Show the pill whenever the user is logged in, even if the
-          // credit summary hasn't loaded yet — falling back to `—` so the
-          // pill doesn't visually disappear on transient backend errors
-          // or before the first /auth/me response lands.
-          <button
-            type="button"
-            onClick={() => setLedgerOpen(true)}
-            title={
-              language === "en"
-                ? "Balance / daily quota — refills to at least your daily quota each day. Click for details."
-                : "余额 / 每日额度 — 每天自动补满到不低于每日额度,充值/额外积分不会被清空。点击查看明细"
-            }
-            className={`flex items-center gap-1 ${pillBase} px-3 py-1.5 text-[11px] text-neutral-200 transition hover:-translate-y-0.5 hover:bg-black/70`}
-          >
-            <Zap className="h-3 w-3 text-amber-400" />
-            <span className="tabular-nums">{creditSummary ? creditSummary.current_balance : "—"}</span>
-            <span className="text-neutral-500">/</span>
-            <span className="tabular-nums text-neutral-400">{creditSummary ? creditSummary.daily_quota : "—"}</span>
-          </button>
-        ) : null}
-
-        {user ? <TaskQueue /> : null}
-
-        {!user ? (
-          <button
-            onClick={() => navigate("/login")}
-            className="rounded-full bg-cyan-600 px-4 py-1.5 text-xs font-medium text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-cyan-500"
-          >
-            {dict.login}
-          </button>
-        ) : (
-          <div className="relative">
-            <button
-              onClick={() => setMenuOpen((open) => !open)}
-              className={`flex items-center justify-center ${pillBase} h-9 w-9 p-0 transition hover:-translate-y-0.5 hover:bg-black/70`}
-            >
-              <UserAvatar avatar={user.avatar} name={user.name} className="h-7 w-7 rounded-full object-cover text-xs" />
-            </button>
-
-            {menuOpen ? (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div ref={menuRef} className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-white/10 bg-[#15181d]/95 py-1.5 shadow-2xl backdrop-blur-xl">
-                  <div className="border-b border-white/5 px-3 py-2">
-                    <div className="text-sm text-neutral-200">{user.name}</div>
-                    <div className="text-[11px] text-neutral-500">{user.email}</div>
-                  </div>
-                  <MenuItem icon={UserIcon} label={dict.profile} onClick={() => { setMenuOpen(false); setProfileOpen(true); }} />
-                  <MenuItem icon={SettingsIcon} label={language === "zh" ? "\u8bbe\u7f6e" : "Settings"} onClick={() => { setMenuOpen(false); setSettingsOpen(true); }} />
-                  <ThemeToggleRow theme={theme} setTheme={setTheme} language={language} />
-                  {user.role === "admin" ? (
-                    <MenuItem icon={Shield} label={dict.admin_settings} onClick={() => { setMenuOpen(false); navigate("/admin"); }} />
-                  ) : null}
-                  <div className="my-1 border-t border-white/5" />
-                  <MenuItem
-                    icon={LogOut}
-                    label={dict.logout}
-                    onClick={async () => {
-                      setMenuOpen(false);
-                      await logout();
-                      navigate("/login");
-                    }}
-                  />
-                </div>
-              </>
-            ) : null}
-          </div>
-        )}
-      </div>
-      <CreditLedgerModal open={ledgerOpen} onClose={() => setLedgerOpen(false)} language={language} />
-    </div>
-  );
+    </header>
+    <CreditLedgerModal open={ledgerOpen} onClose={() => setLedgerOpen(false)} language={language} />
+    <AccountCenter tab={accountTab} onTab={setAccountTab} onEditProfile={() => { setAccountTab(null); setProfileOpen(true); }} onProjects={() => void leave("/home?view=canvases")} onAdmin={() => void leave("/admin")} onLogout={async () => { await prepareCanvasNavigation(); await logout(); navigate("/login"); }} />
+  </>;
 };
 
 /** Save failures remain visible; conflicts pause retries and expose recovery.

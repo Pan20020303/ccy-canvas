@@ -42,6 +42,7 @@ type listAdminSkillsOutput struct {
 var adminSec = []map[string][]string{{httpapi.SecuritySchemeName: {authn.ScopeAdmin}}}
 
 func (h *AdminHandler) RegisterRoutes(api huma.API) {
+	huma.Register(api, huma.Operation{OperationID: "admin-agent-run-events", Method: http.MethodGet, Path: "/api/admin/agent-runs/{id}/events", Tags: []string{"Admin", "Agents"}, Security: adminSec}, h.agentRunEvents)
 	huma.Register(api, huma.Operation{
 		OperationID: "admin-list-skills",
 		Method:      http.MethodGet,
@@ -160,6 +161,7 @@ type listAgentRunsInput struct {
 }
 
 type AgentRunItem struct {
+	Durable    bool   `json:"durable"`
 	ID         string `json:"id"`
 	UserID     string `json:"user_id"`
 	UserName   string `json:"user_name"`
@@ -195,7 +197,7 @@ func (h *AdminHandler) listAgentRuns(ctx context.Context, input *listAgentRunsIn
 			ID: formatUUID(r.ID), UserID: formatUUID(r.UserID), UserName: r.UserName, UserEmail: r.UserEmail,
 			AgentID: formatUUID(r.AgentID), AgentName: r.AgentName, UserInput: r.UserInput, FinalReply: r.FinalReply,
 			ToolCalls: r.ToolCalls, Steps: r.Steps, Status: r.Status, ErrorMsg: r.ErrorMsg, DurationMs: r.DurationMs,
-			CreatedAt: formatTime(r.CreatedAt),
+			CreatedAt: formatTime(r.CreatedAt), Durable: r.Durable,
 		})
 	}
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
@@ -334,7 +336,7 @@ func (h *AdminHandler) createGlobalAgent(ctx context.Context, input *createAgent
 		ParentDeployKey: input.Body.ParentDeployKey,
 		ModelName:       input.Body.ModelName,
 		ProviderID:      input.Body.ProviderID,
-		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		Temperature:     input.Body.Temperature,
 		MaxOutputTokens: input.Body.MaxOutputTokens,
 		Runtime:         defaulted(input.Body.Runtime, "generic"),
 		Metadata:        jsonOrEmpty(input.Body.Metadata),
@@ -373,7 +375,7 @@ func (h *AdminHandler) updateAnyAgent(ctx context.Context, input *updateAgentInp
 		ParentDeployKey: input.Body.ParentDeployKey,
 		ModelName:       input.Body.ModelName,
 		ProviderID:      input.Body.ProviderID,
-		Temperature:     defaultFloat(input.Body.Temperature, 1),
+		Temperature:     input.Body.Temperature,
 		MaxOutputTokens: input.Body.MaxOutputTokens,
 		Runtime:         defaulted(input.Body.Runtime, "generic"),
 		Metadata:        jsonOrEmpty(input.Body.Metadata),
@@ -469,7 +471,7 @@ type updateMemorySettingsInput struct {
 	Body json.RawMessage
 }
 
-var defaultAgentMemorySettings = json.RawMessage(`{"messagesPerSummary":3,"shortTermLimit":5,"summaryMaxLength":500,"summaryLimit":10,"ragLimit":3,"deepRetrieveSummaryLimit":5,"modelOnnxFile":"all-MiniLM-L6-v2/onnx/model_fp16.onnx","modelDtype":"fp16"}`)
+var defaultAgentMemorySettings = json.RawMessage(`{"shortTermLimit":12,"deepRetrieveSummaryLimit":5}`)
 
 func (h *AdminHandler) getAgentMemorySettings(ctx context.Context, _ *struct{}) (*memorySettingsOutput, error) {
 	data := defaultAgentMemorySettings
@@ -483,6 +485,18 @@ func (h *AdminHandler) getAgentMemorySettings(ctx context.Context, _ *struct{}) 
 }
 
 func (h *AdminHandler) updateAgentMemorySettings(ctx context.Context, input *updateMemorySettingsInput) (*memorySettingsOutput, error) {
+	var settings map[string]json.RawMessage
+	if json.Unmarshal(input.Body, &settings) != nil || settings == nil {
+		return nil, huma.Error400BadRequest("记忆配置必须是 JSON 对象")
+	}
+	for key, maximum := range map[string]int{"shortTermLimit": 50, "deepRetrieveSummaryLimit": 20} {
+		if raw, ok := settings[key]; ok {
+			var value int
+			if json.Unmarshal(raw, &value) != nil || value < 1 || value > maximum {
+				return nil, huma.Error400BadRequest("记忆配置超出范围：" + key)
+			}
+		}
+	}
 	payload := jsonOrEmpty(input.Body)
 	if _, err := h.q.UpsertAgentSetting(ctx, sqlc.UpsertAgentSettingParams{Key: skillsapp.AgentMemorySettingsKey, Value: payload}); err != nil {
 		return nil, huma.Error500InternalServerError("Failed to save memory settings")

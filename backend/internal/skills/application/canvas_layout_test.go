@@ -40,7 +40,7 @@ func TestCreateNodeAutoAvoidsOverlap(t *testing.T) {
 	}
 }
 
-// 画布概览必须带节点坐标、分组包围盒与空间规则,支撑"放在分组X上面"。
+// 概览提供语义与分组标识；布局工具解析位置，不让模型反复读坐标。
 func TestBuildCanvasOverviewSpatialContext(t *testing.T) {
 	nodes := []CanvasNode{
 		{ID: "a", Type: "imageNode", Position: XY{X: 1200, Y: 300}, Data: map[string]any{"customTitle": "图A"}},
@@ -49,9 +49,12 @@ func TestBuildCanvasOverviewSpatialContext(t *testing.T) {
 	groups := []CanvasGroup{{ID: "g3", Name: "分组3", NodeIDs: []string{"a", "b"}}}
 
 	out := BuildCanvasOverview(nodes, nil, groups)
-	for _, want := range []string{"@(1200, 300)", "【分组】", "分组3", "x∈[1200,", "【空间规则】"} {
+	for _, want := range []string{"图A", "【分组】", "分组3", "placement.anchor_id", "layout_nodes", "【空间规则】"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("overview missing %q:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "@(1200") || strings.Contains(out, "x∈[") {
+		t.Fatal("raw coordinates leaked into the semantic summary")
 	}
 }

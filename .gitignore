@@ -9,6 +9,9 @@ bin/
 *.exe
 
 # dev / live logs
+/*.log
+/*.err.log
+/*.out.log
 *-dev.log
 *-dev.err.log
 *-dev.out.log
@@ -25,6 +28,13 @@ assets/mannequins/raw/
 
 # generated / exported artifacts (not product source)
 outputs/
+/output/
+/tmp/
+/.codex/
+/.claude/
+/.qwen/
+/.understand-anything/
+/design-qa.md
 
 # root scratch images (debug frames, masks)
 /tmp_*.png

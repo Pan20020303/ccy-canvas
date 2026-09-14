@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -55,7 +54,9 @@ type RunInput struct {
 	Tools        []Tool
 	Strategy     string // "reactive" (default) or "scripted"
 	// Thinking 深度思考开关(nil=按模型默认)。透传到 LLM 请求的思考控制字段。
-	Thinking *bool
+	Thinking        *bool
+	Temperature     *float64
+	MaxOutputTokens int32
 }
 
 // RunStats summarizes what happened during the run. Used by the handler to
@@ -66,7 +67,8 @@ type RunStats struct {
 	FinalReply string
 	// Usage 是最后一轮 LLM 调用的 token 用量。prompt+completion ≈ 本轮结束后的
 	// 上下文规模(下一轮的 prompt 大致就是它)——驱动前端的上下文窗口计量表。
-	Usage Usage
+	Usage      Usage
+	TotalUsage Usage
 	// ToolTranscript 是本次运行的紧凑工具记录(名称/参数/结果,均截断)。
 	// handler 把它持久化为 role="tool_log" 会话消息,下一轮注入 system prompt,
 	// 让后续轮次"记得"之前执行过什么 —— 跨轮工具历史(长任务连续性)。
@@ -94,7 +96,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		model = r.ModelHint
 	}
 	if model == "" {
-		return stats, errors.New("no model specified for agent")
+		return stats, apperror.New(apperror.CodeInvalidInput, "Agent 未配置模型，请在后台配置有效模型后重试")
 	}
 
 	systemPrompt := in.SystemPrompt
@@ -124,7 +126,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			toolErr error
 		)
 		if tool == nil {
-			toolErr = fmt.Errorf("tool %q not available", tc.Function.Name)
+			toolErr = apperror.New(apperror.CodeInvalidInput, "Agent 请求的工具未启用或未绑定："+apperror.SafeProviderText(tc.Function.Name))
 		} else {
 			result, toolErr = tool.Execute(ctx, json.RawMessage(tc.Function.Arguments))
 		}
@@ -135,6 +137,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			result = fmt.Sprintf(`{"error":%q}`, publicMessage)
 			emitResult["ok"] = false
 			emitResult["error"] = publicMessage
+			emitResult["failure"] = apperror.PublicEvent(toolErr)
 		} else {
 			emitResult["ok"] = true
 			emitResult["result"] = result
@@ -152,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	for step := 0; step < max; step++ {
 		select {
 		case <-ctx.Done():
-			return stats, ctx.Err()
+			return stats, apperror.ProviderRequestFailure(ctx.Err())
 		default:
 		}
 		stats.Steps = step + 1
@@ -181,10 +184,12 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 				}
 				emit(EventThoughtDelta, map[string]string{"delta": delta})
 			},
-			Thinking: in.Thinking,
+			Thinking:        in.Thinking,
+			Temperature:     in.Temperature,
+			MaxOutputTokens: in.MaxOutputTokens,
 		}, r.Health)
 		if err != nil {
-			emit(EventError, map[string]string{"message": apperror.PublicMessage(err)})
+			emit(EventError, apperror.PublicEvent(err))
 			return stats, err
 		}
 
@@ -193,6 +198,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		// 包含全部历史,累加会重复计。
 		if resp.Usage.TotalTokens > 0 {
 			stats.Usage = resp.Usage
+			stats.TotalUsage.PromptTokens += resp.Usage.PromptTokens
+			stats.TotalUsage.CompletionTokens += resp.Usage.CompletionTokens
+			stats.TotalUsage.TotalTokens += resp.Usage.TotalTokens
 			emit(EventUsage, map[string]int{
 				"prompt_tokens":     resp.Usage.PromptTokens,
 				"completion_tokens": resp.Usage.CompletionTokens,
@@ -282,6 +290,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		})
 
 		for _, tc := range resp.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return stats, apperror.ProviderRequestFailure(err)
+			}
 			result, _ := executeToolCall(tc)
 
 			messages = append(messages, ChatMessage{
@@ -294,8 +305,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	}
 
 	maxStepsMessage := "任务步骤达到上限。批量创建生成节点时请使用 create_generation_batch；其他复杂任务会由系统自动分段，仍失败时请查看已完成段数。"
-	emit(EventError, map[string]string{"message": maxStepsMessage})
-	return stats, apperror.New(apperror.CodeValidation, maxStepsMessage)
+	err := apperror.New(apperror.CodeValidation, maxStepsMessage)
+	emit(EventError, apperror.PublicEvent(err))
+	return stats, err
 }
 
 func toolCallsNamed(calls []ToolCall, name string) []ToolCall {
@@ -336,7 +348,8 @@ func formatQuestionnaireSummary(questions []string) string {
 
 // canvasWriteToolNames 是会真实改动画布的工具名。
 var canvasWriteToolNames = map[string]bool{
-	"create_node": true, "set_prompt": true, "connect_nodes": true,
+	"layout_nodes": true,
+	"create_node":  true, "set_prompt": true, "connect_nodes": true,
 	"run_node": true, "move_node": true, "delete_node": true, "create_group": true,
 }
 

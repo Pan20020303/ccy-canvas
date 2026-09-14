@@ -2,13 +2,18 @@
 
 import type { Edge, Node } from "@xyflow/react";
 import type { AgentConversationTurn } from "../components/agent-conversation";
+import { ApiClientError, readApiError } from "./client";
+import { toUserMessage } from "./errors";
+import { safeFailureMessage } from "./failure-message";
 
 export type AgentSSEEventType =
   | "thought" | "thought_delta" | "tool_call" | "tool_result"
   | "message" | "message_delta" | "canvas_patch"
-  | "conversation" | "ask_user" | "usage" | "connection_status" | "error" | "done";
+  | "conversation" | "ask_user" | "usage" | "runtime" | "delegation" | "connection_status" | "error" | "done";
 
 export type AgentSSEEvent =
+  | { type: "runtime"; data: { agent_name: string; model: string; policy: string } }
+  | { type: "delegation"; data: { id: string; agent_name: string; status: string; model: string } }
   | { type: "thought"; data: { content: string } }
   | { type: "thought_delta"; data: { delta: string } }
   | { type: "tool_call"; data: { id: string; name: string; arguments: string } }
@@ -20,7 +25,7 @@ export type AgentSSEEvent =
   | { type: "ask_user"; data: { question: string; options: string[]; allow_custom?: boolean } }
   | { type: "usage"; data: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }
   | { type: "connection_status"; data: { state: "reconnecting" | "connected"; attempts: number } }
-  | { type: "error"; data: { message: string } }
+  | { type: "error"; data: { message: string; job_id?: string } }
   | { type: "done"; data: { steps: number } };
 
 export type AgentEventMeta = {
@@ -42,8 +47,9 @@ export type CanvasPatch = (
   | { op: "add_node"; node: Node }
   | { op: "add_edge"; edge: Edge }
   | { op: "patch_node_data"; node_id: string; patch: Record<string, unknown> }
-  | { op: "run_node"; node_id: string; prompt?: string; model?: string }
-  | { op: "move_node"; node_id: string; position: { x: number; y: number } }
+  | { op: "run_node"; node_id: string; prompt?: string; model?: string; requires_confirmation?: boolean }
+  | { op: "move_node"; node_id: string; position: { x: number; y: number }; from_position?: { x: number; y: number } }
+  | { op: "move_nodes"; moves: Array<{ node_id: string; position: { x: number; y: number }; from_position: { x: number; y: number } }> }
   | { op: "delete_node"; node_id: string }
   | { op: "create_group"; node_ids: string[]; name?: string }
 ) & CanvasPatchRevision;
@@ -81,6 +87,7 @@ export function advanceCanvasPatchRevision(
 }
 
 export type AgentRunBody = {
+	 skill_id?: string;
   message: string;
   /** UI-only text. Machine preambles and skill payloads stay in `message`. */
   displayMessage?: string;
@@ -99,6 +106,12 @@ export type AgentRunBody = {
   thinking?: boolean;
   vision_model?: string;
 };
+
+export async function cancelAgentJob(job: ActiveAgentJob): Promise<void> {
+  const response = await fetch(`${apiBase}/api/app/agent-jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST', credentials: 'include' });
+  if (!response.ok) throw await readApiError(response);
+  clearActiveJob(job.agentId, job.jobId);
+}
 
 export type ActiveAgentJob = {
   agentId: string;
@@ -169,7 +182,7 @@ export async function runAgent(
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+      if (!resp.ok) throw await readApiError(resp);
       const responseBody = await resp.json() as {
         data?: { job_id?: string; conversation_id?: string };
         job_id?: string;
@@ -190,7 +203,7 @@ export async function runAgent(
       await observeAgentJob(job, onEvent, controller.signal);
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
-        onEvent({ type: "error", data: { message: (err as Error).message } });
+        onEvent({ type: "error", data: { message: agentConnectionError(err) } });
       }
     }
   })();
@@ -210,7 +223,7 @@ export async function resumeAgentJob(
   const replayThrough = job.after;
   void observeAgentJob({ ...job, after: 0 }, onEvent, controller.signal, replayThrough).catch((err: unknown) => {
     if ((err as Error).name !== "AbortError") {
-      onEvent({ type: "error", data: { message: (err as Error).message } });
+      onEvent({ type: "error", data: { message: agentConnectionError(err), job_id: job.jobId } });
     }
   });
   return () => controller.abort();
@@ -244,7 +257,7 @@ async function observeAgentJob(
     } else {
       onEvent({
         type: "error",
-        data: { message: state.error_message?.trim() || (state.status === "cancelled" ? "任务已取消" : "智能体任务执行失败") },
+        data: { message: safeFailureMessage(state.error_message) || (state.status === "cancelled" ? "任务已取消" : "智能体任务执行失败，未记录详细原因"), job_id: job.jobId },
       });
     }
     streamController.abort();
@@ -268,7 +281,7 @@ async function observeAgentJob(
           `${apiBase}/api/app/agent-jobs/${job.jobId}/events?after=${job.after}`,
           { credentials: "include", signal: streamController.signal },
         );
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+        if (!resp.ok) throw await readApiError(resp);
         if (!resp.body) throw new Error("No response body");
         if (reconnecting) {
           onEvent({ type: "connection_status", data: { state: "connected", attempts: consecutiveFailures } });
@@ -313,6 +326,10 @@ async function observeAgentJob(
             }
             flushDelta();
             if (parsed.event.type === "message") sawFinalMessage = true;
+            if (parsed.event.type === "error") {
+              parsed.event.data.message = safeFailureMessage(parsed.event.data.message) || "智能体任务执行失败，未记录详细原因";
+              parsed.event.data.job_id = job.jobId;
+            }
             onEvent(parsed.event, { id: parsed.id, replayed: parsed.id <= replayThrough });
             if (parsed.event.type === "done" || parsed.event.type === "error") {
               terminal = true;
@@ -327,6 +344,9 @@ async function observeAgentJob(
         }
       } catch (err: unknown) {
         if (terminal || signal.aborted) break;
+        // Authentication/permission failures cannot be repaired by reconnecting.
+        // Preserve the saved job: the server may still be executing it.
+        if (err instanceof ApiClientError && [401, 403, 404].includes(err.status)) throw err;
         consecutiveFailures += 1;
         try {
           if (completeFromState(await getAgentJobState(job.jobId, signal))) break;
@@ -352,7 +372,7 @@ async function getAgentJobState(jobId: string, signal: AbortSignal): Promise<Age
     credentials: "include",
     signal,
   });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  if (!resp.ok) throw await readApiError(resp);
   const responseBody = await resp.json() as { data?: AgentJobState } & Partial<AgentJobState>;
   const body = responseBody.data ?? responseBody;
   return {
@@ -361,6 +381,12 @@ async function getAgentJobState(jobId: string, signal: AbortSignal): Promise<Age
     error_message: body.error_message,
     steps: body.steps,
   };
+}
+
+function agentConnectionError(error: unknown): string {
+  if (error instanceof ApiClientError) return toUserMessage(error, "zh");
+  if (error instanceof TypeError) return "无法连接 Agent 服务，请检查网络连接。";
+  return "Agent 连接异常，未收到有效的任务响应，请重试。";
 }
 
 function waitBeforeReconnect(signal: AbortSignal, delayMs = 700) {

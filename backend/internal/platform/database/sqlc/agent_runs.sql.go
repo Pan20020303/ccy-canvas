@@ -84,13 +84,16 @@ type FinishAgentRunJobParams struct {
 const finishAgentRunJob = `-- name: FinishAgentRunJob :exec
 WITH finished AS (
     UPDATE agent_runs
-    SET final_reply=$2, tool_calls=$3, steps=$4, status=$5, error_msg=$6,
+    SET final_reply=$2, tool_calls=$3, steps=$4,
+        status=CASE WHEN status='waiting' AND error_msg='用户请求停止' THEN 'cancelled' ELSE $5 END,
+        error_msg=CASE WHEN status='waiting' AND error_msg='用户请求停止' THEN '用户已取消任务；已完成的操作不会回滚' ELSE $6 END,
         duration_ms=$7, finished_at=now(), updated_at=now()
-    WHERE id=$1
-    RETURNING id
+    WHERE id=$1 AND status NOT IN ('success','error','cancelled')
+    RETURNING id, status, error_msg
 )
 INSERT INTO agent_run_events (run_id, event_type, data)
-SELECT id, $8, $9 FROM finished
+SELECT id, CASE WHEN status='cancelled' THEN 'error' ELSE $8 END,
+       CASE WHEN status='cancelled' THEN jsonb_build_object('message',error_msg) ELSE $9::jsonb END FROM finished
 `
 
 func (q *Queries) FinishAgentRunJob(ctx context.Context, arg FinishAgentRunJobParams) error {
@@ -231,6 +234,23 @@ func (q *Queries) ListAgentRunEventsAfter(ctx context.Context, arg ListAgentRunE
 	return items, rows.Err()
 }
 
+func (q *Queries) ListAgentRunAuditEvents(ctx context.Context, arg ListAgentRunEventsAfterParams) ([]AgentRunEvent, error) {
+	rows, err := q.db.Query(ctx, `SELECT id,run_id,event_type,data,created_at FROM agent_run_events WHERE run_id=$1 AND id>$2 AND event_type NOT IN ('message_delta','thought_delta','thought','message') ORDER BY id LIMIT $3`, arg.RunID, arg.AfterID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRunEvent{}
+	for rows.Next() {
+		var i AgentRunEvent
+		if err := rows.Scan(&i.ID, &i.RunID, &i.EventType, &i.Data, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
 type ListAgentRunsParams struct {
 	Limit  int32
 	Offset int32
@@ -238,6 +258,7 @@ type ListAgentRunsParams struct {
 
 type ListAgentRunsRow struct {
 	AgentRun
+	Durable   bool   `json:"durable"`
 	AgentName string `json:"agent_name"`
 	UserName  string `json:"user_name"`
 	UserEmail string `json:"user_email"`
@@ -247,7 +268,8 @@ const listAgentRuns = `-- name: ListAgentRuns :many
 SELECT r.id, r.user_id, r.agent_id, r.conversation_id, r.user_input, r.final_reply, r.tool_calls, r.steps, r.status, r.error_msg, r.duration_ms, r.created_at,
        COALESCE(a.name, '') AS agent_name,
        COALESCE(u.name, '') AS user_name,
-       COALESCE(u.email, '') AS user_email
+       COALESCE(u.email, '') AS user_email,
+       r.request_payload <> '{}'::jsonb AS durable
 FROM agent_runs r
 LEFT JOIN agents a ON a.id = r.agent_id
 LEFT JOIN users  u ON u.id = r.user_id
@@ -264,7 +286,7 @@ func (q *Queries) ListAgentRuns(ctx context.Context, arg ListAgentRunsParams) ([
 	items := []ListAgentRunsRow{}
 	for rows.Next() {
 		var i ListAgentRunsRow
-		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.ConversationID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt, &i.AgentName, &i.UserName, &i.UserEmail); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.AgentID, &i.ConversationID, &i.UserInput, &i.FinalReply, &i.ToolCalls, &i.Steps, &i.Status, &i.ErrorMsg, &i.DurationMs, &i.CreatedAt, &i.AgentName, &i.UserName, &i.UserEmail, &i.Durable); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

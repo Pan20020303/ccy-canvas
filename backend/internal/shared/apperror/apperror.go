@@ -84,6 +84,13 @@ func Normalize(err error) *Error {
 	}
 	var appErr *Error
 	if errors.As(err, &appErr) && appErr != nil {
+		// A legacy wrapper must not erase a typed, safe provider failure.
+		// Untyped database/filesystem causes still become INTERNAL.
+		if appErr.Code == CodeInternal && appErr.Err != nil {
+			if inner := Normalize(appErr.Err); inner.Code != CodeInternal {
+				return inner
+			}
+		}
 		return appErr
 	}
 	return Wrap(CodeInternal, "服务暂时不可用，请稍后重试", err)
@@ -101,6 +108,18 @@ func PublicMessage(err error) string {
 		return "服务暂时不可用，请稍后重试"
 	}
 	return appErr.Message
+}
+
+// PublicEvent marks normalized, browser-safe failures for durable telemetry.
+// Legacy unmarked error events may contain raw internals and are not exported
+// as admin timeline diagnostics.
+func PublicEvent(err error) map[string]any {
+	appErr := Normalize(err)
+	if appErr == nil {
+		return map[string]any{}
+	}
+	return map[string]any{"source": "application_error", "code": appErr.Code,
+		"message": PublicMessage(err), "retryable": appErr.Retryable}
 }
 
 func HTTPStatus(code Code) int {

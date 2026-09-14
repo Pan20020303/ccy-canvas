@@ -1,4 +1,7 @@
 import { Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { NodeErrorBanner } from './NodeErrorBanner';
+import { useCanvasPreferences } from '../../canvas-preferences';
+import { getNodeErrorPresentation, nodeFailureReason } from './node-errors';
 import { createPortal } from 'react-dom';
 import { ResizableTextDialog } from '../ResizableTextDialog';
 import { ZImageParamsControls } from './ZImageParamsControls';
@@ -1377,7 +1380,8 @@ const PromptPanel = ({
   // visual size stays constant. The 0×0 anchor + absolute child pattern
   // keeps the surrounding layout from being warped by the scale.
   const viewport = useViewport();
-  const inverseZoom = 1 / (viewport.zoom || 1);
+  const canvasPreferences = useCanvasPreferences(state => state.values);
+  const inverseZoom = canvasPreferences.bottomToolbarScale / (viewport.zoom || 1);
   const language = useStore((state) => state.language);
   const selectReferences = useMemo(() => canvasQueries.referenceConnectionsSelector(nodeId), [nodeId]);
   const connectedReferences = useStore(selectReferences);
@@ -1414,7 +1418,10 @@ const PromptPanel = ({
     // 音频没有可用缩略图（url 是 mp3，塞进 <img> 就是裂图）——留空走图标卡；
     // 视频优先用封面帧，兜底才是原始视频 url。
     const thumb = isAudio || isText ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
-    const label = isImage ? `图片${index}` : isVideo ? `视频${index}` : isAudio ? `音频${index}` : isText ? `文本${index}` : `节点${index}`;
+    const numberedLabel = isImage ? `图片${index}` : isVideo ? `视频${index}` : isAudio ? `音频${index}` : isText ? `文本${index}` : `节点${index}`;
+    // A unique suffix avoids ambiguous tags when two real nodes share a title.
+    const name = d.customTitle || d.sourceName || d.label;
+    const label = canvasPreferences.mentionNaming === 'name' && name ? `${name}·${index}` : numberedLabel;
     const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : isText ? '文' : '节';
     // 文本引用不占缩略图位:内容预览显示在提示词框上方的 chip 行,生成时
     // 由 store.collectUpstreamText 自动并入提示词(与这里取同一字段)。
@@ -1423,7 +1430,7 @@ const PromptPanel = ({
     const mediaUrl = d.url || '';
     const sourceName = d.sourceName || d.customTitle || label;
     return { id, edgeId, type, kind, thumb, mediaUrl, label, icon, index, textContent, sourceName };
-  }), [connectedReferences]);
+  }), [connectedReferences, canvasPreferences.mentionNaming]);
   // 媒体类引用走缩略图横条;文本类引用走独立 chip 行(不占图片位)。
   const mediaRefs = upstreamNodes.filter((up) => up.kind !== 'text');
   const textRefs = upstreamNodes.filter((up) => up.kind === 'text');
@@ -2005,6 +2012,8 @@ const PromptPanel = ({
       });
       return;
     }
+    // runNode owns the real running state, after confirmation and any grace
+    // period. An optimistic state here would misreport a task before submission.
     // 记住这次视频生成的参数,下次新建视频节点自动预填(免去重选时长/分辨率/宽高比)。
     if (serviceType === 'video') {
       setLastVideoParams({
@@ -2019,6 +2028,10 @@ const PromptPanel = ({
         error: err instanceof Error ? err.message : (language === 'zh' ? '生成请求提交失败。' : 'Failed to submit generation request.'),
       });
     });
+    if (canvasPreferences.blurAfterSubmit) {
+      taRef.current?.blur();
+      useStore.getState().onNodesChange([{ id: nodeId, type: 'select', selected: false }]);
+    }
   };
 
   const checkInputs = () => {
@@ -3130,7 +3143,8 @@ const PromptPanel = ({
  *  dragging. */
 function TopFloatingPanelScaler({ children }: { children: React.ReactNode }) {
   const viewport = useViewport();
-  const inverseZoom = 1 / (viewport.zoom || 1);
+  const scale = useCanvasPreferences(state => state.values.topToolbarScale);
+  const inverseZoom = scale / (viewport.zoom || 1);
   return (
     <div className="absolute left-1/2 top-0 z-30" style={{ height: 0, width: 0 }}>
       <div
@@ -3299,7 +3313,7 @@ const BaseNode = ({
           ref={shellRef}
           className={clsx(
             // Borderless full-bleed media: the node IS the media, no outer frame.
-            'relative overflow-hidden text-neutral-100 transition-shadow duration-150',
+            'canvas-node-shell relative overflow-hidden text-neutral-100 transition-shadow duration-150',
             bare ? 'rounded-none' : 'rounded-[14px]',
             toneStyles.shell,
             selected && toneStyles.selected,
@@ -3317,8 +3331,8 @@ const BaseNode = ({
             willChange: connectTarget ? 'transform' : undefined,
           }}
           >
-          <div>{children}</div>
-          {error ? <NodeErrorBanner error={error} /> : null}
+          <div className="canvas-node-content">{children}</div>
+          {error ? <NodeErrorBanner error={error} nodeId={loadingNodeId} /> : null}
           {/* 统一生成动画：所有媒体节点默认走 GenerationOverlay（水位进度 +
               阶段徽章）；loadingOverlay 仍可覆盖特殊场景。 */}
           {loading ? (loadingOverlay ?? (loadingNodeId ? <GenerationOverlay nodeId={loadingNodeId} /> : null)) : null}
@@ -3428,87 +3442,49 @@ const BaseNode = ({
   );
 };
 
-/** User-facing error banner. Shows a short summary; full message is hidden behind a "详情" toggle
- *  and logged to the console so it remains accessible for admin/debugging. */
-function NodeErrorBanner({ error }: { error: string }) {
+
+function recoverableMediaGenerationError(data: Record<string, unknown>): string | undefined {
+  if (typeof data.url !== 'string' || !data.url.trim()) return undefined;
+  if (typeof data.lastGenerationError === 'string' && data.lastGenerationError.trim()) {
+    return data.lastGenerationError;
+  }
+  // Backward compatibility for canvases saved before recoverable failures were
+  // split from the blocking `error` field. A valid media URL always wins.
+  if (typeof data.error === 'string' && data.error.trim()) return data.error;
+  return undefined;
+}
+
+/** Compact, non-blocking failure notice shown over the preserved result. */
+function PreviousGenerationFailureNotice({ nodeId, error }: { nodeId: string; error?: string }) {
   const language = useStore((state) => state.language);
-  const [expanded, setExpanded] = useState(false);
+  const updateNodeData = useStore((state) => state.updateNodeData);
+  if (!error) return null;
+  const presentation = getNodeErrorPresentation(error);
+  const message = nodeFailureReason(error) || (language === 'zh' ? presentation.zh : presentation.en);
 
-  useEffect(() => {
-    if (error) console.error('[NodeError]', error);
-  }, [error]);
-
-  // Map common backend/browser errors to friendly summaries.
-  const summary = (() => {
-    const e = error.toLowerCase();
-    const looksLikeLocalStorageQuota =
-      e.includes('quotaexceeded')
-      || e.includes('localstorage')
-      || e.includes('local storage')
-      || e.includes('failed to execute') && e.includes('setitem')
-      || e.includes('dom exception') && e.includes('quota');
-    if (looksLikeLocalStorageQuota) return language === 'zh' ? '本地存储已满，画布已成功生成但未能保存到本地。' : 'Local storage full; generated, not saved locally.';
-    if (e.includes('quota')) return language === 'zh' ? '服务额度或配额不足，请联系管理员检查账户额度。' : 'Service quota exceeded — contact admin.';
-    if (e.includes('invalid token') || e.includes('unauthorized')) return language === 'zh' ? '模型授权失败，请联系管理员检查 API token。' : 'Model auth failed — contact admin.';
-    if (e.includes('timeout') || e.includes('timed out')) return language === 'zh' ? '请求超时，请稍后重试。' : 'Request timed out — please retry.';
-    if (e.includes('queued task failed')) return language === 'zh' ? '队列任务失败，已停止生成，不会重复提交。' : 'Queued task failed; generation stopped and was not resubmitted.';
-    if (e.includes('network')) return language === 'zh' ? '网络错误，请检查连接后重试。' : 'Network error — please retry.';
-    if (e.includes('rate') && e.includes('limit')) return language === 'zh' ? '请求过于频繁，请稍后重试。' : 'Rate limited — please slow down.';
-    if (e.includes('422') || e.includes('validation') || e.includes('minlength') || e.includes('required')) {
-      if (e.includes('prompt')) return language === 'zh' ? '提示词不能为空，请填写描述后重试。' : 'Prompt is required.';
-      return language === 'zh' ? '请求参数有误，请检查后重试。' : 'Invalid request parameters.';
-    }
-    // Upstream HTTP errors surfaced by readProviderError (e.g. "Provider HTTP 401: ...")
-    if (e.includes('provider http')) {
-      const m = error.match(/Provider HTTP (\d{3})/i);
-      const status = m ? Number(m[1]) : 0;
-      if (status === 401 || status === 403) return language === 'zh' ? '上游模型授权失败（401/403），请联系管理员检查 API key。' : 'Upstream auth failed — contact admin.';
-      if (status === 402)                   return language === 'zh' ? '上游账户余额不足（402），请联系管理员充值。' : 'Upstream credit insufficient.';
-      if (status === 404)                   return language === 'zh' ? '上游模型不存在（404），请检查模型名称是否正确。' : 'Upstream model not found.';
-      if (status === 429)                   return language === 'zh' ? '上游请求过于频繁（429），请稍后重试。' : 'Upstream rate limited.';
-      if (status === 408 || e.includes('timeout')) return language === 'zh' ? '上游请求超时，请稍后重试。' : 'Upstream timeout.';
-      if (status >= 500)                    return language === 'zh' ? '上游模型服务异常，请稍后重试。' : 'Upstream server error.';
-      return language === 'zh' ? '上游模型返回错误，详情见展开。' : 'Upstream returned an error.';
-    }
-    return language === 'zh' ? '生成失败，请稍后重试。' : 'Generation failed — please retry.';
-  })();
-
-  const copyDetail = () => { void copyWithToast(error, language === 'zh'); };
+  const dismiss = () => {
+    updateNodeData(nodeId, {
+      status: 'done',
+      error: undefined,
+      lastGenerationError: undefined,
+      lastGenerationFailedAt: undefined,
+      queuedAfterTimeout: false,
+      taskPhase: undefined,
+    });
+  };
 
   return (
-    // Full-coverage overlay over the node shell — replaces the empty
-    // placeholder with the error summary and a 详情 toggle. Layered as
-    // `absolute inset-0` so it covers any child preview as well; clicks
-    // bubble normally to the inner buttons. Centered icon + label like a
-    // toast, expandable detail panel below.
-    <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-[inherit] bg-rose-950/55 px-4 py-3 text-rose-100 backdrop-blur-md">
-      <div className="flex items-center gap-2 text-xs font-medium">
-        <ImageOff className="h-4 w-4 text-rose-300" />
-        <span className="break-words text-center">{summary}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] text-rose-100 transition hover:bg-white/[0.12]"
-        >
-          {expanded ? (language === 'zh' ? '收起' : 'Hide') : (language === 'zh' ? '详情' : 'Details')}
+    <div className="nodrag nopan pointer-events-auto absolute bottom-2 left-2 z-30 max-w-[calc(100%-16px)]">
+      <div className="flex min-h-8 max-w-full items-center gap-1.5 rounded-lg border border-rose-300/20 bg-[#351820]/92 px-2 py-1 text-[10px] text-rose-100 shadow-lg backdrop-blur-md">
+        <ImageOff className="h-3 w-3 shrink-0 text-rose-300" />
+        <span className="min-w-0 truncate" title={message}>
+          {message}
+        </span>
+        <span className="shrink-0 font-medium tracking-wide text-rose-100/45">{presentation.code}</span>
+        <button type="button" onClick={dismiss} aria-label={language === 'zh' ? '关闭提示' : 'Dismiss'} className="shrink-0 rounded-full p-0.5 text-rose-100/60 hover:bg-white/10 hover:text-white">
+          <X className="h-3 w-3" />
         </button>
-        {expanded ? (
-          <button
-            type="button"
-            onClick={copyDetail}
-            className="rounded-full border border-white/15 bg-white/[0.06] px-3 py-1 text-[11px] text-rose-100 transition hover:bg-white/[0.12]"
-          >
-            {language === 'zh' ? '复制' : 'Copy'}
-          </button>
-        ) : null}
       </div>
-      {expanded ? (
-        <pre className="prompt-editor-scroll max-h-[120px] w-full overflow-auto whitespace-pre-wrap break-all rounded bg-black/40 p-2 text-[10px] text-rose-100/80">
-          {error}
-        </pre>
-      ) : null}
     </div>
   );
 }
@@ -6174,7 +6150,8 @@ function SmartVideo({
     return () => io.disconnect();
   }, []);
 
-  const playing = inView && hovered;
+  const hoverPlayback = useCanvasPreferences(state => state.values.hoverVideo);
+  const playing = inView && hovered && hoverPlayback;
   // Mount the <video> when it should play, or when in view without a poster (so
   // the first frame can still paint). With a poster, idle-in-view stays a cheap
   // <img> and the decoder is only spun up on hover.
@@ -6362,7 +6339,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       clearTimeout(hoverTimeout.current);
     }
     setHovered(true);
-    videoRef.current?.play().catch(() => {});
+    if (useCanvasPreferences.getState().values.hoverVideo) videoRef.current?.play().catch(() => {});
   };
   const handleMouseLeave = () => {
     hoverTimeout.current = setTimeout(() => {
@@ -7481,6 +7458,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   // Aspect handed to derived (annotated) nodes so they open at the right size.
   const effectiveAspect = dims ? `${dims.w}:${dims.h}` : paramAspect;
   const isPanorama = isLikelyPanoramaData(data);
+  const recoverableError = recoverableMediaGenerationError(data);
 
   // 画笔标注 session: null = off. Ops/redo live here so the toolbar (in the
   // topFloatingPanel slot) and the drawing layer (over the media box) share
@@ -7652,7 +7630,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       }
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      error={data.error}
+      error={data.url ? undefined : data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       {data.url ? (
@@ -7686,6 +7664,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             versions={(data.versions ?? []) as NodeVersion[]}
             mediaKind="image"
           />
+          <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
           {isPanorama && !annotate ? (
             <PanoramaOpenButton
               onClick={(event) => {
@@ -7736,12 +7715,13 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
     ? mediaBoxFromAspect(data.mediaWidth / data.mediaHeight)
     : mediaBoxFromAspect(parseAspectRatio(getNodeParams(data).aspectRatio));
   const title = data.customTitle || (language === 'zh' ? '生成视频' : 'Generate Video');
+  const recoverableError = recoverableMediaGenerationError(data);
 
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleMouseEnter = () => {
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
     setHovered(true);
-    videoRef.current?.play().catch(() => {});
+    if (useCanvasPreferences.getState().values.hoverVideo) videoRef.current?.play().catch(() => {});
   };
   const handleMouseLeave = () => {
     hoverTimeout.current = setTimeout(() => {
@@ -7804,7 +7784,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      error={data.error}
+      error={data.url ? undefined : data.error}
       width={videoBox.width}
       smoothResize
       topFloatingPanel={data.url && data.status !== 'uploading' ? <VideoActionToolbar sourceNodeId={id} /> : undefined}
@@ -7856,6 +7836,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
               mediaKind="video"
             />
           ) : null}
+          <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -7875,6 +7856,7 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
   const hasAudio = Boolean(data.url) && data.status !== 'uploading';
   const urlExt = String(data.url ?? '').split('?')[0].split('.').pop() ?? '';
   const formatBadge = (/^[a-z0-9]{2,4}$/i.test(urlExt) ? urlExt : 'mp3').toUpperCase().slice(0, 4);
+  const recoverableError = recoverableMediaGenerationError(data);
   return (
     <BaseNode
       icon={Music}
@@ -7883,18 +7865,21 @@ const RenamableAudioNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      error={data.error}
+      error={data.url ? undefined : data.error}
       topFloatingPanel={hasAudio ? <AudioActionToolbar sourceNodeId={id} /> : undefined}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="qwen3-tts-voice-design-local" />}
     >
       {hasAudio ? (
-        <AudioWaveformPlayer
-          nodeId={id}
-          rawUrl={String(data.url)}
-          downloadName={`${title}.${formatBadge.toLowerCase()}`}
-          formatBadge={formatBadge}
-          playbackRate={Number(data.playbackRate) || 1}
-        />
+        <div className="relative">
+          <AudioWaveformPlayer
+            nodeId={id}
+            rawUrl={String(data.url)}
+            downloadName={`${title}.${formatBadge.toLowerCase()}`}
+            formatBadge={formatBadge}
+            playbackRate={Number(data.playbackRate) || 1}
+          />
+          <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
+        </div>
       ) : (
         <MediaEmptyPlaceholder
           icon={Music}
@@ -7918,6 +7903,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
   const [panoramaPreview, setPanoramaPreview] = useState(false);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-[2/1]');
   const title = data.customTitle || (language === 'zh' ? '生成全景' : '360 Environment');
+  const recoverableError = recoverableMediaGenerationError(data);
   return (
     <BaseNode
       icon={Globe}
@@ -7926,7 +7912,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       selected={selected}
       loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
-      error={data.error}
+      error={data.url ? undefined : data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
@@ -7954,6 +7940,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
             mediaKind="image"
           />
         ) : null}
+        <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
       </div>
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
@@ -8536,6 +8523,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       tone="text"
       selected={selected}
       error={data.error}
+      loadingNodeId={id}
       width={boxWidth}
       // Solid dark shell (the node used to be transparent over the canvas
       // grid). A user-picked tint layers OVER the solid base so pale tints

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { toast } from 'sonner';
+import { bindCanvasPreferences, useCanvasPreferences } from './canvas-preferences';
+import { cancelCanvasSubmissions, waitForCanvasSubmit } from './canvas-submit-delay';
 import {
   Connection,
   Edge,
@@ -1069,6 +1071,47 @@ function buildExtraImageNodes(sourceNode: Node | undefined, existing: Node[], ur
   return extras;
 }
 
+/**
+ * Keep the last usable media visible when a re-generation fails.
+ *
+ * A generated media node is both the editor and the result viewer. Marking the
+ * whole node as `error` while it still owns a valid URL makes the full-card
+ * error overlay hide that result (and its version switcher). Recoverable
+ * failures therefore return the node to `done` and store the new failure as a
+ * non-blocking notice. Nodes without a previous result still use the normal
+ * blocking error state.
+ */
+function generationFailureData(
+  data: Record<string, unknown>,
+  message: string,
+  patch: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const hasPreviousMedia = typeof data.url === 'string' && data.url.trim().length > 0;
+  const common = {
+    ...data,
+    ...patch,
+    queuedAfterTimeout: false,
+    taskPhase: undefined,
+    assetSyncing: false,
+  };
+  if (hasPreviousMedia) {
+    return {
+      ...common,
+      status: 'done',
+      error: undefined,
+      lastGenerationError: message,
+      lastGenerationFailedAt: Date.now(),
+    };
+  }
+  return {
+    ...common,
+    status: 'error',
+    error: message,
+    lastGenerationError: undefined,
+    lastGenerationFailedAt: undefined,
+  };
+}
+
 /** Apply a task lookup result back onto its node. Called from the poller
  *  for each non-pending row the backend returns. */
 function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
@@ -1194,15 +1237,10 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       const isUrl = task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio';
       if (normalizedStatus === 'success') {
         if (!task.result_url) {
+          const message = '生成任务已完成，但后端没有返回媒体地址。';
           return {
             ...node,
-            data: {
-              ...node.data,
-              status: 'error',
-              taskId: task.id,
-              queuedAfterTimeout: false,
-              error: '生成任务已完成，但后端没有返回图片地址。',
-            },
+            data: generationFailureData((node.data ?? {}) as Record<string, unknown>, message, { taskId: task.id }),
           };
         }
         // 把当前 url (如果有) 压进 versions 顶端, 把新 url 提为当前.
@@ -1239,6 +1277,8 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             queuedAfterTimeout: false,
             taskPhase: undefined,
             error: undefined,
+            lastGenerationError: undefined,
+            lastGenerationFailedAt: undefined,
             assetStatus: 'ready',
             assetSyncing: false,
             ...(isUrl
@@ -1256,14 +1296,11 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       }
       return {
         ...node,
-        data: {
-          ...node.data,
-          status: 'error',
-          taskId: task.id,
-          queuedAfterTimeout: false,
-          taskPhase: undefined,
-          error: `Queued task failed: ${task.error_msg || 'Generation failed'}`,
-        },
+        data: generationFailureData(
+          (node.data ?? {}) as Record<string, unknown>,
+          `Queued task failed: ${task.error_msg || 'Generation failed'}`,
+          { taskId: task.id },
+        ),
       };
     });
     // Multi-image generations (wan2.7 组图 / n>1): the node keeps the first
@@ -1579,7 +1616,7 @@ function applyActiveTasksToNodes(
             : 'generating';
         return {
           ...node,
-          data: { ...node.data, status: 'running', taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt },
+          data: { ...node.data, status: 'running', generationOwnerId: storageUserId, taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt },
         };
       });
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
@@ -1931,10 +1968,16 @@ function applyLightPrefsOverride() {
     patch.lastVideoParams = prefs.lastVideoParams;
   }
   useStore.setState(patch);
+  // Only migrate preferences from this account's persisted snapshot, never the
+  // previous account's still-mounted in-memory canvas.
+  let legacy = {};
+  try { legacy = JSON.parse(localStorage.getItem(storageKey('cineflow-store')) || '{}')?.state || {}; } catch { /* defaults */ }
+  bindCanvasPreferences(storageUserId, legacy);
 }
 
 export function bindStorageToUser(userId: string) {
   if (storageUserId === userId) return;
+  cancelCanvasSubmissions();
   // Flush any debounced persist BEFORE the key switches — appStorage resolves
   // storageKey at write time, so a pending write flushed after the switch
   // would land in the NEW user's slot with the OLD user's data.
@@ -2360,7 +2403,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const node = state.nodes.find((n) => n.id === nodeId);
     if (!node) return { agentNodePickActive: false };
     const d = (node.data ?? {}) as Record<string, unknown>;
-    const label = String(d.customTitle || d.sourceName || node.type || node.id);
+    const label = useCanvasPreferences.getState().values.mentionNaming === 'number'
+      ? `节点${state.nodes.findIndex(n => n.id === nodeId) + 1}`
+      : String(d.customTitle || d.sourceName || node.type || node.id);
     const thumb = String(d.url || d.poster || ''); // raw URL; UI wraps for proxy
     return { agentNodePickActive: false, agentPickedNode: { id: nodeId, label, thumb } };
   }),
@@ -3173,7 +3218,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
     const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
-    const GAP = 48; // breathing room between arranged nodes — never overlap.
+    const { horizontalGap: H_GAP, verticalGap: V_GAP } = useCanvasPreferences.getState().values;
 
     // Anchor at the selection's current top-left, then re-flow from there.
     const originX = Math.min(...selected.map((n) => n.position.x));
@@ -3186,15 +3231,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const nextPos = new Map<string, { x: number; y: number }>();
     if (mode === 'horizontal') {
       let x = originX;
-      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + GAP; }
+      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + H_GAP; }
     } else if (mode === 'vertical') {
       let y = originY;
-      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + GAP; }
+      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + V_GAP; }
     } else {
       // Grid: uniform cells sized to the largest node so nothing overlaps.
       const cols = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
-      const cellW = Math.max(...ordered.map(nodeWidth)) + GAP;
-      const cellH = Math.max(...ordered.map(nodeHeight)) + GAP;
+      const cellW = Math.max(...ordered.map(nodeWidth)) + H_GAP;
+      const cellH = Math.max(...ordered.map(nodeHeight)) + V_GAP;
       ordered.forEach((n, i) => {
         nextPos.set(n.id, {
           x: originX + (i % cols) * cellW,
@@ -3390,7 +3435,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     });
     const mergedNodeIds = Array.from(selectionSet);
     const memberNodes = state.nodes.filter((node) => selectionSet.has(node.id));
-    const bounds = computeGroupBounds(memberNodes);
+    const bounds = computeGroupBounds(memberNodes, useCanvasPreferences.getState().values.groupPadding);
     const undoStack = pushUndoState(state);
     const remainingGroups = state.groups.filter((group) => !absorbedGroupIds.has(group.id));
     const groups = [...remainingGroups, {
@@ -3712,8 +3757,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     const nodeWidth = (n: Node) => (n as any).measured?.width ?? n.width ?? 300;
     const nodeHeight = (n: Node) => (n as any).measured?.height ?? n.height ?? 200;
-    const GAP = 48;
-    const PAD = 32; // interior padding between the frame edge and the content
+    const { horizontalGap: H_GAP, verticalGap: V_GAP, groupPadding: PAD } = useCanvasPreferences.getState().values;
 
     const originX = (group.position?.x ?? Math.min(...members.map((n) => n.position.x))) + PAD;
     const originY = (group.position?.y ?? Math.min(...members.map((n) => n.position.y))) + PAD;
@@ -3724,14 +3768,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const nextPos = new Map<string, { x: number; y: number }>();
     if (mode === 'horizontal') {
       let x = originX;
-      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + GAP; }
+      for (const n of ordered) { nextPos.set(n.id, { x, y: originY }); x += nodeWidth(n) + H_GAP; }
     } else if (mode === 'vertical') {
       let y = originY;
-      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + GAP; }
+      for (const n of ordered) { nextPos.set(n.id, { x: originX, y }); y += nodeHeight(n) + V_GAP; }
     } else {
       const cols = Math.max(1, Math.ceil(Math.sqrt(ordered.length)));
-      const cellW = Math.max(...ordered.map(nodeWidth)) + GAP;
-      const cellH = Math.max(...ordered.map(nodeHeight)) + GAP;
+      const cellW = Math.max(...ordered.map(nodeWidth)) + H_GAP;
+      const cellH = Math.max(...ordered.map(nodeHeight)) + V_GAP;
       ordered.forEach((n, i) => {
         nextPos.set(n.id, {
           x: originX + (i % cols) * cellW,
@@ -3771,10 +3815,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     if (state.nodes.length === 0) return {};
     const undoStack = pushUndoState(state);
 
-    const COL_GAP = 130;   // horizontal gap between layers
-    const ROW_GAP = 64;    // vertical gap between nodes within a column
-    const NODE_W = 300;    // BaseNode fixed content width
-    const colStep = NODE_W + COL_GAP;
+    const { horizontalGap: COL_GAP, verticalGap: ROW_GAP } = useCanvasPreferences.getState().values;
 
     const nodeById = new Map(state.nodes.map((n) => [n.id, n]));
     const heightOf = (id: string): number => {
@@ -3831,10 +3872,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // Assign new positions. Keep each column's existing vertical order so
     // the layout doesn't scramble what the user already arranged.
     const newPos = new Map<string, { x: number; y: number }>();
+    let columnX = 0;
     layerKeys.forEach((l) => {
       const ids = byLayer.get(l)!;
       ids.sort((a, b) => (nodeById.get(a)!.position.y) - (nodeById.get(b)!.position.y));
-      const x = l * colStep;
+      const x = columnX;
+      columnX += Math.max(...ids.map(id => { const n = nodeById.get(id)!; return n.measured?.width ?? n.width ?? 300; })) + COL_GAP;
       let y = (maxColHeight - layerHeight.get(l)!) / 2;
       ids.forEach((id) => {
         newPos.set(id, { x, y });
@@ -3849,7 +3892,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const groups = state.groups.map((group) => {
       const members = group.nodeIds.map((id) => nodesAfter.get(id)).filter(Boolean) as Node[];
       if (members.length === 0) return group;
-      const bounds = computeGroupBounds(members);
+      const bounds = computeGroupBounds(members, useCanvasPreferences.getState().values.groupPadding);
       return { ...group, position: { x: bounds.x, y: bounds.y }, width: bounds.width, height: bounds.height };
     });
 
@@ -3892,6 +3935,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           activeVersionId: target.id,
           activeVersionTimestamp: target.timestamp,
           versions: nextVersions,
+          status: 'done',
+          error: undefined,
+          lastGenerationError: undefined,
+          lastGenerationFailedAt: undefined,
+          queuedAfterTimeout: false,
+          taskPhase: undefined,
         },
       };
     });
@@ -4278,6 +4327,24 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       }
       return;
     }
+    // Optional grace period from the new canvas preferences. It starts only
+    // after validation/confirmation, and rechecks ownership plus parameters
+    // before any request or running state is created.
+    if (['imageNode', 'panoramaNode', 'videoNode'].includes(nodeType)) {
+      const delaySeconds = useCanvasPreferences.getState().values.submitDelay;
+      if (delaySeconds > 0) {
+        const ownerId = storageUserId;
+        const projectId = state.activeBackendProjectId;
+        const originalParams = JSON.stringify(currentNode.data.generationParams);
+        const proceed = await waitForCanvasSubmit(`${ownerId}:${projectId}:${nodeId}`, delaySeconds);
+        const latest = get().nodes.find(node => node.id === nodeId);
+        if (!proceed || !latest || !isRunContextCurrent() || storageUserId !== ownerId || get().activeBackendProjectId !== projectId || computeActiveProjectReadOnly(get())) return;
+        if (JSON.stringify(latest.data.generationParams) !== originalParams) {
+          toast.info(get().language === 'zh' ? '生成参数已变更，请确认后重新提交。' : 'Generation settings changed. Review and submit again.');
+          return;
+        }
+      }
+    }
     // Input inspection never aborts a running request. Ownership changes only
     // after validation and any requested confirmation have completed.
     runAborters[runKey]?.abort();
@@ -4295,7 +4362,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const startedAt = Date.now();
     set((snapshot) => {
       const nodes = snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'running', error: undefined, taskId: undefined, queuedAfterTimeout: false, output: undefined, content: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
+        ? { ...node, data: { ...node.data, status: 'running', generationOwnerId: storageUserId, error: undefined, lastGenerationError: undefined, lastGenerationFailedAt: undefined, taskId: undefined, queuedAfterTimeout: false, output: undefined, content: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
         : node);
       const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
       return {
@@ -4568,7 +4635,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           : 'Backend returned an empty result (type=' + result.type + '). Check the model config or admin task logs.';
         set((snapshot) => {
           const nodes = snapshot.nodes.map((node) => node.id === nodeId
-            ? { ...node, data: { ...node.data, status: 'error', error: message, taskId: result.task_id } }
+            ? {
+                ...node,
+                data: generationFailureData((node.data ?? {}) as Record<string, unknown>, message, { taskId: result.task_id }),
+              }
             : node);
           const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
           return {
@@ -4621,6 +4691,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
               taskId: result.task_id,
               queuedAfterTimeout: false,
               error: undefined,
+              lastGenerationError: undefined,
+              lastGenerationFailedAt: undefined,
               ...(isUrlResult
                 ? {
                     url: persistedContent,
@@ -4698,7 +4770,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         }
         set((snapshot) => {
           const nodes = snapshot.nodes.map((node) => node.id === nodeId
-            ? { ...node, data: { ...node.data, status: 'error', error: message } }
+            ? {
+                ...node,
+                data: generationFailureData((node.data ?? {}) as Record<string, unknown>, message),
+              }
             : node);
           const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
           return {
@@ -4772,9 +4847,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   isTaskQueueCollapsed: false,
   setTaskQueueCollapsed: (value) => set({ isTaskQueueCollapsed: value }),
   showMiniMap: false,
-  setShowMiniMap: (value) => set({ showMiniMap: value }),
+  setShowMiniMap: (value) => { set({ showMiniMap: value }); useCanvasPreferences.getState().setPreference('showMiniMap', value); },
   snapToGrid: false,
-  setSnapToGrid: (value) => set({ snapToGrid: value }),
+  setSnapToGrid: (value) => { set({ snapToGrid: value }); useCanvasPreferences.getState().setPreference('snapToGrid', value); },
   isConnectionDragging: false,
   connectionDragType: null,
   setConnectionDragging: (value, handleType) => set({
@@ -4895,6 +4970,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 }));
 
 /** 组件订阅:当前打开的协作项目里我是否只读(访问者)。用于禁用/隐藏画布写入口。 */
+useCanvasPreferences.subscribe(({ values }) => {
+  const state = useStore.getState();
+  if (state.showMiniMap !== values.showMiniMap || state.snapToGrid !== values.snapToGrid) {
+    useStore.setState({ showMiniMap: values.showMiniMap, snapToGrid: values.snapToGrid });
+  }
+});
+useStore.subscribe((state, previous) => {
+  if (state.activeBackendProjectId !== previous.activeBackendProjectId) cancelCanvasSubmissions();
+});
 export const useActiveProjectReadOnly = (): boolean => useStore(computeActiveProjectReadOnly);
 
 setChunkReloadSafety(() => useStore.getState().prepareCanvasPageReload());

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, Loader2, X } from "lucide-react";
 
 import { listMyCreditLedger, type CreditLedgerEntry, type CreditLedgerType } from "../api/credits";
-import { presentCreditReason } from "../credit-ledger-display";
+import { isCreditDebit, presentCreditReason } from "../credit-ledger-display";
 
 // ─── 我的积分明细弹窗 ─────────────────────────────────────────────────────
 // 顶栏积分胶囊点开:看每笔积分怎么来怎么去,扣费透明化(付费信任的前提)。
@@ -16,6 +16,8 @@ const TYPE_LABEL: Record<CreditLedgerType, { zh: string; en: string; tone: strin
   charge:           { zh: "扣费",     en: "Charge",        tone: "text-amber-300" },
   refund:           { zh: "退款",     en: "Refund",        tone: "text-emerald-300" },
   admin_adjustment: { zh: "管理员调整", en: "Admin adjust", tone: "text-violet-300" },
+  project_transfer_out: { zh: "项目划转", en: "Project transfer", tone: "text-amber-300" },
+  project_refund_in: { zh: "项目退款", en: "Project refund", tone: "text-emerald-300" },
 };
 
 type Props = { open: boolean; onClose: () => void; language: "zh" | "en" };
@@ -100,7 +102,7 @@ export function CreditLedgerModal({ open, onClose, language }: Props) {
                   const reason = presentCreditReason(e, language);
                   const expanded = expandedEntryId === e.id;
                   // reserve/charge 是扣减(展示为负),其余为增加。
-                  const isDebit = e.type === "reserve" || e.type === "charge";
+                  const isDebit = isCreditDebit(e);
                   const sign = isDebit ? "−" : "+";
                   return (
                     <Fragment key={e.id}>

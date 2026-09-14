@@ -326,7 +326,9 @@ func (rt *AgentRunRouter) executeHarnessAgentJob(
 	// 否则前端历史与跨轮上下文都会断。
 	persistCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	rt.persistSuccessfulTurn(persistCtx, job, agent, conversation, req, stats)
+	if err := rt.persistSuccessfulTurn(persistCtx, job, agent, conversation, req, stats); err != nil {
+		return rt.finishJob(ctx, job.ID, stats, apperror.New(apperror.CodeConflict, "执行结束但会话保存失败或已取消；不会自动重放，请检查任务记录"), startedAt, nil)
+	}
 
 	// done 事件带 steps：前端会用它显示步数（本地 runner 也是这个载荷）。
 	return rt.finishJob(ctx, job.ID, stats, nil, startedAt, map[string]int{"steps": stats.Steps})

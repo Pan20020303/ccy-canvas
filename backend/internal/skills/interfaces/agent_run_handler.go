@@ -89,13 +89,17 @@ func (rt *AgentRunRouter) WithTasks(queue AgentTaskEnqueuer) *AgentRunRouter {
 
 // RegisterChi attaches /api/app/agents/{id}/run to the supplied router.
 func (rt *AgentRunRouter) RegisterChi(r chi.Router) {
-	r.Post("/api/app/agents/{id}/run", rt.runAgent)
+	r.Post("/api/app/agents/{id}/run", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, r, http.StatusGone, map[string]string{"message": "旧流式执行入口已停用，请使用 /agents/{id}/jobs 创建持久任务，并订阅任务事件。"})
+	})
 	r.Post("/api/app/agents/{id}/jobs", rt.createAgentJob)
 	r.Get("/api/app/agent-jobs/{id}", rt.getAgentJob)
 	r.Get("/api/app/agent-jobs/{id}/events", rt.streamAgentJobEvents)
+	r.Post("/api/app/agent-jobs/{id}/cancel", rt.cancelAgentJob)
 }
 
 type agentRunRequest struct {
+	SkillID string `json:"skill_id,omitempty"`
 	// What the user typed.
 	Message string `json:"message"`
 	// Optional: which chat thread to attach this turn to. When empty the
@@ -257,7 +261,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildSaveMemoryTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
-	tools = append(tools, skillsapp.BuildCreatorSuiteSubAgentTools(rt.q, rt.executor, agent)...)
+	tools = append(tools, rt.delegationTools(r.Context(), agent, userID, emitter.Emit)...)
 	tools = append(tools, skillsapp.BuildAskUserTool(emitter.Emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
 	if invokedSkill != "" {
@@ -334,13 +338,15 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 
 	startedAt := time.Now()
 	stats, runErr := runner.RunAdaptive(ctx, skillsapp.RunInput{
-		SystemPrompt: systemPrompt,
-		Model:        catalogModel,
-		UserMessage:  resolvedMessage,
-		History:      toRunHistoryFromMessages(historyMessages),
-		Tools:        tools,
-		Strategy:     agent.Strategy,
-		Thinking:     req.Thinking,
+		SystemPrompt:    systemPrompt,
+		Model:           catalogModel,
+		UserMessage:     resolvedMessage,
+		History:         toRunHistoryFromMessages(historyMessages),
+		Tools:           tools,
+		Strategy:        agent.Strategy,
+		Thinking:        req.Thinking,
+		Temperature:     &route.Temperature,
+		MaxOutputTokens: route.MaxOutputTokens,
 	}, emitter.Emit)
 	durationMs := int32(time.Since(startedAt).Milliseconds())
 

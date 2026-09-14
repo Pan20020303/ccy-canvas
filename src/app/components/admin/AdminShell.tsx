@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, CheckCheck, Copy, Megaphone, X } from "lucide-react";
-import { Link } from "react-router";
+import { ArrowLeft, Bell, CheckCheck, ChevronRight, Copy, X } from "lucide-react";
+import { Link, useLocation } from "react-router";
+import * as Dialog from "@radix-ui/react-dialog";
 
 import {
   type AdminAlert,
@@ -10,6 +11,8 @@ import {
   markAllAdminAlertsRead,
 } from "../../api/admin";
 import { AdminSidebar } from "./AdminSidebar";
+import { ADMIN_COLLAPSED_KEY, getAdminNavGroup, readAdminCollapsed } from "./admin-navigation";
+import "./admin.css";
 import { useAdminWorkbenchMotion } from "./useAdminWorkbenchMotion";
 
 type AdminShellProps = {
@@ -21,6 +24,24 @@ type AdminShellProps = {
 
 export function AdminShell({ title, description, action, children }: AdminShellProps) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const { pathname } = useLocation();
+  const group = getAdminNavGroup(pathname);
+  const [mobile, setMobile] = useState(() => window.matchMedia?.("(max-width: 760px)").matches ?? false);
+  const [collapsed, setCollapsed] = useState(() => (window.matchMedia?.("(max-width: 760px)").matches ?? false) || readAdminCollapsed());
+  useEffect(() => {
+    const query = window.matchMedia?.("(max-width: 760px)");
+    if (!query) return;
+    const update = () => { setMobile(query.matches); setCollapsed(query.matches || readAdminCollapsed()); };
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  const toggleSidebar = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    if (!mobile) {
+      try { localStorage.setItem(ADMIN_COLLAPSED_KEY, String(next)); } catch { /* Optional preference. */ }
+    }
+  };
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState<AdminAlert[]>([]);
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -55,66 +76,36 @@ export function AdminShell({ title, description, action, children }: AdminShellP
   }, []);
 
   return (
-    <div ref={rootRef} className="min-h-screen bg-[#060606] text-neutral-100">
-      <div className="relative flex min-h-screen w-full overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,106,31,0.16),transparent_24%),radial-gradient(circle_at_top_right,rgba(93,124,255,0.12),transparent_22%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent_28%)]" />
-        <AdminSidebar />
-        <main className="relative flex min-h-screen min-w-0 flex-1 flex-col bg-[linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0))]">
-          <div className="border-b border-white/[0.06] px-6 py-5 lg:px-8">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div data-admin-hero>
-                <Link
-                  to="/app"
-                  className="inline-flex h-10 items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.045] px-4 text-xs font-medium uppercase tracking-[0.16em] text-neutral-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition hover:border-[#ff6a1f]/35 hover:bg-white/[0.075] hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6a1f]/40"
-                >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  返回工作区
-                </Link>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setAlertsOpen(true)}
-                  title={alertCount > 0 ? `当前有 ${alertCount} 条未读告警` : "当前暂无未读告警"}
-                  className={[
-                    "inline-flex h-10 items-center gap-2 rounded-full border px-4 text-sm font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6a1f]/45",
-                    alertCount > 0
-                      ? "border-rose-400/35 bg-rose-500/12 text-rose-100 hover:border-rose-300/50 hover:bg-rose-500/18"
-                      : "border-white/[0.08] bg-white/[0.045] text-neutral-300 hover:border-[#ff6a1f]/35 hover:bg-white/[0.075] hover:text-white",
-                  ].join(" ")}
-                >
-                  <Megaphone className="h-4 w-4" />
-                  <span className="hidden sm:inline">告警</span>
-                  {alertCount > 0 ? (
-                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-rose-400 px-1.5 py-0.5 text-[11px] font-semibold text-rose-950">
-                      {alertCount}
-                    </span>
-                  ) : (
-                    <span className="inline-flex min-w-6 items-center justify-center rounded-full bg-white/8 px-1.5 py-0.5 text-[11px] text-neutral-400">
-                      <AlertTriangle className="h-3 w-3" />
-                    </span>
-                  )}
-                </button>
-                {action ? <div data-admin-hero className="shrink-0">{action}</div> : null}
-              </div>
-            </div>
-
-            <header className="mt-6 flex flex-wrap items-start justify-between gap-6">
-              <div data-admin-hero>
-                <p className="text-xs uppercase tracking-[0.28em] text-[#ff9b68]">管理员工作台</p>
-                <h1 className="mt-3 text-3xl font-semibold text-white lg:text-4xl">{title}</h1>
-                <p className="mt-3 max-w-4xl text-sm leading-6 text-neutral-400 lg:text-[15px]">{description}</p>
-              </div>
-            </header>
+    <div ref={rootRef} className="admin-workbench dark" data-collapsed={collapsed}>
+      <a href="#admin-page-content" className="admin-skip-link">跳到页面内容</a>
+      <AdminSidebar collapsed={collapsed} mobile={mobile} onToggle={toggleSidebar} onClose={() => setCollapsed(true)} />
+      <main className="admin-main" inert={mobile && !collapsed}>
+        <div className="admin-topbar">
+          <nav aria-label="当前位置" className="admin-breadcrumb">
+            <Link to="/admin/overview">管理后台</Link>
+            <ChevronRight size={13} />
+            {group && <><span className="admin-breadcrumb-group">{group.label}</span><ChevronRight className="admin-breadcrumb-group" size={13} /></>}
+            <span aria-current="page">{title}</span>
+          </nav>
+          <div className="admin-topbar-actions">
+            <Link to="/app" className="admin-toolbar-button admin-back-workspace"><ArrowLeft size={15} /><span>返回工作区</span></Link>
+            <button type="button" className={`admin-toolbar-button admin-alert-trigger${alertCount > 0 ? ' has-alerts' : ''}`}
+              onClick={() => setAlertsOpen(true)} aria-label={alertCount > 0 ? `渠道告警，${alertCount} 条未读` : "渠道告警"}
+              title={alertCount > 0 ? `当前有 ${alertCount} 条未读告警` : "当前暂无未读告警"}>
+              <Bell size={16} /><span>告警</span>{alertCount > 0 && <b>{alertCount}</b>}
+            </button>
           </div>
-
-          <div className="flex-1 px-6 py-6 lg:px-8 lg:py-8">{children}</div>
-        </main>
-
-        {alertsOpen ? (
-          <AlertDrawer alerts={alerts} onClose={() => setAlertsOpen(false)} onRefresh={refreshAlerts} />
-        ) : null}
-      </div>
+        </div>
+        <header className="admin-page-header">
+          <div data-admin-hero className="admin-page-heading">
+            <h1>{title}</h1>
+            <p>{description}</p>
+          </div>
+          {action && <div data-admin-hero className="admin-page-actions">{action}</div>}
+        </header>
+        <div id="admin-page-content" tabIndex={-1} className="admin-page-content">{children}</div>
+      </main>
+      {alertsOpen && <AlertDrawer alerts={alerts} onClose={() => setAlertsOpen(false)} onRefresh={refreshAlerts} />}
     </div>
   );
 }
@@ -129,17 +120,19 @@ function AlertDrawer({
   onRefresh: () => Promise<void>;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/45 backdrop-blur-sm" onClick={onClose}>
-      <aside
-        className="h-full w-full max-w-md overflow-y-auto border-l border-white/[0.08] bg-[#101014]/95 p-5 text-neutral-100 shadow-2xl"
-        onClick={(event) => event.stopPropagation()}
+    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm" />
+      <Dialog.Content
+        aria-describedby={undefined}
+        className="admin-alert-drawer fixed inset-y-0 right-0 z-50 w-full max-w-md overflow-y-auto border-l border-white/[0.08] bg-[#1c1c1c] p-5 text-neutral-100 shadow-2xl"
+        onCloseAutoFocus={(event) => { event.preventDefault(); document.querySelector<HTMLButtonElement>('.admin-alert-trigger')?.focus(); }}
       >
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-[#ff9b68]">Channel Alerts</p>
-            <h2 className="mt-1 text-lg font-semibold">渠道告警</h2>
+            <p className="text-xs text-neutral-500">运行监控</p>
+            <Dialog.Title className="mt-1 text-lg font-semibold">渠道告警</Dialog.Title>
           </div>
-          <button className="rounded-full p-2 text-neutral-400 transition hover:bg-white/8 hover:text-white" onClick={onClose}>
+          <button aria-label="关闭渠道告警" className="rounded-full p-2 text-neutral-400 transition hover:bg-white/8 hover:text-white" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -194,8 +187,8 @@ function AlertDrawer({
             ))
           )}
         </div>
-      </aside>
-    </div>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 

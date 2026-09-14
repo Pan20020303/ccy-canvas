@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, CheckCircle2, Loader2, Megaphone, XCircle } from 'lucide-react';
+import { Bell, CheckCircle2, Loader2, Megaphone, MoreHorizontal, XCircle, type LucideIcon } from 'lucide-react';
 import clsx from 'clsx';
 
 import { listAnnouncements, type Announcement } from '../api/announcements';
@@ -20,7 +20,7 @@ const isAfter = (a: string, b: string) => {
   return Number.isFinite(ta) && Number.isFinite(tb) ? ta > tb : a > b;
 };
 
-export const TaskQueue = () => {
+export const TaskQueue = ({ variant = 'bell', menuActions = [] }: { variant?: 'bell' | 'more'; menuActions?: Array<{ label: string; icon: LucideIcon; onSelect: () => void | Promise<void> }> }) => {
   const language = useStore((state) => state.language);
   const { user } = useAuth();
   const dict = t[language];
@@ -100,6 +100,16 @@ export const TaskQueue = () => {
       setTaskError(error instanceof Error ? error.message : (language === 'zh' ? '未能确认取消，任务仍在跟踪' : 'Cancellation unconfirmed; still tracking'));
     } finally { setCancelling(null); }
   };
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    const outside = (event: MouseEvent) => { if (variant === 'more' && event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false); };
+    window.addEventListener('keydown', escape);
+    window.addEventListener('mousedown', outside);
+    return () => { window.removeEventListener('keydown', escape); window.removeEventListener('mousedown', outside); };
+  }, [open, variant]);
 
   const storageKey = readKey(user?.id ?? 'anon');
 
@@ -154,15 +164,19 @@ export const TaskQueue = () => {
   };
 
   return (
-    <div className="relative">
+    <div ref={rootRef} className={variant === 'more' ? 'canvas-more-menu' : 'relative'}>
       {/* Icon-only bell (reference proportions) — the label lives in the
           tooltip and the dropdown header. */}
       <button
+        type="button"
         onClick={handleToggle}
-        title={language === 'zh' ? '公告与任务' : 'Announcements & tasks'}
-        className="relative flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/45 text-neutral-200 shadow-xl backdrop-blur-xl transition hover:bg-black/60"
+        title={variant === 'more' ? '更多操作' : (language === 'zh' ? '公告与任务' : 'Announcements & tasks')}
+        aria-label={variant === 'more' ? '更多操作' : (language === 'zh' ? '公告与任务' : 'Announcements & tasks')}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        className={variant === 'more' ? 'canvas-more-trigger canvas-action-pill' : 'relative flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-black/45 text-neutral-200 shadow-xl backdrop-blur-xl transition hover:bg-black/60'}
       >
-        <Bell className={clsx('h-4 w-4', active > 0 ? 'text-cyan-300' : 'text-neutral-300')} />
+        {variant === 'more' ? <MoreHorizontal className="canvas-more-icon" size={18} /> : <Bell className={clsx('h-4 w-4', active > 0 ? 'text-cyan-300' : 'text-neutral-300')} />}
         {unread ? (
           // 未读公告红点:打开公告页签后熄灭。
           <span className="absolute right-1.5 top-1.5 flex h-2 w-2 items-center justify-center">
@@ -174,8 +188,9 @@ export const TaskQueue = () => {
 
       {open ? (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full z-50 mt-2 flex max-h-[460px] w-80 flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#15181d]/95 shadow-2xl backdrop-blur-xl">
+          {variant !== 'more' && <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />}
+          <div role="dialog" aria-label={variant === 'more' ? '更多操作与消息' : '公告与任务'} className="canvas-more-content absolute right-0 top-full z-50 mt-2 flex max-h-[460px] w-80 flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#15181d]/95 shadow-2xl backdrop-blur-xl">
+            {menuActions.length > 0 && <div className="canvas-more-actions">{menuActions.map(({ label, icon: Icon, onSelect }) => <button type="button" key={label} className="canvas-more-action" onClick={() => { setOpen(false); void onSelect(); }}><Icon className="canvas-more-action-icon" size={15} /><span className="canvas-more-action-label">{label}</span></button>)}</div>}
             <div className="flex items-center gap-1 border-b border-white/10 bg-white/5 px-2 py-2">
               <button
                 onClick={() => setTab('announcements')}
@@ -194,7 +209,7 @@ export const TaskQueue = () => {
                   tab === 'tasks' ? 'bg-white/10 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300',
                 )}
               >
-                {dict.task_queue}
+                {variant === 'more' ? (language === 'zh' ? '生成任务' : 'Generation tasks') : dict.task_queue}
                 {active > 0 ? (
                   <span className="flex items-center gap-1 text-[10px] text-cyan-300">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />

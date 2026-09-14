@@ -1,4 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
+import { CanvasBackground } from './settings/CanvasPreferencesRuntime';
 import {
   ReactFlow,
   Background,
@@ -81,6 +83,7 @@ import { VersionsPanel } from './VersionsPanel';
 import { useAuth } from '../auth/AuthProvider';
 import { CanvasIndexPanel } from './CanvasIndexPanel';
 import { RemotePresenceLayer } from './RemotePresenceLayer';
+import { AgentCanvasActivityOverlay } from './agent/AgentCanvasActivityOverlay';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
 import { updatePresence } from '../collab/presence-store';
 import { useCanvasSync } from '../collab/canvas-sync';
@@ -134,7 +137,7 @@ const FUTURE_NODE_OPTIONS = [
   { key: 'script', icon: SquarePen, zh: '脚本', en: 'Script', badge: 'Beta', subtitleZh: '创意脚本、生成故事板', subtitleEn: 'Create scripts and storyboards' },
 ] as const;
 
-const GRID_SIZE = 24;
+// Grid spacing is shared by rendering and the actual snap math.
 /** Snap window in SCREEN pixels — divided by zoom before comparing flow
  *  coords, so the grab distance feels identical at 37% and 200%. */
 const GUIDE_THRESHOLD_SCREEN = 8;
@@ -147,9 +150,9 @@ const GUIDE_THRESHOLD_SCREEN = 8;
  *  (their `+` bubbles sit 20px outside), so they are NOT excluded here. */
 const NON_PORT_NODE_TYPES = new Set(['agentNode', 'stickyNoteNode']);
 
-const snapPosition = (position: { x: number; y: number }) => ({
-  x: Math.round(position.x / GRID_SIZE) * GRID_SIZE,
-  y: Math.round(position.y / GRID_SIZE) * GRID_SIZE,
+const snapPosition = (position: { x: number; y: number }, grid = useCanvasPreferences.getState().values.gridGap) => ({
+  x: Math.round(position.x / grid) * grid,
+  y: Math.round(position.y / grid) * grid,
 });
 
 type GuideLine = { orientation: 'h' | 'v'; pos: number; from: number; to: number };
@@ -258,6 +261,7 @@ function computeGuides(dragged: Node, others: Node[], threshold: number): {
  *  the moment you hovered it. The drop still lands on the handle at release;
  *  only the preview roams free until then. */
 function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: ConnectionLineComponentProps) {
+  const preferences = useCanvasPreferences(state => state.values);
   const { screenToFlowPosition } = useReactFlow();
   const theme = useStore((state) => state.theme);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
@@ -285,8 +289,8 @@ function FreeConnectionLine({ fromX, fromY, fromPosition, toX, toY }: Connection
     <path
       d={path}
       fill="none"
-      stroke={theme === 'light' ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.55)'}
-      strokeWidth={2}
+      stroke={theme === 'light' && preferences.edgeColorId === 'default' ? '#555555' : selectedEdgeColor(preferences)}
+      strokeWidth={preferences.edgeWidth}
       strokeDasharray="6 6"
       strokeLinecap="round"
     />
@@ -354,6 +358,7 @@ const InnerCanvas = () => {
   const showMiniMap = useStore((state) => state.showMiniMap);
   const setShowMiniMap = useStore((state) => state.setShowMiniMap);
   const snapToGrid = useStore((state) => state.snapToGrid);
+  const preferences = useCanvasPreferences(state => state.values);
   const history = useStore((state) => state.history);
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
@@ -418,9 +423,10 @@ const InnerCanvas = () => {
     if (!canvasFocusRequest) return;
     const node = nodes.find((n) => n.id === canvasFocusRequest.nodeId);
     if (!node) return;
-    setCenter(node.position.x + 170, node.position.y + 130, {
+    const bounds = getNodeBounds(node);
+    setCenter(bounds.cx, bounds.cy, {
       zoom: Math.max(viewport.zoom, 0.6),
-      duration: 420,
+      duration: nodes.length <= preferences.focusAnimationLimit ? 420 : 0,
     });
     onNodesChange([
       ...nodes.filter((n) => n.selected && n.id !== node.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
@@ -488,12 +494,13 @@ const InnerCanvas = () => {
   const jumpToNode = useCallback((nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return;
-    setCenter(node.position.x + 170, node.position.y + 130, { zoom: Math.max(viewport.zoom, 0.6), duration: 420 });
+    const bounds = getNodeBounds(node);
+    setCenter(bounds.cx, bounds.cy, { zoom: Math.max(viewport.zoom, 0.6), duration: nodes.length <= preferences.focusAnimationLimit ? 420 : 0 });
     onNodesChange([
       ...nodes.filter((n) => n.selected && n.id !== node.id).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
       { id: node.id, type: 'select' as const, selected: true },
     ]);
-  }, [nodes, onNodesChange, setCenter, viewport.zoom]);
+  }, [nodes, onNodesChange, setCenter, viewport.zoom, preferences.focusAnimationLimit]);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
   const [guides, setGuides] = useState<GuideLine[]>([]);
@@ -667,7 +674,18 @@ const InnerCanvas = () => {
       // 导演台 / 图层编辑器 overlay 打开时,画布全局快捷键整体让位 ——
       // 尤其 Backspace/Delete 在 overlay 里删的是选中的演员/道具/图层,
       // 落到这里会把节点本身删掉。
-      if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId || useStore.getState().videoEditorNodeId) return;
+      if (useStore.getState().directorStageNodeId || useStore.getState().layerEditorNodeId || useStore.getState().videoEditorNodeId || useStore.getState().isSettingsOpen) return;
+
+      const prefs = useCanvasPreferences.getState();
+      for (const [action, key] of [['show_grid','showGrid'],['guide_snap','alignmentGuides'],['grid_toggle','snapToGrid'],['toggle_minimap','showMiniMap']] as const) {
+        if (eventMatchesShortcut(event, action, shortcuts)) { event.preventDefault(); prefs.setPreference(key, !prefs.values[key]); return; }
+      }
+      if (eventMatchesShortcut(event, 'fit_view', shortcuts)) {
+        event.preventDefault();
+        const selected = nodesRef.current.filter(n => n.selected);
+        void fitView({ ...(selected.length ? { nodes: selected } : {}), padding: .15, duration: nodesRef.current.length <= prefs.values.focusAnimationLimit ? 400 : 0 });
+        return;
+      }
 
       // ── Delete / Backspace ─────────────────────────────────────────────
       // Office-standard: Del removes the current selection. Selected NODES take
@@ -753,7 +771,7 @@ const InnerCanvas = () => {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [bringNodeForward, bringNodeToFront, copySelectedNodes, deleteSelectedNodes, pasteCopiedNodes, redoCanvas, removeGroup, selectedGroupId, sendNodeBackward, sendNodeToBack, shortcuts, toggleNodeLock, undoCanvas]);
+  }, [bringNodeForward, bringNodeToFront, copySelectedNodes, deleteSelectedNodes, pasteCopiedNodes, redoCanvas, removeGroup, selectedGroupId, sendNodeBackward, sendNodeToBack, shortcuts, toggleNodeLock, undoCanvas, fitView]);
 
   useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
@@ -1149,7 +1167,7 @@ const InnerCanvas = () => {
   }, [activeBackendProjectId, readOnly]);
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    if (!snapToGrid) {
+    if (!snapToGrid && !preferences.alignmentGuides) {
       onNodesChange(changes);
       return;
     }
@@ -1169,7 +1187,9 @@ const InnerCanvas = () => {
       const isMultiDrag = Boolean(draggedNode.selected);
       const others = nodes.filter((node) => node.id !== draggedNode.id && !(isMultiDrag && node.selected));
       const virtual = { ...draggedNode, position: posChange.position };
-      const { guides: nextGuides, snapDx, snapDy, hasSnapX, hasSnapY } = computeGuides(virtual, others, threshold);
+      const { guides: nextGuides, snapDx, snapDy, hasSnapX, hasSnapY } = preferences.alignmentGuides
+        ? computeGuides(virtual, others, threshold)
+        : { guides: [], snapDx: 0, snapDy: 0, hasSnapX: false, hasSnapY: false };
 
       if (posChange.dragging) {
         // Skip the setState when nothing changed (empty→empty is the common
@@ -1185,8 +1205,8 @@ const InnerCanvas = () => {
       // position, destroying the alignment the guides had just shown — and
       // grid-snap only the unaligned axes.
       const snapped = {
-        x: hasSnapX ? posChange.position.x + snapDx : (posChange.dragging ? posChange.position.x : snapPosition(posChange.position).x),
-        y: hasSnapY ? posChange.position.y + snapDy : (posChange.dragging ? posChange.position.y : snapPosition(posChange.position).y),
+        x: hasSnapX ? posChange.position.x + snapDx : (posChange.dragging || !snapToGrid ? posChange.position.x : snapPosition(posChange.position).x),
+        y: hasSnapY ? posChange.position.y + snapDy : (posChange.dragging || !snapToGrid ? posChange.position.y : snapPosition(posChange.position).y),
       };
       const deltaX = snapped.x - posChange.position.x;
       const deltaY = snapped.y - posChange.position.y;
@@ -1212,10 +1232,10 @@ const InnerCanvas = () => {
     onNodesChange(
       changes.map((change) => {
         if (change.type !== 'position' || !('position' in change) || !change.position) return change;
-        return { ...change, position: snapPosition(change.position) };
+        return snapToGrid ? { ...change, position: snapPosition(change.position) } : change;
       }),
     );
-  }, [nodes, onNodesChange, snapToGrid]);
+  }, [nodes, onNodesChange, snapToGrid, preferences.alignmentGuides]);
 
   const openContextMenu = useCallback((event: { clientX: number; clientY: number }, mode: ContextMenuMode, fromConnection: boolean) => {
     if (!wrapperRef.current) return;
@@ -1233,9 +1253,10 @@ const InnerCanvas = () => {
 
   const onPaneContextMenu = useCallback((event: any) => {
     event.preventDefault();
+    if (preferences.blankAction !== 'context') return;
     connectingFrom.current = null;
     openContextMenu(event, 'root', false);
-  }, [openContextMenu]);
+  }, [openContextMenu, preferences.blankAction]);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: { id: string; type?: string }) => {
     event.preventDefault();
@@ -1308,10 +1329,11 @@ const InnerCanvas = () => {
         return;
       }
     }
+    if (preferences.blankAction !== 'double') return;
     connectingFrom.current = null;
     bulkConnectFrom.current = null;
     openContextMenu(event, 'add-node', false);
-  }, [openContextMenu]);
+  }, [openContextMenu, preferences.blankAction]);
 
 
   const onPickerSelect = useCallback((kind: NodeKind) => {
@@ -1536,7 +1558,7 @@ const InnerCanvas = () => {
       const dataUrl = await toPng(viewportEl, {
         pixelRatio: 2,
         cacheBust: true,
-        backgroundColor: '#1d1f24',
+        backgroundColor: '#111111',
         // Skip lock badges / ReactFlow controls so the export is clean.
         filter: (node) => {
           const cls = (node as HTMLElement).className;
@@ -1649,12 +1671,14 @@ const InnerCanvas = () => {
   return (
     <div
       ref={wrapperRef}
-      className={`relative h-screen w-full bg-[#1d1f24] ${cursorMode}`}
+      className={`relative h-screen w-full overflow-hidden ${preferences.compactZoom && viewport.zoom < .35 ? 'canvas-compact-mode' : ''} ${cursorMode}`}
+      style={{ backgroundColor: theme === 'light' && preferences.themeId === 'graphite' ? '#e8eaed' : 'var(--canvas-bg, #111111)' }}
       onContextMenu={(event) => event.preventDefault()}
       onDoubleClick={onCanvasDoubleClick}
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <CanvasBackground />
       <input
         ref={fileInputRef}
         type="file"
@@ -1933,25 +1957,28 @@ const InnerCanvas = () => {
         /* 点击必须移动 ≥4px 才算拖拽:避免「点选节点」时的手抖被判成微拖拽,
            从而多压一个几乎相同的撤销快照,导致 Ctrl+Z 看起来「失灵」。 */
         nodeDragThreshold={4}
+        selectNodesOnDrag={preferences.dragFocus}
+        connectionRadius={preferences.connectionRadius}
         snapToGrid={snapToGrid}
-        snapGrid={[GRID_SIZE, GRID_SIZE]}
+        snapGrid={[preferences.gridGap, preferences.gridGap]}
         /* 关闭 xyflow 内置的 pane 双击缩放,让外层 wrapper 的
            onCanvasDoubleClick 能收到事件唤出"添加节点"菜单. */
         zoomOnDoubleClick={false}
         /* 滚轮 = 上下/左右平移画布（设计工具惯例），而非缩放。
            缩放走 Ctrl/⌘+滚轮、触控板双指捏合，或工具栏/快捷键。 */
-        zoomOnScroll={false}
-        panOnScroll={true}
+        zoomOnScroll={preferences.wheelAction === 'zoom'}
+        panOnScroll={preferences.wheelAction === 'pan'}
+        panOnScrollSpeed={preferences.panSensitivity / 3}
         panOnScrollMode={"free" as never}
         zoomOnPinch={true}
       >
-        <Background variant={BackgroundVariant.Dots} gap={24} size={2} color="#3a3d44" />
+        {preferences.showGrid && <Background variant={BackgroundVariant.Dots} gap={preferences.gridGap} size={preferences.gridDotSize} color={theme === 'light' ? '#b7bac1' : 'var(--canvas-grid, #3a3d44)'} />}
         {showMiniMap ? (
           <MiniMap
             position="bottom-left"
             pannable
             zoomable
-            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: viewport.zoom, duration: 400 })}
+            onClick={(_event, position) => setCenter(position.x, position.y, { zoom: viewport.zoom, duration: nodes.length <= preferences.focusAnimationLimit ? 400 : 0 })}
             onMouseEnter={enterMinimap}
             onMouseLeave={leaveMinimap}
             maskColor={theme === 'light' ? 'rgba(228,231,236,0.7)' : 'rgba(0,0,0,0.6)'}
@@ -1975,8 +2002,10 @@ const InnerCanvas = () => {
             }}
           />
         ) : null}
-        {snapToGrid ? <AlignmentGuides guides={guides} /> : null}
+        {preferences.alignmentGuides ? <AlignmentGuides guides={guides} /> : null}
       </ReactFlow>
+
+      <AgentCanvasActivityOverlay containerRef={wrapperRef} />
 
       {/* Group rename input — rendered ABOVE the ReactFlow pane (the group shell
           lives below it and can't take input). Positioned at the group's title. */}
@@ -2032,7 +2061,7 @@ const InnerCanvas = () => {
           </button>
           <div className="flex flex-col items-center gap-2 text-center">
             <div className="text-[17px] font-semibold text-neutral-300">
-              {language === 'zh' ? '双击画布开始创作' : 'Double-click the canvas to start'}
+              {language === 'zh' ? (preferences.blankAction === 'double' ? '双击画布开始创作' : '右键画布开始创作') : (preferences.blankAction === 'double' ? 'Double-click the canvas to start' : 'Right-click the canvas to start')}
             </div>
             <div className="text-[13px] text-neutral-600">
               {language === 'zh' ? '或使用底部工具栏添加节点' : 'Or add nodes from the bottom toolbar'}
@@ -2469,7 +2498,7 @@ const InnerCanvas = () => {
             tidyCanvas();
             // Fit after the layout commits so the freshly-arranged graph
             // is framed nicely.
-            setTimeout(() => void fitView({ padding: 0.15, duration: 400 }), 60);
+            setTimeout(() => void fitView({ padding: 0.15, duration: nodes.length <= preferences.focusAnimationLimit ? 400 : 0 }), 60);
           }}
         >
           <LayoutGrid className="h-3.5 w-3.5" />
@@ -2701,9 +2730,10 @@ const InnerCanvas = () => {
           if (!node) return;
           // Keep the user's zoom unless they're zoomed way out (a jump at 10%
           // zoom lands "nowhere" visually) — clamp up to a readable level.
-          setCenter(node.position.x + 170, node.position.y + 130, {
+          const bounds = getNodeBounds(node);
+          setCenter(bounds.cx, bounds.cy, {
             zoom: Math.max(viewport.zoom, 0.6),
-            duration: 400,
+            duration: nodes.length <= preferences.focusAnimationLimit ? 400 : 0,
           });
           onNodesChange([
             ...nodes.filter((n) => n.selected && n.id !== nodeId).map((n) => ({ id: n.id, type: 'select' as const, selected: false })),
@@ -2715,7 +2745,7 @@ const InnerCanvas = () => {
           if (!group) return;
           const cx = (group.position?.x ?? 0) + (group.width ?? 0) / 2;
           const cy = (group.position?.y ?? 0) + (group.height ?? 0) / 2;
-          setCenter(cx, cy, { zoom: Math.max(viewport.zoom, 0.5), duration: 400 });
+          setCenter(cx, cy, { zoom: Math.max(viewport.zoom, 0.5), duration: nodes.length <= preferences.focusAnimationLimit ? 400 : 0 });
           setSelectedGroupId(groupId);
         }}
       />
@@ -2772,12 +2802,13 @@ function GroupTitle({
   // an editable input ABOVE the pane (GroupRenameOverlay in Canvas).
   editing: boolean;
 }) {
+  const labelScale = useCanvasPreferences(state => state.values.groupLabelScale);
   const language = useStore((state) => state.language);
   if (editing) return null;
   return (
     <div
       className="pointer-events-none absolute left-0 top-0 z-20 -translate-y-[110%] flex select-none items-center gap-1 whitespace-nowrap rounded font-medium text-white/60"
-      style={{ fontSize: `${Math.max(9, 12 * zoom)}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
+      style={{ fontSize: `${Math.max(9, 12 * zoom) * labelScale}px`, padding: `${2 * zoom}px ${4 * zoom}px` }}
       title={language === 'zh' ? '双击组内空白处重命名' : 'Double-click inside the group to rename'}
     >
       <span aria-hidden className="opacity-30">⋮⋮</span>

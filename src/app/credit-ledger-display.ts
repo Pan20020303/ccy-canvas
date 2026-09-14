@@ -6,6 +6,11 @@ export type CreditReasonDisplay = {
   technicalDetail?: string;
 };
 
+/** Debits are stored as positive magnitudes; administrator adjustments are signed. */
+export function isCreditDebit(entry: Pick<CreditLedgerEntry, 'type' | 'amount'>): boolean {
+  return entry.type === 'reserve' || entry.type === 'charge' || entry.type === 'project_transfer_out' || entry.amount < 0;
+}
+
 const SERVICE_LABELS = {
   text: { zh: "文本生成", en: "Text generation" },
   image: { zh: "图片生成", en: "Image generation" },
@@ -32,6 +37,15 @@ export function presentCreditReason(
   const zh = language === "zh";
   const reason = entry.reason.trim();
   if (!reason) return { summary: "—" };
+
+  if (entry.type === 'project_transfer_out' || entry.type === 'project_refund_in') {
+    return {
+      summary: entry.type === 'project_transfer_out'
+        ? (zh ? '积分已划转至协作项目' : 'Credits transferred to project')
+        : (zh ? '协作项目积分已退回' : 'Project credits returned'),
+      technicalDetail: reason,
+    };
+  }
 
   if (entry.type === "daily_reset" || /每日(?:额度)?重置|daily\s+(?:quota\s+)?reset/i.test(reason)) {
     return { summary: zh ? "每日额度已恢复" : "Daily quota restored" };

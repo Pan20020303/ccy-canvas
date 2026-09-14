@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentFailureNotice } from "./agent/AgentFailureNotice";
+import { selectMainAgent } from "./agent/main-agent";
+import { layoutPositionChanges } from "./agent/canvas-layout-patch";
 import { createPortal } from "react-dom";
 import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, GitBranch, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
+import "./agent/agent-workbench.css";
 
 import type { Edge, Node } from "@xyflow/react";
 
 import {
   advanceCanvasPatchRevision,
+  cancelAgentJob,
   getActiveAgentJob,
   resumeAgentJob,
   runAgent,
@@ -57,6 +62,13 @@ import { pickVisionModel } from "./nodes/director-blocking";
 import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
 import { presentCanvasOperation, CanvasOperationIcon, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
 import { GenerationBatch } from "./agent/generation-batch";
+import {
+  beginAgentCanvasThinking,
+  cancelAgentCanvasActivity,
+  finishAgentCanvasActivity,
+  markAgentCanvasAction,
+  markAgentCanvasThinking,
+} from "./agent/agent-canvas-activity";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
 const HISTORY_FETCH_LIMIT = 50;
@@ -102,7 +114,7 @@ type RunStep =
   | { kind: "tool"; id: string; invocation: ToolInvocation }
   | { kind: "canvas"; id: string; patch: CanvasPatch }
   | ({ kind: "ask_user" } & AgentQuestionPage)
-  | { kind: "error"; id: string; message: string }
+  | { kind: "error"; id: string; message: string; jobId?: string }
   | {
       kind: "pending_run";
       id: string;
@@ -204,6 +216,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const recognitionRef = useRef<any>(null);
 
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentLoadError, setAgentLoadError] = useState("");
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [agentLoadRevision, setAgentLoadRevision] = useState(0);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
@@ -218,6 +233,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [message, setMessage] = useState("");
   const [running, setRunning] = useState(false);
   const [activeSkillName, setActiveSkillName] = useState<string | null>(null);
+  const [runtimeLabel, setRuntimeLabel] = useState("");
 
   // Conversations live as `${agentId}::${convId}` → turns[]. Switching
   // conversations swaps which key the UI renders.
@@ -228,22 +244,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [conversationsByAgent, setConversationsByAgent] = useState<Record<string, AgentConversationSummary[]>>({});
   const [activeConversationId, setActiveConversationId] = useState<Record<string, string>>({});
 
-  // Execution mode (frontend-only, persisted in localStorage). "manual" = the
-  // agent asks once per turn/model (PendingRunCard);
-  // "auto" = it runs generations autonomously. NOTE: the confirmation gate is
-  // entirely frontend (see applyPatch's needsConfirmation) — this does NOT touch
-  // the backend AgentUseMode (which controls sub-agent routing, a separate axis).
-  const [executionMode, setExecutionMode] = useState<"manual" | "auto">(() => {
-    try {
-      return localStorage.getItem("agentExecutionMode") === "auto" ? "auto" : "manual";
-    } catch {
-      return "manual";
-    }
-  });
-  const changeExecutionMode = useCallback((next: "manual" | "auto") => {
-    setExecutionMode(next);
-    try { localStorage.setItem("agentExecutionMode", next); } catch { /* ignore */ }
-  }, []);
+  // Media generation always requires an explicit confirmation in the canvas.
   // Left history sidebar collapse (persisted).
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -335,6 +336,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [running, runSteps]);
 
   const abortRef = useRef<(() => void) | null>(null);
+  const activityRunIdRef = useRef<string | null>(null);
   const canvasPatchRevisionRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
@@ -360,32 +362,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
+    setAgentLoading(true);
+    setAgentLoadError("");
     void Promise.all([listAgents(), listSkills()])
       .then(([agentRows, skillRows]) => {
-        // Only surface TOP-LEVEL (orchestrator) agents in the picker. Child /
-        // sub-agents (those with a parent_deploy_key) are not picked directly —
-        // the parent invokes them on demand via its sub-agent tools. This keeps
-        // the picker to a single orchestrator instead of a long list of子智能体.
-        const topLevel = (agentRows ?? []).filter((a) => !a.parent_deploy_key);
-        setAgents(topLevel);
+        if (!active) return;
+        const mainAgent = selectMainAgent(agentRows ?? []);
+        setAgents(mainAgent ? [mainAgent] : []);
         setSkills(skillRows ?? []);
-        if (topLevel.length > 0) {
-          // No agent picker is shown — default to the production orchestrator
-          // (it dispatches to its sub-agents on demand). Also re-select if the
-          // current selectedId is stale (e.g. a child agent that was filtered
-          // out) — otherwise selectedAgent is null and the model badge vanishes.
-          setSelectedId((cur) => {
-            if (cur && topLevel.some((a) => a.id === cur)) return cur;
-            const preferred =
-              topLevel.find((a) => a.deploy_key === "productionAgent" && a.enabled) ??
-              topLevel.find((a) => a.enabled) ??
-              topLevel[0];
-            return preferred?.id ?? cur;
-          });
-        }
+        setSelectedId(mainAgent?.id ?? null);
+        if (!mainAgent) setAgentLoadError("暂无可用的主 Agent，请联系管理员启用。");
       })
-      .catch(() => {});
-  }, [open, selectedId]);
+      .catch(() => { if (active) setAgentLoadError("Agent 配置加载失败，请重试。"); })
+      .finally(() => { if (active) setAgentLoading(false); });
+    return () => { active = false; };
+  }, [open, agentLoadRevision]);
 
   const refreshSkills = useCallback(async () => {
     try {
@@ -548,7 +540,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [requestCanvasFocus]);
 
   const applyPatch = useCallback((event: AgentSSEEvent) => {
-    if (event.type !== "canvas_patch") return;
+    if (event.type !== "canvas_patch") return false;
     const patch = event.data;
     const revisionResult = advanceCanvasPatchRevision(canvasPatchRevisionRef.current, patch);
     if (!revisionResult.accepted) {
@@ -557,9 +549,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         id: `patch-conflict-${prev.length}`,
         message: `${revisionResult.reason}。该操作未应用，请重新发起任务。`,
       }]);
-      return;
+      return false;
     }
-    canvasPatchRevisionRef.current = revisionResult.nextRevision;
     switch (patch.op) {
       case "add_node": {
         // Belt-and-braces: ensure `.data` exists so node renderers don't crash
@@ -586,10 +577,32 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       case "patch_node_data":
         updateNodeData(patch.node_id, patch.patch);
         break;
-      case "move_node":
-        moveNodeTo(patch.node_id, patch.position);
+      case "move_node": {
+        if (patch.from_position) {
+          try {
+            const changes = layoutPositionChanges(useStore.getState().nodes, {op:"move_nodes",moves:[{node_id:patch.node_id,position:patch.position,from_position:patch.from_position}]});
+            useStore.getState().onNodesChange(changes);
+          } catch (error) {
+            setRunSteps(previous => [...previous, {kind:"error",id:`move-conflict-${previous.length}`,message:error instanceof Error ? error.message : "移动未应用，请重试"}]);
+            return false;
+          }
+        } else {
+          moveNodeTo(patch.node_id, patch.position);
+        }
         scheduleNodeFocus(patch.node_id);
         break;
+      }
+      case "move_nodes": {
+        try {
+          const changes = layoutPositionChanges(useStore.getState().nodes, patch);
+          useStore.getState().onNodesChange(changes);
+          if (changes[0]) scheduleNodeFocus(changes[0].id);
+        } catch (error) {
+          setRunSteps(previous => [...previous, {kind:"error",id:`layout-conflict-${previous.length}`,message:error instanceof Error ? error.message : "布局未应用，请重试"}]);
+          return false;
+        }
+        break;
+      }
       case "delete_node":
         deleteNodes([patch.node_id]);
         break;
@@ -655,7 +668,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         const model = patch.model || data.model || fallbackModel;
         const batch = generationBatchRef.current ?? resetGenerationBatch();
         const request = {id: `pending-${++pendingSequenceRef.current}`, nodeId: patch.node_id, serviceType, prompt, model};
-        const disposition = batch.register(request, executionMode === "auto");
+        const disposition = batch.register(request, false);
         if (disposition === "duplicate") break;
         setRunSteps((prev) => [...prev, {
             kind: "pending_run",
@@ -672,7 +685,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         break;
       }
     }
-  }, [addNode, onConnect, updateNodeData, moveNodeTo, deleteNodes, createGroup, executionMode, backendModels, scheduleNodeFocus, resetGenerationBatch]);
+    canvasPatchRevisionRef.current = revisionResult.nextRevision;
+    return true;
+  }, [addNode, onConnect, updateNodeData, moveNodeTo, deleteNodes, createGroup, backendModels, scheduleNodeFocus, resetGenerationBatch]);
 
   // 闭合最后一个仍在流式增长的思考步骤 —— 一旦模型开始输出叙述文本/工具调用/
   // 最终回复,说明这一段 reasoning 已经结束(ReasoningBlock 随之收起并定格耗时)。
@@ -710,6 +725,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       .map((n) => (n.thumb ? toRenderableMediaUrl(n.thumb, { thumbWidth: 720 }) : ""))
       .filter(Boolean);
     const targetAgentId = selectedId;
+    const activityRunId = `agent-${targetAgentId}-${Date.now()}`;
+    activityRunIdRef.current = activityRunId;
 
     // The active conversation id may be null on a fresh agent panel (no
     // conversations exist yet) — backend will create one and emit the new
@@ -732,12 +749,14 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setActiveSkillName(invokedSkillDisplayName);
     setStreamingReply("");
     setRunSteps([]);
+    setRuntimeLabel("");
     setRunConvKey(initialKey);
     const startedAt = performance.now();
     setRunStartedAt(startedAt);
     setRunFinishedMs(null);
     setConnectionState(null);
     setRunning(true);
+    beginAgentCanvasThinking(activityRunId);
     canvasPatchRevisionRef.current = useStore.getState().canvasRevision;
 
     const priorHistory = conversationHistory;
@@ -749,7 +768,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     abortRef.current = await runAgent(
       targetAgentId,
       {
-        message: refPreamble + outbound.message,
+        message: refPreamble + rawMessage,
+        skill_id: invokedSkill?.id ?? skills.find((skill) => getSkillCommandName(skill) === outbound.invokedSkillName)?.id,
         displayMessage: rawMessage,
         nodes: nodes as unknown[],
         edges: edges as unknown[],
@@ -771,6 +791,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       },
       (event) => {
         switch (event.type) {
+          case "runtime": setRuntimeLabel(`${event.data.agent_name} · ${event.data.model}`); break;
+          case "delegation": setRunSteps(prev => [...prev, {kind: "thought", id: `delegate-${event.data.id}-${event.data.status}`, content: `${event.data.status === "running" ? "正在调度" : event.data.status === "success" ? "子任务完成" : "子任务失败"}：${event.data.agent_name} · ${event.data.model}`}]); break;
           case "conversation": {
             const newId = event.data.id;
             const newKey = CONVERSATIONS_KEY(targetAgentId, newId);
@@ -795,6 +817,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             break;
           }
           case "thought_delta":
+            markAgentCanvasThinking(activityRunId);
             // reasoning 流:追加到最后一个开放的思考步骤;没有就开一个新块。
             setRunSteps((prev) => {
               for (let i = prev.length - 1; i >= 0; i--) {
@@ -829,6 +852,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             break;
           }
           case "thought":
+            markAgentCanvasThinking(activityRunId);
             setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "thought",
               id: `thought-${prev.length}`,
@@ -836,6 +860,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             }]);
             break;
           case "ask_user":
+            finishAgentCanvasActivity(activityRunId);
             setRunSteps((prev) => [...prev, {
               kind: "ask_user",
               id: `ask-${prev.length}`,
@@ -881,14 +906,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               return prev;
             });
             break;
-          case "canvas_patch":
+          case "canvas_patch": {
+            const beforeNodes = useStore.getState().nodes;
+            if (!applyPatch(event)) break;
+            markAgentCanvasAction(activityRunId, event.data, beforeNodes, zh);
             setRunSteps((prev) => [...prev, {
               kind: "canvas",
               id: `canvas-${prev.length}`,
               patch: event.data,
             }]);
-            applyPatch(event);
             break;
+          }
           case "usage":
             setCtxUsage({
               prompt: event.data.prompt_tokens,
@@ -900,22 +928,27 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
             break;
           case "error":
+            finishAgentCanvasActivity(activityRunId);
             setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "error",
               id: `err-${prev.length}`,
               message: event.data.message,
+              jobId: event.data.job_id,
             }]);
             setRunning(false);
             setRunFinishedMs(performance.now() - startedAt);
             setConnectionState(null);
             abortRef.current = null;
+            if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
             break;
           case "done":
+            finishAgentCanvasActivity(activityRunId);
             setRunSteps(sealStreamingThought);
             setRunning(false);
             setRunFinishedMs(performance.now() - startedAt);
             setConnectionState(null);
             abortRef.current = null;
+            if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
             break;
         }
       },
@@ -931,6 +964,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (!job) return;
 
     const targetAgentId = selectedId;
+    const activityRunId = `job-${job.jobId}`;
+    activityRunIdRef.current = activityRunId;
     let currentKey = job.conversationId
       ? CONVERSATIONS_KEY(targetAgentId, job.conversationId)
       : null;
@@ -962,9 +997,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     setRunFinishedMs(null);
     setConnectionState(null);
     setRunning(true);
+    beginAgentCanvasThinking(activityRunId);
 
     void resumeAgentJob(job, (event, meta?: AgentEventMeta) => {
       switch (event.type) {
+        case "runtime": setRuntimeLabel(`${event.data.agent_name} · ${event.data.model}`); break;
+        case "delegation": setRunSteps(prev => [...prev, {kind: "thought", id: `delegate-${event.data.id}-${event.data.status}`, content: `${event.data.status === "running" ? "正在调度" : event.data.status === "success" ? "子任务完成" : "子任务失败"}：${event.data.agent_name} · ${event.data.model}`}]); break;
         case "conversation": {
           const newID = event.data.id;
           currentKey = CONVERSATIONS_KEY(targetAgentId, newID);
@@ -974,6 +1012,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           break;
         }
         case "thought_delta":
+          markAgentCanvasThinking(activityRunId);
           setRunSteps((prev) => {
             for (let index = prev.length - 1; index >= 0; index--) {
               const step = prev[index];
@@ -1009,6 +1048,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             .catch(() => {});
           break;
         case "thought":
+          markAgentCanvasThinking(activityRunId);
           setRunSteps((prev) => [...sealStreamingThought(prev), {
             kind: "thought",
             id: `thought-${prev.length}`,
@@ -1016,6 +1056,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           }]);
           break;
         case "ask_user":
+          finishAgentCanvasActivity(activityRunId);
           setRunSteps((prev) => [...prev, {
             kind: "ask_user",
             id: `ask-${prev.length}`,
@@ -1058,14 +1099,19 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             return prev;
           });
           break;
-        case "canvas_patch":
+        case "canvas_patch": {
+          if (!meta?.replayed) {
+            const beforeNodes = useStore.getState().nodes;
+            if (!applyPatch(event)) break;
+            markAgentCanvasAction(activityRunId, event.data, beforeNodes, zh);
+          }
           setRunSteps((prev) => [...prev, {
             kind: "canvas",
             id: `canvas-${prev.length}`,
             patch: event.data,
           }]);
-          if (!meta?.replayed) applyPatch(event);
           break;
+        }
         case "usage":
           setCtxUsage({
             prompt: event.data.prompt_tokens,
@@ -1077,22 +1123,27 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
           break;
         case "error":
+          finishAgentCanvasActivity(activityRunId);
           setRunSteps((prev) => [...sealStreamingThought(prev), {
             kind: "error",
             id: `err-${prev.length}`,
             message: event.data.message,
+            jobId: event.data.job_id,
           }]);
           setRunning(false);
           setRunFinishedMs(performance.now() - startedAt);
           setConnectionState(null);
           abortRef.current = null;
+          if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
           break;
         case "done":
+          finishAgentCanvasActivity(activityRunId);
           setRunSteps(sealStreamingThought);
           setRunning(false);
           setRunFinishedMs(performance.now() - startedAt);
           setConnectionState(null);
           abortRef.current = null;
+          if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
           break;
       }
     }).then((stopObserving) => {
@@ -1105,7 +1156,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       abortRef.current?.();
       abortRef.current = null;
     };
-  }, [applyPatch, open, selectedId]);
+  }, [applyPatch, open, selectedId, zh]);
 
   const submitWithMotion = () => {
     if (sendButtonRef.current && !shouldReduceMotion()) {
@@ -1125,10 +1176,19 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     void start();
   };
 
-  const stop = () => {
+  const stop = async () => {
     generationBatchRef.current?.stop();
+    const job = selectedId ? getActiveAgentJob(selectedId) : null;
+    if (job) {
+      try { await cancelAgentJob(job); }
+      catch { setRunSteps(prev => [...prev, {kind: "error", id: `cancel-${Date.now()}`, message: "取消失败，后台任务可能仍在运行，请重试。"}]); }
+    }
     abortRef.current?.();
     abortRef.current = null;
+    if (activityRunIdRef.current) {
+      cancelAgentCanvasActivity(activityRunIdRef.current);
+      activityRunIdRef.current = null;
+    }
     setRunSteps(sealStreamingThought);
     setRunning(false);
     if (runStartedAt != null) {
@@ -1143,6 +1203,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     const step = runSteps.find(s => s.id === stepId);
     if (!step || step.kind !== "pending_run" || step.status !== "pending") return;
     const model = step.chosenModel ?? step.availableModels[0] ?? "";
+    if (!model) return;
     const accepted = generationBatchRef.current?.approve(stepId, model) ?? [];
     const ids = new Set(accepted.map(request => request.id));
     // No generation side effects inside a React updater (StrictMode can replay it).
@@ -1300,8 +1361,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (reply) void start(reply);
   };
 
-  const skillBatchCount = Math.max(1, Math.ceil(allInvokableSkills.length / 5));
-  const quickChips = getRotatingSkillBatch(allInvokableSkills, skillBatchIndex, 5);
+  const skillBatchCount = Math.max(1, Math.ceil(allInvokableSkills.length / 3));
+  const quickChips = getRotatingSkillBatch(allInvokableSkills, skillBatchIndex, 3);
   const selectedComposerSkill = selectedSkillId
     ? skills.find((skill) => skill.id === selectedSkillId) ?? null
     : null;
@@ -1363,7 +1424,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     <div
       ref={panelRef}
       style={{ display: open ? "flex" : "none", width: panelWidth }}
-      className="absolute inset-y-0 right-0 z-40 flex h-full flex-col overflow-hidden border-l border-[var(--agent-border)] bg-[var(--agent-bg)] shadow-[0_0_40px_rgba(0,0,0,0.5)]"
+      className="agent-workbench absolute right-0 z-40 flex flex-col overflow-hidden"
     >
       {/* 左缘拖拽手柄:拖动调节面板宽度(380–860px,持久化)。 */}
       <div
@@ -1382,15 +1443,15 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         document.body,
       ) : null}
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3">
+      <div className="agent-workbench-header flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <Bot className="h-4 w-4 text-neutral-300" />
-          <span className="text-sm font-medium text-neutral-100">{zh ? "智能体" : "Agent"}</span>
+          <span className="max-w-[170px] truncate text-sm font-medium text-neutral-100">{activeConvId ? conversations.find(c => c.id === activeConvId)?.title || (zh ? "对话" : "Chat") : (zh ? "新对话" : "New chat")}</span>
           {/* 读秒移到消息流「思考中…」上方(AgentThread elapsedMs);运行中
               header 只留一个轻量转圈,提示后台有 run(含切到其他会话时)。 */}
           {running ? <Loader2 className="ml-1 h-3 w-3 animate-spin text-neutral-400" /> : null}
         </div>
         <div className="flex items-center gap-1 text-neutral-500">
+          <span className="px-2 text-[11px] text-neutral-500" title={zh ? "主 Agent 按需调用已启用的专业 Agent" : "The main agent delegates to specialists as needed"}>{zh ? "主 Agent · 按需调度" : "Main agent · auto dispatch"}</span>
           <button type="button" onClick={() => void newChat()} disabled={running || !selectedId} className="rounded-md p-1.5 transition hover:bg-white/5 hover:text-white disabled:opacity-40" title={zh ? "新建会话" : "New chat"}>
             <Plus className="h-4 w-4" />
           </button>
@@ -1404,6 +1465,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       </div>
 
       {/* Body: 会话列表(assistant-ui ThreadList)+ 主栏。共享同一 runtime。 */}
+      {agentLoading && <p className="px-4 pb-2 text-xs text-neutral-500">正在加载 Agent 配置…</p>}
+      {agentLoadError && <p role="alert" className="px-4 pb-2 text-xs text-red-300">{agentLoadError} <button onClick={() => setAgentLoadRevision(v => v + 1)}>重试</button></p>}
       <AssistantRuntimeProvider runtime={threadRuntime}>
       {/* min-w-0:flex 子项默认 min-width:auto,超宽内容(w-max 的 GFM 表格)
           会把整列撑破面板,右半截被 overflow-hidden 裁掉(表格也因此失去
@@ -1473,7 +1536,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       />
 
       {/* Composer —— shrink-0:无论消息区多长,对话框永远完整固定在底部。 */}
-      <div className="relative shrink-0 border-t border-[var(--agent-border)] p-3">
+      <div className="agent-workbench-compose relative shrink-0 p-3">
+        {runtimeLabel && <p className="agent-runtime-indicator" title={runtimeLabel}>{running ? "正在执行" : "本次运行"} · {runtimeLabel}</p>}
         {/* Slash command popup — appears when the message starts with `/`. */}
         {slashSuggestions.length > 0 ? (
           <SlashMenu
@@ -1500,65 +1564,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             ))}
           </div>
         ) : null}
-        {/* Greeting + quick chips, bottom-anchored (empty state). */}
-        {!hasAnyContent ? (
-          <div className="mb-3 space-y-2.5">
-            <div className="flex items-center gap-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-[10px] text-neutral-300">{zh ? "用" : "U"}</span>
-              <span className="text-[13px] text-neutral-400">{userName ? `Hi ${userName}!` : "Hi!"}</span>
-            </div>
-            <div className="text-[17px] font-semibold leading-snug text-neutral-100">
-              {zh ? "今天一起创作点什么？" : "What shall we create today?"}
-            </div>
-            {quickChips.length > 0 ? (
-              <div className="pt-0.5">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-neutral-300">
-                    <Wrench className="h-3.5 w-3.5 shrink-0 text-cyan-300/80" />
-                    <span className="truncate">{zh ? "让 Skill 帮你迈出第一步" : "Start with a Skill"}</span>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1 text-[10px]">
-                    <button
-                      type="button"
-                      onClick={() => setShowSkillLibrary(true)}
-                      className="rounded-md px-1.5 py-1 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
-                    >
-                      {zh ? "全部" : "All"}
-                    </button>
-                    {allInvokableSkills.length > 5 ? (
-                      <button
-                        type="button"
-                        onClick={showNextSkillBatch}
-                        className="rounded-md px-1.5 py-1 text-neutral-500 transition hover:bg-white/5 hover:text-neutral-200"
-                      >
-                        {zh ? "换一批" : "Refresh"}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                {quickChips.map((skill, index) => (
-                  <button
-                    key={skill.id}
-                    type="button"
-                    onClick={() => applyQuickChip(skill)}
-                    className={`group flex min-w-0 items-center gap-2 rounded-xl border border-[var(--agent-border)] bg-white/[0.025] px-2.5 py-2 text-left transition hover:border-cyan-300/25 hover:bg-white/[0.06] hover:text-white ${index === 4 ? "col-span-2" : ""}`}
-                    title={skill.description || skill.name}
-                  >
-                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/[0.07] bg-white/[0.04] text-neutral-500 transition group-hover:text-cyan-200">
-                      <Sparkles className="h-3.5 w-3.5" />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-[11px] font-medium text-neutral-300 group-hover:text-white">{getSkillDisplayName(skill)}</span>
-                      <span className="block truncate font-mono text-[9px] text-neutral-600">{getSkillCommandName(skill)}</span>
-                    </span>
-                  </button>
-                ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        {/* Empty state stays beside the composer, matching the canvas dock. */}
+        {!hasAnyContent ? <div className="agent-welcome">
+          <div className="agent-welcome-name"><span className="agent-welcome-avatar">{userName?.slice(0,1) || (zh ? "用" : "U")}</span>Hi {userName || (zh ? "创作者" : "creator")}!</div>
+          <h2>{zh ? "今天一起创作点什么？" : "What shall we create today?"}</h2>
+          <div className="agent-welcome-skills">{quickChips.map(skill => <button key={skill.id} onClick={() => applyQuickChip(skill)} title={skill.description || skill.name}><Sparkles size={13}/><span>{getSkillDisplayName(skill)}</span></button>)}{!quickChips.length && <button onClick={() => setShowSkillLibrary(true)}><Sparkles size={13}/><span>{zh ? "选择创作技能" : "Choose a skill"}</span></button>}</div>
+        </div> : null}
 
         {/* Single rounded composer container. */}
         <div className="rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
@@ -1688,12 +1699,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 <Wrench className="h-4 w-4" />
               </button>
             </div>
-            <ExecutionModeToggle
-              mode={executionMode}
-              onChange={changeExecutionMode}
-              disabled={running}
-              zh={zh}
-            />
+            <span className="agent-manual-policy" title={zh ? "媒体生成需确认后执行，子 Agent 仅负责分析建议" : "Media generation requires confirmation"}><Hand size={13}/>{zh ? "手动确认" : "Confirm"}</span>
             {/* 深度思考开关:仅思考类模型(deepseek / qwen3.7 / *-thinking…)显示。
                 开=模型输出 reasoning 流(思考块实时可见);关=直接回答,更快。 */}
             {thinkingSupported ? (
@@ -1952,117 +1958,6 @@ function AttachMenu({
         <span className="truncate">{zh ? "从画布添加（点选节点）" : "Add from canvas (pick a node)"}</span>
       </button>
     </PopoverContent>
-  );
-}
-
-/** Compact execution-mode picker: icon-only in the toolbar, labels in the popup. */
-function ExecutionModeToggle({
-  mode,
-  onChange,
-  disabled,
-  zh,
-}: {
-  mode: "manual" | "auto";
-  onChange: (mode: "manual" | "auto") => void;
-  disabled?: boolean;
-  zh: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const manual = mode === "manual";
-  const currentLabel = manual
-    ? (zh ? "手动确认" : "Manual confirmation")
-    : (zh ? "自动生成" : "Automatic generation");
-
-  const selectMode = (next: "manual" | "auto") => {
-    onChange(next);
-    setOpen(false);
-  };
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              disabled={disabled}
-              title={currentLabel}
-              aria-label={currentLabel}
-              aria-haspopup="menu"
-              aria-expanded={open}
-              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                open
-                  ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
-                  : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
-              }`}
-            >
-              {manual ? <Hand className="h-4 w-4" /> : <Zap className="h-4 w-4 text-cyan-300" />}
-            </button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        {!open ? (
-          <TooltipContent
-            side="top"
-            sideOffset={8}
-            className="border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
-          >
-            {currentLabel}
-          </TooltipContent>
-        ) : null}
-      </Tooltip>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={8}
-        role="menu"
-        aria-label={zh ? "执行方式" : "Execution mode"}
-        className="z-[130] w-[228px] rounded-xl border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
-      >
-        <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
-          {zh ? "执行方式" : "Execution mode"}
-        </div>
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={manual}
-          onClick={() => selectMode("manual")}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition hover:bg-white/5"
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-neutral-300">
-            <Hand className="h-3.5 w-3.5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[11px] font-medium text-neutral-200">
-              {zh ? "手动确认" : "Manual confirmation"}
-            </span>
-            <span className="mt-0.5 block text-[9px] text-neutral-500">
-              {zh ? "生成前逐项确认" : "Confirm each generation"}
-            </span>
-          </span>
-          {manual ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
-        </button>
-        <button
-          type="button"
-          role="menuitemradio"
-          aria-checked={!manual}
-          onClick={() => selectMode("auto")}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition hover:bg-white/5"
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.035] text-cyan-300">
-            <Zap className="h-3.5 w-3.5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[11px] font-medium text-neutral-200">
-              {zh ? "自动生成" : "Automatic generation"}
-            </span>
-            <span className="mt-0.5 block text-[9px] text-neutral-500">
-              {zh ? "自动规划并执行" : "Plan and run automatically"}
-            </span>
-          </span>
-          {!manual ? <Check className="h-3.5 w-3.5 shrink-0 text-cyan-300" /> : null}
-        </button>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -2430,11 +2325,7 @@ function RunStepRow({
       />
     );
   }
-  return (
-    <div className="rounded border border-rose-400/20 bg-rose-500/10 px-2 py-1.5 text-[11px] text-rose-200">
-      {step.message}
-    </div>
-  );
+  return <AgentFailureNotice message={step.message} jobId={step.jobId} />;
 }
 
 export function PendingRunCard({
@@ -2606,6 +2497,8 @@ function humanizeToolName(name: string, zh: boolean): string {
     get_canvas_delta: "Read canvas changes",
     create_node: "Create node",
     connect_nodes: "Connect nodes",
+    layout_nodes: "Arrange nodes",
+    delegate_agent: "Consult specialist",
     set_prompt: "Set prompt",
     run_node: "Run node",
     move_node: "Move node",
@@ -2621,6 +2514,8 @@ function humanizeToolName(name: string, zh: boolean): string {
     get_canvas_delta: "读取画布变化",
     create_node: "新建节点",
     connect_nodes: "连接节点",
+    layout_nodes: "自动排列节点",
+    delegate_agent: "调度专业 Agent",
     set_prompt: "设置提示词",
     run_node: "运行节点",
     move_node: "移动节点",

@@ -157,7 +157,7 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -170,7 +170,7 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 	// Parse task ID from response — format: { id: "..." } or { task_id: "..." }
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse submit response: %s", string(respBody[:min(len(respBody), 300)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 
 	taskID := ""
@@ -184,7 +184,7 @@ func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, 
 		if videoURL, ok := submitResp["video_url"].(string); ok && videoURL != "" {
 			return &GenerateResult{Type: "url", Content: videoURL}, nil
 		}
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	return s.pollVideoTask(ctx, baseURL, apiKey, queryPath, taskID)
@@ -347,7 +347,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -358,7 +358,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse submit response: %s", string(respBody[:min(len(respBody), 300)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	taskID, _ := submitResp["id"].(string)
 	if taskID == "" {
@@ -367,7 +367,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		}
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	return s.pollVideoArkTask(ctx, baseURL, queryPath, apiKey, taskID)
@@ -382,7 +382,7 @@ func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiK
 
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 
@@ -390,7 +390,7 @@ func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiK
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -416,19 +416,7 @@ func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiK
 		status := strings.ToLower(fmt.Sprintf("%v", taskResp["status"]))
 		switch status {
 		case "failed", "error", "cancelled", "canceled":
-			msg := ""
-			if e, ok := taskResp["error"].(map[string]interface{}); ok {
-				if m, ok := e["message"].(string); ok {
-					msg = m
-				}
-				if c, ok := e["code"].(string); ok && c != "" {
-					msg = c + ": " + msg
-				}
-			}
-			if msg == "" {
-				msg = string(body[:min(len(body), 500)])
-			}
-			return nil, apperror.New(apperror.CodeInternal, "Video generation failed: "+msg)
+			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		case "succeeded", "success", "completed":
 			if c, ok := taskResp["content"].(map[string]interface{}); ok {
 				if u, ok := c["video_url"].(string); ok && u != "" {
@@ -438,11 +426,11 @@ func (s *Service) pollVideoArkTask(ctx context.Context, baseURL, queryPath, apiK
 			if u := findStringField(taskResp, "video_url", 5); u != "" {
 				return &GenerateResult{Type: "url", Content: u}, nil
 			}
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task succeeded but no video_url found. Raw: %s", string(body[:min(len(body), 800)])))
+			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 		}
 		// queued / running / unknown — keep polling.
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }
 
 // generateVideoDashScope talks to Alibaba DashScope's async video API
@@ -501,31 +489,20 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		// DashScope sometimes returns an empty 404 when the API key's
-		// region doesn't match the model (e.g. Singapore key hitting
-		// the Beijing-only HappyHorse models), when HappyHorse isn't
-		// subscribed for this account, or when baseURL was edited wrong.
-		// Surface the exact URL + status so the user can diagnose
-		// region / quota / baseURL mismatches instead of staring at
-		// "<empty body>".
-		if resp.StatusCode == http.StatusNotFound && len(bytes.TrimSpace(respBody)) == 0 {
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf(
-				"Provider HTTP 404 (empty body) at %s — model %q not found. Check (1) API key region matches the model (HappyHorse 1.1 = cn-beijing only), (2) HappyHorse subscription is enabled in DashScope console, (3) baseURL is %q.",
-				submitURL, req.Model, "https://dashscope.aliyuncs.com/api/v1",
-			))
-		}
+		// Even an empty 404 retains its actual status. Do not guess whether
+		// the cause is a region, subscription or URL configuration mismatch.
 		return nil, parseProviderErrorBytes(resp.StatusCode, respBody)
 	}
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Failed to parse submit response: %s", string(respBody[:min(len(respBody), 300)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 
 	taskID := ""
@@ -540,7 +517,7 @@ func (s *Service) generateVideoDashScope(ctx context.Context, pc *domain.Provide
 		}
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("No task ID in response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	return s.pollVideoDashScopeTask(ctx, baseURL, queryPath, apiKey, taskID)
@@ -959,7 +936,7 @@ func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath
 
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 
@@ -967,7 +944,7 @@ func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -999,19 +976,7 @@ func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath
 
 		switch status {
 		case "FAILED":
-			msg := ""
-			if output != nil {
-				if m, ok := output["message"].(string); ok {
-					msg = m
-				}
-				if c, ok := output["code"].(string); ok && c != "" {
-					msg = c + ": " + msg
-				}
-			}
-			if msg == "" {
-				msg = string(body[:min(len(body), 500)])
-			}
-			return nil, apperror.New(apperror.CodeInternal, "Video generation failed: "+msg)
+			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		case "SUCCEEDED":
 			if output != nil {
 				if u, ok := output["video_url"].(string); ok && u != "" {
@@ -1021,13 +986,13 @@ func (s *Service) pollVideoDashScopeTask(ctx context.Context, baseURL, queryPath
 			if u := findStringField(taskResp, "video_url", 5); u != "" {
 				return &GenerateResult{Type: "url", Content: u}, nil
 			}
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task succeeded but no video_url found. Raw: %s", string(body[:min(len(body), 800)])))
+			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 		case "CANCELED", "UNKNOWN":
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Task %s: status=%s", taskID, status))
+			return nil, apperror.ProviderTaskFailure("视频任务状态为 " + status + "，未返回可用结果")
 		}
 		// PENDING / RUNNING / other — keep polling.
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }
 
 // pollVideoTask polls the provider's task endpoint until completed or failed.
@@ -1157,7 +1122,7 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 	client := newProviderHTTPClient(60 * time.Second)
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1170,7 +1135,7 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized MiniMax H3 submit response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	// Only a video_url is a completed result. A task id or task URL must never
 	// be surfaced as a successful media URL.
@@ -1198,7 +1163,7 @@ func (s *Service) generateVideoManjuMiniMaxH3(ctx context.Context, pc *domain.Pr
 		taskID = strings.TrimSpace(findStringField(submitResp, "id", 4))
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("MiniMax H3 submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	queryPath := resolveVideoQueryPath(pc)
@@ -1302,7 +1267,7 @@ func (s *Service) generateVideoManjuGrok15(ctx context.Context, pc *domain.Provi
 	client := newProviderHTTPClient(60 * time.Second)
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1315,7 +1280,7 @@ func (s *Service) generateVideoManjuGrok15(ctx context.Context, pc *domain.Provi
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized Grok Imagine Video submit response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	if videoURL := findStringField(submitResp, "video_url", 5); strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
 		return &GenerateResult{Type: "url", Content: videoURL}, nil
@@ -1326,7 +1291,7 @@ func (s *Service) generateVideoManjuGrok15(ctx context.Context, pc *domain.Provi
 		taskID = strings.TrimSpace(findStringField(submitResp, "id", 4))
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Grok Imagine Video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
 	queryPath := resolveVideoQueryPath(pc)
@@ -1420,7 +1385,7 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 	client := newProviderHTTPClient(60 * time.Second)
 	resp, err := doProviderSubmitOnce(ctx, client, httpReq, bodyJSON)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1433,7 +1398,7 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 
 	var submitResp map[string]interface{}
 	if err := json.Unmarshal(respBody, &submitResp); err != nil {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Unrecognized submit response: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务返回的任务数据无法解析，请检查接口兼容性")
 	}
 	// 同步兜底：万一网关直接返回了成片 URL。
 	if url := findStringField(submitResp, "video_url", 5); url != "" && strings.HasPrefix(url, "http") {
@@ -1447,7 +1412,7 @@ func (s *Service) generateVideoChatCompletions(ctx context.Context, pc *domain.P
 		taskID = strings.TrimSpace(id)
 	}
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 	queryPath := resolveVideoQueryPath(pc)
 	if pollURL, ok := submitResp["poll_url"].(string); ok && strings.TrimSpace(pollURL) != "" {
@@ -1473,7 +1438,7 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 
@@ -1481,7 +1446,7 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -1510,7 +1475,7 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 		// 各网关的失败/完成词汇不一(sora-style: failed/completed;Manju 中转站:
 		// error/succeeded 等)——统一按词表归类。
 		if status == "failed" || status == "error" || status == "failure" || status == "cancelled" || status == "canceled" {
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation failed. Raw: %s", string(body[:min(len(body), 500)])))
+			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		}
 
 		if status == "completed" || status == "succeeded" || status == "success" {
@@ -1527,13 +1492,13 @@ func (s *Service) pollVideoTask(ctx context.Context, baseURL, apiKey, queryPath,
 			if url != "" && strings.HasPrefix(url, "http") {
 				return &GenerateResult{Type: "url", Content: url}, nil
 			}
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video completed but no URL found. Raw: %s", string(body[:min(len(body), 800)])))
+			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
 		}
 
 		// Still processing — continue polling.
 	}
 
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }
 
 // generateVideoApimart implements apimart.ai's video contract (docs.apimart.ai),
@@ -1604,7 +1569,7 @@ func (s *Service) generateVideoApimart(ctx context.Context, pc *domain.ProviderC
 	client := safehttp.Client(30 * time.Second) // SSRF guard: poll/result urls come from relay responses
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, apperror.Wrap(apperror.CodeInternal, providerRequestErrorMessage(err), err)
+		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
 
@@ -1619,7 +1584,7 @@ func (s *Service) generateVideoApimart(ctx context.Context, pc *domain.ProviderC
 	}
 	taskID := extractImageTaskID(respBody) // {code, data:[{task_id}]} 通用任务 id 提取
 	if taskID == "" {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("apimart video submit returned no task id. Raw: %s", string(respBody[:min(len(respBody), 500)])))
+		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 	return s.pollApimartVideoTask(ctx, baseURL, apiKey, taskID)
 }
@@ -1637,7 +1602,7 @@ func (s *Service) pollApimartVideoTask(ctx context.Context, baseURL, apiKey, tas
 
 	select {
 	case <-ctx.Done():
-		return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+		return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 	case <-time.After(videoPollInitialDelay()):
 	}
 
@@ -1646,7 +1611,7 @@ func (s *Service) pollApimartVideoTask(ctx context.Context, baseURL, apiKey, tas
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, apperror.New(apperror.CodeInternal, "Generation timed out")
+				return nil, apperror.New(apperror.CodeTimeout, "模型任务等待超时，尚未取得生成结果；请先检查任务状态，避免重复提交")
 			case <-time.After(videoPollInterval()):
 			}
 		}
@@ -1669,14 +1634,14 @@ func (s *Service) pollApimartVideoTask(ctx context.Context, baseURL, apiKey, tas
 			return &GenerateResult{Type: "url", Content: url}, nil
 		}
 		if apimartTaskFailed(body) {
-			return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation failed. Raw: %s", string(body[:min(len(body), 500)])))
+			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		}
 	}
 
 	if len(lastBody) > 0 {
-		return nil, apperror.New(apperror.CodeInternal, fmt.Sprintf("Video generation timed out after polling. Last response: %s", string(lastBody[:min(len(lastBody), 800)])))
+		return nil, apperror.Wrap(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交", fmt.Errorf("last polling response: %.800s", lastBody))
 	}
-	return nil, apperror.New(apperror.CodeInternal, "Video generation timed out after polling")
+	return nil, apperror.New(apperror.CodeTimeout, "视频任务查询超时，上游是否完成尚未确认；请先检查任务状态，避免重复提交")
 }
 
 // extractApimartVideoURL pulls the final video URL out of an apimart task

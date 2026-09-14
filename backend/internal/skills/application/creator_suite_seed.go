@@ -73,16 +73,9 @@ func EnsureCreatorSuiteSeeds(ctx context.Context, queries *sqlc.Queries) (Creato
 
 	for _, seed := range seeds {
 		seedKey := creatorSuiteSeedKey(seed.SourceType, seed.SourcePath)
-		if existing, ok := existingBySeed[seedKey]; ok {
-			updated, err := syncCreatorSuiteSeed(ctx, queries, existing, seed)
-			if err != nil {
-				return report, err
-			}
-			if updated {
-				report.Updated++
-			} else {
-				report.Existing++
-			}
+		if _, ok := existingBySeed[seedKey]; ok {
+			// Saved skill content is operator-owned, just like Agent prompts.
+			report.Existing++
 			continue
 		}
 		if _, ok := existingByName[seed.Category+"/"+seed.Name]; ok {
