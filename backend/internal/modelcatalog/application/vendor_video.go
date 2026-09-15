@@ -265,14 +265,12 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
 	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
 	for i, raw := range req.ReferenceImages {
-		// Hand Ark a URL it can download itself — our own private object-store
-		// objects get a short-lived signed URL. Ark/Seedance rejects base64 data
-		// URLs and 403s on private links, so a reachable (signed) URL is the
-		// contract. arkReferenceImageURL also normalizes any image outside Ark's
-		// 300–6000px bounds (uploads a rescaled copy) to avoid WidthTooLarge.
+		// Use URL mode from the official Ark contract. Local references are
+		// copied to the active object store; private objects get signed URLs.
+		// The helper also normalizes images outside the 300–6000px bounds.
 		refURL, err := arkReferenceImageURL(ctx, raw)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
+			return nil, arkReferenceInputError(fmt.Sprintf("参考图 #%d ", i+1), err)
 		}
 		role := "reference_image"
 		if useFrameRoles {
@@ -295,11 +293,12 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	for _, rawVid := range collectArkReferenceVideos(req) {
 		refURL, err := arkReferenceMediaURL(ctx, rawVid)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, "参考视频处理失败", err)
+			return nil, arkReferenceInputError("参考视频", err)
 		}
 		content = append(content, map[string]interface{}{
 			"type":      "video_url",
 			"video_url": map[string]interface{}{"url": refURL},
+			"role":      "reference_video",
 		})
 	}
 
@@ -367,6 +366,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
+	s.rememberProviderTask(req.GenerationLogID, pc.ID, taskID)
 	return s.pollVideoArkTask(ctx, baseURL, queryPath, apiKey, taskID)
 }
 

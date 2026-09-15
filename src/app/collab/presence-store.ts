@@ -104,7 +104,9 @@ let selfColor = "";
 let readonly = false;
 
 let sendTimer: number | null = null;
-const SEND_INTERVAL = 60; // ms → ~16Hz max upstream
+// 4Hz is visually smooth for remote cursors while avoiding dozens of HTTP
+// requests per second during pointer movement on a busy canvas.
+const SEND_INTERVAL = 250;
 
 function flushReport() {
   sendTimer = null;

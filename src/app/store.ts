@@ -1525,9 +1525,12 @@ function applyActiveTasksToNodes(
         const task = taskByNode.get(node.id);
         if (!task) return node;
         const data = (node.data ?? {}) as Record<string, unknown>;
-        // Don't disturb a node that already finished or is already tracking
-        // this exact task.
-        if (data.status === 'running' && data.taskId === task.id) return node;
+        // Don't rewrite an already hydrated node. A matching running task that
+        // has just entered `persisting` is the exception: result_url now points
+        // at a readable local preview and must be copied onto the node so the
+        // opaque "返回中" overlay can disappear immediately after a refresh.
+        const hasHydratedTaskPreview = typeof data.url === 'string' && data.url.length > 0;
+        if (data.status === 'running' && data.taskId === task.id && (!task.result_url || hasHydratedTaskPreview)) return node;
         // Resume the timer from when the backend task actually started, not
         // from "now" — otherwise refreshing the page resets the elapsed
         // counter back to 0 even though the upstream task has been running
@@ -1540,9 +1543,17 @@ function applyActiveTasksToNodes(
           : task.status === 'persisting'
             ? 'persisting'
             : 'generating';
+        const preview = task.result_url
+          ? {
+              url: task.result_url,
+              output: task.result_url,
+              assetStatus: task.status,
+              assetSyncing: task.status === 'persisting',
+            }
+          : {};
         return {
           ...node,
-          data: { ...node.data, status: 'running', generationOwnerId: storageUserId, taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt },
+          data: { ...node.data, status: 'running', generationOwnerId: storageUserId, taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt, ...preview },
         };
       });
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;

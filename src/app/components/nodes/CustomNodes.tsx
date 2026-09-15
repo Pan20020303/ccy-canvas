@@ -7062,7 +7062,7 @@ function ResilientImage({
     slowProxyTimer.current = window.setTimeout(() => {
       triedDirect.current = true;
       setUseProxy(false);
-    }, 3500);
+    }, 15000);
     return () => {
       if (slowProxyTimer.current) {
         clearTimeout(slowProxyTimer.current);

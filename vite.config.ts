@@ -32,6 +32,7 @@ export default defineConfig(({ mode }) => {
   const release = currentRelease();
 
   return {
+    base: fileEnv.VITE_PUBLIC_BASE_PATH ?? "/",
     plugins: [
       react(),
       tailwindcss(),

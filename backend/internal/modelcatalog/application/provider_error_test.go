@@ -28,6 +28,7 @@ func TestProviderErrorClassification(t *testing.T) {
 		{403, "OperationDenied.ServiceOverdue", apperror.CodeUpstreamUnavailable, "余额或配额", false},
 		{403, "AccessDenied", apperror.CodeUpstreamUnavailable, "访问权限", false},
 		{404, "NotFound.Model", apperror.CodeUpstreamUnavailable, "不存在", false},
+		{404, "ModelNotOpen", apperror.CodeUpstreamUnavailable, "尚未开通此模型", false},
 		{413, "", apperror.CodeRequestTooLarge, "过大", false},
 		{429, "", apperror.CodeRateLimited, "并发", true},
 		{504, "", apperror.CodeTimeout, "超时", true},

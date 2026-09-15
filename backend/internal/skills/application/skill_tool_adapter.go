@@ -2,8 +2,8 @@ package application
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -22,18 +22,38 @@ type SkillTool struct {
 }
 
 func NewSkillTool(skill sqlc.Skill, executor *Executor) *SkillTool {
-	name := sanitizeToolName(skill.Name)
+	name := skillToolName(skill)
 	if skill.ID.Valid {
 		if len(name) > 31 {
 			name = name[:31]
 		}
-		name += "_" + fmt.Sprintf("%x", skill.ID.Bytes)
+		name += "_" + hex.EncodeToString(skill.ID.Bytes[:])
 	}
 	return &SkillTool{
 		skill:    skill,
 		executor: executor,
 		safeName: name,
 	}
+}
+
+func skillToolName(skill sqlc.Skill) string {
+	raw := skill.Name
+	var spec struct {
+		SlashCommand string `json:"slash_command"`
+		SourcePath   string `json:"source_path"`
+	}
+	if json.Unmarshal(skill.Spec, &spec) == nil {
+		if strings.TrimSpace(spec.SlashCommand) != "" {
+			raw = strings.TrimPrefix(strings.TrimSpace(spec.SlashCommand), "/")
+		} else if strings.TrimSpace(spec.SourcePath) != "" {
+			raw = spec.SourcePath
+		}
+	}
+	name := "skill_" + sanitizeToolName(raw)
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	return name
 }
 
 func (t *SkillTool) Name() string { return t.safeName }
@@ -97,11 +117,25 @@ func LoadBoundSkills(ctx context.Context, q *sqlc.Queries, skillIDs []pgtype.UUI
 
 func BuildSkillToolsFromRows(executor *Executor, skills []sqlc.Skill) []Tool {
 	tools := make([]Tool, 0, len(skills))
-	for _, skill := range skills {
+	seen := make(map[string]struct{}, len(skills))
+	for i, skill := range skills {
 		if !skill.Enabled || skill.Kind == "code" && !IsGuideSkill(skill) {
 			continue
 		}
-		tools = append(tools, NewSkillTool(skill, executor))
+		tool := NewSkillTool(skill, executor)
+		if _, exists := seen[tool.safeName]; exists {
+			suffix := "_" + string(rune('a'+i%26))
+			if skill.ID.Valid {
+				suffix = "_" + hex.EncodeToString(skill.ID.Bytes[:4])
+			}
+			base := tool.safeName
+			if len(base)+len(suffix) > 64 {
+				base = base[:64-len(suffix)]
+			}
+			tool.safeName = base + suffix
+		}
+		seen[tool.safeName] = struct{}{}
+		tools = append(tools, tool)
 	}
 	return tools
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearReferencePayloadValue,
@@ -8,9 +8,11 @@ import {
   isPublicHttpAssetUrl,
   resolveBackendAssetUrl,
   setReferencePayloadValue,
+  toRenderableMediaUrl,
 } from "./reference-media";
 
 describe("reference media helpers", () => {
+  afterEach(() => vi.unstubAllEnvs());
   it("maps image mime types to reference image nodes", () => {
     expect(getReferenceNodeTypeFromMimeType("image/png")).toBe("referenceImageNode");
   });
@@ -36,6 +38,19 @@ describe("reference media helpers", () => {
   it("resolves backend-relative asset urls against the api base url", () => {
     expect(resolveBackendAssetUrl("/uploads/2026-06/example.png", "http://127.0.0.1:8080")).toBe(
       "http://127.0.0.1:8080/uploads/2026-06/example.png",
+    );
+  });
+
+  it("preserves the deployed sub-path for generated uploads", () => {
+    expect(resolveBackendAssetUrl("/uploads/generated/example.jpeg", "https://cylaigc.com/ccy")).toBe(
+      "https://cylaigc.com/ccy/uploads/generated/example.jpeg",
+    );
+    vi.stubEnv("VITE_API_BASE_URL", "https://cylaigc.com/ccy");
+    expect(toRenderableMediaUrl("/uploads/generated/example.jpeg")).toBe(
+      "https://cylaigc.com/ccy/uploads/generated/example.jpeg",
+    );
+    expect(toRenderableMediaUrl("/uploads/generated/example.jpeg", { thumbWidth: 720 })).toBe(
+      "https://cylaigc.com/ccy/api/app/media-thumbnail?path=%2Fuploads%2Fgenerated%2Fexample.jpeg&w=720",
     );
   });
 
