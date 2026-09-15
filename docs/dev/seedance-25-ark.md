@@ -19,7 +19,11 @@
 | 时长、比例、分辨率 | `duration`、`ratio`、`resolution` |
 | 输出格式 | `output_format=mp4/mov`，默认 MP4 |
 
-界面开放 4～30 秒、480p / 720p；后台也接受 `duration=-1` 自动时长。
+界面开放 4～30 秒、480p / 720p / 1080p，默认仍为 720p；后台也接受
+`duration=-1` 自动时长。选择 1080p 后直接提交 `resolution=1080p`，不降档。
+国内 Ark 文档明确支持 2.5 的 1080p 输出，不能套用海外 LAS / HopBase 的限制。
+1080p 输出使用 10bit 位深与 H.265/HEVC 编码；少数浏览器/系统可能无法播放，
+可下载原文件用支持 HEVC 的播放器查看。本适配不转码，也不将 2.5 扩展为 4K。
 全能参考最多 30 张图片、10 段视频、10 段音频。超出这些数量、无效时长、
 不支持的分辨率/格式、混用首尾帧与多模态参考，会在请求上游前报错。
 本地上传沿用已有的对象存储转存 / 公网挂载流程，内嵌图片和素材 ID 仍可
@@ -35,10 +39,12 @@
   `generate_audio=true`、`omni_reference_task_type=reference`、`output_format=mov`。
 - 前端测试验证真实 `runNode` 提交的参考数组和设置；本地 HTTP 模拟服务
   验证 Ark POST 请求体、授权头、任务 ID 轮询和 MOV 结果。
-- 增加音频关闭、音频参考去重、首尾帧、数量与参数越界、旧版兼容测试。
+- 增加音频关闭、音频参考去重、首尾帧、数量与参数越界、旧版兼容测试；
+  覆盖 480p / 720p / 1080p 从画布提交到 Ark 请求体的传递及 4K 拒绝校验。
 - 不调用真实付费生成。更新后端进程/worker 后，新的请求适配才会生效；
   重启前应等待现有任务完成，或使用现有部署流程平滑更新。
 - [ByteDance Seedance 2.5 模型说明](https://seed.bytedance.com/en/seedance2_5)
-- [BytePlus 官方同系列输入及能力表](https://docs.byteplus.com/en/docs/Byteplus_LAS/video_gen_enhanced)
-  用于核对 2.5 的分辨率、时长和多模态能力；国内 Ark 的字段以用户提供的
-  官方请求为准（BytePlus LAS 是不同入口，不能替换本渠道地址）。
+- [国内 Ark 创建视频生成任务](https://docs.volcengine.com/docs/82379/1520757?lang=zh)
+  为本渠道的参数依据。2026-09-15 通过浏览器核对（页面更新时间 2026-09-09）：
+  `resolution` 明确列出 Seedance 2.5 默认 720p，可选 480p、720p、1080p。
+  BytePlus LAS 是不同入口，其同系列能力表不能替代国内 Ark 的规格。

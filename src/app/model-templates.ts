@@ -200,7 +200,9 @@ const SEEDANCE_2_TEMPLATE = {
 // model-scoped so existing 2.0 channels retain their original capabilities.
 const ARK_SEEDANCE_25_TEMPLATE = {
   ...SEEDANCE_2_TEMPLATE,
-  resolutionOptions: ["480p", "720p"],
+  // Domestic Ark supports 1080p; do not inherit the overseas LAS/HopBase limit.
+  // https://docs.volcengine.com/docs/82379/1520757 (resolution)
+  resolutionOptions: ["480p", "720p", "1080p"],
   durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
   referenceModes: ["text-to-video", "first-last", "multi-image", "motion-mimic", "all-in-one"] as ReferenceModeKey[],
   referenceImageRange: { min: 1, max: 30 },

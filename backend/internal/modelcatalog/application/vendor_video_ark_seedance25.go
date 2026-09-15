@@ -32,9 +32,9 @@ func validateArkSeedance25Request(req GenerateRequest) error {
 		return invalid("Seedance 2.5 视频时长需为 4～30 秒，或 -1（自动）。")
 	}
 	switch strings.ToLower(strings.TrimSpace(req.Resolution)) {
-	case "", "480p", "720p":
+	case "", "480p", "720p", "1080p":
 	default:
-		return invalid("Seedance 2.5 仅支持 480p / 720p 分辨率。")
+		return invalid("Seedance 2.5 仅支持 480p / 720p / 1080p 分辨率。")
 	}
 	switch strings.ToLower(strings.TrimSpace(req.OutputFormat)) {
 	case "", "mp4", "mov":

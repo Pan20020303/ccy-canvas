@@ -105,7 +105,7 @@ describe("model templates", () => {
     const template = getModelTemplate("doubao-seedance-2-5-260628");
     expect(template).toMatchObject({
       vendor: "Volcengine", serviceType: "video",
-      resolutionOptions: ["480p", "720p"],
+      resolutionOptions: ["480p", "720p", "1080p"],
       durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
       referenceImageRange: { min: 1, max: 30 },
       audioSettingOptions: ["on", "off"],
@@ -121,6 +121,14 @@ describe("model templates", () => {
     const previous = getModelTemplate("doubao-seedance-2-0-260128");
     expect(isModeSatisfied("all-in-one", { images: 1, videos: 6 }, previous?.referenceRequirements?.["all-in-one"])).toBe(false);
     expect(previous?.supportsOutputFormat).toBeFalsy();
+  });
+
+  it("keeps 1080p available for official Seedance 2.5 aliases without changing the default", () => {
+    for (const model of ["doubao-seedance-2-5-260628", "doubao-seedance-2.5"]) {
+      const template = getModelTemplate(model, { vendor: "Volcengine", service_type: "video" });
+      expect(template?.resolutionOptions).toEqual(["480p", "720p", "1080p"]);
+      expect(template?.defaults?.resolution).toBe("720p");
+    }
   });
 
   it("matches HopBase Seedance 2.5 capabilities", () => {

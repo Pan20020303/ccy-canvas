@@ -61,7 +61,7 @@ func TestGenerateVideoArkSeedance25ReferenceContract(t *testing.T) {
 		ReferenceImages: []string{server.URL + "/reference.png"},
 		ReferenceVideo:  videos[0], ReferenceVideos: videos,
 		ReferenceMode: "image_reference", AudioSetting: "on", AspectRatio: "16:9",
-		Resolution: "720p", Duration: 15, OutputFormat: "mov",
+		Resolution: "1080p", Duration: 15, OutputFormat: "mov",
 	}
 	svc := &Service{}
 	result, err := svc.generateVideo(context.Background(), &domain.ProviderConfig{Vendor: "Volcengine", APISpec: "ark", ServiceType: "video"}, server.URL+"/api/v3", "ark-test-key", req)
@@ -72,7 +72,7 @@ func TestGenerateVideoArkSeedance25ReferenceContract(t *testing.T) {
 		t.Fatalf("result=%+v, polls=%d", result, polls)
 	}
 	for key, want := range map[string]any{
-		"model": req.Model, "ratio": "16:9", "duration": float64(15), "resolution": "720p",
+		"model": req.Model, "ratio": "16:9", "duration": float64(15), "resolution": "1080p",
 		"generate_audio": true, "omni_reference_task_type": "reference", "output_format": "mov", "watermark": false,
 	} {
 		if submitted[key] != want {
@@ -95,6 +95,40 @@ func TestGenerateVideoArkSeedance25ReferenceContract(t *testing.T) {
 		if video["type"] != "video_url" || video["role"] != "reference_video" || video["video_url"].(map[string]any)["url"] != videos[i] {
 			t.Errorf("reference video %d=%#v", i, video)
 		}
+	}
+}
+
+func TestGenerateVideoArkSeedance25Resolutions(t *testing.T) {
+	fastVideoPoll(t)
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	for _, resolution := range []string{"480p", "720p", "1080p", " 1080P "} {
+		t.Run(resolution, func(t *testing.T) {
+			var submitted map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost {
+					if err := json.NewDecoder(r.Body).Decode(&submitted); err != nil {
+						t.Errorf("decode request: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					_, _ = w.Write([]byte(`{"id":"task"}`))
+				} else {
+					_, _ = w.Write([]byte(`{"status":"succeeded","content":{"video_url":"https://example.com/output.mp4"}}`))
+				}
+			}))
+			defer server.Close()
+			_, err := (&Service{}).generateVideoArk(context.Background(), &domain.ProviderConfig{APISpec: "ark"}, server.URL, "test", GenerateRequest{
+				Model: "doubao-seedance-2-5-260628", Prompt: "日落", Resolution: resolution,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.ToLower(strings.TrimSpace(resolution))
+			if submitted["resolution"] != want {
+				t.Fatalf("resolution=%v, want %s without a downgrade", submitted["resolution"], want)
+			}
+		})
 	}
 }
 
@@ -157,7 +191,7 @@ func TestArkSeedance25Validation(t *testing.T) {
 	}{
 		{"too-long", GenerateRequest{Duration: 31}, "4～30"},
 		{"too-short", GenerateRequest{Duration: 3}, "4～30"},
-		{"resolution", GenerateRequest{Resolution: "1080p"}, "480p / 720p"},
+		{"resolution", GenerateRequest{Resolution: "4k"}, "480p / 720p / 1080p"},
 		{"format", GenerateRequest{OutputFormat: "webm"}, "MP4 / MOV"},
 		{"audio-setting", GenerateRequest{AudioSetting: "origin"}, "on / off"},
 		{"images", GenerateRequest{ReferenceImages: make([]string, 31)}, "30 张"},

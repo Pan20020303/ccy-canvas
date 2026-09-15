@@ -1616,7 +1616,7 @@ describe("workspace control bar state", () => {
     else { expect(JSON.parse(String(request![1].body)).reference_images ?? []).toEqual(Array.from({ length: count }, (_, i) => `https://example.com/ref-${i}.png`)); }
   });
 
-  it.each(["on", "off"])("submits official Seedance 2.5 mixed references, MOV and audio %s from canvas nodes", async (audioSetting) => {
+  it.each(["480p", "720p", "1080p"].flatMap((resolution) => ["on", "off"].map((audioSetting) => ({ resolution, audioSetting }))))("submits official Seedance 2.5 mixed references at $resolution, MOV and audio $audioSetting from canvas nodes", async ({ resolution, audioSetting }) => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true, headers: new Headers({ "content-type": "application/json" }),
@@ -1632,7 +1632,7 @@ describe("workspace control bar state", () => {
       useStore.getState().onConnect({ source: id, target, sourceHandle: null, targetHandle: null });
     });
     useStore.getState().updateNodeGenerationParams(target, {
-      durationSeconds: 15, aspectRatio: "16:9", resolution: "720p", outputFormat: "mov", audioSetting, referenceVariant: "all-in-one",
+      durationSeconds: 15, aspectRatio: "16:9", resolution, outputFormat: "mov", audioSetting, referenceVariant: "all-in-one",
     });
     await useStore.getState().runNode(target, { prompt: "饼干广告，参考@图像1和@视频1至@视频6", model: "doubao-seedance-2-5-260628" });
     const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
@@ -1640,7 +1640,7 @@ describe("workspace control bar state", () => {
     expect(JSON.parse(String(request![1].body))).toMatchObject({
       model: "doubao-seedance-2-5-260628", reference_mode: "image_reference",
       reference_images: refs.slice(0, 1), reference_videos: refs.slice(1),
-      duration: 15, aspect_ratio: "16:9", resolution: "720p", output_format: "mov", audio_setting: audioSetting,
+      duration: 15, aspect_ratio: "16:9", resolution, output_format: "mov", audio_setting: audioSetting,
     });
   });
 
