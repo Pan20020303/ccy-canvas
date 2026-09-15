@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
+import { canvasViewportKey, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, useCanvasViewportMemory } from '../canvas-viewport';
 import { CanvasBackground } from './settings/CanvasPreferencesRuntime';
 import {
   ReactFlow,
@@ -336,7 +337,7 @@ function isEditableTarget(target: EventTarget | null) {
   return Boolean(element.closest('input, textarea, [contenteditable="true"]'));
 }
 
-const InnerCanvas = () => {
+const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   // 细粒度 selector 订阅 —— 不要用 useStore() 整状态解构:那样 store 里任何字段变化
   // (包括拖动每帧之外的无关状态)都会重渲染整个画布+全部节点,是拖动卡顿的主因。
   // actions 是稳定引用(永不触发重渲染);state 切片只在自身变化时触发。
@@ -358,6 +359,7 @@ const InnerCanvas = () => {
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const readOnly = useActiveProjectReadOnly();
   const canvasHydrated = useStore((state) => state.canvasHydrated);
+  const viewportMemory = useCanvasViewportMemory(viewportKey, canvasHydrated);
   const language = useStore((state) => state.language);
   const theme = useStore((state) => state.theme);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
@@ -406,10 +408,14 @@ const InnerCanvas = () => {
   // 资产库「定位」:store 里的 canvasFocusRequest nonce 变化时,平移到目标节点
   // 并选中(useReactFlow 只能在 Canvas 内用,故经 store 中转)。
   const canvasFocusRequest = useStore((state) => state.canvasFocusRequest);
+  // A completed focus request survives route changes in the store. Do not
+  // replay it on mount and override this canvas's restored viewing position.
+  const handledFocusNonce = useRef(canvasFocusRequest?.nonce);
   useEffect(() => {
-    if (!canvasFocusRequest) return;
+    if (!canvasHydrated || !canvasFocusRequest || handledFocusNonce.current === canvasFocusRequest.nonce) return;
     const node = nodes.find((n) => n.id === canvasFocusRequest.nodeId);
     if (!node) return;
+    handledFocusNonce.current = canvasFocusRequest.nonce;
     const bounds = getNodeBounds(node);
     setCenter(bounds.cx, bounds.cy, {
       zoom: Math.max(viewport.zoom, 0.6),
@@ -421,7 +427,7 @@ const InnerCanvas = () => {
     ]);
     // 只在 nonce 变化时触发一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasFocusRequest?.nonce]);
+  }, [canvasFocusRequest?.nonce, canvasHydrated, nodes]);
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const [downloadBatch,setDownloadBatch]=useState<DownloadItem[]|null>(null);
   const selectedDownloads=useMemo(()=>collectDownloadItems(nodes.filter(n=>n.selected)),[nodes]);
@@ -1728,7 +1734,7 @@ const InnerCanvas = () => {
           // with no trace. Surface it instead of hiding it.
           if (code === '008') console.warn(`[ReactFlow] edge not drawn — handle not found (008): ${message}`);
         }}
-        nodes={nodes}
+        nodes={canvasHydrated ? nodes : []}
         edges={normalizedEdges}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
@@ -1851,14 +1857,15 @@ const InnerCanvas = () => {
         edgeTypes={edgeTypes}
         connectionLineComponent={FreeConnectionLine}
         defaultEdgeOptions={defaultEdgeOptions}
-        fitView
+        {...viewportMemory}
+        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
         /* 性能:只渲染视口内的节点/边。节点多时(每个媒体节点都挂着真实
            img/video)不再全量渲染,屏幕外的不挂媒体;配合会话级尺寸缓存,
            节点重新进入视口时尺寸已知、图片已缓存,不跳不闪。 */
         onlyRenderVisibleElements
         className="touch-none"
-        minZoom={0.1}
-        maxZoom={4}
+        minZoom={CANVAS_MIN_ZOOM}
+        maxZoom={CANVAS_MAX_ZOOM}
         selectionOnDrag
         panOnDrag={[1, 2]}
         selectionMode={"partial" as never}
@@ -3087,8 +3094,13 @@ function RunConfirmDialog() {
   );
 }
 
-export const Canvas = () => (
-  <ReactFlowProvider>
-    <InnerCanvas />
-  </ReactFlowProvider>
-);
+export const Canvas = () => {
+  const { user } = useAuth();
+  const projectId = useStore(state => state.activeBackendProjectId);
+  const viewportKey = canvasViewportKey(user?.id ?? null, projectId);
+  return (
+    <ReactFlowProvider key={viewportKey ?? 'unbound-canvas'}>
+      <InnerCanvas viewportKey={viewportKey} />
+    </ReactFlowProvider>
+  );
+};

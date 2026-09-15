@@ -143,7 +143,7 @@ import { PositionStudio } from './PositionStudio';
 // proxy-wrapped (legacy persisted data) — toRenderableMediaUrl collapses both
 // to exactly one proxy layer, so the request can never double-wrap (which the
 // backend would reject with 401→502).
-async function downloadAsset(src: string, filename: string) {
+async function downloadAsset(src: string, filename: string, propagateError = false) {
   if (!src) return;
   const proxied = toRenderableMediaUrl(src);
   if (!proxied) return;
@@ -160,6 +160,9 @@ async function downloadAsset(src: string, filename: string) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
   } catch (err) {
+    // The fullscreen viewer owns its inline error/retry state. Other node
+    // buttons keep the existing toast-only behavior.
+    if (propagateError) throw err;
     // No silent <a download> fallback: navigating to the proxy URL on failure
     // just saved a mis-named "proxy-media.txt" error page. Tell the user instead.
     // eslint-disable-next-line no-console
@@ -3515,25 +3518,17 @@ function PreviousGenerationFailureNotice({ nodeId, error }: { nodeId: string; er
 const MediaPreview = lazy(() => import('../MediaPreview'));
 
 const PreviewModal = ({ kind, src, onClose, nodeId }: { kind: 'image' | 'video'; src: string; onClose: () => void; nodeId?: string }) => {
-  const language = useStore(state => state.language);
-  const nodes = useStore(state => state.nodes);
-  const readOnly = useActiveProjectReadOnly();
-  const source = nodeId ? nodes.find(node => node.id === nodeId) : undefined;
-  const title = String(source?.data?.customTitle || source?.data?.sourceName || (kind === 'image' ? '图片' : '视频'));
-  const canUseTools = Boolean(source?.selected && nodes.filter(node => node.selected).length === 1 && !readOnly);
-  const openTool = (action: 'edit' | 'upscale') => {
-    if (!nodeId) return;
+  const openTool = (targetNodeId: string, action: 'edit' | 'upscale') => {
     onClose();
-    requestMediaPreviewAction(nodeId, action);
+    requestMediaPreviewAction(targetNodeId, action);
   };
   return <Suspense fallback={createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-[#111215] text-white" role="dialog" aria-label="加载预览">
       <span>正在加载预览…</span><button className="absolute right-6 top-6" onClick={onClose}>关闭</button>
     </div>, document.body)}>
-    <MediaPreview key={src} kind={kind} src={src} title={title} zh={language === 'zh'} onClose={onClose}
-      onDownload={() => downloadAsset(src, title + (kind === 'image' ? '.png' : '.mp4'))}
-      onEdit={canUseTools ? () => openTool('edit') : undefined}
-      onUpscale={canUseTools ? () => openTool('upscale') : undefined}
+    <MediaPreview key={`${nodeId ?? ''}:${src}`} kind={kind} src={src} nodeId={nodeId} onClose={onClose}
+      onDownload={(currentSrc, filename) => downloadAsset(currentSrc, filename, true)}
+      onNodeAction={openTool}
     />
   </Suspense>;
 };

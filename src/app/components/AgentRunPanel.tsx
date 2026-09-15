@@ -52,6 +52,7 @@ import { displayNameOf, getCurrentUser } from "../api/me";
 import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { SkillLibraryDialog, SkillQuickPicker } from "./SkillLibrary";
+import { SkillMentionChip } from "./skills/SkillMentionChip";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { getRotatingSkillBatch, getSkillDisplayName } from "../skill-display";
@@ -220,6 +221,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [agentLoading, setAgentLoading] = useState(false);
   const [agentLoadRevision, setAgentLoadRevision] = useState(0);
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [skillsError, setSkillsError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
   // Per-message model override (composer "+" → 模型). null = use agent's model.
@@ -365,27 +368,33 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     let active = true;
     setAgentLoading(true);
     setAgentLoadError("");
-    void Promise.all([listAgents(), listSkills()])
-      .then(([agentRows, skillRows]) => {
+    setSkillsLoading(true);
+    setSkillsError("");
+    void Promise.allSettled([listAgents(), listSkills()])
+      .then(([agentResult, skillResult]) => {
         if (!active) return;
-        const mainAgent = selectMainAgent(agentRows ?? []);
+        if (skillResult.status === 'fulfilled') setSkills(skillResult.value ?? []);
+        else setSkillsError(`技能加载失败：${skillResult.reason instanceof Error ? skillResult.reason.message : '请重试。'}`);
+        if (agentResult.status === 'rejected') { setAgentLoadError("Agent 配置加载失败，请重试。"); return; }
+        const mainAgent = selectMainAgent(agentResult.value ?? []);
         setAgents(mainAgent ? [mainAgent] : []);
-        setSkills(skillRows ?? []);
         setSelectedId(mainAgent?.id ?? null);
         if (!mainAgent) setAgentLoadError("暂无可用的主 Agent，请联系管理员启用。");
       })
       .catch(() => { if (active) setAgentLoadError("Agent 配置加载失败，请重试。"); })
-      .finally(() => { if (active) setAgentLoading(false); });
+      .finally(() => { if (active) { setAgentLoading(false); setSkillsLoading(false); } });
     return () => { active = false; };
   }, [open, agentLoadRevision]);
 
   const refreshSkills = useCallback(async () => {
+    setSkillsLoading(true);
+    setSkillsError("");
     try {
       const rows = await listSkills();
       setSkills(rows ?? []);
-    } catch {
-      // Keep the current skill library visible when refresh fails.
-    }
+    } catch (error) {
+      setSkillsError(`技能加载失败：${error instanceof Error ? error.message : '请重试。'}`);
+    } finally { setSkillsLoading(false); }
   }, []);
 
   // Greeting needs a display name — fetch the current user once.
@@ -518,7 +527,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [allInvokableSkills, message]);
 
   const applySlashCompletion = (skill: Skill) => {
-    // Skill selection is represented by its own full-width chip. Keeping the
+    // Skill selection is represented by its own compact icon chip. Keeping the
     // slash command out of the textarea avoids leaking internal identifiers
     // into the user's prompt.
     setMessage("");
@@ -1574,22 +1583,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         {/* Single rounded composer container. */}
         <div className="rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
           {selectedComposerSkill ? (
-            <div className="mb-2 flex w-full min-w-0 items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-500/[0.08] px-2.5 py-2 text-cyan-50">
-              <Sparkles className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-              <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
-                {getSkillDisplayName(selectedComposerSkill)}
-              </span>
-              <button
-                type="button"
-                onClick={() => setSelectedSkillId(null)}
-                disabled={running}
-                aria-label={zh ? "移除已选技能" : "Remove selected skill"}
-                title={zh ? "移除已选技能" : "Remove selected skill"}
-                className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-cyan-100/60 transition hover:bg-white/10 hover:text-white disabled:opacity-40"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
+            <div className="mb-1.5 min-w-0"><SkillMentionChip skill={selectedComposerSkill} onRemove={() => setSelectedSkillId(null)} disabled={running} zh={zh} /></div>
           ) : null}
           <textarea
             ref={inputRef}
@@ -1670,7 +1664,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 <SkillQuickPicker
                   anchorRef={skillButtonRef}
                   zh={zh}
-                  skills={quickChips}
+                  skills={allInvokableSkills}
+                  loading={skillsLoading}
+                  error={skillsError}
+                  onRetry={() => void refreshSkills()}
                   onPick={applyQuickChip}
                   onOpenAll={() => {
                     setShowSkillMenu(false);
@@ -1696,7 +1693,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                     : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
                 }`}
               >
-                <Wrench className="h-4 w-4" />
+                <Sparkles className="h-4 w-4" />
+                {selectedComposerSkill && <span className="skill-selected-count" aria-label={zh ? '已选 1 个技能' : '1 skill selected'}>1</span>}
               </button>
             </div>
             <span className="agent-manual-policy" title={zh ? "媒体生成需确认后执行，子 Agent 仅负责分析建议" : "Media generation requires confirmation"}><Hand size={13}/>{zh ? "手动确认" : "Confirm"}</span>
@@ -1845,9 +1843,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         open={showSkillLibrary}
         zh={zh}
         skills={skills.filter((skill) => skill.enabled)}
+        loading={skillsLoading}
+        error={skillsError}
+        onRetry={() => void refreshSkills()}
         onClose={() => setShowSkillLibrary(false)}
         onPick={applyQuickChip}
-        onSkillsChanged={() => void refreshSkills()}
+        onSkillsChanged={(next) => { if (next) setSkills(next); void refreshSkills(); }}
       />
     </div>
   );

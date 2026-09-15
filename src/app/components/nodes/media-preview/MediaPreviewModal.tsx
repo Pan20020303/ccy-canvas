@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ChevronLeft, ChevronRight, Crosshair, Download, ImageOff, Info, Loader2, Play, RefreshCw, X } from 'lucide-react';
-import { useStore } from '../../../store';
+import { ChevronLeft, ChevronRight, Crosshair, Download, ImageOff, Info, Loader2, Pencil, Play, RefreshCw, Scissors, Sparkles, X } from 'lucide-react';
+import { useStore, useActiveProjectReadOnly } from '../../../store';
+import type { MediaPreviewAction } from '../../media-preview-utils';
 import { useCanvasPreferences } from '../../../canvas-preferences';
 import { toRenderableMediaUrl } from '../../../reference-media';
 import { ImagePreview } from './ImagePreview';
@@ -16,6 +17,7 @@ export type MediaPreviewProps = {
   nodeId?: string;
   onClose: () => void;
   onDownload: (src: string, filename: string) => Promise<void>;
+  onNodeAction?: (nodeId: string, action: MediaPreviewAction) => void;
 };
 
 function PreviewThumbnail({ item, selected, onSelect }: { item: PreviewItem; selected: boolean; onSelect: () => void }) {
@@ -39,8 +41,9 @@ function PreviewThumbnail({ item, selected, onSelect }: { item: PreviewItem; sel
   </button>;
 }
 
-export function MediaPreviewModal({ kind, src, nodeId, onClose, onDownload }: MediaPreviewProps) {
+export function MediaPreviewModal({ kind, src, nodeId, onClose, onDownload, onNodeAction }: MediaPreviewProps) {
   const nodes = useStore(state => state.nodes);
+  const readOnly = useActiveProjectReadOnly();
   const zh = useStore(state => state.language) === 'zh';
   const dialogRef = useRef<HTMLDivElement>(null);
   const initialId = nodeId || '__standalone-preview__';
@@ -58,6 +61,13 @@ export function MediaPreviewModal({ kind, src, nodeId, onClose, onDownload }: Me
     return neighbors.flatMap(id => { const node = map.get(id); const item = node ? nodePreviewItem(node, zh) : null; return item ? [item] : []; });
   }, [initialId, kind, neighbors, nodeId, nodes, src, zh]);
   const selected = items.find(item => item.id === selectedId) || items[0];
+  const actionNode = selected?.nodeId ? nodes.find(node => node.id === selected.nodeId) : undefined;
+  // Toolbars listen only for the single selected editable node. Re-evaluate
+  // against the current preview, never edit the original node after switching.
+  const canUseTools = Boolean(onNodeAction && !readOnly && actionNode?.selected && nodes.filter(node => node.selected).length === 1);
+  const runAction = (action: MediaPreviewAction) => {
+    if (canUseTools && selected?.nodeId) onNodeAction?.(selected.nodeId, action);
+  };
   const index = selected ? items.indexOf(selected) : -1;
   const itemKey = selected ? `${selected.id}:${selected.src}:${revision}` : '';
   const dimensions = measured?.key === itemKey ? measured.dimensions : selected?.width && selected.height ? { width: selected.width, height: selected.height } : null;
@@ -86,6 +96,10 @@ export function MediaPreviewModal({ kind, src, nodeId, onClose, onDownload }: Me
           <PreviewButton label={zh ? '素材信息' : 'Media information'} aria-expanded={info} onClick={() => setInfo(!info)}><Info /></PreviewButton>
           <span className="media-preview-divider" />
           <PreviewButton label={zh ? '重新加载' : 'Reload'} disabled={!selected} onClick={reload}><RefreshCw /></PreviewButton>
+          {canUseTools && <><span className="media-preview-divider" />
+            <PreviewButton label={selected?.kind === 'video' ? (zh ? '裁剪视频' : 'Trim video') : (zh ? '编辑图片' : 'Edit image')} onClick={() => runAction('edit')}>{selected?.kind === 'video' ? <Scissors /> : <Pencil />}</PreviewButton>
+            <PreviewButton label={zh ? '超分' : 'Upscale'} onClick={() => runAction('upscale')}><Sparkles /></PreviewButton>
+          </>}
         </div>
         {info && <section className="media-preview-info" aria-label={zh ? '素材详情' : 'Media details'}>
           <h2>{selected?.title}</h2>
