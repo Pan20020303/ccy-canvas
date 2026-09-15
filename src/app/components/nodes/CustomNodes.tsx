@@ -1,16 +1,14 @@
-import { Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NodeErrorBanner } from './NodeErrorBanner';
 import { useCanvasPreferences } from '../../canvas-preferences';
 import { getNodeErrorPresentation, nodeFailureReason } from './node-errors';
 import { createPortal } from 'react-dom';
-import { ResizableTextDialog } from '../ResizableTextDialog';
 import { ZImageParamsControls } from './ZImageParamsControls';
 import { LocalImageParamsControls } from './LocalImageParamsControls';
 import { ReferenceLimitsBar, resolveReferenceLimits } from './ReferenceLimitsBar';
 import { requestMediaPreviewAction, useMediaPreviewAction } from '../media-preview-utils';
 import VideoTrimDialog, { type VideoTrimSelection } from '../VideoTrimDialog';
 import { trimLocalVideo } from '../../api/video-edit';
-import { lazyWithChunkRecovery } from '../../chunk-recovery';
 
 import type { LocalImageSettings } from '../../local-image-params';
 import type { ZImageParams } from '../../zimage-params';
@@ -72,15 +70,10 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
-import { canvasQueries } from '../../canvas-selectors';
-import { isOriginalImageResponse } from '../../media-measurement';
 import Magnet from '../Magnet';
 import { resolveApiUrl } from '../../api/client';
 import { upscaleLocalSeedVR2 } from '../../api/models';
 import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
-import { hasNumberedReferenceToken, isSeedance25Model, usesConnectedReferenceInputs } from '../../reference-connections';
-import { MENTION_THUMB_SLOT, MENTION_WRAP, migrateMentionTags, resolvePromptMentionTags, synchronizeReferenceMentions, wrapMentionTag, type PromptMention } from '../../reference-mentions';
-import { ConnectedReferenceSummary } from './ConnectedReferenceSummary';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
 import { copyTextToClipboard, copyWithToast } from '../../clipboard';
@@ -150,7 +143,7 @@ import { PositionStudio } from './PositionStudio';
 // proxy-wrapped (legacy persisted data) — toRenderableMediaUrl collapses both
 // to exactly one proxy layer, so the request can never double-wrap (which the
 // backend would reject with 401→502).
-async function downloadAsset(src: string, filename: string) {
+async function downloadAsset(src: string, filename: string, propagateError = false) {
   if (!src) return;
   const proxied = toRenderableMediaUrl(src);
   if (!proxied) return;
@@ -167,6 +160,9 @@ async function downloadAsset(src: string, filename: string) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
   } catch (err) {
+    // The fullscreen viewer owns its inline error/retry state. Other node
+    // buttons keep the existing toast-only behavior.
+    if (propagateError) throw err;
     // No silent <a download> fallback: navigating to the proxy URL on failure
     // just saved a mis-named "proxy-media.txt" error page. Tell the user instead.
     // eslint-disable-next-line no-console
@@ -218,20 +214,20 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
   const light = useStore((state) => state.theme) === 'light';
   const cancelNode = useStore((state) => state.cancelNode);
   const startedAt = useStore((state) => {
-    const node = canvasQueries.node(state.nodes, nodeId);
+    const node = state.nodes.find((n) => n.id === nodeId);
     const v = (node?.data as { runningStartedAt?: number } | undefined)?.runningStartedAt;
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
   });
   const taskPhase = useStore((state) => {
-    const node = canvasQueries.node(state.nodes, nodeId);
+    const node = state.nodes.find((n) => n.id === nodeId);
     return (node?.data as { taskPhase?: string } | undefined)?.taskPhase;
   });
   const hasTaskId = useStore((state) => {
-    const node = canvasQueries.node(state.nodes, nodeId);
+    const node = state.nodes.find((n) => n.id === nodeId);
     return Boolean((node?.data as { taskId?: string } | undefined)?.taskId);
   });
   const hasPreview = useStore((state) => {
-    const node = canvasQueries.node(state.nodes, nodeId);
+    const node = state.nodes.find((n) => n.id === nodeId);
     const d = (node?.data ?? {}) as { url?: string; poster?: string };
     return Boolean(d.url || d.poster);
   });
@@ -309,7 +305,7 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
 function GenerationTimerBadge({ nodeId }: { nodeId: string }) {
   const light = useStore((state) => state.theme) === 'light';
   const startedAt = useStore((state) => {
-    const node = canvasQueries.node(state.nodes, nodeId);
+    const node = state.nodes.find((n) => n.id === nodeId);
     const v = (node?.data as { runningStartedAt?: number } | undefined)?.runningStartedAt;
     return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
   });
@@ -1037,6 +1033,44 @@ function MediaEmptyPlaceholder({
   );
 }
 
+type PromptMention = { tag: string; id: string; thumb: string; kind?: string };
+
+// 提及标签用零宽词连接符(U+2060)包裹干净标签,而非可见的 [@图片 1] ——
+// 镜像层显示成「图片1」这类干净文本(参考需求图),零宽字符在 textarea 与
+// 镜像层都不占宽度,光标依旧逐字对齐;词连接符不可打印,也不会把用户手打的
+// 「图片1」误判成提及(必须两侧都带 U+2060 才匹配)。
+const MENTION_WRAP = String.fromCharCode(0x2060); // WORD JOINER(零宽/非断行/不可打印)
+// 标签开头预留一个全角空格(≈1em)作为缩略图的位置槽:缩略图绝对定位盖在这个槽
+// 上,既不盖住相邻文字、也不破坏 textarea↔镜像层的逐字光标对齐(两层都含这个空格、
+// 宽度一致)。resolveTagsToMentions 会把整段标签替换成 @id,槽字符不会进模型提示词。
+const MENTION_THUMB_SLOT = String.fromCharCode(0x3000); // IDEOGRAPHIC SPACE(全角空格,≈1em)
+const wrapMentionTag = (label: string) => `${MENTION_WRAP}${MENTION_THUMB_SLOT}${label}${MENTION_WRAP}`;
+const OLD_MENTION_TAG_RE = /^\[@(.+)\]$/; // 旧格式 [@图片 1]
+
+/** 把旧的 [@图片 1] 提及迁移为零宽包裹的干净标签(顺手去掉标签里的空格)。
+ *  返回 null 表示无需改动。text + mentions 一并改写,持久化后即完成清洗。 */
+function migrateMentionTags(text: string, mentions: PromptMention[]): { text: string; mentions: PromptMention[] } | null {
+  let changed = false;
+  let nextText = text;
+  const rewrite = (m: PromptMention, label: string): PromptMention => {
+    changed = true;
+    const newTag = wrapMentionTag(label);
+    if (nextText.includes(m.tag)) nextText = nextText.split(m.tag).join(newTag);
+    return { ...m, tag: newTag };
+  };
+  const nextMentions = mentions.map((m) => {
+    // 旧格式 [@图片 1] → 零宽包裹 + 缩略图槽(顺手去空格)。
+    const oldMatch = OLD_MENTION_TAG_RE.exec(m.tag);
+    if (oldMatch) return rewrite(m, oldMatch[1].replace(/\s+/g, ''));
+    // v1 包裹(有零宽包裹但无缩略图槽)→ 补上槽,让老提及也显示缩略图。
+    if (m.tag.startsWith(MENTION_WRAP) && m.tag.endsWith(MENTION_WRAP) && m.tag[1] !== MENTION_THUMB_SLOT) {
+      return rewrite(m, m.tag.slice(MENTION_WRAP.length, m.tag.length - MENTION_WRAP.length));
+    }
+    return m;
+  });
+  return changed ? { text: nextText, mentions: nextMentions } : null;
+}
+
 /** 行内 @ 提及开头的小预览图:绝对定位盖在标签开头预留的全角空格槽上,不占布局、
  *  不破坏光标对齐、也不盖住相邻文字。有缩略图(图片/视频封面)显示图片,音频/文本
  *  等无图则显示类型图标底片。 */
@@ -1383,9 +1417,8 @@ const PromptPanel = ({
   const canvasPreferences = useCanvasPreferences(state => state.values);
   const inverseZoom = canvasPreferences.bottomToolbarScale / (viewport.zoom || 1);
   const language = useStore((state) => state.language);
-  const selectReferences = useMemo(() => canvasQueries.referenceConnectionsSelector(nodeId), [nodeId]);
-  const connectedReferences = useStore(selectReferences);
-  const currentNode = useStore((state) => canvasQueries.node(state.nodes, nodeId));
+  const edges = useStore((state) => state.edges);
+  const allNodes = useStore((state) => state.nodes);
   const runNode = useStore((state) => state.runNode);
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
@@ -1398,43 +1431,56 @@ const PromptPanel = ({
   const [pickerOpen, setPickerOpen] = useState(false);
   // Keep the full edge so the strip can wire the disconnect button to a
   // specific edge id instead of guessing one from (source,target).
-  const upstreamIds = connectedReferences.map(({ node }) => node.id);
-  const upstreamNodes = useMemo(() => connectedReferences.map(({ node: n, edgeId, kind, index }) => {
-    const id = n.id;
+  const upstreamEdges = edges.filter((edge, index, all) => (
+    edge.target === nodeId
+    && edge.source !== nodeId
+    && all.findIndex((candidate) => (
+      candidate.source === edge.source
+      && candidate.target === edge.target
+      && (candidate.sourceHandle ?? null) === (edge.sourceHandle ?? null)
+      && (candidate.targetHandle ?? null) === (edge.targetHandle ?? null)
+    )) === index
+  ));
+  const upstreamIds = upstreamEdges.map((edge) => edge.source);
+  const upstreamNodes = useMemo(() => upstreamEdges.map((edge, idx) => {
+    const id = edge.source;
+    const n = allNodes.find((node) => node.id === id);
     const d = (n?.data ?? {}) as Record<string, string>;
     const type = n?.type ?? '';
     // 导演台 / 构图预览的输出是构图快照 —— 在引用条里就是一张图片参考,
     // 与 collectUpstreamReferenceMedia 的取值逻辑保持一致。
-    const stageData = n?.data as { editorPreview?: string; lastCapture?: { image?: string }; lastCaptures?: Record<string, { image?: string }>; image?: string } | undefined;
+    const stageData = n?.data as { editorPreview?: string; lastCapture?: { image?: string }; image?: string } | undefined;
     const stageThumb = type === 'directorStageNode'
-      ? (stageData?.editorPreview || stageData?.lastCapture?.image || (stageData?.lastCaptures ? Object.values(stageData.lastCaptures)[0]?.image : '') || '')
+      ? (stageData?.editorPreview || stageData?.lastCapture?.image || '')
       : type === 'compositionPreviewNode'
         ? (stageData?.image || '')
         : '';
-    const isImage = kind === 'image';
-    const isVideo = kind === 'video';
-    const isAudio = kind === 'audio';
-    const isText = kind === 'text';
+    const isImage = type === 'imageNode' || type === 'referenceImageNode'
+      || type === 'directorStageNode' || type === 'compositionPreviewNode';
+    const isVideo = type === 'videoNode' || type === 'referenceVideoNode';
+    const isAudio = type === 'audioNode' || type === 'referenceAudioNode';
+    const isText = type === 'textNode';
     // 音频没有可用缩略图（url 是 mp3，塞进 <img> 就是裂图）——留空走图标卡；
     // 视频优先用封面帧，兜底才是原始视频 url。
     const thumb = isAudio || isText ? '' : isVideo ? (d.poster || d.thumbnail || d.url || '') : (stageThumb || d.url || d.thumbnail || '');
-    const numberedLabel = isImage ? `图片${index}` : isVideo ? `视频${index}` : isAudio ? `音频${index}` : isText ? `文本${index}` : `节点${index}`;
+    const kind = isImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : isText ? 'text' : 'other';
+    const numberedLabel = isImage ? `图片${idx + 1}` : isVideo ? `视频${idx + 1}` : isAudio ? `音频${idx + 1}` : isText ? `文本${idx + 1}` : `节点${idx + 1}`;
     // A unique suffix avoids ambiguous tags when two real nodes share a title.
     const name = d.customTitle || d.sourceName || d.label;
-    const label = canvasPreferences.mentionNaming === 'name' && name ? `${name}·${index}` : numberedLabel;
+    const label = canvasPreferences.mentionNaming === 'name' && name ? `${name}·${idx + 1}` : numberedLabel;
     const icon = isImage ? '图' : isVideo ? '视' : isAudio ? '音' : isText ? '文' : '节';
     // 文本引用不占缩略图位:内容预览显示在提示词框上方的 chip 行,生成时
     // 由 store.collectUpstreamText 自动并入提示词(与这里取同一字段)。
     const textContent = isText && typeof d.content === 'string' ? d.content.replace(/\s+/g, ' ').trim() : '';
     // mediaUrl:悬停预览用的原始媒体(音频/视频要能播,不只是缩略图)。
     const mediaUrl = d.url || '';
-    const sourceName = d.sourceName || d.customTitle || label;
-    return { id, edgeId, type, kind, thumb, mediaUrl, label, icon, index, textContent, sourceName };
-  }), [connectedReferences, canvasPreferences.mentionNaming]);
+    return { id, edgeId: edge.id, type, kind, thumb, mediaUrl, label, icon, index: idx + 1, textContent };
+  }), [upstreamEdges, allNodes, canvasPreferences.mentionNaming]);
   // 媒体类引用走缩略图横条;文本类引用走独立 chip 行(不占图片位)。
   const mediaRefs = upstreamNodes.filter((up) => up.kind !== 'text');
   const textRefs = upstreamNodes.filter((up) => up.kind === 'text');
 
+  const currentNode = allNodes.find((node) => node.id === nodeId);
   const params = getNodeParams(currentNode?.data);
   const nodeData = (currentNode?.data ?? {}) as Record<string, unknown>;
   // 协作只读(访问者):禁用生成入口。写操作在 store 层也已早退,这里只做 UX。
@@ -1793,14 +1839,20 @@ const PromptPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, mentions, nodeId]);
 
-  // Stable node ids keep bound mentions attached to their media as indices change.
-  // Handwritten numbered prose has no identity binding and is never rewritten here.
+  // 上游参考图连线被断开后,把引用它的 @提及从提示词里一并清掉 —— 否则线没了、
+  // 提及还留着,提交时会带上一个已不再连接的参考。仅在「连接关系变化」时运行。
   const upstreamKey = upstreamIds.join('|');
   useEffect(() => {
     if (mentions.length === 0) return;
-    const { text: nextText, mentions: nextMentions } = synchronizeReferenceMentions(text, mentions, upstreamNodes);
+    const connected = new Set(upstreamIds);
+    const stale = mentions.filter((m) => !connected.has(m.id));
+    if (stale.length === 0) return;
+    let nextText = text;
+    for (const m of stale) nextText = nextText.split(m.tag).join('');
+    // 清掉标签移除后遗留的多余空格 / 行尾空格。
+    nextText = nextText.replace(/[^\S\n]{2,}/g, ' ').replace(/[^\S\n]+\n/g, '\n');
     if (nextText !== text) setText(nextText);
-    if (JSON.stringify(nextMentions) !== JSON.stringify(mentions)) setMentions(nextMentions);
+    setMentions((prev) => prev.filter((m) => connected.has(m.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upstreamKey]);
 
@@ -1956,7 +2008,14 @@ const PromptPanel = ({
   };
 
   const resolveTagsToMentions = (raw: string): string => {
-    return resolvePromptMentionTags(raw, mentions, upstreamNodes, serviceType === 'video' && isSeedance25Model(activeModel));
+    let result = raw;
+    for (const m of mentions) {
+      if (result.includes(m.tag)) {
+        result = result.replace(m.tag, `@${m.id.slice(0, 12)}`);
+      }
+    }
+    // 清掉任何残留的零宽包裹符(理论上已随标签替换掉,兜底防止漏进后端提示词)。
+    return result.split(MENTION_WRAP).join('');
   };
 
   const handleModelChange = (nextModel: string) => {
@@ -2032,17 +2091,6 @@ const PromptPanel = ({
       taRef.current?.blur();
       useStore.getState().onNodesChange([{ id: nodeId, type: 'select', selected: false }]);
     }
-  };
-
-  const checkInputs = () => {
-    if (isBusy || readOnly) return;
-    void Promise.resolve(runNode(nodeId, {
-      prompt: resolveTagsToMentions(text),
-      model: activeModel,
-      checkOnly: true,
-    })).catch((err: unknown) => {
-      toast.error(err instanceof Error ? err.message : (language === 'zh' ? '输入检查失败。' : 'Failed to check inputs.'));
-    });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2170,7 +2218,8 @@ const PromptPanel = ({
   // satisfiable supported mode (or the first supported as a last resort).
   const activeReferenceMode = useMemo<ReferenceModeKey | ''>(() => {
     if (modelReferenceModes.length === 0) return '';
-    // Attaching audio should enter the model's mixed-reference mode instead
+    // Audio is orthogonal to the legacy image/video count registry. For H3,
+    // attaching any audio should enter its native mixed-reference mode instead
     // of leaving the visually misleading "text-to-video" tab active.
     if (refCounts.audios > 0 && modelReferenceModes.includes('all-in-one')) {
       return 'all-in-one';
@@ -2463,7 +2512,7 @@ const PromptPanel = ({
    *  pipeline blind to where the reference came from. */
   const handlePickerConfirm = useCallback((picked: PickedAsset[]) => {
     if (!picked.length) return;
-    const self = canvasQueries.node(useStore.getState().nodes, nodeId);
+    const self = allNodes.find((n) => n.id === nodeId);
     const base = self?.position ?? { x: 0, y: 0 };
     picked.forEach((item, index) => {
       if (item.source === 'canvas') {
@@ -2471,7 +2520,7 @@ const PromptPanel = ({
         const rawId = item.id.replace(/^canvas-/, '');
         if (!rawId || rawId === nodeId) return;
         // Skip if an edge already exists between rawId → this node.
-        if (canvasQueries.incomingEdges(useStore.getState().edges, nodeId).some((edge) => edge.source === rawId)) return;
+        if (allNodes.length && edges.some((edge) => edge.source === rawId && edge.target === nodeId)) return;
         onConnect({ source: rawId, target: nodeId, sourceHandle: null, targetHandle: null } as never);
         return;
       }
@@ -2489,7 +2538,7 @@ const PromptPanel = ({
       onConnect({ source: refId, target: nodeId, sourceHandle: null, targetHandle: null } as never);
     });
     setPickerOpen(false);
-  }, [addNode, nodeId, onConnect]);
+  }, [addNode, allNodes, edges, nodeId, onConnect]);
 
   // Named slots for the active reference mode. When the mode defines
   // slots (e.g. 首帧 / 尾帧 for first-last), each thumbnail in order gets
@@ -2521,26 +2570,20 @@ const PromptPanel = ({
     canSwitchToAudioMode={modelReferenceModes.includes('all-in-one')}
   />;
 
-  const connectionsOwnInputs = serviceType === 'video' && isSeedance25Model(activeModel)
-    && usesConnectedReferenceInputs(currentNode, connectedReferences.map((ref) => ref.node),
-      connectedReferences.map((ref) => ({ id: ref.edgeId, source: ref.node.id, target: nodeId })));
   const previewStrip = (
     <>
-    {connectionsOwnInputs ? <ConnectedReferenceSummary refs={mediaRefs} zh={language === 'zh'} /> : null}
     <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
       {mediaRefs.map((up, idx) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id);
-        const isUsed = connectionsOwnInputs || Boolean(matched) || hasNumberedReferenceToken(text, up.kind, up.index);
+        const isUsed = Boolean(matched);
         const slot = activeModeSlots[idx];
         const slotLabel = slot ? (language === 'zh' ? slot.zh : slot.en) : '';
         return (
           <div
             key={up.edgeId}
-            data-reference-node-id={up.id}
-            data-reference-bound={isUsed}
             className="group/ref relative shrink-0 flex flex-col items-center gap-1"
-            title={`${up.label} · ${up.sourceName} · ${language === 'zh' ? (connectionsOwnInputs ? '已绑定，将随请求提交' : '已连接的参考素材') : (connectionsOwnInputs ? 'Bound request input' : 'Connected reference')}${matched ? ` · ${matched.tag ?? tag}` : ''}`}
+            title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
             onMouseEnter={(event) => showRefHover(up.id, event.currentTarget.getBoundingClientRect())}
             onMouseLeave={scheduleRefHoverClear}
           >
@@ -2596,12 +2639,11 @@ const PromptPanel = ({
                 <X className="h-2.5 w-2.5" strokeWidth={3} />
               </button>
             </div>
-            {slotLabel || up.label ? (
+            {slotLabel ? (
               <span className={clsx('max-w-[52px] truncate text-[9px]', slot?.optional ? 'text-neutral-500' : 'text-neutral-300')}>
-                {slotLabel || up.label}
+                {slotLabel}
               </span>
             ) : null}
-            {connectionsOwnInputs ? <span className="text-[9px] leading-none text-cyan-300">{language === 'zh' ? '已绑定' : 'Bound'}</span> : null}
           </div>
         );
       })}
@@ -2876,22 +2918,6 @@ const PromptPanel = ({
           <Zap className="h-3 w-3" />
           <span className="tabular-nums">{creditCost * currentOutputCount}</span>
         </div>
-        <button
-          type="button"
-          data-testid="check-generation-inputs"
-          disabled={isBusy || readOnly}
-          title={language === 'zh' ? '检查提示词、模型参数和参考素材，不提交生成' : 'Review prompt, model settings and references without generating'}
-          onPointerDown={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            checkInputs();
-          }}
-          className="nodrag nopan h-7 shrink-0 rounded-lg px-2 text-[11px] text-neutral-400 transition hover:bg-white/8 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {language === 'zh' ? '检查输入' : 'Check inputs'}
-        </button>
         <button
           type="button"
           disabled={isBusy || readOnly}
@@ -3209,7 +3235,7 @@ const BaseNode = ({
   const toneStyles = NODE_TONE_STYLES[tone];
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const connectionDragType = useStore((state) => state.connectionDragType);
-  const multiSelectActive = useStore((state) => canvasQueries.selectedCount(state.nodes) > 1);
+  const multiSelectActive = useStore((state) => state.nodes.filter((node) => node.selected).length > 1);
   // The quick-connect `+` bubbles only show on hover / sole-selection; gate the
   // magnet effect to those states so the global mousemove listeners aren't
   // attached for every off-screen node's bubbles. An ENGAGED pull also keeps
@@ -3489,28 +3515,20 @@ function PreviousGenerationFailureNotice({ nodeId, error }: { nodeId: string; er
   );
 }
 
-const MediaPreview = lazyWithChunkRecovery('media-preview', () => import('../MediaPreview'));
+const MediaPreview = lazy(() => import('../MediaPreview'));
 
 const PreviewModal = ({ kind, src, onClose, nodeId }: { kind: 'image' | 'video'; src: string; onClose: () => void; nodeId?: string }) => {
-  const language = useStore(state => state.language);
-  const source = useStore(state => canvasQueries.node(state.nodes, nodeId));
-  const selectedCount = useStore(state => canvasQueries.selectedCount(state.nodes));
-  const readOnly = useActiveProjectReadOnly();
-  const title = String(source?.data?.customTitle || source?.data?.sourceName || (kind === 'image' ? '图片' : '视频'));
-  const canUseTools = Boolean(source?.selected && selectedCount === 1 && !readOnly);
-  const openTool = (action: 'edit' | 'upscale') => {
-    if (!nodeId) return;
+  const openTool = (targetNodeId: string, action: 'edit' | 'upscale') => {
     onClose();
-    requestMediaPreviewAction(nodeId, action);
+    requestMediaPreviewAction(targetNodeId, action);
   };
   return <Suspense fallback={createPortal(
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-[#111215] text-white" role="dialog" aria-label="加载预览">
       <span>正在加载预览…</span><button className="absolute right-6 top-6" onClick={onClose}>关闭</button>
     </div>, document.body)}>
-    <MediaPreview key={src} kind={kind} src={src} title={title} zh={language === 'zh'} onClose={onClose}
-      onDownload={() => downloadAsset(src, title + (kind === 'image' ? '.png' : '.mp4'))}
-      onEdit={canUseTools ? () => openTool('edit') : undefined}
-      onUpscale={canUseTools ? () => openTool('upscale') : undefined}
+    <MediaPreview key={`${nodeId ?? ''}:${src}`} kind={kind} src={src} nodeId={nodeId} onClose={onClose}
+      onDownload={(currentSrc, filename) => downloadAsset(currentSrc, filename, true)}
+      onNodeAction={openTool}
     />
   </Suspense>;
 };
@@ -4460,13 +4478,14 @@ function VideoSeedVR2UpscaleModal({ sourceUrl, zh, busy, onSubmit, onClose }: {
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
   const backendModels = useStore((state) => state.backendModels);
-  const sourceNode = useStore((state) => canvasQueries.node(state.nodes, sourceNodeId));
+  const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const onConnect = useStore((state) => state.onConnect);
   const openPositionStudio = useStore((state) => state.openPositionStudio);
   const createGroup = useStore((state) => state.createGroup);
   const runNode = useStore((state) => state.runNode);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
   const sourceUrl = String(sourceData.url ?? '');
   const sourceParams = (sourceData.generationParams as Record<string, unknown> | undefined) ?? {};
@@ -4498,7 +4517,13 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       ?? models.find((m) => m.trim().toLowerCase().startsWith('gemini-3.0-pro-image'))
       ?? '';
   }, [imageModelOptions]);
-  const latestDerived = useStore((state) => canvasQueries.latestDerived(state.nodes, sourceNodeId));
+  const latestDerived = useMemo(
+    () => {
+      const matches = nodes.filter((node) => (node.data as Record<string, unknown> | undefined)?.derivedFromNodeId === sourceNodeId);
+      return matches[matches.length - 1];
+    },
+    [nodes, sourceNodeId],
+  );
   const latestDerivedUrl = String((latestDerived?.data as Record<string, unknown> | undefined)?.url ?? '');
 
   useEffect(() => {
@@ -5171,12 +5196,13 @@ export function PositionStudioHost() {
 function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [trimOpen, setTrimOpen] = useState(false);
   const language = useStore((state) => state.language);
-  const sourceNode = useStore((state) => canvasQueries.node(state.nodes, sourceNodeId));
+  const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const onConnect = useStore((state) => state.onConnect);
   const createGroup = useStore((state) => state.createGroup);
   const runNode = useStore((state) => state.runNode);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
   const sourceUrl = String(sourceData.url ?? '');
   const sourceDuration = Number(sourceData.mediaDuration ?? sourceData.durationSeconds ?? sourceData.duration ?? 0) || 0;
@@ -5620,8 +5646,9 @@ const AUDIO_PLAYBACK_RATES = [1, 1.25, 1.5, 2, 0.5] as const;
 
 function AudioActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
-  const sourceNode = useStore((state) => canvasQueries.node(state.nodes, sourceNodeId));
+  const nodes = useStore((state) => state.nodes);
   const updateNodeData = useStore((state) => state.updateNodeData);
+  const sourceNode = nodes.find((node) => node.id === sourceNodeId);
   const sourceData = (sourceNode?.data ?? {}) as Record<string, any>;
   const sourceUrl = typeof sourceData.url === 'string' ? sourceData.url : '';
   if (!sourceNode || !['audioNode', 'referenceAudioNode'].includes(sourceNode.type ?? '') || !sourceUrl) return null;
@@ -6311,6 +6338,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
   const addNode = useStore((state) => state.addNode);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
+  const nodes = useStore((state) => state.nodes);
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -6387,7 +6415,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       }
     } catch { /* fall back to dataUrl if upload fails */ }
 
-    const thisNode = canvasQueries.node(useStore.getState().nodes, id);
+    const thisNode = nodes.find((n) => n.id === id);
     const pos = thisNode?.position ?? { x: 0, y: 0 };
     const label = mode === 'first' ? '首帧截图' : mode === 'last' ? '尾帧截图' : '视频截图';
     addNode({
@@ -6396,7 +6424,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       position: { x: pos.x + 340, y: pos.y },
       data: { url: stableUrl, sourceName: label },
     } as any);
-  }, [addNode, data.url, id]);
+  }, [addNode, data.url, id, nodes]);
 
   return (
     <BaseNode
@@ -6463,11 +6491,9 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
   const [panoramaPreview, setPanoramaPreview] = useState(false);
   const displayName = getReferenceDisplayName(data);
   const updateNodeData = useStore((state) => state.updateNodeData);
-  const [previewAspect, setPreviewAspect] = useState<{ url: string; value: number } | null>(null);
   const mediaDims = resolveMediaDims(data);
   const resolutionLabel = formatMediaResolution(mediaDims?.w, mediaDims?.h);
-  const mediaBox = mediaDims ? mediaBoxFromAspect(mediaDims.w / mediaDims.h)
-    : previewAspect && previewAspect.url === data.url ? mediaBoxFromAspect(previewAspect.value) : null;
+  const mediaBox = mediaDims ? mediaBoxFromAspect(mediaDims.w / mediaDims.h) : null;
   const isPanorama = isLikelyPanoramaData(data);
   // 宫格切片:去 chrome(无标题、直角),让同组切片能边贴边无缝拼回原图。
   const isSlice = Boolean(data.sliceGrid);
@@ -6513,8 +6539,6 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
             onLoad={(event) => {
               const { naturalWidth, naturalHeight } = event.currentTarget;
               if (naturalWidth && naturalHeight) {
-                setPreviewAspect({ url: data.url, value: naturalWidth / naturalHeight });
-                if (!isOriginalImageResponse(data.url, event.currentTarget.currentSrc || event.currentTarget.src)) return;
                 rememberMediaDims(data.url, naturalWidth, naturalHeight);
                 if (data.mediaWidth !== naturalWidth || data.mediaHeight !== naturalHeight) {
                   updateNodeData(id, { mediaWidth: naturalWidth, mediaHeight: naturalHeight });
@@ -7181,6 +7205,7 @@ function PanoramaPreviewModal({
   onClose: () => void;
 }) {
   const language = useStore((state) => state.language);
+  const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
   // yaw / pitch in radians, mapped to camera rotation. yaw wraps over 2π,
@@ -7195,6 +7220,7 @@ function PanoramaPreviewModal({
   const [aspect, setAspect] = useState(2);
   const dragRef = useRef<{ x: number; y: number; yaw: number; pitch: number; width: number; height: number } | null>(null);
   const glRef = useRef<THREE.WebGLRenderer | null>(null);
+  const sourceNode = nodes.find((node) => node.id === nodeId);
 
   // Load the panorama as a Three.js texture. We go through loadImageElement
   // (which fetches via the proxy-media endpoint into a blob: URL) — blob
@@ -7273,7 +7299,7 @@ function PanoramaPreviewModal({
       } catch {
         // DataURL still works locally if upload is temporarily unavailable.
       }
-      const base = canvasQueries.node(useStore.getState().nodes, nodeId)?.position ?? { x: 0, y: 0 };
+      const base = sourceNode?.position ?? { x: 0, y: 0 };
       const captureId = `pano-view-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       addNode({
         id: captureId,
@@ -7296,7 +7322,7 @@ function PanoramaPreviewModal({
     } finally {
       setCapturing(false);
     }
-  }, [addNode, capturing, language, nodeId, onConnect]);
+  }, [addNode, capturing, language, nodeId, onConnect, sourceNode?.position]);
 
   // Drag converts pixel deltas into camera rotation: full panel width
   // covers 360° yaw, full panel height covers ~135° pitch.
@@ -7446,15 +7472,16 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   const updateNodeData = useStore((state) => state.updateNodeData);
   const [preview, setPreview] = useState(false);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
-  const [previewAspect, setPreviewAspect] = useState<{ url: string; value: number } | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
   const title = data.customTitle || (language === 'zh' ? '生成图像' : 'Generate Image');
-  // Persisted original dimensions win. A thumbnail may establish the preview
-  // aspect for this mount, but never replaces original dimensions in storage.
+  // Box aspect is DETERMINISTIC: measured dims (persisted or session-cached)
+  // first, else the requested param aspect. It is NOT component state, so a
+  // remount (re-entry, or onlyRenderVisibleElements culling during zoom) never
+  // re-measures and the box never jumps.
   const dims = resolveMediaDims(data);
   const genBox = dims
     ? mediaBoxFromAspect(dims.w / dims.h)
-    : mediaBoxFromAspect(previewAspect && previewAspect.url === data.url ? previewAspect.value : parseAspectRatio(paramAspect));
+    : mediaBoxFromAspect(parseAspectRatio(paramAspect));
   // Aspect handed to derived (annotated) nodes so they open at the right size.
   const effectiveAspect = dims ? `${dims.w}:${dims.h}` : paramAspect;
   const isPanorama = isLikelyPanoramaData(data);
@@ -7583,8 +7610,6 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     if (w > 0 && h > 0) {
-      setPreviewAspect({ url: data.url, value: w / h });
-      if (!isOriginalImageResponse(data.url, img.currentSrc || img.src)) return;
       rememberMediaDims(data.url, w, h);
       // Persist the real dims once so the box aspect is deterministic on every
       // future render (owner → saved snapshot; anyone → no re-measure, no jump).
@@ -7707,6 +7732,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
+  const nodes = useStore((state) => state.nodes);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const [preview, setPreview] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -7765,7 +7791,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       }
     } catch {}
 
-    const thisNode = canvasQueries.node(useStore.getState().nodes, id);
+    const thisNode = nodes.find((n) => n.id === id);
     const pos = thisNode?.position ?? { x: 0, y: 0 };
     const label = mode === 'first' ? '首帧截图' : mode === 'last' ? '尾帧截图' : '视频截图';
     addNode({
@@ -7774,7 +7800,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       position: { x: pos.x + 340, y: pos.y },
       data: { url: stableUrl, sourceName: label },
     } as any);
-  }, [addNode, data.url, id]);
+  }, [addNode, data.url, id, nodes]);
 
   return (
     <BaseNode
@@ -8173,8 +8199,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const language = useStore((state) => state.language);
   // shellBackground 是内联样式，CSS 主题覆盖不到 — 按主题取底色。
   const shellBase = useStore((state) => state.theme) === 'light' ? '#ffffff' : '#16181d';
-  const selectUpstreamNodes = useMemo(() => canvasQueries.incomingNodesSelector(id), [id]);
-  const upstreamNodes = useStore(selectUpstreamNodes);
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const title = data.customTitle || (language === 'zh' ? '文本节点' : 'Text Node');
@@ -8364,6 +8390,14 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
     commit(nv, s + open.length, s + open.length + body.length);
   }, [id, updateNodeData, language]);
 
+  const upstreamIds = useMemo(
+    () => edges.filter((edge) => edge.target === id).map((edge) => edge.source),
+    [edges, id],
+  );
+  const upstreamNodes = useMemo(
+    () => upstreamIds.map((sourceId) => nodes.find((node) => node.id === sourceId)).filter(Boolean),
+    [nodes, upstreamIds],
+  );
   const firstReferenceImage = getFirstUpstreamReferenceImage(upstreamNodes as any);
   const reversePromptEnabled = canUseReversePrompt(upstreamNodes as any);
   const reversePromptModels = useMemo(
@@ -8710,7 +8744,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
         ) : null}
       </div>
       {isFullscreen ? createPortal(
-        <ResizableTextDialog title={String(title)} language={language} onClose={() => setIsFullscreen(false)}>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm" onClick={() => setIsFullscreen(false)}>
+          <div className="relative flex h-[82vh] w-[58vw] min-w-[720px] max-w-[92vw] flex-col rounded-2xl border border-white/10 bg-[#1a1d22]/98 px-6 py-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
             <button
               type="button"
               onClick={() => setIsFullscreen(false)}
@@ -8719,10 +8754,10 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
               <X className="h-4 w-4" />
             </button>
             {/* 头部：标题 + 右侧切换。资产结果→表格/原文；普通内容→预览/编辑。 */}
-            <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3 pr-12">
-              <div className="flex min-w-0 items-center gap-2">
+            <div className="mb-3 flex items-center justify-between gap-4 pr-12">
+              <div className="flex items-center gap-2">
                 {renderBgPalette()}
-                <div className="min-w-0 break-words text-sm text-neutral-300">{title}</div>
+                <div className="text-sm text-neutral-300">{title}</div>
               </div>
               {extractedAssets && !fsEditMode ? (
                 <div className="flex items-center gap-2">
@@ -8826,7 +8861,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
             ) : dataContent ? (
               // 预览：渲染 Markdown。
               <div
-                className="prompt-editor-scroll rich-text-editor min-h-0 min-w-0 flex-1 w-full overflow-auto rounded-xl bg-transparent p-4 text-sm text-neutral-100 outline-none"
+                className="prompt-editor-scroll rich-text-editor flex-1 w-full overflow-auto rounded-xl bg-transparent p-4 text-sm text-neutral-100 outline-none"
                 dangerouslySetInnerHTML={{ __html: renderedHtml }}
               />
             ) : (
@@ -8834,7 +8869,8 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
                 {language === 'zh' ? '暂无内容，切到「编辑」开始书写' : 'No content — switch to Edit to write'}
               </div>
             )}
-        </ResizableTextDialog>,
+          </div>
+        </div>,
         document.body,
       ) : null}
       <PromptTemplateLibrary

@@ -11,6 +11,9 @@ import { buildPromptSkillSpec } from "./skill-agent-presenters";
  *   command     → explicit slash command (defaults to slugified name)
  *   model       → optional model hint
  *   system      → optional system prompt
+ *   icon        → optional icon URL or emoji
+ *   version     → optional version label
+ *   version_notes → optional release notes
  *
  * The body after the frontmatter becomes the template content.
  */
@@ -29,9 +32,13 @@ export function parseSkillMarkdown(raw: string, fallbackName = "imported-skill")
     name,
     description,
     category,
-    icon: "",
+    icon: (frontmatter.icon ?? "").trim(),
     kind: "prompt",
-    spec: buildPromptSkillSpec({ commandName, content, systemPrompt, modelHint }),
+    spec: {
+      ...buildPromptSkillSpec({ commandName, content, systemPrompt, modelHint }),
+      ...(frontmatter.version?.trim() ? { version: frontmatter.version.trim() } : {}),
+      ...(frontmatter.version_notes?.trim() ? { version_notes: frontmatter.version_notes.trim() } : {}),
+    },
     input_schema: {
       type: "object",
       properties: { input: { type: "string" } },

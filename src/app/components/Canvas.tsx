@@ -1,5 +1,6 @@
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
+import { canvasViewportKey, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, useCanvasViewportMemory } from '../canvas-viewport';
 import { CanvasBackground } from './settings/CanvasPreferencesRuntime';
 import {
   ReactFlow,
@@ -16,7 +17,6 @@ import {
   type Edge,
   type Node,
   type NodeChange,
-  type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
@@ -75,8 +75,6 @@ import { nodeTypes, PositionStudioHost } from './nodes/CustomNodes';
 import { FlowEdge } from './FlowEdge';
 import { SaveAssetDialog } from './SaveAssetDialog';
 import { CanvasGuideModal } from './CanvasGuideModal';
-import { CanvasLoader } from './CanvasLoader';
-import { onCanvasUploadRequested } from '../canvas-commands';
 import { OnboardingTour } from './OnboardingTour';
 import { CommentsPanel } from './CommentsPanel';
 import { VersionsPanel } from './VersionsPanel';
@@ -87,18 +85,15 @@ import { AgentCanvasActivityOverlay } from './agent/AgentCanvasActivityOverlay';
 import { usePresenceReporting } from '../collab/usePresenceReporting';
 import { updatePresence } from '../collab/presence-store';
 import { useCanvasSync } from '../collab/canvas-sync';
-import { useCanvasAgentBridge } from '../use-canvas-agent-bridge';
-import { lazyWithChunkRecovery } from '../chunk-recovery';
-import { readCanvasViewport, writeCanvasViewport } from '../canvas-viewport';
 
 // 3D 导演台 overlay 走动态 import,three.js + r3f + drei (~1MB) 只在用户首次
 // 打开导演台时按需加载,首屏 0 影响.
-const DirectorStageOverlay = lazyWithChunkRecovery('director-stage', () =>
+const DirectorStageOverlay = lazy(() =>
   import('./nodes/DirectorStageOverlay').then((m) => ({ default: m.DirectorStageOverlay })),
 );
 
 // 图层编辑器同样按需加载:打开时才拉代码,关闭即卸载。
-const LayerEditorOverlay = lazyWithChunkRecovery('layer-editor', () =>
+const LayerEditorOverlay = lazy(() =>
   import('./nodes/LayerEditorOverlay').then((m) => ({ default: m.LayerEditorOverlay })),
 );
 
@@ -107,9 +102,9 @@ const defaultEdgeOptions = { type: 'flow' as const };
 import { t } from '../i18n';
 import { HistoryImagePickerModal } from './HistoryImagePickerModal';
 import {collectDownloadItems,type DownloadItem} from '../batch-download';
-const BatchDownloadPanel=lazyWithChunkRecovery('batch-download',()=>import('./BatchDownloadPanel'));
+const BatchDownloadPanel=lazy(()=>import('./BatchDownloadPanel'));
 
-const VideoEditorHost = lazyWithChunkRecovery('video-editor', () => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
+const VideoEditorHost = lazy(() => import('./video-editor/VideoEditorHost').then(m => ({ default: m.VideoEditorHost })));
 type NodeKind = 'textNode' | 'imageNode' | 'videoNode' | 'audioNode' | 'directorStageNode' | 'layerEditorNode' | 'videoEditorNode';
 type ContextMenuMode = 'root' | 'add-node' | 'node-media' | 'node-text';
 type ContextMenuState = {
@@ -342,7 +337,7 @@ function isEditableTarget(target: EventTarget | null) {
   return Boolean(element.closest('input, textarea, [contenteditable="true"]'));
 }
 
-const InnerCanvas = () => {
+const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   // 细粒度 selector 订阅 —— 不要用 useStore() 整状态解构:那样 store 里任何字段变化
   // (包括拖动每帧之外的无关状态)都会重渲染整个画布+全部节点,是拖动卡顿的主因。
   // actions 是稳定引用(永不触发重渲染);state 切片只在自身变化时触发。
@@ -362,10 +357,9 @@ const InnerCanvas = () => {
   const history = useStore((state) => state.history);
   const saveCanvasToBackend = useStore((state) => state.saveCanvasToBackend);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
-  const activeSpaceId = useStore((state) => state.activeSpaceId);
-  const activeProjectId = useStore((state) => state.activeProjectId);
   const readOnly = useActiveProjectReadOnly();
   const canvasHydrated = useStore((state) => state.canvasHydrated);
+  const viewportMemory = useCanvasViewportMemory(viewportKey, canvasHydrated);
   const language = useStore((state) => state.language);
   const theme = useStore((state) => state.theme);
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
@@ -403,26 +397,25 @@ const InnerCanvas = () => {
   const videoEditorNodeId = useStore((state) => state.videoEditorNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
-  const { screenToFlowPosition, fitView, setCenter, setViewport, zoomTo } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
   const viewport = useViewport();
-  const canvasViewportKey = activeBackendProjectId ?? `local:${activeSpaceId}:${activeProjectId}`;
-  const canRestoreViewport = !activeBackendProjectId || canvasHydrated;
   // Live-collaboration presence: broadcast our cursor/selection, watch others.
   usePresenceReporting();
   // Real-time canvas sync: broadcast our node/edge/group edits + apply theirs so
   // everyone sees changes live and states converge (no silent save-clobber).
   useCanvasSync();
-  // dev-only：把工作区里智能体（CLI/MCP）改出来的 patch 实时回灌到这张画布。
-  // 生产构建里该 hook 直接短路（import.meta.env.DEV 为 false），零运行时开销。
-  useCanvasAgentBridge();
 
   // 资产库「定位」:store 里的 canvasFocusRequest nonce 变化时,平移到目标节点
   // 并选中(useReactFlow 只能在 Canvas 内用,故经 store 中转)。
   const canvasFocusRequest = useStore((state) => state.canvasFocusRequest);
+  // A completed focus request survives route changes in the store. Do not
+  // replay it on mount and override this canvas's restored viewing position.
+  const handledFocusNonce = useRef(canvasFocusRequest?.nonce);
   useEffect(() => {
-    if (!canvasFocusRequest) return;
+    if (!canvasHydrated || !canvasFocusRequest || handledFocusNonce.current === canvasFocusRequest.nonce) return;
     const node = nodes.find((n) => n.id === canvasFocusRequest.nodeId);
     if (!node) return;
+    handledFocusNonce.current = canvasFocusRequest.nonce;
     const bounds = getNodeBounds(node);
     setCenter(bounds.cx, bounds.cy, {
       zoom: Math.max(viewport.zoom, 0.6),
@@ -434,7 +427,7 @@ const InnerCanvas = () => {
     ]);
     // 只在 nonce 变化时触发一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasFocusRequest?.nonce]);
+  }, [canvasFocusRequest?.nonce, canvasHydrated, nodes]);
   const selectedIds = nodes.filter((node) => node.selected).map((node) => node.id);
   const [downloadBatch,setDownloadBatch]=useState<DownloadItem[]|null>(null);
   const selectedDownloads=useMemo(()=>collectDownloadItems(nodes.filter(n=>n.selected)),[nodes]);
@@ -539,62 +532,6 @@ const InnerCanvas = () => {
   useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
-
-  // Remember the camera independently for every project. ReactFlow's old
-  // `fitView` prop reframed the entire graph on every refresh, which made a
-  // large production canvas jump away from the shot the user was reviewing.
-  const restoredViewportKeyRef = useRef<string | null>(null);
-  const persistViewport = useCallback((nextViewport: Viewport = viewportRef.current) => {
-    if (!canRestoreViewport || restoredViewportKeyRef.current !== canvasViewportKey) return;
-    writeCanvasViewport(canvasViewportKey, nextViewport);
-  }, [canRestoreViewport, canvasViewportKey]);
-
-  useEffect(() => {
-    if (!canRestoreViewport) return;
-    let cancelled = false;
-    let firstFrame = 0;
-    let secondFrame = 0;
-    restoredViewportKeyRef.current = null;
-
-    // Wait for the backend snapshot and ReactFlow node measurements. Existing
-    // projects without a saved camera keep the previous one-time fit behavior;
-    // every later visit restores the exact pan and zoom with no animation.
-    firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        if (cancelled) return;
-        const savedViewport = readCanvasViewport(canvasViewportKey);
-        restoredViewportKeyRef.current = canvasViewportKey;
-        if (savedViewport) {
-          void setViewport(savedViewport, { duration: 0 });
-        } else if (nodesRef.current.length > 0) {
-          void fitView({ padding: 0.15, duration: 0 });
-        }
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(firstFrame);
-      cancelAnimationFrame(secondFrame);
-      if (restoredViewportKeyRef.current === canvasViewportKey) {
-        writeCanvasViewport(canvasViewportKey, viewportRef.current);
-      }
-    };
-  }, [canRestoreViewport, canvasViewportKey, fitView, setViewport]);
-
-  useEffect(() => {
-    if (!canRestoreViewport) return;
-    const flushViewport = () => persistViewport();
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') flushViewport();
-    };
-    window.addEventListener('pagehide', flushViewport);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      window.removeEventListener('pagehide', flushViewport);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
-  }, [canRestoreViewport, persistViewport]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1089,53 +1026,38 @@ const InnerCanvas = () => {
     return curves;
   }, [bulkRouting, nodes, viewport]);
 
-  /** Save nodes, edges and group-only edits with the same 2s debounce. */
+  /** Mark canvas dirty whenever nodes/edges change; auto-save with 2s debounce. */
   const dirtyRef = useRef(false);
   useEffect(() => {
-    if (!activeBackendProjectId || readOnly) { dirtyRef.current = false; return; }
+    if (!activeBackendProjectId) return;
     // Data-loss guard: never auto-save before the backend canvas has loaded.
     // On refresh the store first rehydrates the heavy-media-stripped
     // localStorage canvas; saving that back would overwrite the full backend
     // snapshot. canvasHydrated flips true only once the real canvas is loaded.
     if (!canvasHydrated) return;
-    if (!useStore.getState().hasUnsavedCanvasChanges()) { dirtyRef.current = false; return; }
     dirtyRef.current = true;
-    // Persist a full recovery copy ahead of the slower network debounce.
-    // pagehide also stages the current state synchronously if this is pending.
-    const recoveryTimer = setTimeout(() => { void useStore.getState().saveCanvasRecovery(); }, 400);
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      void saveCanvasToBackend().then(() => {
-        const current = useStore.getState();
-        if (current.canvasSaveStatus === 'saved' && current.nodes === nodes && current.edges === edges && current.groups === groups) {
-          dirtyRef.current = false;
-        }
-      });
+      void saveCanvasToBackend().finally(() => { dirtyRef.current = false; });
     }, 2000);
     return () => {
-      clearTimeout(recoveryTimer);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [nodes, edges, groups, activeBackendProjectId, canvasHydrated, readOnly, saveCanvasToBackend]);
+  }, [nodes, edges, activeBackendProjectId, canvasHydrated, saveCanvasToBackend]);
 
   /** Flush pending save synchronously on tab close / hard refresh, so users
    *  don't lose the last 0-2 seconds of work that the debounce hasn't yet
    *  written. visibilitychange + pagehide are more reliable than beforeunload
    *  on mobile and Chrome's bfcache. */
   useEffect(() => {
-    if (!activeBackendProjectId || readOnly) return;
+    if (!activeBackendProjectId) return;
     const flush = () => {
       if (!dirtyRef.current) return;
       if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
       // Fire-and-forget; keepalive=true lets the browser keep the request
       // in flight even after navigation/tab-close starts.
-      const snapshot = useStore.getState();
-      void saveCanvasToBackend({ keepalive: true }).then(() => {
-        const current = useStore.getState();
-        if (current.canvasSaveStatus === 'saved' && current.nodes === snapshot.nodes && current.edges === snapshot.edges && current.groups === snapshot.groups) {
-          dirtyRef.current = false;
-        }
-      });
+      void saveCanvasToBackend({ keepalive: true }).catch(() => {});
+      dirtyRef.current = false;
     };
     const onPageHide = () => flush();
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
@@ -1145,26 +1067,24 @@ const InnerCanvas = () => {
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [activeBackendProjectId, readOnly, saveCanvasToBackend]);
+  }, [activeBackendProjectId, saveCanvasToBackend]);
 
   /** Warn before leaving ONLY when the last save actually failed or we're
    *  offline — so the keepalive flush above stays the silent happy path, and
    *  the prompt fires exactly when work is at real risk of being lost. */
   useEffect(() => {
-    if (!activeBackendProjectId || readOnly) return;
+    if (!activeBackendProjectId) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      const state = useStore.getState();
-      const status = state.canvasSaveStatus;
+      const status = useStore.getState().canvasSaveStatus;
       const offline = typeof navigator !== 'undefined' && !navigator.onLine;
-      if (state.hasUnsavedCanvasChanges()) void state.saveCanvasRecovery();
-      if (state.hasUnsavedCanvasChanges() || status === 'error' || status === 'saving' || offline) {
+      if (status === 'error' || status === 'saving' || offline) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [activeBackendProjectId, readOnly]);
+  }, [activeBackendProjectId]);
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!snapToGrid && !preferences.alignmentGuides) {
@@ -1454,10 +1374,6 @@ const InnerCanvas = () => {
     pendingUploadFlowPosRef.current = flowPos ?? viewportCenterFlowPos();
     fileInputRef.current?.click();
   }, [viewportCenterFlowPos]);
-
-  useEffect(() => onCanvasUploadRequested(() => {
-    if (!readOnly) openUploadDialog();
-  }), [openUploadDialog, readOnly]);
 
   const handleMenuUpload = useCallback(() => {
     // Capture the right-click point BEFORE clearing the menu.
@@ -1818,7 +1734,7 @@ const InnerCanvas = () => {
           // with no trace. Surface it instead of hiding it.
           if (code === '008') console.warn(`[ReactFlow] edge not drawn — handle not found (008): ${message}`);
         }}
-        nodes={nodes}
+        nodes={canvasHydrated ? nodes : []}
         edges={normalizedEdges}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
@@ -1941,14 +1857,15 @@ const InnerCanvas = () => {
         edgeTypes={edgeTypes}
         connectionLineComponent={FreeConnectionLine}
         defaultEdgeOptions={defaultEdgeOptions}
-        onMoveEnd={(_event, nextViewport) => persistViewport(nextViewport)}
+        {...viewportMemory}
+        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
         /* 性能:只渲染视口内的节点/边。节点多时(每个媒体节点都挂着真实
            img/video)不再全量渲染,屏幕外的不挂媒体;配合会话级尺寸缓存,
            节点重新进入视口时尺寸已知、图片已缓存,不跳不闪。 */
         onlyRenderVisibleElements
         className="touch-none"
-        minZoom={0.1}
-        maxZoom={4}
+        minZoom={CANVAS_MIN_ZOOM}
+        maxZoom={CANVAS_MAX_ZOOM}
         selectionOnDrag
         panOnDrag={[1, 2]}
         selectionMode={"partial" as never}
@@ -3135,7 +3052,7 @@ function RunConfirmDialog() {
       <div className="w-[440px] rounded-xl border border-white/10 bg-[#101114] p-5">
         <div className="flex items-center justify-between">
           <span className="text-[14px] font-medium text-white">
-            {pending.checkOnly ? (zh ? '检查输入' : 'Inspect inputs') : (zh ? '生成前确认' : 'Confirm before generating')}
+            {zh ? '生成前确认' : 'Confirm before generating'}
           </span>
           {rest.length > 0 ? (
             <span className="rounded bg-white/[0.06] px-2 py-0.5 text-[10.5px] text-neutral-400">
@@ -3144,26 +3061,13 @@ function RunConfirmDialog() {
           ) : null}
         </div>
         <p className="mt-3 text-[12.5px] leading-relaxed text-neutral-300">
-          {pending.checkOnly
-            ? (zh ? '以下是当前解析后的提交内容。本次检查不会创建生成任务。' : 'Resolved submission inputs. This check does not create a generation task.')
-            : (zh ? '请核对实际提示词、素材与参数。任务能否取消取决于服务端执行状态。' : 'Review the effective prompt, media and settings. Cancellation depends on the server execution state.')}
+          {zh
+            ? '请确认你的提示词、参考图以及分辨率等设置是否正确 — 任务发起后，离开排队状态将无法取消。'
+            : 'Please double-check your prompt, reference images and resolution — once the task leaves the queue it cannot be cancelled.'}
         </p>
-        {pending.preview ? (
-          <div className="prompt-editor-scroll mt-3 max-h-48 overflow-y-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-[11.5px] text-neutral-400">
-            <div>{pending.preview.parameters.model as string} · {pending.preview.provider}</div>
-            <div>{String(pending.preview.parameters.resolution ?? '')} · {String(pending.preview.parameters.aspectRatio ?? '')}{pending.preview.parameters.duration ? ` · ${pending.preview.parameters.duration}s` : ''}</div>
-            {([['images', zh ? '图片' : 'Image'], ['videos', zh ? '视频' : 'Video'], ['audios', zh ? '音频' : 'Audio']] as const).map(([kind, label]) => (
-              <div key={kind} className="mt-2">
-                <div>{label} · {pending.preview![kind].length}</div>
-                {pending.preview![kind].map((url, index) => <div key={`${index}:${url}`} className="break-all">{index + 1}. {url.startsWith('data:') ? (zh ? '内嵌媒体' : 'Embedded media') : url}</div>)}
-              </div>
-            ))}
-            <details className="mt-2"><summary>{zh ? '完整参数' : 'All settings'}</summary><pre className="whitespace-pre-wrap break-all">{JSON.stringify(pending.preview.parameters, null, 2)}</pre></details>
-          </div>
-        ) : null}
-        {pending.preview?.prompt || pending.payload.prompt ? (
+        {pending.payload.prompt ? (
           <div className="prompt-editor-scroll mt-3 max-h-24 overflow-y-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-3 py-2 text-[11.5px] text-neutral-400">
-            {pending.preview?.prompt ?? pending.payload.prompt}
+            {pending.payload.prompt}
           </div>
         ) : null}
         <div className="mt-4 flex items-center justify-end gap-2">
@@ -3178,11 +3082,11 @@ function RunConfirmDialog() {
             type="button"
             onClick={() => {
               setQueue(rest);
-              if (!pending.checkOnly) void runNode(pending.nodeId, { ...pending.payload, skipConfirm: true, expectedInputs: pending.expectedInputs });
+              void runNode(pending.nodeId, { ...pending.payload, skipConfirm: true });
             }}
             className="rounded-md border border-violet-400/40 bg-violet-500/[0.18] px-3 py-1.5 text-[12px] text-violet-50 transition hover:border-violet-400/70 hover:bg-violet-500/[0.3]"
           >
-            {pending.checkOnly ? (zh ? '关闭' : 'Close') : (zh ? '确认生成' : 'Generate')}
+            {zh ? '确认生成' : 'Generate'}
           </button>
         </div>
       </div>
@@ -3190,9 +3094,13 @@ function RunConfirmDialog() {
   );
 }
 
-export const Canvas = () => (
-  <ReactFlowProvider>
-    <InnerCanvas />
-    <CanvasLoader />
-  </ReactFlowProvider>
-);
+export const Canvas = () => {
+  const { user } = useAuth();
+  const projectId = useStore(state => state.activeBackendProjectId);
+  const viewportKey = canvasViewportKey(user?.id ?? null, projectId);
+  return (
+    <ReactFlowProvider key={viewportKey ?? 'unbound-canvas'}>
+      <InnerCanvas viewportKey={viewportKey} />
+    </ReactFlowProvider>
+  );
+};

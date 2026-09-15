@@ -1,86 +1,91 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest';
-import { act } from 'react';
+import { act, createElement, type ComponentType } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import MediaPreview, { PreviewVideo } from './MediaPreview';
-vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-const mocks = vi.hoisted(() => ({ options: [] as any[], destroy: vi.fn() }));
-vi.mock('plyr', () => ({ default: class { constructor(_video: unknown, options: unknown) { mocks.options.push(options); } destroy() { mocks.destroy(); } } }));
-vi.mock('yet-another-react-lightbox', () => ({ default: (props: any) => <div>
-  {props.toolbar.buttons.filter((b: unknown) => b !== 'close')}
-  {props.render.slide({slide:props.slides[0],rect:{width:1000,height:600}})}
-</div> }));
-vi.mock('yet-another-react-lightbox/plugins/zoom', () => ({ default: () => {} }));
-vi.mock('yet-another-react-lightbox/plugins/fullscreen', () => ({ default: () => {} }));
-let root: Root | undefined;
-function mount(element: React.ReactNode) {
- const host=document.createElement('div');document.body.append(host);root=createRoot(host);act(() => root!.render(element));return host;
-}
-function click(label: string) { const b=[...document.querySelectorAll('button')].find(e=>e.textContent?.includes(label)); expect(b).toBeTruthy();act(() => b!.click()); }
-afterEach(() => { if(root) act(() => root!.unmount());root=undefined;document.body.replaceChildren();vi.useRealTimers();vi.restoreAllMocks();mocks.options.length=0;mocks.destroy.mockClear(); });
-it('fits loaded images and retries the exact same URL without changing signatures', () => {
- mount(<MediaPreview kind="image" src="data:image/png;base64,AA==" onClose={()=>{}} onDownload={async()=>{}} />);
- const img=document.querySelector('img')!;
- Object.defineProperties(img,{naturalWidth:{value:430},naturalHeight:{value:430}});
- act(() => img.dispatchEvent(new Event('load')));
- expect(img.style.width).toBe('600px');
- act(() => img.dispatchEvent(new Event('error')));
- expect(document.body.textContent).toContain('素材加载失败');
- click('重新加载');const retry=document.querySelector('img')!;
- expect(retry).not.toBe(img);expect(retry.getAttribute('src')).toBe('data:image/png;base64,AA==');
-});
-it('routes edit/upscale actions and prevents duplicate downloads', async () => {
- const edit=vi.fn(), upscale=vi.fn();let finish!:()=>void;
- const download=vi.fn(()=>new Promise<void>(resolve=>{finish=resolve;}));
- mount(<MediaPreview kind="image" src="data:image/png;base64,AA==" onClose={()=>{}} onDownload={download} onEdit={edit} onUpscale={upscale}/>);
- click('编辑图片');click('超分');expect(edit).toHaveBeenCalledOnce();expect(upscale).toHaveBeenCalledOnce();
- click('下载原文件');click('下载中');expect(download).toHaveBeenCalledOnce();
- await act(async()=>{finish();});
- expect(document.body.textContent).toContain('下载原文件');
-});
-it('initializes locally hosted player controls, reports metadata and destroys on retry/close', () => {
- vi.useFakeTimers();
- vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
- vi.spyOn(HTMLMediaElement.prototype,'load').mockImplementation(()=>{});
- const dimensions=vi.fn();
- mount(<PreviewVideo src="/sample.webm" zh rect={{width:1000,height:600}} onDimensions={dimensions}/>);
- const video=document.querySelector('video')!;
- expect(video.getAttribute('src')).toBe('/sample.webm');
- expect(mocks.options[0].iconUrl).not.toMatch(/^https?:/);
- expect(mocks.options[0].storage.enabled).toBe(false);
- expect(mocks.options[0].keyboard.global).toBe(false);
- expect(mocks.options[0].speed.options).toContain(2);
- Object.defineProperties(video,{videoWidth:{value:720},videoHeight:{value:1280}});
- act(()=>video.dispatchEvent(new Event('loadedmetadata')));
- expect(dimensions).toHaveBeenCalledWith(720,1280);
- // Transient failures recover automatically with three bounded backoff rounds;
- // only a persistent fourth failure asks the user to retry manually.
- let current=video;
- for(const delay of [1000,2500,5000]) {
-  act(()=>current.dispatchEvent(new Event('error')));
-  expect(document.body.textContent).toContain('正在自动重试');
-  act(()=>vi.advanceTimersByTime(delay));
-  const replacement=document.querySelector('video')!;
-  expect(replacement).not.toBe(current);
-  current=replacement;
- }
- act(()=>current.dispatchEvent(new Event('error')));
- expect(document.body.textContent).toContain('素材加载失败');
- const destroyedBeforeRetry=mocks.destroy.mock.calls.length;
- click('重新加载');expect(mocks.destroy.mock.calls.length).toBeGreaterThan(destroyedBeforeRetry);expect(document.querySelector('video')).not.toBe(current);
- const destroyedBeforeClose=mocks.destroy.mock.calls.length;
- act(()=>root!.unmount());root=undefined;expect(mocks.destroy.mock.calls.length).toBeGreaterThan(destroyedBeforeClose);expect(document.querySelector('video')).toBeNull();
-});
+import { ReactFlowProvider, type Node } from '@xyflow/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import MediaPreview from './MediaPreview';
+import { MediaPreviewModal } from './nodes/media-preview/MediaPreviewModal';
+import { nodeTypes } from './nodes/CustomNodes';
+import { useStore } from '../store';
+import { bindCanvasPreferences } from '../canvas-preferences';
 
-it('falls back from the authenticated proxy to the original public video before retrying', () => {
- vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
- vi.spyOn(HTMLMediaElement.prototype,'load').mockImplementation(()=>{});
- mount(<PreviewVideo src="https://media.example/video.mp4" zh rect={{width:1000,height:600}} onDimensions={()=>{}}/>);
- const proxy=document.querySelector('video')!;
- expect(proxy.getAttribute('src')).toContain('/api/app/proxy-media?url=');
- act(()=>proxy.dispatchEvent(new Event('error')));
- const direct=document.querySelector('video')!;
- expect(direct).not.toBe(proxy);
- expect(direct.getAttribute('src')).toBe('https://media.example/video.mp4');
- expect(document.body.textContent).not.toContain('素材加载失败');
+vi.mock('../reference-media', async () => ({ ...await vi.importActual('../reference-media'), toRenderableMediaUrl: (src: string) => src }));
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+const originalState = useStore.getState();
+const types = ['imageNode', 'videoNode', 'referenceImageNode', 'referenceVideoNode'] as const;
+const fixtures: Node[] = types.map((type, i) => ({ id: type, type, position: { x: i * 360, y: 0 }, data: { url: `/test/${type}.${type.toLowerCase().includes('video') ? 'webm' : 'webp'}`, customTitle: type, sourceName: type, mediaWidth: 640, mediaHeight: 480, status: 'done' }, selected: false }));
+let root: Root, host: HTMLDivElement;
+let fetchMock: ReturnType<typeof vi.fn>;
+let saves: string[];
+const close = vi.fn();
+const button = (label: string) => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(element => element.getAttribute('aria-label') === label || element.textContent?.trim() === label)!;
+const click = async (label: string) => { const target = button(label); expect(target, label).toBeTruthy(); await act(async () => target.click()); };
+beforeEach(() => {
+  bindCanvasPreferences('preview-entry-test');
+  vi.clearAllMocks(); saves = [];
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(800);
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function(this: HTMLAnchorElement) { saves.push(this.download); });
+  const NativeURL = URL;
+  vi.stubGlobal('URL', class extends NativeURL { static createObjectURL() { return 'blob:test-download'; } static revokeObjectURL() {} });
+  fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['media']) });
+  vi.stubGlobal('fetch', fetchMock);
+  useStore.setState({ ...originalState, nodes: fixtures, language: 'zh' });
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+});
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); useStore.setState(originalState); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+async function openNode(type: typeof types[number]) {
+  const node = fixtures.find(item => item.type === type)!;
+  const Component = nodeTypes[type] as ComponentType<any>;
+  await act(async () => root.render(<ReactFlowProvider>{createElement(Component, { id: node.id, data: node.data, selected: false })}</ReactFlowProvider>));
+  // Videos intentionally mount only a poster before entering the viewport.
+  // Double-click the actual node preview surface, just like the user does.
+  const surface = host.querySelector('.cursor-zoom-in');
+  expect(surface, `actual ${type} preview surface`).toBeTruthy();
+  await act(async () => surface!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })));
+  await vi.waitFor(() => expect(document.querySelector('.media-preview-dialog')).toBeTruthy());
+}
+describe('production canvas preview wiring', () => {
+  it('exports the new viewer through the public entry used by the node lazy import', () => {
+    expect(MediaPreview).toBe(MediaPreviewModal);
+  });
+  it.each(types)('double-clicking registered %s opens the new viewer and its current node', async type => {
+    await openNode(type);
+    expect(document.querySelector('.media-preview-navigation')?.textContent).toContain('相邻节点');
+    expect(document.querySelectorAll('.media-preview-thumbnail')).toHaveLength(4);
+    expect(document.querySelector('.media-preview-thumbnail[aria-current="true"]')?.getAttribute('aria-label')).toBe(type);
+    expect(document.querySelector(type.toLowerCase().includes('video') ? '.media-preview-video' : '.media-preview-original')).toBeTruthy();
+    expect(document.querySelector('.yarl__root')).toBeNull();
+    await click('关闭预览'); expect(document.querySelector('.media-preview-dialog')).toBeNull();
+  });
+  it('downloads the actual switched file through the production callback, preserving extension', async () => {
+    await openNode('referenceImageNode'); await click('referenceVideoNode');
+    await click('下载原文件');
+    expect(fetchMock).toHaveBeenCalledWith('/test/referenceVideoNode.webm', { credentials: 'include' });
+    expect(saves).toEqual(['referenceVideoNode.webm']);
+  });
+  it('surfaces production download failures in the new viewer without saving an error page', async () => {
+    await openNode('referenceImageNode'); fetchMock.mockResolvedValueOnce({ ok: false, status: 503 });
+    await click('下载原文件');
+    expect(document.querySelector('.media-preview-download-error')?.textContent).toContain('下载失败');
+    expect(saves).toHaveLength(0);
+  });
+  it('routes actions to the previewed selected node and hides actions for other/read-only nodes', async () => {
+    const action = vi.fn();
+    useStore.setState({ nodes: fixtures.map(node => ({ ...node, selected: node.id === 'imageNode' })) });
+    await act(async () => root.render(<MediaPreview kind="image" src="/test/imageNode.webp" nodeId="imageNode" onClose={close} onDownload={async () => {}} onNodeAction={action} />));
+    await click('编辑图片'); expect(action).toHaveBeenCalledWith('imageNode', 'edit');
+    await click('videoNode'); expect(button('裁剪视频')).toBeUndefined();
+    await act(async () => useStore.setState({ nodes: fixtures.map(node => ({ ...node, selected: node.id === 'videoNode' })) }));
+    await click('裁剪视频'); expect(action).toHaveBeenLastCalledWith('videoNode', 'edit');
+    await click('超分'); expect(action).toHaveBeenLastCalledWith('videoNode', 'upscale');
+    await act(async () => useStore.setState({ activeBackendProjectId: 'read-only', backendProjects: [{ id: 'read-only', my_role: 'visitor' }] as never }));
+    expect(button('裁剪视频')).toBeUndefined(); expect(button('超分')).toBeUndefined();
+  });
 });
