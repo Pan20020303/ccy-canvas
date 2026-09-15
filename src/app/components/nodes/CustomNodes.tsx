@@ -7461,10 +7461,17 @@ function PanoramaOpenButton({ onClick, compact = false }: { onClick: (event: Rea
   );
 }
 
+function AssetSyncNotice({ zh }: { zh: boolean }) {
+  return <div role="status" className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-black/65 px-2 py-1 text-[10px] text-white/80">
+    {zh ? '已生成 · 存储同步中，可预览' : 'Generated · syncing storage, preview ready'}
+  </div>;
+}
+
 const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   // Defensive: agent-created nodes (or other producers) may omit `data`.
   // Without this fallback, React crashes the entire workspace on render.
   const data = rawData ?? {};
+  const hasCurrentTaskPreview = hasTaskPreview(data);
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
@@ -7653,7 +7660,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             )
             : undefined
       }
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
@@ -7690,6 +7697,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             mediaKind="image"
           />
           <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
+          {hasCurrentTaskPreview ? <AssetSyncNotice zh={language === 'zh'} /> : null}
           {isPanorama && !annotate ? (
             <PanoramaOpenButton
               onClick={(event) => {
@@ -7730,6 +7738,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
 
 const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
+  const hasCurrentTaskPreview = hasTaskPreview(data);
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const nodes = useStore((state) => state.nodes);
@@ -7808,7 +7817,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       tone="video"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       width={videoBox.width}
@@ -7863,6 +7872,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
             />
           ) : null}
           <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
+          {hasCurrentTaskPreview ? <AssetSyncNotice zh={language === 'zh'} /> : null}
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -8892,6 +8902,7 @@ import { StickyNoteNode } from './StickyNoteNode';
 import { DirectorStageNode } from './DirectorStageNode';
 import { NodeVersionsBadge, NodeVersionsModal } from './NodeVersions';
 import type { NodeVersion } from '../../store';
+import { hasTaskPreview } from '../../media-result-state';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 import { LayerEditorNode } from './LayerEditorNode';
 import { VideoEditorNode } from './VideoEditorNode';

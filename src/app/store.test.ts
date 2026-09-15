@@ -843,6 +843,49 @@ describe("workspace control bar state", () => {
     }
   });
 
+  it.each(['image', 'video'])("keeps one %s version across preview, promotion and late poll events", async (serviceType) => {
+    let stream: { onmessage: ((event: MessageEvent) => void) | null } | undefined;
+    class MockStream {
+      onmessage = null;
+      onopen = null;
+      onerror = null;
+      close = vi.fn();
+      constructor() { stream = this; }
+    }
+    vi.stubGlobal('EventSource', MockStream);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }))));
+    try {
+      const { useStore } = await loadStore();
+      const old = 'https://example.com/previous.png';
+      useStore.getState().updateNodeData('2', {
+        url: old, status: 'running', taskId: 'preview-task', queuedAfterTimeout: true, versions: [],
+      });
+      const file = '2026-09/11111111-2222-4333-8444-555555555555.png';
+      const preview = `/uploads/staging/generated/${file}`;
+      const final = `https://bucket.oss-cn-beijing.aliyuncs.com/generated/${file}`;
+      const emit = (status: string, url: string, taskId = 'preview-task') => stream!.onmessage?.({ data: JSON.stringify({
+        task_id: taskId, node_id: '2', service_type: serviceType, status, result_url: url,
+      }) } as MessageEvent);
+      const data = () => useStore.getState().nodes.find((node) => node.id === '2')!.data;
+      emit('persisting', preview);
+      expect(data().url).toBe(preview);
+      expect(data().assetSyncing).toBe(true);
+      expect(data().versions).toEqual([expect.objectContaining({ url: old })]);
+      emit('persisting', preview);
+      emit('success', final);
+      const versionId = data().activeVersionId;
+      expect(data().versions).toEqual([expect.objectContaining({ url: old })]);
+      expect(data().assetSyncing).toBe(false);
+      emit('persisting', preview); // stale poll after final SSE
+      emit('success', final); // duplicate success delivery
+      emit('success', 'https://example.com/late.png', 'older-task');
+      expect(data().status).toBe('done');
+      expect(data().url).toBe(final);
+      expect(data().activeVersionId).toBe(versionId);
+      expect(data().versions).toHaveLength(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("recovers a running node without a task id from the batch task poller", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T10:00:00.000Z"));
