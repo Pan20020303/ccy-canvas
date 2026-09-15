@@ -12,6 +12,12 @@ import (
 
 type stubAgentRunProcessor struct{ err error }
 
+func TestShutdownCoversVideoRuntime(t *testing.T) {
+	if workerShutdownTimeout < timeoutForServiceType("video")+time.Minute {
+		t.Fatal("shutdown must allow the longest paid video task to finish")
+	}
+}
+
 func (p stubAgentRunProcessor) ProcessAgentRun(context.Context, string) error { return p.err }
 
 func TestIsMediaGeneration(t *testing.T) {

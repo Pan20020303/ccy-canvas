@@ -3,7 +3,7 @@ import { useAgentCanvasActivityStore } from '../agent/agent-canvas-activity';
 
 const generationFields = new Set(['status', 'taskId', 'queuedAfterTimeout', 'taskPhase', 'error', 'output', 'content',
   'url', 'originalUrl', 'versions', 'activeVersionId', 'activeVersionTimestamp', 'assetStatus', 'assetSyncing',
-  'lastGenerationError', 'lastGenerationFailedAt', 'runningStartedAt', 'generationOwnerId', 'sourceKind']);
+  'lastGenerationError', 'lastGenerationFailedAt', 'runningStartedAt', 'generationOwnerId', 'sourceKind', 'mediaTaskId', 'poster']);
 function onlyGenerationChanged(before: ReturnType<typeof useStore.getState>, after: ReturnType<typeof useStore.getState>) {
   const running = new Set(before.nodes.filter(n => ['running', 'generating'].includes(String(n.data.status))).map(n => n.id));
   if (!running.size || before.edges !== after.edges || before.groups !== after.groups) return false;

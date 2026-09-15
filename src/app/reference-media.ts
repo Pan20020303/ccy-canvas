@@ -34,6 +34,13 @@ export function resolveBackendAssetUrl(url?: string | null, apiBaseUrl?: string 
     return url;
   }
 
+  // `new URL('/uploads/...', 'https://host/ccy')` drops the `/ccy` deployment
+  // prefix and incorrectly requests `https://host/uploads/...`. Generated
+  // media is served by the CCY API, so preserve its configured base path.
+  if (url.startsWith("/uploads/")) {
+    return `${apiBaseUrl.trim().replace(/\/+$/, "")}${url}`;
+  }
+
   return new URL(url, apiBaseUrl).toString();
 }
 
@@ -64,6 +71,7 @@ export function isTransientBrowserMediaUrl(url?: string | null): boolean {
 }
 
 const PROXY_MEDIA_PATH = "/api/app/proxy-media";
+const LOCAL_THUMBNAIL_PATH = "/api/app/media-thumbnail";
 
 function apiBaseUrlPrefix(): string {
   return (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
@@ -116,7 +124,16 @@ export function toRenderableMediaUrl(url?: string | null, opts?: { thumbWidth?: 
   }
   const origin = extractOriginalMediaUrl(url);
   if (!/^https?:\/\//i.test(origin)) {
-    // Relative path (e.g. /uploads/..) — leave as-is for the page/backend to serve.
+    // Generated/uploaded media belongs to the API. When the app is deployed
+    // under a sub-path (for example /ccy), a root-relative /uploads URL would
+    // otherwise escape that prefix and be routed to another application.
+    if (origin.startsWith("/uploads/")) {
+      const prefix = apiBaseUrlPrefix();
+      if (opts?.thumbWidth && opts.thumbWidth > 0) {
+        return `${prefix}${LOCAL_THUMBNAIL_PATH}?path=${encodeURIComponent(origin)}&w=${Math.round(opts.thumbWidth)}`;
+      }
+      return prefix ? `${prefix}${origin}` : origin;
+    }
     return origin;
   }
   // Optional thumbnail hint: the media proxy downsizes our own OSS images to a

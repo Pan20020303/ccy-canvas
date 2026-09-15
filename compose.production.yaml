@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:16.14-alpine
+    container_name: ccy-canvas-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: ccy-canvas-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ccy-canvas-api
+    restart: unless-stopped
+    stop_grace_period: 36m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/ccy_canvas?sslmode=disable
+      SESSION_SECRET: ${SESSION_SECRET}
+      CCY_ENCRYPTION_KEY: ${CCY_ENCRYPTION_KEY}
+      HTTP_ADDR: 0.0.0.0:8080
+      COOKIE_SECURE: "true"
+      AUTH_FRONTEND_BASE_URL: https://cylaigc.com/ccy
+      DEFAULT_DAILY_QUOTA: ${DEFAULT_DAILY_QUOTA:-100}
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_PUBLIC_BASE_URL: ${OSS_PUBLIC_BASE_URL:-}
+      OSS_KEY_PREFIX: ${OSS_KEY_PREFIX:-ccy-canvas}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_ENDPOINT: ${COS_ENDPOINT:-}
+      COS_PUBLIC_BASE_URL: ${COS_PUBLIC_BASE_URL:-}
+      COS_KEY_PREFIX: ${COS_KEY_PREFIX:-ccy-canvas}
+      UPLOAD_DIR: /app/uploads
+      MEDIA_CACHE_DIR: /app/media-cache
+      MEDIA_CACHE_MAX_BYTES: "5368709120"
+      TEXT_PROVIDER_TIMEOUT_SECONDS: ${TEXT_PROVIDER_TIMEOUT_SECONDS:-720}
+      TEXT_TASK_MAX_RUNTIME_SECONDS: ${TEXT_TASK_MAX_RUNTIME_SECONDS:-900}
+      NEWAPI_TIMEOUT_SECONDS: ${NEWAPI_TIMEOUT_SECONDS:-720}
+    ports:
+      - "127.0.0.1:8180:8080"
+    volumes:
+      - uploads-data:/app/uploads
+      - media-cache-data:/app/media-cache
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: ccy-canvas-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8181:80"
+
+volumes:
+  postgres-data:
+  redis-data:
+  uploads-data:
+  media-cache-data:

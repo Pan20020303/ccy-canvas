@@ -2,10 +2,15 @@ package interfaces
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +23,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 const maxUploadSize = 50 * 1024 * 1024 // 50 MB
@@ -27,6 +34,7 @@ const maxProxySize = 100 * 1024 * 1024 // 100 MB
 func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 	cache := newMediaCache() // nil unless MEDIA_CACHE_DIR is set (opt-in)
 	r.Get("/api/app/proxy-media", proxyMediaHandler(sm, cache))
+	r.Get("/api/app/media-thumbnail", localMediaThumbnailHandler(sm, cache))
 	r.Post("/api/app/upload", func(w http.ResponseWriter, r *http.Request) {
 		// Auth check.
 		cookie, err := r.Cookie(session.CookieName)
@@ -125,6 +133,82 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			"content_type": contentType,
 		})
 	})
+}
+
+func localMediaThumbnailHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(session.CookieName)
+		if err != nil || cookie.Value == "" {
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+		if _, err := sm.Parse(cookie.Value); err != nil {
+			http.Error(w, "Invalid session", http.StatusUnauthorized)
+			return
+		}
+
+		requested := strings.TrimSpace(r.URL.Query().Get("path"))
+		width := parseThumbWidth(r.URL.Query().Get("w"))
+		if !strings.HasPrefix(requested, "/uploads/") || width == 0 {
+			http.Error(w, "Missing or invalid thumbnail parameters", http.StatusBadRequest)
+			return
+		}
+		rel := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(requested, "/uploads/")))
+		if rel == "." || rel == "" || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			http.Error(w, "Invalid media path", http.StatusBadRequest)
+			return
+		}
+		root, err := filepath.Abs(strings.TrimSpace(os.Getenv("UPLOAD_DIR")))
+		if err != nil || strings.TrimSpace(os.Getenv("UPLOAD_DIR")) == "" {
+			root, err = filepath.Abs("uploads")
+		}
+		if err != nil {
+			http.Error(w, "Media storage unavailable", http.StatusInternalServerError)
+			return
+		}
+		source := filepath.Join(root, rel)
+		resolved, err := filepath.Abs(source)
+		if err != nil || (resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator))) {
+			http.Error(w, "Invalid media path", http.StatusBadRequest)
+			return
+		}
+
+		cacheKey := "local:" + filepath.ToSlash(rel) + "|w=" + strconv.Itoa(width)
+		if cache != nil {
+			if bodyPath, ct, ok := cache.lookup(cacheKey); ok {
+				w.Header().Set("X-Cache", "HIT")
+				serveCachedFile(w, r, bodyPath, ct)
+				return
+			}
+		}
+		file, err := os.Open(resolved)
+		if err != nil {
+			if os.IsNotExist(err) {
+				http.Error(w, "Media not found", http.StatusNotFound)
+			} else {
+				http.Error(w, "Failed to read media", http.StatusInternalServerError)
+			}
+			return
+		}
+		defer file.Close()
+		thumb, err := resizeImageToJPEG(io.LimitReader(file, maxProxySize), width)
+		if err != nil {
+			http.Error(w, "Failed to resize media", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", cacheControlOwnObject)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Length", strconv.Itoa(len(thumb)))
+		if cache != nil {
+			w.Header().Set("X-Cache", "MISS")
+			if err := cache.storeWhileServing(cacheKey, "image/jpeg", w, bytes.NewReader(thumb)); err != nil {
+				log.Printf("[media-thumbnail] cache fill failed: %v", err)
+			}
+			return
+		}
+		_, _ = w.Write(thumb)
+	}
 }
 
 func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
@@ -237,13 +321,17 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		}
 
 		resp, lastErr := fetch(fetchURL, upstreamRange)
+		localResize := false
 		// If the resized fetch fails (e.g. non-image / pipeline error), fall back
-		// to the original object once.
+		// to the original object once. Keep the requested thumbnail width so very
+		// large images rejected by OSS image processing can still be resized here;
+		// otherwise a 20+ MB source is sent to every browser unchanged.
 		if useResize && (lastErr != nil || resp == nil || resp.StatusCode >= 400) {
 			if resp != nil {
 				resp.Body.Close()
 			}
 			useResize = false
+			localResize = true
 			fallback := target
 			if signed != "" {
 				fallback = signed
@@ -267,6 +355,22 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 			}
 			http.Error(w, fmt.Sprintf("Upstream returned HTTP %d", resp.StatusCode), http.StatusBadGateway)
 			return
+		}
+
+		// OSS rejects image processing for source files larger than 20 MiB. In
+		// that case create the requested thumbnail locally. The browser receives
+		// a small JPEG and the normal media cache stores this variant by URL+width.
+		if localResize {
+			thumb, rerr := resizeImageToJPEG(io.LimitReader(resp.Body, maxProxySize), width)
+			if rerr != nil {
+				http.Error(w, "Failed to resize media", http.StatusBadGateway)
+				return
+			}
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(thumb))
+			resp.ContentLength = int64(len(thumb))
+			resp.Header.Set("Content-Type", "image/jpeg")
+			resp.Header.Set("Content-Length", strconv.Itoa(len(thumb)))
 		}
 
 		// Be permissive with Content-Type. Many object stores (COS
@@ -355,6 +459,33 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		}
 		io.Copy(w, io.LimitReader(body, maxProxySize))
 	}
+}
+
+func resizeImageToJPEG(src io.Reader, maxWidth int) ([]byte, error) {
+	if maxWidth <= 0 {
+		return nil, fmt.Errorf("invalid width")
+	}
+	decoded, _, err := image.Decode(src)
+	if err != nil {
+		return nil, err
+	}
+	bounds := decoded.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid image dimensions")
+	}
+	targetWidth := min(width, maxWidth)
+	targetHeight := max(1, height*targetWidth/width)
+	target := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
+	// ApproxBiLinear is intentionally used for canvas thumbnails: it is much
+	// faster on provider images with very large pixel dimensions while remaining
+	// visually clean at the 640-960px display sizes used by the UI.
+	draw.ApproxBiLinear.Scale(target, target.Bounds(), decoded, bounds, draw.Over, nil)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, target, &jpeg.Options{Quality: 84}); err != nil {
+		return nil, err
+	}
+	return encoded.Bytes(), nil
 }
 
 // sniffMediaType returns a best-guess image/video MIME type for a URL

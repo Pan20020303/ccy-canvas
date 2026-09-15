@@ -128,6 +128,14 @@ describe('canvas navigation protections', () => {
     useStore.setState({activeRun:{nodeId:'run',startedAt:Date.now()}});
     await expect(prepareCanvasNavigation({logout:true})).rejects.toThrow('退出账号');
   });
+  it('allows media promotion metadata to arrive while navigation saves', async () => {
+    const node = {id:'run',type:'imageNode',position:{x:0,y:0},data:{status:'running',url:'/uploads/previous.png',poster:'/uploads/previous-poster.png'}};
+    useStore.setState({nodes:[node]});
+    mocks.save.mockImplementationOnce(async () => {
+      useStore.setState({nodes:[{...node,data:{...node.data,status:'done',url:'/uploads/new.png',mediaTaskId:'new-task',poster:undefined}}],canvasSaveStatus:'saved'});
+    });
+    await expect(prepareCanvasNavigation()).resolves.toBeUndefined();
+  });
   it('keeps the original canvas after a failed target load', async () => {
     const originalNodes=useStore.getState().nodes;
     mocks.switch.mockImplementationOnce(async () => {useStore.setState({activeBackendProjectId:'p2',activeProjectId:'p2',nodes:[],canvasHydrated:false});});

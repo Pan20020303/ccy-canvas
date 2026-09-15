@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -36,7 +37,14 @@ type Worker struct {
 	queries        *sqlc.Queries
 	agentProcessor AgentRunProcessor
 	capacity       *generationCapacity
+	shutdownOnce   sync.Once
+	stopSignals    func()
 }
+
+// Paid video jobs can take 30 minutes. An 8-second default drain interrupts
+// polling after submit and loses the result even though the vendor completes.
+// Keep Docker's stop_grace_period longer than this plus the HTTP drain.
+const workerShutdownTimeout = 35 * time.Minute
 
 // AgentRunProcessor is implemented by the skills runtime. Keeping the
 // boundary here avoids a tasks -> skills import cycle and lets the existing
@@ -58,6 +66,7 @@ func NewWorker(redisAddr, redisPassword string, redisDB int, svc *modelapp.Servi
 			DB:       redisDB,
 		},
 		asynq.Config{
+			ShutdownTimeout: workerShutdownTimeout,
 			RetryDelayFunc: func(n int, err error, task *asynq.Task) time.Duration {
 				if errors.Is(err, skillsapp.ErrAgentSessionBusy) {
 					return time.Second
@@ -114,8 +123,9 @@ func (w *Worker) Enabled() bool {
 	return w != nil && w.server != nil
 }
 
-// Start runs the Asynq server in the calling goroutine. Block until
-// Shutdown is called (or fatal error). Callers typically do go w.Start().
+// Start launches processing. Main owns SIGTERM and the single shutdown path;
+// using Asynq.Run would register a second SIGTERM shutdown, allowing main to
+// exit while that other goroutine is still draining paid jobs.
 func (w *Worker) Start() error {
 	if !w.Enabled() {
 		return nil
@@ -126,19 +136,27 @@ func (w *Worker) Start() error {
 	if w.agentProcessor != nil {
 		mux.HandleFunc(TaskTypeAgentRun, w.handleAgentRun)
 	}
-	return w.server.Run(mux)
+	if err := w.server.Start(mux); err != nil {
+		return err
+	}
+	w.stopSignals = listenForWorkerQuiesce(w.server.Stop)
+	return nil
 }
 
-// Shutdown drains the worker pool gracefully. In-flight tasks get up to
-// the Asynq default ShutdownTimeout (8s) to finish before forced abort.
+// Shutdown drains the worker pool within the paid-media runtime budget.
 func (w *Worker) Shutdown() {
 	if !w.Enabled() {
 		return
 	}
-	w.server.Shutdown()
-	if w.capacity != nil {
-		_ = w.capacity.client.Close()
-	}
+	w.shutdownOnce.Do(func() {
+		if w.stopSignals != nil {
+			w.stopSignals()
+		}
+		w.server.Shutdown()
+		if w.capacity != nil {
+			_ = w.capacity.client.Close()
+		}
+	})
 }
 
 func (w *Worker) handleAgentRun(ctx context.Context, t *asynq.Task) error {

@@ -247,4 +247,6 @@ export const router = createBrowserRouter([
       </ProtectedRoute>
     ),
   },
-]);
+], {
+  basename: import.meta.env.VITE_ROUTER_BASENAME || "/",
+});

@@ -49,17 +49,41 @@ export type InvokeResult = {
 
 // ─── User CRUD (sees globals + own personals) ───────────────────────────────
 
-export function listSkills(): Promise<Skill[]> {
-  return apiClient.get<Skill[]>("/api/app/skills");
+let skillsCache: Skill[] | null = null;
+let skillsRequest: Promise<Skill[]> | null = null;
+
+function invalidateSkillsCache() {
+  skillsCache = null;
+  skillsRequest = null;
+}
+
+export function listSkills(force = false): Promise<Skill[]> {
+  if (!force && skillsCache) return Promise.resolve(skillsCache);
+  if (!force && skillsRequest) return skillsRequest;
+  skillsRequest = apiClient.get<Skill[]>("/api/app/skills").then((skills) => {
+    skillsCache = skills;
+    skillsRequest = null;
+    return skills;
+  }).catch((error) => {
+    skillsRequest = null;
+    throw error;
+  });
+  return skillsRequest;
 }
 export function createSkill(payload: SkillUpsert): Promise<Skill> {
-  return apiClient.post<Skill>("/api/app/skills", payload);
+  return apiClient.post<Skill>("/api/app/skills", payload).then((skill) => {
+    invalidateSkillsCache();
+    return skill;
+  });
 }
 export function updateSkill(id: string, payload: SkillUpsert): Promise<Skill> {
-  return apiClient.put<Skill>(`/api/app/skills/${id}`, payload);
+  return apiClient.put<Skill>(`/api/app/skills/${id}`, payload).then((skill) => {
+    invalidateSkillsCache();
+    return skill;
+  });
 }
 export function deleteSkill(id: string): Promise<void> {
-  return apiClient.delete(`/api/app/skills/${id}`);
+  return apiClient.delete(`/api/app/skills/${id}`).then(() => invalidateSkillsCache());
 }
 export function invokeSkill(id: string, inputs: Record<string, unknown>): Promise<InvokeResult> {
   return apiClient.post<InvokeResult>(`/api/app/skills/${id}/invoke`, { inputs });
@@ -71,13 +95,19 @@ export function adminListSkills(): Promise<AdminSkill[]> {
   return apiClient.get<AdminSkill[]>("/api/admin/skills");
 }
 export function adminCreateSkill(payload: SkillUpsert): Promise<Skill> {
-  return apiClient.post<Skill>("/api/admin/skills", payload);
+  return apiClient.post<Skill>("/api/admin/skills", payload).then((skill) => {
+    invalidateSkillsCache();
+    return skill;
+  });
 }
 export function adminUpdateSkill(id: string, payload: SkillUpsert): Promise<Skill> {
-  return apiClient.put<Skill>(`/api/admin/skills/${id}`, payload);
+  return apiClient.put<Skill>(`/api/admin/skills/${id}`, payload).then((skill) => {
+    invalidateSkillsCache();
+    return skill;
+  });
 }
 export function adminDeleteSkill(id: string): Promise<void> {
-  return apiClient.delete(`/api/admin/skills/${id}`);
+  return apiClient.delete(`/api/admin/skills/${id}`).then(() => invalidateSkillsCache());
 }
 
 // ─── Agents (Phase 3 will wire run/SSE; CRUD stubs in place now) ────────────

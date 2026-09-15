@@ -270,11 +270,12 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
 	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame" || req.ReferenceMode == "first_frame"
 	for i, raw := range req.ReferenceImages {
-		// Local uploads / embedded images become Data URLs. Public and private
-		// object-store images retain their URL / signed URL behavior.
+		// Use URL mode from the official Ark contract. Local references are
+		// copied to the active object store; private objects get signed URLs.
+		// Embedded images and asset IDs retain the native Ark input contract.
 		refURL, err := arkReferenceImageURL(ctx, raw)
 		if err != nil {
-			return nil, seedanceReferenceImageError(i, err)
+			return nil, arkReferenceInputError(fmt.Sprintf("参考图 #%d ", i+1), err)
 		}
 		role := "reference_image"
 		if useFrameRoles {
@@ -297,14 +298,12 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	for _, rawVid := range collectArkReferenceVideos(req) {
 		refURL, err := arkReferenceMediaURL(ctx, rawVid)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, "参考视频处理失败", err)
+			return nil, arkReferenceInputError("参考视频", err)
 		}
 		item := map[string]interface{}{
 			"type":      "video_url",
 			"video_url": map[string]interface{}{"url": refURL},
-		}
-		if isSeedance25Model(req.Model) {
-			item["role"] = "reference_video"
+			"role":      "reference_video",
 		}
 		content = append(content, item)
 	}
@@ -312,7 +311,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		for _, rawAudio := range collectArkReferenceAudios(req) {
 			refURL, err := arkReferenceMediaURL(ctx, rawAudio)
 			if err != nil {
-				return nil, apperror.Wrap(apperror.CodeInvalidInput, "参考音频处理失败", err)
+				return nil, arkReferenceInputError("参考音频", err)
 			}
 			content = append(content, map[string]interface{}{
 				"type": "audio_url", "audio_url": map[string]interface{}{"url": refURL}, "role": "reference_audio",
@@ -387,6 +386,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
+	s.rememberProviderTask(req.GenerationLogID, pc.ID, taskID)
 	return s.pollVideoArkTask(ctx, baseURL, queryPath, apiKey, taskID)
 }
 

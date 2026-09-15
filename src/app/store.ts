@@ -21,6 +21,7 @@ import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import type { ServiceType } from './model-config';
 import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
+import { taskMediaPatch, uniqueMediaVersions } from './media-result-state';
 import { batchTasksByNodeIds, getTask, listActiveTasks, type TaskItem } from './api/tasks';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
 import {
@@ -1198,6 +1199,9 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
       const targetData = targetNode?.data as Record<string, unknown> | undefined;
       const nodeTaskId = typeof targetData?.taskId === 'string' ? targetData.taskId : undefined;
+      // A poll that started before completion can arrive after the success SSE.
+      // Never roll a completed task back to its staging URL or running state.
+      if (nodeTaskId === task.id && targetData?.status === 'done' && targetData?.queuedAfterTimeout !== true) return;
       if (targetNode && (!nodeTaskId || nodeTaskId === task.id)) {
         setStore((state) => {
           const nodes = state.nodes.map((node) => node.id === task.node_id
@@ -1221,8 +1225,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
                         // rendering happens at the render boundary, so the
                         // persisted value stays env-agnostic and download /
                         // capture paths don't double-wrap it.
-                        url: task.result_url,
-                        output: task.result_url,
+                        ...taskMediaPatch((node.data ?? {}) as Record<string, unknown>, task.result_url, task.id),
                         assetStatus: task.status,
                         assetSyncing: true,
                       }
@@ -1301,26 +1304,6 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         // Persist the raw upstream URL; proxy wrapping is applied at render time.
         const resultUrl = task.result_url;
         const prevData = (node.data ?? {}) as Record<string, unknown>;
-        let nextVersions: NodeVersion[] | undefined;
-        let nextActiveVersionId: string | undefined;
-        const nextTs = Date.now();
-        if (isUrl) {
-          const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
-          const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
-          if (prevUrl && prevUrl !== resultUrl) {
-            const snapshot: NodeVersion = {
-              id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
-              url: prevUrl,
-              prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : undefined,
-              model: typeof prevData.model === 'string' ? prevData.model as string : undefined,
-              timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
-            };
-            nextVersions = [snapshot, ...existing];
-          } else {
-            nextVersions = existing;
-          }
-          nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
-        }
         return {
           ...node,
           data: {
@@ -1336,12 +1319,8 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             assetSyncing: false,
             ...(isUrl
               ? {
-                  url: resultUrl,
-                  output: resultUrl,
+                  ...taskMediaPatch(prevData, resultUrl, task.id),
                   originalUrl: task.result_url,
-                  versions: nextVersions,
-                  activeVersionId: nextActiveVersionId,
-                  activeVersionTimestamp: nextTs,
                 }
               : { content: resultUrl, output: resultUrl }),
           },
@@ -1650,9 +1629,13 @@ function applyActiveTasksToNodes(
         const task = taskByNode.get(node.id);
         if (!task) return node;
         const data = (node.data ?? {}) as Record<string, unknown>;
-        // Don't disturb a node that already finished or is already tracking
-        // this exact task.
-        if (data.status === 'running' && data.taskId === task.id) return node;
+        // Don't rewrite an already hydrated node. A matching running task that
+        // has just entered `persisting` is the exception: result_url now points
+        // at a readable local preview and must be copied onto the node so the
+        // opaque "返回中" overlay can disappear immediately after a refresh.
+        if (data.status === 'done' && data.taskId === task.id && data.queuedAfterTimeout !== true) return node;
+        const hasHydratedTaskPreview = data.url === task.result_url;
+        if (data.status === 'running' && data.taskId === task.id && (!task.result_url || hasHydratedTaskPreview)) return node;
         // Resume the timer from when the backend task actually started, not
         // from "now" — otherwise refreshing the page resets the elapsed
         // counter back to 0 even though the upstream task has been running
@@ -1665,9 +1648,16 @@ function applyActiveTasksToNodes(
           : task.status === 'persisting'
             ? 'persisting'
             : 'generating';
+        const preview = task.result_url
+          ? {
+              ...taskMediaPatch(data, task.result_url, task.id),
+              assetStatus: task.status,
+              assetSyncing: task.status === 'persisting',
+            }
+          : {};
         return {
           ...node,
-          data: { ...node.data, status: 'running', generationOwnerId: storageUserId, taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt },
+          data: { ...node.data, status: 'running', generationOwnerId: storageUserId, taskId: task.id, queuedAfterTimeout: true, taskPhase, error: undefined, runningStartedAt, ...preview },
         };
       });
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
@@ -1792,7 +1782,7 @@ export function stripHeavyFromNodeData(data: unknown): unknown {
     out.referenceLayer = null;
   }
   if (Array.isArray(out.versions)) {
-    out.versions = (out.versions as NodeVersion[])
+    out.versions = uniqueMediaVersions(typeof out.url === 'string' ? out.url : '', out.versions as NodeVersion[])
       .map(stripHeavyFromVersion)
       .filter((version) => version.url)
       .slice(0, MAX_PERSISTED_NODE_VERSIONS);
@@ -4153,7 +4143,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const startedAt = Date.now();
     set((snapshot) => {
       const nodes = snapshot.nodes.map((node) => node.id === nodeId
-        ? { ...node, data: { ...node.data, status: 'running', generationOwnerId: storageUserId, error: undefined, lastGenerationError: undefined, lastGenerationFailedAt: undefined, taskId: undefined, queuedAfterTimeout: false, output: undefined, content: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
+        ? { ...node, data: { ...node.data, status: 'running', generationOwnerId: storageUserId, error: undefined, lastGenerationError: undefined, lastGenerationFailedAt: undefined, taskId: undefined, queuedAfterTimeout: false, taskPhase: 'generating', assetSyncing: false, output: undefined, content: undefined, prompt: payload.prompt, resolvedPrompt, model: payload.model, runningStartedAt: startedAt } }
         : node);
       const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
       return {
@@ -4443,26 +4433,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           // (同步路径 + SSE / 轮询恢复路径) 都维护历史.
           const prevData = (node.data ?? {}) as Record<string, unknown>;
           const isUrlResult = result.type === 'url';
-          let nextVersions: NodeVersion[] | undefined;
-          let nextActiveVersionId: string | undefined;
-          const nextTs = Date.now();
-          if (isUrlResult) {
-            const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
-            const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
-            if (prevUrl && prevUrl !== persistedContent) {
-              const snap: NodeVersion = {
-                id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
-                url: prevUrl,
-                prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : payload.prompt,
-                model: typeof prevData.model === 'string' ? prevData.model as string : payload.model,
-                timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
-              };
-              nextVersions = [snap, ...existing];
-            } else {
-              nextVersions = existing;
-            }
-            nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
-          }
           return {
             ...node,
             data: {
@@ -4473,17 +4443,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
                 : (serviceType === 'image' || serviceType === 'video' ? 'generated' : (node.data as Record<string, unknown> | undefined)?.sourceKind),
               taskId: result.task_id,
               queuedAfterTimeout: false,
+              taskPhase: undefined,
+              assetSyncing: false,
               error: undefined,
               lastGenerationError: undefined,
               lastGenerationFailedAt: undefined,
               ...(isUrlResult
                 ? {
-                    url: persistedContent,
-                    output: persistedContent,
+                    ...taskMediaPatch(prevData, persistedContent, result.task_id || `sync-${nodeId}-${startedAt}`),
                     originalUrl: result.content,
-                    versions: nextVersions,
-                    activeVersionId: nextActiveVersionId,
-                    activeVersionTimestamp: nextTs,
                     prompt: payload.prompt,
                     model: payload.model,
                   }
