@@ -195,6 +195,24 @@ const SEEDANCE_2_TEMPLATE = {
   defaults: { resolution: "720p", aspectRatio: "16:9" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
+// Official Ark 2.5 uses the contents/generations/tasks contract, not the
+// HopBase gateway. Keep its audio/output options and mixed-reference limits
+// model-scoped so existing 2.0 channels retain their original capabilities.
+const ARK_SEEDANCE_25_TEMPLATE = {
+  ...SEEDANCE_2_TEMPLATE,
+  resolutionOptions: ["480p", "720p"],
+  durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
+  referenceModes: ["text-to-video", "first-last", "multi-image", "motion-mimic", "all-in-one"] as ReferenceModeKey[],
+  referenceImageRange: { min: 1, max: 30 },
+  referenceRequirements: {
+    "all-in-one": { images: { min: 0, max: 30 }, videos: { min: 0, max: 10 }, audios: { min: 0, max: 10 } },
+  },
+  audioSettingOptions: ["on", "off"],
+  supportsOutputFormat: true,
+  outputFormatOptions: ["mp4", "mov"],
+  defaults: { resolution: "720p", aspectRatio: "16:9", outputFormat: "mp4" },
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
 // HopBase overseas Seedance 2.5. Compared with 2.0 it accepts longer clips
 // and substantially more mixed references, but currently tops out at 720p.
 const HOPBASE_SEEDANCE_25_TEMPLATE = {
@@ -874,6 +892,11 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     audioLanguageOptions: ["Auto", "Chinese", "English", "Japanese", "Korean"],
     supportsSeed: true,
   },
+  "doubao-seedance-2-5-260628": {
+    vendor: "Volcengine",
+    modelName: "doubao-seedance-2-5-260628",
+    ...ARK_SEEDANCE_25_TEMPLATE,
+  },
   "doubao-seedance-2-0-260128": {
     vendor: "Volcengine",
     modelName: "doubao-seedance-2-0-260128",
@@ -1294,7 +1317,9 @@ function inferSeedanceTemplate(
   const v = m.replace(/\./g, "-"); // 归一化点号→连字符,便于版本判断
   const fast = v.includes("fast");
   if (v.includes("seedance-2-5")) {
-    return { vendor, modelName, ...HOPBASE_SEEDANCE_25_TEMPLATE };
+    return { vendor, modelName, ...(v.startsWith("doubao-") && vendor !== "HopBase"
+      ? ARK_SEEDANCE_25_TEMPLATE
+      : HOPBASE_SEEDANCE_25_TEMPLATE) };
   }
   if (v.includes("seedance-2")) {
     return { vendor, modelName, ...(fast ? SEEDANCE_2_FAST_TEMPLATE : SEEDANCE_2_TEMPLATE) };

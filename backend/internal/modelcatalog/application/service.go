@@ -3243,9 +3243,9 @@ func encodeReferenceImageReader(r io.Reader) (string, error) {
 // generous window also covers queueing and any retry.
 const arkReferenceURLTTL = time.Hour
 
-// arkReferenceMediaURL resolves a reference image/video to a URL the provider
-// can download ITSELF. Ark/Seedance does not accept base64 data URLs — it must
-// fetch a real link — so we hand it a publicly reachable one:
+// arkReferenceMediaURL resolves a reference video to a URL the provider can
+// download. Videos cannot use base64; images are handled separately by
+// arkReferenceImageURL, which also supports inline data and local uploads.
 //   - one of our own object-store objects (e.g. a private COS bucket) → a
 //     short-lived SIGNED URL the provider can GET within the TTL (fixes the
 //     InvalidParameter.DownloadFailed / 403 on private objects);
@@ -3280,12 +3280,23 @@ const (
 	arkRefMaxDim = 6000
 )
 
-// arkReferenceImageURL returns a provider-downloadable URL for a reference IMAGE
+// arkReferenceImageURL returns a URL, Data URL or asset ID for a reference IMAGE
 // whose dimensions satisfy Ark's 300–6000px constraint. Most images pass through
 // as their signed/public URL untouched; only when the original is out of range
 // do we download, rescale, and upload a normalized copy (keyed by content hash
 // so identical images aren't re-uploaded), handing Ark that copy's signed URL.
 func arkReferenceImageURL(ctx context.Context, rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "data:") || strings.HasPrefix(rawURL, "/uploads/") {
+		return seedanceInlineImageURL(rawURL)
+	}
+	if strings.HasPrefix(rawURL, "asset://") {
+		id := strings.TrimPrefix(rawURL, "asset://")
+		if id == "" || strings.ContainsAny(id, " \t\r\n/?#") {
+			return "", apperror.New(apperror.CodeInvalidInput, "参考图素材 ID 无效，请重新选择素材")
+		}
+		return rawURL, nil
+	}
 	downloadURL, err := arkReferenceMediaURL(ctx, rawURL)
 	if err != nil {
 		return "", err

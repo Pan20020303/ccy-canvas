@@ -89,6 +89,20 @@ describe("ManjuAPI Grok Imagine provider templates", () => {
   });
 });
 
+describe("official Jimeng Seedance provider template", () => {
+  it("adds the exact Ark 2.5 model without replacing existing versions or relay endpoints", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("doubao-seedance-2-5-260628"));
+    expect(template).toMatchObject({
+      vendor: "Volcengine", label: "火山引擎 · 即梦 Seedance",
+      baseURL: "https://ark.cn-beijing.volces.com/api/v3", apiSpec: "ark",
+    });
+    expect(template?.models[0]).toBe("doubao-seedance-2-5-260628");
+    expect(template?.models).toContain("doubao-seedance-2-0-260128");
+    expect(template?.models).toContain("doubao-seedance-1-5-pro-251215");
+    expect(getEndpointPreview("video", "ark")).toContain("/contents/generations/tasks");
+  });
+});
+
 describe("HopBase Seedance provider template", () => {
   it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("dreamina-seedance-2-5-260628"));

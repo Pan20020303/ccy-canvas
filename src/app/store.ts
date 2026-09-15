@@ -28,7 +28,7 @@ import {
   listAssetFoldersFromServer, saveAssetFolderToServer, deleteAssetFolderFromServer,
 } from './api/assets';
 import type { BackendProject } from './api/projects';
-import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas, uploadFile } from './api/projects';
+import { createProject as apiCreateProject, getCanvas, listProjects, saveCanvas as apiSaveCanvas, uploadFile } from './api/projects';
 import {
   buildCanvasClipboardSelection,
   remapClipboardSelectionForPaste,
@@ -913,6 +913,118 @@ const seedInvitations: AdminInvitation[] = [
 
 const runAborters: Record<string, AbortController> = {};
 const runTokens: Record<string, string> = {};
+
+type GenerationSetter = (update: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void;
+type CanvasUpdater = (update: (state: AppState) => Partial<AppState>) => void;
+const generationKey = (projectId: string, nodeId: string) => JSON.stringify([storageUserId, projectId, nodeId]);
+// All writes to one canvas are ordered, including autosave and background results.
+const canvasWrites = new Map<string, Promise<unknown>>();
+function saveCanvas(...args: Parameters<typeof apiSaveCanvas>): ReturnType<typeof apiSaveCanvas> {
+  const owner = storageUserId;
+  const key = JSON.stringify([owner, args[0]]);
+  const pending = (canvasWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(() => {
+    if (owner !== storageUserId) throw new Error('账户已切换，已停止旧账户的画布保存。');
+    return apiSaveCanvas(...args);
+  });
+  canvasWrites.set(key, pending);
+  void pending.finally(() => { if (canvasWrites.get(key) === pending) canvasWrites.delete(key); }).catch(() => {});
+  return pending;
+}
+
+type GenerationWrite = {
+  owner: string; version: number; savedVersion: number; nodeIds: Set<string>;
+  timer?: ReturnType<typeof setTimeout>; pending?: Promise<void>;
+  read: () => AppState;
+};
+const generationWrites = new Map<string, GenerationWrite>();
+async function flushGenerationCanvas(projectId: string): Promise<void> {
+  const entry = generationWrites.get(projectId);
+  if (!entry || entry.owner !== storageUserId) return;
+  clearTimeout(entry.timer);
+  entry.timer = undefined;
+  if (entry.pending) await entry.pending;
+  if (entry.savedVersion === entry.version || entry.owner !== storageUserId) return;
+  const state = entry.read();
+  const version = entry.version;
+  if (!state.activeBackendProjectId) { entry.savedVersion = version; return; }
+  if (state.backendProjects.find(p => p.id === projectId)?.my_role === 'visitor') return;
+  entry.pending = saveCanvas(projectId, state.nodes, state.edges, state.groups).then(saved => {
+    entry.savedVersion = version;
+    const visible = useStore.getState();
+    if (entry.owner === storageUserId && visible.activeBackendProjectId === projectId && visible.canvasHydrated && Number.isSafeInteger(saved.version)) {
+      useStore.setState({ canvasRevision: saved.version });
+    }
+  }).finally(() => { entry.pending = undefined; });
+  await entry.pending;
+}
+
+function scheduleGenerationSave(projectId: string, read: () => AppState, changedIds: string[]) {
+  let entry = generationWrites.get(projectId);
+  if (!entry || entry.owner !== storageUserId) {
+    entry = { owner: storageUserId, version: 0, savedVersion: 0, nodeIds: new Set(), read };
+    generationWrites.set(projectId, entry);
+  }
+  entry.version++;
+  for (const id of changedIds) entry.nodeIds.add(id);
+  // Throttle (not debounce): long text streams still persist while off-page.
+  if (entry.timer) return;
+  entry.timer = setTimeout(() => {
+    entry.timer = undefined;
+    void flushGenerationCanvas(projectId).catch(() => {
+      if (entry.owner !== storageUserId) return;
+      toast.warning('生成结果暂存于本地，后台保存失败；请返回原画布重试保存。', { id: `generation-save-${projectId}` });
+    });
+  }, 2000);
+}
+
+/** A generation owns a project, never whichever canvas happens to be visible. */
+function generationScope(getStore: () => AppState, setStore: CanvasUpdater,
+  projectId = getStore().activeProjectId, backendId: string | null = getStore().activeBackendProjectId) {
+  const owner = storageUserId;
+  const isVisible = (state: AppState) => state.activeProjectId === projectId
+    && state.activeBackendProjectId === backendId && (!backendId || state.canvasHydrated);
+  const projectState = (state: AppState): AppState => {
+    if (isVisible(state)) return state;
+    return { ...state, ...(state.projectStateById[projectId] ?? createEmptyCanvasState()),
+      activeProjectId: projectId, activeBackendProjectId: backendId, activeRun: null };
+  };
+  const read = (): AppState => {
+    const state = projectState(getStore());
+    return { ...state,
+      addHistory: item => { if (owner === storageUserId) getStore().addHistory({ ...item, projectId }); },
+      pushUndoSnapshot: () => { if (owner === storageUserId && isVisible(getStore())) getStore().pushUndoSnapshot(); },
+      updateNodeData: (id, data) => write(s => ({ nodes: s.nodes.map(n => n.id === id ? { ...n, data: { ...n.data, ...data } } : n) })),
+    };
+  };
+  const write: GenerationSetter = update => {
+    if (owner !== storageUserId) return;
+    let changedIds: string[] = [];
+    setStore(state => {
+      if (!isVisible(state) && !state.projectStateById[projectId]) return {};
+      const scoped = projectState(state);
+      const patch = typeof update === 'function' ? update(scoped) : update;
+      if (!patch.nodes) return isVisible(state) ? patch : {};
+      const previousNodes = new Map(scoped.nodes.map(n => [n.id, n]));
+      changedIds = patch.nodes.filter(n => previousNodes.get(n.id) !== n).map(n => n.id);
+      if (!changedIds.length) return {};
+      const projectStateById = { ...state.projectStateById,
+        [projectId]: createCanvasSnapshot(patch.nodes, patch.edges ?? scoped.edges, patch.groups ?? scoped.groups) };
+      return { ...(isVisible(state) ? patch : {}), projectStateById,
+        ...syncActiveSpaceSnapshot(state, { projectStateById }) };
+    });
+    if (changedIds.length && backendId && getStore().backendProjects.find(p => p.id === backendId)?.my_role !== 'visitor') {
+      scheduleGenerationSave(projectId, read, changedIds);
+    }
+  };
+  return { get: read, set: write, owner, projectId };
+}
+
+function taskScopes(getStore: () => AppState, setStore: CanvasUpdater) {
+  const state = getStore();
+  const ids = new Set([state.activeProjectId, ...Object.keys(state.projectStateById)]);
+  return [...ids].map(id => generationScope(getStore, setStore, id,
+    id === state.activeProjectId ? state.activeBackendProjectId : state.backendProjects.some(p => p.id === id) ? id : null));
+}
 // 智能体面板宽度边界:最窄保证 composer 控件不换行,最宽给大屏留出画布空间。
 const AGENT_PANEL_MIN_WIDTH = 380;
 const AGENT_PANEL_MAX_WIDTH = 860;
@@ -946,7 +1058,6 @@ let taskPollerTimer: ReturnType<typeof setInterval> | null = null;
 // Tracks nodes the poller should watch. We need this because the store's
 // node list is the source of truth but we don't want to scan all nodes
 // every tick; the set is the working subset.
-const trackedTaskNodes = new Set<string>();
 const activeTaskStatuses = new Set(['queued', 'pending', 'running', 'retrying', 'persisting']);
 const successTaskStatuses = new Set(['success', 'succeeded', 'completed', 'done']);
 const errorTaskStatuses = new Set(['error', 'failed', 'failure', 'cancelled', 'canceled']);
@@ -1080,6 +1191,7 @@ function generationFailureData(
 /** Apply a task lookup result back onto its node. Called from the poller
  *  for each non-pending row the backend returns. */
 function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  if (task.project_id && task.project_id !== getStore().activeBackendProjectId) return;
   const normalizedStatus = normalizeTaskStatus(task.status);
   if (normalizedStatus !== 'success' && normalizedStatus !== 'error') {
     if (normalizedStatus === 'active') {
@@ -1131,7 +1243,6 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   }
   const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
   if (!targetNode) {
-    trackedTaskNodes.delete(task.node_id);
     return;
   }
   const targetData = targetNode.data as Record<string, unknown>;
@@ -1170,7 +1281,6 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask && !isOrphanedRecovery) {
     // The node has already moved on (user ran a new generation, or the
     // success path already handled it). Drop tracking and skip.
-    trackedTaskNodes.delete(task.node_id);
     return;
   }
 
@@ -1292,14 +1402,19 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       } as never);
     }
   }
-  trackedTaskNodes.delete(task.node_id);
 }
 
 /** One tick of the task poller. Fetches the latest status for every
  *  tracked node and calls applyTaskResultToNode on each non-pending row.
  *  Silent on network errors — a failed poll just leaves nodes in their
  *  current 'running' state until the next tick. */
-async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+async function pollTrackedTasks(getStore: () => AppState, setStore: CanvasUpdater) {
+  await Promise.all(taskScopes(getStore, setStore).map(scope => pollProjectTasks(scope.get, scope.set)));
+}
+
+async function pollProjectTasks(getStore: () => AppState, setStore: GenerationSetter) {
+  const owner = storageUserId;
+  const projectId = getStore().activeBackendProjectId;
   // Reconcile the tracked set with what's actually in the store: keep
   // actively running nodes and queued-after-timeout nodes that may have
   // been restored as idle from a saved canvas snapshot.
@@ -1327,14 +1442,7 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
     })
     .map((n) => n.id);
 
-  // Add any that aren't yet tracked (covers reload recovery).
-  for (const id of runningNodeIds) trackedTaskNodes.add(id);
-  // Drop any that have left running state.
-  for (const id of [...trackedTaskNodes]) {
-    if (!runningNodeIds.includes(id)) trackedTaskNodes.delete(id);
-  }
-
-  if (trackedTaskNodes.size === 0) return;
+  if (runningNodeIds.length === 0) return;
 
   // Prefer per-task lookup for nodes that have a taskId saved (precise
   // and avoids ambiguity if the user ran multiple generations on the
@@ -1344,7 +1452,7 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
   const nodeIdToTaskId = new Map<string, string>();
   const withoutTaskId: string[] = [];
 
-  for (const nodeId of trackedTaskNodes) {
+  for (const nodeId of runningNodeIds) {
     const node = nodes.find((n) => n.id === nodeId);
     const taskId = (node?.data as Record<string, unknown> | undefined)?.taskId as string | undefined;
     if (taskId) {
@@ -1372,8 +1480,10 @@ async function pollTrackedTasks(getStore: () => AppState, setStore: (updater: (s
   }
 
   const results = await Promise.all(requests);
+  if (owner !== storageUserId) return;
   for (const tasks of results) {
     for (const task of tasks) {
+      if (task.project_id && task.project_id !== projectId) continue;
       applyTaskResultToNode(task, getStore, setStore);
     }
   }
@@ -1403,6 +1513,7 @@ function ensureTaskPollerStarted(getStore: () => AppState, setStore: (updater: (
 type TaskEventPayload = {
   task_id: string;
   node_id: string;
+  project_id?: string;
   service_type: string;
   status: string;
   result_url: string;
@@ -1417,11 +1528,24 @@ let taskEventSource: EventSource | null = null;
 let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
+  const candidates = taskScopes(getStore, setStore).filter(scope => {
+    const state = scope.get();
+    if (event.project_id && state.activeBackendProjectId !== event.project_id) return false;
+    const node = state.nodes.find(n => n.id === event.node_id);
+    return node && (!node.data.taskId || node.data.taskId === event.task_id);
+  });
+  // Older servers omit project_id. Never guess when duplicate node ids exist;
+  // the project-scoped poller will reconcile the precise task instead.
+  const exact = candidates.filter(scope => scope.get().nodes.some(n => n.id === event.node_id && n.data.taskId === event.task_id));
+  const targets = exact.length ? exact : candidates;
+  if (targets.length !== 1) return;
+  const scope = targets[0];
   // Reuse the poller's per-task application — they share semantics.
   applyTaskResultToNode(
     {
       id: event.task_id,
       node_id: event.node_id,
+      project_id: event.project_id,
       service_type: event.service_type,
       model: '',
       status: event.status,
@@ -1432,13 +1556,14 @@ function applyTaskEventToNode(event: TaskEventPayload, getStore: () => AppState,
       created_at: '',
       asset_temporary: event.asset_temporary,
     },
-    getStore,
-    setStore,
+    scope.get,
+    scope.set,
   );
 }
 
 function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (state: AppState) => Partial<AppState>) => void) {
   if (taskEventSource) return;
+  const owner = storageUserId;
 
   const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
   const url = `${apiBaseUrl}/api/app/tasks/stream`;
@@ -1456,6 +1581,7 @@ function ensureTaskStreamStarted(getStore: () => AppState, setStore: (updater: (
   };
 
   taskEventSource.onmessage = (msg) => {
+    if (owner !== storageUserId) return;
     try {
       const event = JSON.parse(msg.data) as TaskEventPayload;
       if (event && typeof event === 'object' && event.node_id) {
@@ -1516,7 +1642,6 @@ function applyActiveTasksToNodes(
       const node = nodes.find((n) => n.id === task.node_id);
       if (!node) continue; // node not loaded yet — caller retries on change
       appliedNodeIds.add(task.node_id);
-      trackedTaskNodes.add(task.node_id);
     }
     if (appliedNodeIds.size === 0) return appliedNodeIds;
     const taskByNode = new Map(tasks.map((t) => [t.node_id, t]));
@@ -1903,11 +2028,21 @@ function applyLightPrefsOverride() {
 export function bindStorageToUser(userId: string) {
   if (storageUserId === userId) return;
   cancelCanvasSubmissions();
+  for (const key of Object.keys(runAborters)) { runAborters[key].abort(); delete runAborters[key]; }
+  for (const key of Object.keys(runTokens)) delete runTokens[key];
+  for (const entry of generationWrites.values()) clearTimeout(entry.timer);
+  generationWrites.clear();
+  taskEventSource?.close();
+  taskEventSource = null;
+  if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+  sseReconnectTimer = null;
+  activeTasksHydrated = false;
   // Flush any debounced persist BEFORE the key switches — appStorage resolves
   // storageKey at write time, so a pending write flushed after the switch
   // would land in the NEW user's slot with the OLD user's data.
   flushPendingPersist();
   storageUserId = userId;
+  ensureTaskStreamStarted(useStore.getState, useStore.setState);
   const rehydrated = useStore.persist.rehydrate();
   // 独立小键在整仓 rehydrate 之后覆盖,保证大 blob 里的旧值压不过它。
   if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') {
@@ -2494,6 +2629,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
     return {
       activeProjectId: id,
+      activeRun: null,
+      pendingRunConfirm: [],
       nodes: createCanvasSnapshot(nextProjectState.nodes).nodes,
       edges: createCanvasSnapshot([], nextProjectState.edges).edges,
       groups: createCanvasSnapshot([], [], nextProjectState.groups).groups,
@@ -2607,6 +2744,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         canvasRevision: 0,
         activeProjectId: project.id,
         canvasHydrated: true, // freshly created empty project — safe to auto-save
+        activeRun: null,
+        pendingRunConfirm: [],
         nodes: [],
         edges: [],
         groups: [],
@@ -2635,11 +2774,28 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }
     // Switching: disable auto-save until the target canvas has loaded, so a
     // 2s auto-save can't write the outgoing/stale nodes into the new project.
-    set({ activeBackendProjectId: id, canvasRevision: 0, canvasHydrated: false, backendSyncing: true });
+    set(current => ({ projectStateById: syncActiveProjectState(current).projectStateById,
+      activeBackendProjectId: id, activeProjectId: id, activeRun: null, pendingRunConfirm: [],
+      nodes: [], edges: [], groups: [], canvasRevision: 0, canvasHydrated: false, backendSyncing: true }));
     try {
+      // Returning to a background generation must not load an older snapshot
+      // over the result that just arrived in this tab.
+      await flushGenerationCanvas(id).catch(() => {}); // keep dirty local results for the merge below
+      const generationVersion = generationWrites.get(id)?.savedVersion ?? 0;
       const canvas = await getCanvas(id);
+      if (get().activeBackendProjectId !== id) return;
       const rawNodes = Array.isArray(canvas.nodes) ? (canvas.nodes as Node[]) : [];
-      const nodes = rawNodes.map((n) => {
+      const latestWrite = generationWrites.get(id);
+      const cached = get().projectStateById[id]?.nodes ?? [];
+      const mergePending = latestWrite && (latestWrite.version > generationVersion || latestWrite.savedVersion < latestWrite.version);
+      const restored = mergePending ? rawNodes.map(n => {
+        const newer = latestWrite.nodeIds.has(n.id) && cached.find(c => c.id === n.id);
+        return newer ? { ...n, data: newer.data } : n;
+      }) : rawNodes;
+      if (mergePending) for (const n of cached) {
+        if (n.id.startsWith('node-multi-') && latestWrite.nodeIds.has(n.id) && !restored.some(r => r.id === n.id)) restored.push(n);
+      }
+      const nodes = restored.map((n) => {
         const d = n.data as Record<string, unknown> | undefined;
         if (d?.status === 'running' || d?.status === 'generating') {
           return { ...n, data: { ...d, status: 'running', queuedAfterTimeout: true, error: undefined } };
@@ -2671,9 +2827,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       // (those resolve with an empty canvas). Show an empty canvas but keep
       // auto-save OFF (canvasHydrated stays false) so we don't overwrite the
       // un-fetched backend snapshot.
-      set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
+      if (get().activeBackendProjectId === id) set({ nodes: [], edges: [], groups: [], activeProjectId: id, undoStack: [], copiedCanvasSelection: null });
     } finally {
-      set({ backendSyncing: false });
+      if (get().activeBackendProjectId === id) set({ backendSyncing: false });
     }
   },
 
@@ -2741,6 +2897,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     try {
       const savedCanvas = await saveCanvas(activeBackendProjectId, cleanNodes, edges, groups, options);
       lastSavedCanvasSignature = payloadSignature;
+      if (get().activeBackendProjectId !== activeBackendProjectId) return;
       set({
         canvasRevision: Number.isSafeInteger(savedCanvas.version) ? savedCanvas.version : get().canvasRevision,
         canvasSaveStatus: 'saved',
@@ -2750,7 +2907,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       // No longer silent: surface the failure so the user knows their work
       // isn't persisted. The signature is intentionally NOT updated, so the
       // next edit (or a manual retry) re-attempts the save.
-      set({ canvasSaveStatus: 'error', canvasSaveError: err instanceof Error ? err.message : String(err) });
+      if (get().activeBackendProjectId === activeBackendProjectId) set({ canvasSaveStatus: 'error', canvasSaveError: err instanceof Error ? err.message : String(err) });
     }
   },
 
@@ -3695,6 +3852,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
 
   activeRun: null,
   runNode: async (nodeId, payload) => {
+    if (get().activeBackendProjectId && !get().canvasHydrated) return;
+    const scope = generationScope(get, set);
+    const runKey = generationKey(scope.projectId, nodeId);
+    const execute = async (get: () => AppState, set: GenerationSetter) => {
     // 访问者(协作只读)不能生成 —— 前端早退并清掉调用方的乐观 running 态。
     // 后端 generate 也按项目角色二次拦截(带 project_id),双保险。
     if (computeActiveProjectReadOnly(get())) {
@@ -3741,15 +3902,15 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     }
     // 新提交优先：如果同一个节点已有请求在跑，先中止旧请求并让新请求接管。
     // 不能直接 return，否则用户会看到按钮只闪一下但没有任何生成状态。
-    if (runAborters[nodeId]) {
-      runAborters[nodeId]?.abort();
-      delete runAborters[nodeId];
+    if (runAborters[runKey]) {
+      runAborters[runKey]?.abort();
+      delete runAborters[runKey];
     }
     const runToken = (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
       ? crypto.randomUUID()
       : `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    runTokens[nodeId] = runToken;
-    const isCurrentRun = () => runTokens[nodeId] === runToken;
+    runTokens[runKey] = runToken;
+    const isCurrentRun = () => storageUserId === scope.owner && runTokens[runKey] === runToken;
     const state = get();
     // Determine service type from the node type.
     const currentNode = state.nodes.find((n) => n.id === nodeId);
@@ -4007,7 +4168,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     const durationSeconds = genParams?.durationSeconds ?? undefined;
 
     const aborter = new AbortController();
-    runAborters[nodeId] = aborter;
+    runAborters[runKey] = aborter;
 
     // ── Text nodes: token-by-token SSE streaming into data.content ──────────
     // Text generation streams live via POST /api/app/text/stream instead of the
@@ -4103,7 +4264,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         fail(err instanceof Error ? err.message : zhFail());
       } finally {
         clearTimeout(streamTimeout);
-        if (runAborters[nodeId] === aborter) delete runAborters[nodeId];
+        if (isCurrentRun()) {
+          set(s => ({ activeRun: s.activeRun?.nodeId === nodeId ? null : s.activeRun }));
+          delete runTokens[runKey];
+        }
+        if (runAborters[runKey] === aborter) delete runAborters[runKey];
       }
       return;
     }
@@ -4125,7 +4290,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // Make sure the recovery poller is running. Idempotent — first call
     // wires up the interval, subsequent calls are no-ops.
     ensureTaskPollerStarted(get, set as never);
-    trackedTaskNodes.add(nodeId);
 
     try {
       const result = await apiGenerate({
@@ -4225,7 +4389,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         });
         if (result.task_id) {
           void getTask(result.task_id)
-            .then((task) => applyTaskResultToNode(task, get, set as never))
+            .then((task) => { if (storageUserId === scope.owner) applyTaskResultToNode(task, get, set as never); })
             .catch((err) => {
               // eslint-disable-next-line no-console
               console.warn('[runNode] initial queued task lookup failed', { taskId: result.task_id, error: err });
@@ -4268,7 +4432,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
           };
         });
-        trackedTaskNodes.delete(nodeId);
         return;
       }
 
@@ -4341,7 +4504,6 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
         };
       });
-      trackedTaskNodes.delete(nodeId);
 
       // Add to history for the file manager panel.
       get().addHistory({
@@ -4402,19 +4564,22 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
           };
         });
-        trackedTaskNodes.delete(nodeId);
       }
     } finally {
       clearTimeout(timeout);
       if (isCurrentRun()) {
-        delete runAborters[nodeId];
-        delete runTokens[nodeId];
+        delete runAborters[runKey];
+        delete runTokens[runKey];
       }
     }
+    };
+    await execute(scope.get, scope.set);
   },
   cancelNode: (nodeId) => {
-    runAborters[nodeId]?.abort();
-    delete runAborters[nodeId];
+    const runKey = generationKey(get().activeProjectId, nodeId);
+    runAborters[runKey]?.abort();
+    delete runAborters[runKey];
+    delete runTokens[runKey];
     set((state) => {
       // 一并清掉任务引用：留着 taskId 的话轮询协调器会把节点重新挂回任务、
       // 孤儿恢复还会在完成时把结果塞回来 — 取消就白点了。

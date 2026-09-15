@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isModeSatisfied } from "./reference-modes";
 
 import {
   buildModelRequestBody,
@@ -98,6 +99,28 @@ describe("model templates", () => {
       durationOptions: [10, 15],
       referenceModes: ["first-frame"],
     });
+  });
+
+  it("exposes official Seedance 2.5 controls and accepts the one-image/six-video contract", () => {
+    const template = getModelTemplate("doubao-seedance-2-5-260628");
+    expect(template).toMatchObject({
+      vendor: "Volcengine", serviceType: "video",
+      resolutionOptions: ["480p", "720p"],
+      durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
+      referenceImageRange: { min: 1, max: 30 },
+      audioSettingOptions: ["on", "off"],
+      supportsOutputFormat: true, outputFormatOptions: ["mp4", "mov"],
+    });
+    const override = template?.referenceRequirements?.["all-in-one"];
+    expect(isModeSatisfied("all-in-one", { images: 1, videos: 6 }, override)).toBe(true);
+    expect(isModeSatisfied("all-in-one", { images: 30, videos: 10, audios: 10 }, override)).toBe(true);
+    for (const counts of [{ images: 31, videos: 0 }, { images: 0, videos: 11 }, { images: 0, videos: 0, audios: 11 }]) {
+      expect(isModeSatisfied("all-in-one", counts, override)).toBe(false);
+    }
+    // 2.0 is still limited to three videos, and gains no 2.5-only controls.
+    const previous = getModelTemplate("doubao-seedance-2-0-260128");
+    expect(isModeSatisfied("all-in-one", { images: 1, videos: 6 }, previous?.referenceRequirements?.["all-in-one"])).toBe(false);
+    expect(previous?.supportsOutputFormat).toBeFalsy();
   });
 
   it("matches HopBase Seedance 2.5 capabilities", () => {

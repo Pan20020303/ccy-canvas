@@ -29,6 +29,13 @@ it('preserves all-in-one image/video/audio badges even with zero inputs', () => 
   expect(render(limits, { images: 10, videos: 4, audios: 4 }, 'video')).toContain('音频参考最多 3，当前 4');
 });
 
+it('shows official Seedance 2.5 model-specific limits without a false six-video warning', () => {
+  const limits = resolveReferenceLimits({ mode: 'all-in-one', override: getModelTemplate('doubao-seedance-2-5-260628')?.referenceRequirements?.['all-in-one'] });
+  const html = render(limits, { images: 1, videos: 6, audios: 6 }, 'video');
+  for (const chip of ['图片 ≤ 30', '视频 ≤ 10', '音频 ≤ 10']) expect(html).toContain(chip);
+  expect(html).not.toContain('role="status"');
+});
+
 it('honors model-specific mode overrides and first-frame mode changes', () => {
   const limits = resolveReferenceLimits({ mode: 'motion-mimic', override: getModelTemplate('wan-animate-2-motion-local')?.referenceRequirements?.['motion-mimic'] });
   expect(limits?.images).toEqual({ min: 1, max: 1 });

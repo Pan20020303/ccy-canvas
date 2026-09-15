@@ -215,10 +215,11 @@ export const REFERENCE_MODE_ORDER: ReferenceModeKey[] = [
   "wan-group",
 ];
 
-export type ReferenceInputCounts = { images: number; videos: number };
+export type ReferenceInputCounts = { images: number; videos: number; audios?: number };
 export type ReferenceRequirementOverride = {
   images?: { min: number; max: number };
   videos?: { min: number; max: number };
+  audios?: { min: number; max: number };
 };
 
 /** Human-readable model-specific requirement, used when a model tightens the
@@ -263,7 +264,8 @@ export function isModeSatisfied(
     counts.images >= images.min &&
     counts.images <= images.max &&
     counts.videos >= videos.min &&
-    counts.videos <= videos.max
+    counts.videos <= videos.max &&
+    (!override?.audios || ((counts.audios ?? 0) >= override.audios.min && (counts.audios ?? 0) <= override.audios.max))
   );
 }
 

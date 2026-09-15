@@ -33,7 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   bindCanvasPreferences('settings-test');
-  useStore.setState({ ...original, nodes: [], edges: [], groups: [], backendProjects: [], activeBackendProjectId: 'settings-test-project', confirmBeforeGenerate: false, isSettingsOpen: true });
+  useStore.setState({ ...original, nodes: [], edges: [], groups: [], backendProjects: [], activeProjectId: 'settings-test-project', activeBackendProjectId: 'settings-test-project', canvasHydrated: true, confirmBeforeGenerate: false, isSettingsOpen: true });
   // No live server/model calls: all tests use isolated in-memory canvas data.
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('No network in settings tests')));
   mocks.generate.mockResolvedValue({ type: 'text', content: '测试结果' });

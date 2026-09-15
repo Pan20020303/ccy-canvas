@@ -15,7 +15,7 @@ export function resolveReferenceLimits({ mode, override, imageRange, suffixRequi
   if (mode) return {
     ...REFERENCE_MODE_SPECS[mode].requires,
     ...override,
-    audios: mode === 'all-in-one' ? { min: 0, max: 3 } : none,
+    audios: override?.audios ?? (mode === 'all-in-one' ? { min: 0, max: 3 } : none),
   };
   return imageRange ? { images: imageRange, videos: none, audios: none } : null;
 }
