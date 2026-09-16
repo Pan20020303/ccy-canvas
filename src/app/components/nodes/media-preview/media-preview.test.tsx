@@ -40,9 +40,9 @@ async function loadImage(width = 1000, height = 1500) {
   await act(async () => img.dispatchEvent(new Event('load')));
   return img;
 }
-async function loadVideo() {
+async function loadVideo(width = 864, height = 496) {
   const video = document.querySelector<HTMLVideoElement>('.media-preview-video')!;
-  Object.defineProperties(video, { videoWidth: { value: 864, configurable: true }, videoHeight: { value: 496, configurable: true }, duration: { value: 4, configurable: true } });
+  Object.defineProperties(video, { videoWidth: { value: width, configurable: true }, videoHeight: { value: height, configurable: true }, duration: { value: 4, configurable: true } });
   await act(async () => { video.dispatchEvent(new Event('loadedmetadata')); video.dispatchEvent(new Event('canplay')); });
   return video;
 }
@@ -164,6 +164,14 @@ describe('actual video playback controls', () => {
     await change('视频进度', '2.25'); expect(video.currentTime).toBe(2.25);
     await click('前进 1 秒'); expect(video.currentTime).toBe(3.25); await click('后退 1 秒'); expect(video.currentTime).toBe(2.25);
     await change('播放倍速', '1.5'); expect(video.playbackRate).toBe(1.5);
+  });
+  it('retains the seek control and actual seeking for a 9:16 video', async () => {
+    await render('镜头视频'); const video = await loadVideo(720, 1280);
+    const frame = document.querySelector<HTMLElement>('.media-preview-video-frame')!;
+    expect(frame.style.aspectRatio).toBe('720 / 1280');
+    expect(document.querySelector<HTMLInputElement>('[aria-label="视频进度"]')!.disabled).toBe(false);
+    await change('视频进度', '2.75'); expect(video.currentTime).toBe(2.75);
+    expect(document.querySelector('.media-preview-time')?.textContent).toContain('02.75');
   });
   it('persists volume, rate and loop between video/image switches and stops old playback', async () => {
     await render('镜头视频'); const video = await loadVideo(); await change('音量', '.4'); await click('循环播放');

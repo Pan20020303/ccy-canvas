@@ -112,10 +112,24 @@ export function mixColor(base: string, overlay: string, amount: number): string 
   const channels = [1,3,5].map(offset => Math.round(parseInt(base.slice(offset, offset + 2),16) * (1 - amount) + parseInt(overlay.slice(offset, offset + 2),16) * amount).toString(16).padStart(2,'0'));
   return `#${channels.join('')}`;
 }
-export function canvasThemeVariables(values: CanvasPreferences) {
-  const base = CANVAS_THEMES.find(item => item[0] === values.themeId)?.[2] || '#111111';
+export function canvasThemeVariables(values: CanvasPreferences, appearance: 'light' | 'dark' = 'dark') {
+  const light = appearance === 'light' && values.themeId === 'graphite';
+  const base = light ? '#e8eaed' : CANVAS_THEMES.find(item => item[0] === values.themeId)?.[2] || '#111111';
+  const ink = light ? '#000000' : '#ffffff';
   const colors = simplePaletteColors(values);
-  return { '--canvas-bg': base, '--canvas-panel': mixColor(base, '#ffffff', .12), '--canvas-card': mixColor(base, '#ffffff', .16), '--canvas-active': mixColor(base, '#ffffff', .25), '--canvas-grid': mixColor(base, '#ffffff', .19),
+  return { '--canvas-bg': base, '--canvas-panel': mixColor(base, ink, .12), '--canvas-card': mixColor(base, ink, .16), '--canvas-active': mixColor(base, ink, .25), '--canvas-grid': mixColor(base, ink, .19),
+    // Keep alpha on the surface, never on its contents: images and text retain
+    // their original contrast, while the canvas grid shows through empty nodes.
+    '--canvas-node-surface': `${mixColor(base, light ? '#ffffff' : '#aab5c8', light ? .65 : .09)}99`,
+    '--canvas-ui-surface': `${mixColor(base, light ? '#ffffff' : '#aab5c8', light ? .9 : .11)}e8`,
+    '--canvas-menu-surface': `${mixColor(base, light ? '#ffffff' : '#aab5c8', light ? .95 : .055)}f7`,
+    '--canvas-ui-soft': `${mixColor(base, ink, .12)}b3`,
+    '--canvas-ui-hover': `${mixColor(base, ink, .2)}cc`,
+    '--canvas-ui-selected': mixColor(base, ink, light ? .15 : .2),
+    '--canvas-ui-border': light ? '#00000012' : '#ffffff10',
+    '--canvas-ui-text': light ? '#272930' : '#f0f0f2',
+    '--canvas-ui-muted': mixColor(base, light ? '#22252a' : '#ffffff', .68),
+    '--canvas-ui-dim': mixColor(base, light ? '#22252a' : '#ffffff', .43),
     '--canvas-simple-text': colors[0], '--canvas-simple-image': colors[1], '--canvas-simple-video': colors[2], '--canvas-simple-audio': colors[3], '--canvas-simple-other': colors[4] };
 }
 export function simplePaletteColors(values: CanvasPreferences, id = values.simplePaletteId): readonly string[] {

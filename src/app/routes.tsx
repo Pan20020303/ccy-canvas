@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import { useEffect } from "react";
-import { canvasThemeVariables, useCanvasPreferences } from "./canvas-preferences";
+import { useCanvasThemeStyle } from "./use-canvas-theme";
+import './components/canvas-surfaces.css';
 import { CanvasGenerationNotifications } from "./components/settings/CanvasPreferencesRuntime";
 
 import { listAppProviderConfigs } from "./api/providerConfigs";
@@ -29,7 +30,7 @@ import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
 
 const Workspace = () => {
-  const canvasPreferences = useCanvasPreferences(state => state.values);
+  const canvasThemeStyle = useCanvasThemeStyle();
   const setBackendModels = useStore((state) => state.setBackendModels);
   const agentPanelOpen = useStore((state) => state.agentPanelOpen);
   const setAgentPanelOpen = useStore((state) => state.setAgentPanelOpen);
@@ -60,8 +61,8 @@ const Workspace = () => {
 
   return (
     <div
-      className={`relative h-screen w-full overflow-hidden bg-[#16181c] font-sans text-neutral-200 selection:bg-cyan-500/30 ${agentPanelResizing ? "" : "transition-[padding] duration-200 ease-out"}`}
-      style={{ ...canvasThemeVariables(canvasPreferences), paddingRight: agentPanelOpen ? agentPanelWidth : 0 }}
+      className={`canvas-workspace relative h-screen w-full overflow-hidden font-sans text-neutral-200 selection:bg-cyan-500/30 ${agentPanelResizing ? "" : "transition-[padding] duration-200 ease-out"}`}
+      style={{ ...canvasThemeStyle, paddingRight: agentPanelOpen ? agentPanelWidth : 0 }}
     >
       <Navbar />
       <Toolbar />

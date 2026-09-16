@@ -8,6 +8,7 @@ import { listMyCreditLedger, type CreditLedgerEntry } from '../../api/credits';
 import { listAnnouncements, type Announcement } from '../../api/announcements';
 import { isCreditDebit, presentCreditReason } from '../../credit-ledger-display';
 import { UserAvatar } from '../UserAvatar';
+import { LogoutConfirmDialog } from './LogoutConfirmDialog';
 
 export type AccountTab = 'profile' | 'ledger' | 'usage' | 'messages' | 'settings' | 'cli' | 'help';
 type Props = { tab: AccountTab | null; onTab: (tab: AccountTab | null) => void; onEditProfile: () => void; onProjects: () => void; onLogout: () => Promise<void>; onAdmin: () => void };
@@ -28,7 +29,7 @@ export function AccountCenter(p: Props) {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [retry, setRetry] = useState(0);
-  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   useEffect(() => { setPage(0); setError(''); setCopied(false); }, [p.tab]);
   useEffect(() => {
@@ -49,7 +50,7 @@ export function AccountCenter(p: Props) {
   const copy = async (value: string) => { try { await navigator.clipboard.writeText(value); setCopied(true); } catch { toast.error(zh ? '复制失败，请手动选择并复制。' : 'Copy failed. Please copy manually.'); } };
   const nav = (key: AccountTab, Icon: typeof UserRound) => <button type="button" className={`account-nav-item ${p.tab === key ? 'is-active' : ''}`} aria-current={p.tab === key ? 'page' : undefined} onClick={() => p.onTab(key)}><Icon size={16} />{labels[key][zh ? 0 : 1]}</button>;
   const soon = (title: string, en: string, Icon: typeof UserRound) => <button type="button" className="account-nav-item" disabled title={zh ? '尚未开放' : 'Not available yet'}><Icon size={16} />{zh ? title : en}</button>;
-  return <Dialog.Root open={p.tab !== null} onOpenChange={open => { if (!open && !loggingOut) p.onTab(null); }}><Dialog.Portal><Dialog.Overlay className="home-dialog-overlay" /><Dialog.Content className="account-center" data-theme={theme} aria-describedby="account-description">
+  return <Dialog.Root open={p.tab !== null} onOpenChange={open => { if (!open && !logoutOpen) p.onTab(null); }}><Dialog.Portal><Dialog.Overlay className="home-dialog-overlay" /><Dialog.Content className="account-center" data-theme={theme} aria-describedby="account-description">
     <Dialog.Description id="account-description" className="sr-only">{zh ? '管理个人资料、积分账单和账户设置。' : 'Manage your profile, credits and preferences.'}</Dialog.Description>
     <aside className="account-sidebar"><h2 className="account-heading">{zh ? '账户中心' : 'Account center'}</h2><nav className="account-nav">
       <small>{zh ? '我的' : 'MY ACCOUNT'}</small>{nav('profile', UserRound)}{nav('ledger', Activity)}{nav('usage', BarChart3)}{soon('赚取积分', 'Earn credits', Gift)}
@@ -57,8 +58,8 @@ export function AccountCenter(p: Props) {
       <small>{zh ? '作品' : 'WORKS'}</small><button type="button" className="account-nav-item" onClick={p.onProjects}><Star size={16} />{zh ? '我的作品' : 'My canvases'}</button>{soon('我的点赞', 'My likes', Heart)}
       <small>{zh ? '账户' : 'ACCOUNT'}</small>{nav('messages', Bell)}{soon('发票管理', 'Invoices', ReceiptText)}{soon('登录设备', 'Devices', Monitor)}{nav('settings', Settings2)}{nav('cli', Terminal)}{nav('help', BookOpen)}
       {user?.role === 'admin' && <button type="button" className="account-nav-item" onClick={p.onAdmin}><ShieldCheck size={16} />{zh ? '管理后台' : 'Administration'}</button>}
-    </nav><button type="button" className="account-logout" disabled={loggingOut} onClick={async () => { setLoggingOut(true); try { await p.onLogout(); } catch { toast.error(zh ? '退出失败，请重试。' : 'Could not sign out.'); } finally { setLoggingOut(false); } }}><LogOut size={16} />{zh ? (loggingOut ? '退出中…' : '退出账号') : 'Sign out'}</button></aside>
-    <main className="account-main"><Dialog.Title className="account-title">{p.tab ? labels[p.tab][zh ? 0 : 1] : ''}</Dialog.Title><Dialog.Close className="home-dialog-close" disabled={loggingOut} aria-label={zh ? '关闭账户中心' : 'Close account center'}><X size={19} /></Dialog.Close>
+    </nav><button type="button" className="account-logout" onClick={() => setLogoutOpen(true)}><LogOut size={16} />{zh ? '退出账号' : 'Sign out'}</button></aside>
+    <main className="account-main"><Dialog.Title className="account-title">{p.tab ? labels[p.tab][zh ? 0 : 1] : ''}</Dialog.Title><Dialog.Close className="home-dialog-close" disabled={logoutOpen} aria-label={zh ? '关闭账户中心' : 'Close account center'}><X size={19} /></Dialog.Close>
       <div className="account-content">
         {p.tab === 'profile' && <>
           <section className="account-card account-profile"><UserAvatar avatar={user?.avatar} name={user?.name || 'CCY'} className="account-avatar" fallbackClassName="account-avatar-fallback" /><div className="account-identity"><div className="account-name"><h3>{user?.name || (zh ? '创作者' : 'Creator')}</h3><button type="button" onClick={p.onEditProfile} aria-label={zh ? '编辑个人资料' : 'Edit profile'}><Pencil size={14} /></button></div><div className="account-identifiers"><span><Mail size={12} />{user?.email}</span><button type="button" className="account-uid" onClick={() => user && void copy(user.id)} title={user?.id}><span>UID: {user?.id}</span>{copied ? <Check size={12} /> : <Copy size={12} />}</button></div></div></section>
@@ -77,5 +78,6 @@ export function AccountCenter(p: Props) {
         {p.tab === 'help' && <section className="account-card account-guide"><BookOpen size={28} /><h3>{zh ? '从一个灵感开始' : 'Start with an idea'}</h3><ol><li>{zh ? '新建画布：直接进入无限画布，自由编排创作节点。' : 'Create a canvas and freely arrange your creative nodes.'}</li><li>{zh ? '首页创意框：输入想法后创建画布，内容会保存为文本节点；不会自动发起付费生成。' : 'The home idea box saves your idea as a text node, without starting paid generation.'}</li><li>{zh ? '作品广场：预览创作灵感，或使用已发布模板创建自己的副本。' : 'Preview inspiration or create a copy of a published template.'}</li><li>{zh ? '无限画布：管理封面、文件夹，查找个人和协作项目。' : 'Manage covers, folders, personal and collaborative canvases.'}</li></ol><p className="home-muted">{zh ? '会员、社群课程、充值、发票与登录设备等灰色入口尚未开放。' : 'Disabled entries, including memberships, top-ups and devices, are not available yet.'}</p></section>}
       </div>
     </main>
+    <LogoutConfirmDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={p.onLogout} zh={zh} />
   </Dialog.Content></Dialog.Portal></Dialog.Root>;
 }

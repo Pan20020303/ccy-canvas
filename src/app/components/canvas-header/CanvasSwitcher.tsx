@@ -9,10 +9,12 @@ import { MediaThumb } from '../MediaThumb';
 import { CanvasSaveStatus } from './CanvasSaveStatus';
 import { createHeaderProject, switchHeaderProject } from './canvas-navigation';
 import logo from '../../../imports/logo-login.png';
+import { useCanvasThemeStyle } from '../../use-canvas-theme';
 
 type Scope = 'all' | 'personal' | 'collab';
 type CanvasEntry = { id: string; name: string; cover: string; folderId: string; collab: boolean; updated: number };
 export function CanvasSwitcher({ onHome }: { onHome: () => void }) {
+  const themeStyle = useCanvasThemeStyle();
   const { user } = useAuth();
   const language = useStore(s => s.language);
   const remote = useStore(s => s.backendProjects);
@@ -69,7 +71,7 @@ export function CanvasSwitcher({ onHome }: { onHome: () => void }) {
       <button type="button" className="canvas-home-mark" onClick={onHome} aria-label={zh ? '返回橙次元首页' : 'Back to home'} title={zh ? '返回首页' : 'Home'}><img className="canvas-brand-icon" src={logo} alt="橙次元" /></button>
       <Popover.Root open={open} onOpenChange={setOpen}>
         <Popover.Trigger asChild><button type="button" className={`canvas-project-trigger ${open ? 'is-open' : ''}`} aria-label={zh ? '切换画布' : 'Switch canvas'} title={current?.name}><span className="canvas-current-name">{current?.name || (zh ? '无限画布' : 'Untitled canvas')}</span><ChevronDown className="canvas-project-chevron" size={13} /></button></Popover.Trigger>
-        <Popover.Portal><Popover.Content className="canvas-switcher" align="start" sideOffset={12} alignOffset={-48} collisionPadding={10} aria-label={zh ? '画布切换菜单' : 'Canvas switcher'} onOpenAutoFocus={event => { event.preventDefault(); searchRef.current?.focus(); }}>
+        <Popover.Portal><Popover.Content style={themeStyle} className="canvas-switcher" align="start" sideOffset={12} alignOffset={-48} collisionPadding={10} aria-label={zh ? '画布切换菜单' : 'Canvas switcher'} onOpenAutoFocus={event => { event.preventDefault(); searchRef.current?.focus(); }}>
           <label className="canvas-switcher-search"><Search className="canvas-search-icon" size={15} /><input className="canvas-search-input" ref={searchRef} aria-label={zh ? '搜索画布' : 'Search canvases'} placeholder={zh ? '搜索画布' : 'Search canvases'} value={search} onChange={event => setSearch(event.target.value)} /></label>
           <div className="canvas-switcher-tabs" role="group" aria-label={zh ? '画布分类' : 'Canvas categories'}>{(['all','personal','collab'] as const).map((key, index) => <button type="button" key={key} className={scope === key ? 'is-active' : ''} aria-pressed={scope === key} onClick={() => setScope(key)}>{(zh ? ['全部','个人','协作'] : ['All','Personal','Shared'])[index]}</button>)}</div>
           {error && <div className="canvas-list-error" role="alert"><span className="canvas-error-copy">{error}</span><button className="canvas-retry" type="button" aria-label="重新加载画布列表" onClick={() => void load()}><RefreshCw size={14} /></button></div>}
