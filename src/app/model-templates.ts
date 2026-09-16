@@ -195,6 +195,15 @@ const SEEDANCE_2_TEMPLATE = {
   defaults: { resolution: "720p", aspectRatio: "16:9" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
+// Official Ark Seedance 2.0 standard now exposes native 4K output. Keep this
+// override model-scoped: 2.0 Fast/Mini and Seedance 2.5 have different
+// resolution ceilings and must not inherit 4K from the shared family template.
+// https://docs.volcengine.com/docs/82379/1520757 (resolution)
+const ARK_SEEDANCE_20_TEMPLATE = {
+  ...SEEDANCE_2_TEMPLATE,
+  resolutionOptions: ["480p", "720p", "1080p", "4k"],
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
 // Official Ark 2.5 uses the contents/generations/tasks contract, not the
 // HopBase gateway. Keep its audio/output options and mixed-reference limits
 // model-scoped so existing 2.0 channels retain their original capabilities.
@@ -902,7 +911,7 @@ export const modelTemplates: Record<string, ModelTemplate> = {
   "doubao-seedance-2-0-260128": {
     vendor: "Volcengine",
     modelName: "doubao-seedance-2-0-260128",
-    ...SEEDANCE_2_TEMPLATE,
+    ...ARK_SEEDANCE_20_TEMPLATE,
   },
   "doubao-seedance-2-0-fast-260128": {
     vendor: "Volcengine",

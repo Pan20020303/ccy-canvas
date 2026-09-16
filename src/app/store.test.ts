@@ -1644,6 +1644,42 @@ describe("workspace control bar state", () => {
     });
   });
 
+  it("submits 4k for the official Seedance 2.0 standard model", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/result-4k.mp4" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = "seedance20-4k";
+    const reference = "seedance20-4k-ref";
+    useStore.getState().addNode({ id: target, type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().addNode({
+      id: reference,
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference.png" },
+    } as never);
+    useStore.getState().onConnect({ source: reference, target, sourceHandle: null, targetHandle: null });
+    useStore.getState().updateNodeGenerationParams(target, {
+      durationSeconds: 8, aspectRatio: "16:9", resolution: "4k", referenceVariant: "all-in-one",
+    });
+
+    await useStore.getState().runNode(target, {
+      prompt: "4K 产品广告",
+      model: "doubao-seedance-2-0-260128",
+    });
+
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      model: "doubao-seedance-2-0-260128",
+      resolution: "4k",
+      aspect_ratio: "16:9",
+      duration: 8,
+    });
+  });
+
   it("sends seed + audio_setting for a HappyHorse video-edit run that has them set", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({

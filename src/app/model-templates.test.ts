@@ -131,6 +131,19 @@ describe("model templates", () => {
     }
   });
 
+  it("exposes 4k only for the official Seedance 2.0 standard model", () => {
+    const standard = getModelTemplate("doubao-seedance-2-0-260128");
+    expect(standard?.resolutionOptions).toEqual(["480p", "720p", "1080p", "4k"]);
+    expect(standard?.defaults?.resolution).toBe("720p");
+
+    expect(getModelTemplate("doubao-seedance-2-0-fast-260128")?.resolutionOptions)
+      .toEqual(["480p", "720p"]);
+    expect(getModelTemplate("doubao-seedance-2-5-260628")?.resolutionOptions)
+      .toEqual(["480p", "720p", "1080p"]);
+    expect(getModelTemplate("doubao-seedance-1-5-pro-251215")?.resolutionOptions)
+      .not.toContain("4k");
+  });
+
   it("matches HopBase Seedance 2.5 capabilities", () => {
     const template = getModelTemplate("dreamina-seedance-2-5-260628", {
       vendor: "HopBase",

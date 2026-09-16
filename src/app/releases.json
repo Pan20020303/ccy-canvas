@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.0.6",
+    "date": "2026-09-16",
+    "notes": [
+      "官方 Seedance 2.0 标准版新增 4K 分辨率选项，并按 4k 参数原样提交至火山方舟。",
+      "Seedance 2.0 Fast、Mini 与 Seedance 2.5 的分辨率范围保持不变。"
+    ]
+  },
+  {
     "version": "1.0.5",
     "date": "2026-09-16",
     "notes": [
