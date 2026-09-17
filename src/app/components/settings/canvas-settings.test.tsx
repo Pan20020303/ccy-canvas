@@ -33,7 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   bindCanvasPreferences('settings-test');
-  useStore.setState({ ...original, nodes: [], edges: [], groups: [], backendProjects: [], activeBackendProjectId: 'settings-test-project', confirmBeforeGenerate: false, isSettingsOpen: true });
+  useStore.setState({ ...original, nodes: [], edges: [], groups: [], backendProjects: [], activeProjectId: 'settings-test-project', activeBackendProjectId: 'settings-test-project', canvasHydrated: true, confirmBeforeGenerate: false, isSettingsOpen: true });
   // No live server/model calls: all tests use isolated in-memory canvas data.
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('No network in settings tests')));
   mocks.generate.mockResolvedValue({ type: 'text', content: '测试结果' });
@@ -82,6 +82,17 @@ describe('validated, account-scoped settings', () => {
     expect(canvasThemeVariables(values)['--canvas-bg']).not.toBe('#111111');
     expect(selectedEdgeColor(values)).toBe('#ff8800');
     expect(canvasThemeVariables(values)['--canvas-simple-text']).not.toBe(canvasThemeVariables(DEFAULT_CANVAS_PREFERENCES)['--canvas-simple-text']);
+  });
+  it('tints translucent nodes, UI and portaled menus together without changing light defaults', () => {
+    const dark = canvasThemeVariables(DEFAULT_CANVAS_PREFERENCES);
+    const blue = canvasThemeVariables(normalizeCanvasPreferences({ themeId: 'frost' }));
+    const wine = canvasThemeVariables(normalizeCanvasPreferences({ themeId: 'wine' }));
+    for (const key of ['--canvas-node-surface', '--canvas-ui-surface', '--canvas-menu-surface'] as const) {
+      expect(dark[key]).not.toBe(blue[key]); expect(blue[key]).not.toBe(wine[key]);
+      expect(blue[key]).toMatch(/^#[a-f0-9]{8}$/);
+    }
+    expect(canvasThemeVariables(DEFAULT_CANVAS_PREFERENCES, 'light')['--canvas-bg']).toBe('#e8eaed');
+    expect(canvasThemeVariables(normalizeCanvasPreferences({ themeId: 'wine' }), 'light')).toEqual(wine);
   });
 });
 

@@ -103,7 +103,10 @@ describe('home and account contracts', () => {
     await click('新建画布'); expect(host.querySelector('[data-testid="creation-mode-dialog"]')).toBeNull(); expect(mocks.create).toHaveBeenCalledOnce(); expect(mocks.navigate).toHaveBeenCalledWith('/app');
   });
   it('supports account sign-out without changing auth behavior', async () => {
-    await renderHome(); await click('我的账户'); await click('退出账号'); expect(mocks.logout).toHaveBeenCalledOnce(); expect(mocks.navigate).toHaveBeenCalledWith('/login');
+    await renderHome(); await click('我的账户'); await click('退出账号');
+    expect(mocks.logout).not.toHaveBeenCalled(); expect(document.querySelector('[role="alertdialog"]')).toBeTruthy();
+    await click('取消'); expect(mocks.logout).not.toHaveBeenCalled(); expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    await click('退出账号'); await click('确定登出'); expect(mocks.logout).toHaveBeenCalledOnce(); expect(mocks.navigate).toHaveBeenCalledWith('/login');
   });
   it('replaces legacy studio entries with the try-on library', async () => {
     await renderHome(); await click('工作室');

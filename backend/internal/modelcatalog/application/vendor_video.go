@@ -242,14 +242,19 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		ratio = "adaptive"
 	}
 	duration := req.Duration
-	if duration <= 0 {
+	if duration <= 0 && !(isSeedance25Model(req.Model) && duration == -1) {
 		duration = 5
 	}
 
-	if len(req.ReferenceImages) > 2 && !isSeedance20Model(req.Model) {
+	if isSeedance25Model(req.Model) {
+		if err := validateArkSeedance25Request(req); err != nil {
+			return nil, err
+		}
+	}
+	if len(req.ReferenceImages) > 2 && !isSeedance20Model(req.Model) && !isSeedance25Model(req.Model) {
 		return nil, apperror.New(
 			apperror.CodeInvalidInput,
-			"当前 Seedance 模型最多支持 2 张参考图；1~9 张多图参考仅支持 Seedance 2.0 系列。",
+			"当前 Seedance 模型最多支持 2 张参考图；多图参考请使用 Seedance 2.0 / 2.5 系列。",
 		)
 	}
 
@@ -266,16 +271,14 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	//   start_end   → img[0]=first_frame, img[1]=last_frame(第 3 张起兜 reference_image)
 	//   start_frame → img[0]=first_frame(其余 reference_image)
 	//   其它(多图/全能/动作参考)→ 全部 reference_image(主体一致性参考)
-	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame"
+	useFrameRoles := req.ReferenceMode == "start_end" || req.ReferenceMode == "start_frame" || req.ReferenceMode == "first_frame"
 	for i, raw := range req.ReferenceImages {
-		// Hand Ark a URL it can download itself — our own private object-store
-		// objects get a short-lived signed URL. Ark/Seedance rejects base64 data
-		// URLs and 403s on private links, so a reachable (signed) URL is the
-		// contract. arkReferenceImageURL also normalizes any image outside Ark's
-		// 300–6000px bounds (uploads a rescaled copy) to avoid WidthTooLarge.
+		// Use URL mode from the official Ark contract. Local references are
+		// copied to the active object store; private objects get signed URLs.
+		// Embedded images and asset IDs retain the native Ark input contract.
 		refURL, err := arkReferenceImageURL(ctx, raw)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考图 #%d 处理失败", i+1), err)
+			return nil, arkReferenceInputError(fmt.Sprintf("参考图 #%d ", i+1), err)
 		}
 		role := "reference_image"
 		if useFrameRoles {
@@ -298,12 +301,25 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	for _, rawVid := range collectArkReferenceVideos(req) {
 		refURL, err := arkReferenceMediaURL(ctx, rawVid)
 		if err != nil {
-			return nil, apperror.Wrap(apperror.CodeInvalidInput, "参考视频处理失败", err)
+			return nil, arkReferenceInputError("参考视频", err)
 		}
-		content = append(content, map[string]interface{}{
+		item := map[string]interface{}{
 			"type":      "video_url",
 			"video_url": map[string]interface{}{"url": refURL},
-		})
+			"role":      "reference_video",
+		}
+		content = append(content, item)
+	}
+	if isSeedance25Model(req.Model) {
+		for _, rawAudio := range collectArkReferenceAudios(req) {
+			refURL, err := arkReferenceMediaURL(ctx, rawAudio)
+			if err != nil {
+				return nil, arkReferenceInputError("参考音频", err)
+			}
+			content = append(content, map[string]interface{}{
+				"type": "audio_url", "audio_url": map[string]interface{}{"url": refURL}, "role": "reference_audio",
+			})
+		}
 	}
 
 	body := map[string]interface{}{
@@ -333,6 +349,9 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	}
 	if strings.TrimSpace(req.DeriveFromNodeID) != "" {
 		body["derive_from_node_id"] = req.DeriveFromNodeID
+	}
+	if isSeedance25Model(req.Model) {
+		applyArkSeedance25Options(body, req)
 	}
 	bodyJSON, _ := json.Marshal(body)
 
@@ -370,6 +389,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		return nil, apperror.ProviderResponseFailure(resp.StatusCode, respBody, "模型服务未返回任务编号，无法查询生成进度，请检查渠道接口")
 	}
 
+	s.rememberProviderTask(req.GenerationLogID, pc.ID, taskID)
 	return s.pollVideoArkTask(ctx, baseURL, queryPath, apiKey, taskID)
 }
 

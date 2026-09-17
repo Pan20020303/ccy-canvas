@@ -102,4 +102,20 @@
   .media-preview-navigation > .media-preview-pill { padding: 4px 8px; font-size: 10px; }
 }
 @media (max-width: 400px) { .media-preview-key-hint { display: none; } .media-preview-video-controls .media-preview-rate { width: 32px; } }
+/* Size transport controls against the video, not the browser: portrait videos
+   stay narrow even on a wide desktop. The timeline always gets its own row. */
+.media-preview-video-frame { container: media-player / inline-size; }
+@container media-player (max-width: 620px) {
+  .media-preview-video-controls { flex-wrap: wrap; justify-content: center; gap: 3px; padding: 28px 10px 8px; }
+  .media-preview-seek { order: -1; flex: 0 0 calc(100% - 8px); width: calc(100% - 8px); margin: 0 4px 4px; }
+  .media-preview-time { margin-right: auto; font-size: 9px; padding: 0 2px; }
+  .media-preview-video-controls .media-preview-button { width: 25px; height: 25px; }
+  .media-preview-rate { width: 33px; }
+  .media-preview-video-notice { bottom: 92px; }
+}
+@container media-player (max-width: 360px) {
+  .media-preview-resolution { display: none; }
+  .media-preview-video-controls { gap: 1px; padding-inline: 5px; }
+  .media-preview-volume-popover { right: -40px; width: 170px; }
+}
 @media (prefers-reduced-motion: reduce) { .media-preview-dialog *, .media-preview-dialog *::before { transition: none !important; scroll-behavior: auto !important; } }

@@ -85,7 +85,7 @@ export const Navbar = () => {
       </div>
     </header>
     <CreditLedgerModal open={ledgerOpen} onClose={() => setLedgerOpen(false)} language={language} />
-    <AccountCenter tab={accountTab} onTab={setAccountTab} onEditProfile={() => { setAccountTab(null); setProfileOpen(true); }} onProjects={() => void leave("/home?view=canvases")} onAdmin={() => void leave("/admin")} onLogout={async () => { await prepareCanvasNavigation(); await logout(); navigate("/login"); }} />
+    <AccountCenter tab={accountTab} onTab={setAccountTab} onEditProfile={() => { setAccountTab(null); setProfileOpen(true); }} onProjects={() => void leave("/home?view=canvases")} onAdmin={() => void leave("/admin")} onLogout={async () => { await prepareCanvasNavigation({ logout: true }); await logout(); navigate("/login"); }} />
   </>;
 };
 

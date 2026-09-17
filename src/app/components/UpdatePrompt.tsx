@@ -33,7 +33,7 @@ export function UpdatePrompt() {
     const check = async () => {
       if (stopped) return;
       try {
-        const res = await fetch(`/version.json?ts=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`${import.meta.env.BASE_URL}version.json?ts=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) return;
         const data = (await res.json()) as Partial<Release>;
         const deployed = (data?.version ?? "").toString();

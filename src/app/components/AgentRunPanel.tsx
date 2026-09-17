@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCanvasThemeStyle } from "../use-canvas-theme";
 import { AgentFailureNotice } from "./agent/AgentFailureNotice";
 import { selectMainAgent } from "./agent/main-agent";
 import { layoutPositionChanges } from "./agent/canvas-layout-patch";
@@ -1726,7 +1727,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 <TooltipContent
                   side="top"
                   sideOffset={8}
-                  className="border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
+                  className="canvas-menu-surface border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
                 >
                   {thinkingOn
                     ? (zh ? "深度思考 · 已开启" : "Deep thinking · On")
@@ -1910,7 +1911,7 @@ function ContextWindowMeter({
         {formatTokens(used)}{limit ? ` / ${formatTokens(limit)} (${pct}%)` : ""}
       </span>
       {open ? (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-[216px] rounded-xl border border-white/12 bg-[#17191e] p-3 shadow-2xl">
+        <div className="canvas-menu-surface absolute bottom-full right-0 z-50 mb-2 w-[216px] rounded-xl border border-white/12 bg-[#17191e] p-3 shadow-2xl">
           <div className="pb-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
             {zh ? "上下文用量 · 最近一轮" : "Context usage · last turn"}
           </div>
@@ -1935,15 +1936,17 @@ function AttachMenu({
   zh: boolean;
   onPickFromCanvas: () => void;
 }) {
+  const themeStyle = useCanvasThemeStyle();
   return (
     <PopoverContent
+      style={themeStyle}
       side="top"
       align="start"
       sideOffset={8}
       collisionPadding={12}
       role="menu"
       aria-label={zh ? "画布素材" : "Canvas assets"}
-      className="prompt-editor-scroll z-[130] max-h-[320px] w-[300px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
+      className="canvas-menu-surface prompt-editor-scroll z-[130] max-h-[320px] w-[300px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
       onWheel={(event) => event.stopPropagation()}
     >
       <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
@@ -2061,7 +2064,7 @@ function AgentPicker({
       {open ? (
         <div
           ref={menuRef}
-          className="prompt-editor-scroll absolute left-0 right-0 top-[calc(100%+8px)] z-[60] max-h-[280px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[#171a20]/98 p-1.5 shadow-2xl shadow-black/45 backdrop-blur-xl"
+          className="canvas-menu-surface prompt-editor-scroll absolute left-0 right-0 top-[calc(100%+8px)] z-[60] max-h-[280px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[#171a20]/98 p-1.5 shadow-2xl shadow-black/45 backdrop-blur-xl"
         >
           {agents.length === 0 ? (
             <div className="px-3 py-3 text-center text-[11px] text-neutral-500">
@@ -2575,7 +2578,7 @@ function SlashMenu({
   }, []);
 
   return (
-    <div ref={menuRef} className="prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
+    <div ref={menuRef} className="canvas-menu-surface prompt-editor-scroll absolute bottom-[110px] left-3 right-3 z-50 max-h-[280px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl">
       <div className="px-2.5 pb-1 pt-1 text-[10px] uppercase tracking-wider text-neutral-500">
         {zh ? "技能" : "Skills"}
       </div>
@@ -2679,7 +2682,7 @@ function ConversationMenu({
   return (
     <div
       ref={rootRef}
-      className="prompt-editor-scroll absolute right-4 top-[58px] z-50 max-h-[360px] w-[300px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl"
+      className="canvas-menu-surface prompt-editor-scroll absolute right-4 top-[58px] z-50 max-h-[360px] w-[300px] overflow-y-auto rounded-lg border border-[var(--agent-border)] bg-[#1a1d23]/98 p-1.5 shadow-2xl backdrop-blur-xl"
     >
       <button
         type="button"

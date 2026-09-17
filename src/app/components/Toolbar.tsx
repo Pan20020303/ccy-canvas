@@ -141,7 +141,7 @@ export const Toolbar = () => {
 
   return (
     <div ref={rootRef} style={{ scale: toolbarScale, transformOrigin: 'bottom center' }} className="absolute bottom-6 left-1/2 z-40 flex -translate-x-1/2 flex-col-reverse items-center gap-3">
-      <Dock className="flex flex-row items-end gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+      <Dock className="canvas-floating-surface flex flex-row items-end gap-0.5 rounded-full border border-white/10 bg-black/45 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
         <DockItem>
           {/* Primary action — solid white circle (reference proportions), the
               one filled control in the dock. */}
@@ -222,7 +222,7 @@ export const Toolbar = () => {
       </Dock>
 
       {open ? (
-        <div ref={panelRef} className="max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
+        <div ref={panelRef} className="canvas-floating-surface max-h-[70vh] w-[340px] overflow-y-auto rounded-2xl border border-white/10 bg-[#15181d]/95 p-3 shadow-2xl backdrop-blur-xl">
           {open === 'add' ? (
             <>
               <PanelTitle>{language === 'zh' ? '添加节点' : 'Add Node'}</PanelTitle>

@@ -1514,14 +1514,29 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 		result.Content = staged.StagingURL
 		return out, nil
 	}
+	// A locally staged file is already a durable, browser-readable result. Do
+	// not make the user wait for a second cross-region object-store upload
+	// before revealing it. Production wires both the repository and the asset
+	// queue, so publish the staging URL now and let the queue promote it to the
+	// configured store in the background. Callers without durable queue wiring
+	// (notably CLI/unit-test paths) retain the synchronous promotion fallback.
+	if s.repo != nil && s.assetQueue != nil && req.GenerationLogID != "" {
+		return s.queueStagedAssetPersistence(ctx, req, result, startedAt, staged, nil)
+	}
 	cachedURL, err := PromoteStagedAssetToStore(ctx, staged)
 	if err == nil {
 		result.Content = cachedURL
 		return out, nil
 	}
+	return s.queueStagedAssetPersistence(ctx, req, result, startedAt, staged, err)
+}
 
-	out.cacheHit = false
-	out.pending = true
+// queueStagedAssetPersistence exposes the already-readable local staging URL
+// while object-store promotion continues asynchronously. The generation stays
+// in "persisting" so the recovery poller remains attached and can replace the
+// local URL with the final OSS/COS URL when the background worker succeeds.
+func (s *Service) queueStagedAssetPersistence(ctx context.Context, req GenerateRequest, result *GenerateResult, startedAt time.Time, staged StagedAsset, promotionErr error) (generatedAssetPersistenceOutcome, error) {
+	out := generatedAssetPersistenceOutcome{cacheHit: false, pending: true}
 	result.Content = staged.StagingURL
 	duration := time.Since(startedAt)
 	if s.repo != nil && req.GenerationLogID != "" {
@@ -1548,7 +1563,11 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 			log.Printf("[modelcatalog] WARNING asset persist enqueue failed for log %s; staged file retained: %v", req.GenerationLogID, qerr)
 		}
 	}
-	log.Printf("[modelcatalog] asset staged for log %s but COS promotion failed; queued background persist: %v", req.GenerationLogID, err)
+	if promotionErr != nil {
+		log.Printf("[modelcatalog] asset staged for log %s but object-store promotion failed; queued background persist: %v", req.GenerationLogID, promotionErr)
+	} else {
+		log.Printf("[modelcatalog] asset staged for log %s; queued non-blocking object-store promotion", req.GenerationLogID)
+	}
 	return out, nil
 }
 
@@ -2142,6 +2161,9 @@ func resolveProviderURL(baseURL, endpoint string) string {
 }
 
 func (s *Service) generateImage(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	if isHopBaseProvider(pc, baseURL) {
+		return s.generateImageHopBase(ctx, pc, baseURL, apiKey, req)
+	}
 	if ResolveProfile(pc).ID == "ark" {
 		return s.generateImageVolcengine(ctx, pc, baseURL, apiKey, req)
 	}
@@ -3330,23 +3352,24 @@ func encodeReferenceImageReader(r io.Reader) (string, error) {
 // generous window also covers queueing and any retry.
 const arkReferenceURLTTL = time.Hour
 
-// arkReferenceMediaURL resolves a reference image/video to a URL the provider
-// can download ITSELF. Ark/Seedance does not accept base64 data URLs — it must
-// fetch a real link — so we hand it a publicly reachable one:
+// arkReferenceMediaURL resolves references to downloadable URLs. Although native
+// Ark also accepts image data URLs, URL-only relays share this helper:
 //   - one of our own object-store objects (e.g. a private COS bucket) → a
 //     short-lived SIGNED URL the provider can GET within the TTL (fixes the
 //     InvalidParameter.DownloadFailed / 403 on private objects);
 //   - any other public http(s) link → passed through unchanged;
-//   - a data: URL or a bare /uploads path (local storage has no address the
-//     provider can reach from the public internet) → a clear error asking the
-//     user to re-upload.
+//   - local uploads are copied to the active object store and signed, or use
+//     the explicitly configured public mount in local-only deployments.
 func arkReferenceMediaURL(ctx context.Context, rawURL string) (string, error) {
 	raw := strings.TrimSpace(rawURL)
 	if raw == "" {
 		return "", fmt.Errorf("empty reference url")
 	}
 	if strings.HasPrefix(raw, "data:") {
-		return "", fmt.Errorf("参考素材是内嵌数据(base64),模型无法下载,请重新上传该素材后再试")
+		return "", apperror.New(apperror.CodeInvalidInput, "当前素材通道需要文件链接，请先上传该内嵌素材后重试")
+	}
+	if strings.HasPrefix(raw, "/uploads/") {
+		return arkLocalReferenceURL(ctx, raw)
 	}
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		// Our own object-store object (e.g. a private COS bucket) 403s on a bare
@@ -3367,29 +3390,59 @@ const (
 	arkRefMaxDim = 6000
 )
 
-// arkReferenceImageURL returns a provider-downloadable URL for a reference IMAGE
+// arkReferenceImageURL returns a URL, Data URL or asset ID for a reference IMAGE
 // whose dimensions satisfy Ark's 300–6000px constraint. Most images pass through
 // as their signed/public URL untouched; only when the original is out of range
 // do we download, rescale, and upload a normalized copy (keyed by content hash
 // so identical images aren't re-uploaded), handing Ark that copy's signed URL.
 func arkReferenceImageURL(ctx context.Context, rawURL string) (string, error) {
-	downloadURL, err := arkReferenceMediaURL(ctx, rawURL)
-	if err != nil {
-		return "", err
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "data:") {
+		return seedanceInlineImageURL(rawURL)
+	}
+	if strings.HasPrefix(rawURL, "asset://") {
+		id := strings.TrimPrefix(rawURL, "asset://")
+		if id == "" || strings.ContainsAny(id, " \t\r\n/?#") {
+			return "", apperror.New(apperror.CodeInvalidInput, "参考图素材 ID 无效，请重新选择素材")
+		}
+		return rawURL, nil
+	}
+	local := strings.HasPrefix(rawURL, "/uploads/")
+	downloadURL := rawURL
+	var data []byte
+	var err error
+	if local {
+		// Inspect the existing disk file before uploading it, avoiding an OSS
+		// round-trip (or a slow request to our own public server).
+		data, err = readArkLocalImage(rawURL)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		downloadURL, err = arkReferenceMediaURL(ctx, rawURL)
+		if err != nil {
+			return "", err
+		}
+		data, err = fetchRemoteReferenceBytes(ctx, downloadURL)
+		if err != nil {
+			return downloadURL, nil
+		}
 	}
 	// Fetch to inspect dimensions. On any read/decode trouble, fall back to the
 	// URL as-is (may be a host/format we can't read but the provider can) — the
 	// size guard is best-effort normalization, not a hard gate.
-	data, ferr := fetchRemoteReferenceBytes(ctx, downloadURL)
-	if ferr != nil {
-		return downloadURL, nil
-	}
 	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data))
 	if cerr != nil {
+		if local {
+			return "", apperror.Wrap(apperror.CodeInvalidInput, "参考图片格式无法识别或文件已损坏，请重新上传 PNG/JPEG/WebP 图片", cerr)
+		}
 		return downloadURL, nil
 	}
 	if cfg.Width >= arkRefMinDim && cfg.Width <= arkRefMaxDim &&
 		cfg.Height >= arkRefMinDim && cfg.Height <= arkRefMaxDim {
+		if local {
+			return arkReferenceMediaURL(ctx, rawURL)
+		}
 		return downloadURL, nil
 	}
 	// Out of range → normalize and upload a compliant copy.
@@ -3411,10 +3464,7 @@ func arkReferenceImageURL(ctx context.Context, rawURL string) (string, error) {
 	if serr != nil {
 		return "", fmt.Errorf("规范化参考图上传失败:%w", serr)
 	}
-	if signed, e := assetstore.PresignGet(ctx, publicURL, arkReferenceURLTTL); e == nil && signed != "" {
-		return signed, nil
-	}
-	return publicURL, nil
+	return arkReferenceMediaURL(ctx, publicURL)
 }
 
 // arkTargetDims computes the target dimensions that bring (w,h) within
@@ -3479,6 +3529,15 @@ func resolveUploadDiskPath(rawURL string) (string, error) {
 	rel = filepath.Clean(rel)
 	if rel == "." || rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("invalid upload reference path %q", rawURL)
+	}
+	// Match assetstore's write directory. When explicitly configured, never
+	// silently read a different upload tree from a parent working directory.
+	if uploadDir := strings.TrimSpace(os.Getenv("UPLOAD_DIR")); uploadDir != "" {
+		candidate := filepath.Join(uploadDir, rel)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("upload reference not found in configured UPLOAD_DIR")
 	}
 
 	candidateRoots := make([]string, 0, 16)

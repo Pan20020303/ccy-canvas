@@ -78,8 +78,21 @@ func EnsureCreatorSuiteSeeds(ctx context.Context, queries *sqlc.Queries) (Creato
 			report.Existing++
 			continue
 		}
-		if _, ok := existingByName[seed.Category+"/"+seed.Name]; ok {
-			report.Existing++
+		if existing, ok := existingByName[seed.Category+"/"+seed.Name]; ok {
+			// Older releases could create these prompts before source metadata was
+			// added. Adopt the same category/name row into the managed seed instead
+			// of silently skipping it, otherwise agents can never bind the seed by
+			// source_path.
+			updated, err := syncCreatorSuiteSeed(ctx, queries, existing, seed)
+			if err != nil {
+				return report, err
+			}
+			if updated {
+				report.Updated++
+			} else {
+				report.Existing++
+			}
+			existingBySeed[seedKey] = existing
 			continue
 		}
 
@@ -178,6 +191,16 @@ var creatorSuitePromptSeedNames = map[string]string{
 	"scriptAssetExtraction": "剧本资产提取",
 	"videoPromptGeneration": "视频提示词生成",
 	"audioBindPrompt":       "音色绑定",
+	"logoDesignStyle":       "Logo设计风格",
+	"beautyCampaignDesign":  "美妆宣传广告",
+	"restaurantMenuDesign":  "餐饮宣传与菜单",
+	"ecommerceCampaign":     "电商商品宣传",
+	"educationCampaign":     "教育招生宣传",
+	"tourismCampaign":       "文旅宣传设计",
+	"realEstateCampaign":    "房产宣传物料",
+	"automotiveCampaign":    "汽车营销广告",
+	"fitnessCampaign":       "健身运动宣传",
+	"corporateCampaign":     "企业品牌宣传",
 }
 
 func loadCreatorSuitePromptSeeds() ([]creatorSuiteSkillSeed, error) {

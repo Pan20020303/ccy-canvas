@@ -328,7 +328,10 @@ func findFinalImageURL(value interface{}, allowGenericOutput bool, depth int) st
 	}
 	switch current := value.(type) {
 	case map[string]interface{}:
-		for _, key := range []string{"result_url", "final_url", "download_url", "image_url"} {
+		// Prefer explicit media fields over result_url. Manju's completed task
+		// response uses result_url for the JSON task-detail endpoint while
+		// final_url/download_url/image_url point at the actual PNG.
+		for _, key := range []string{"final_url", "download_url", "image_url", "result_url"} {
 			if candidate := firstStringValue(current[key]); isRenderableImageValue(candidate) {
 				return candidate
 			}

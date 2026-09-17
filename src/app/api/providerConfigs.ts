@@ -1401,7 +1401,8 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       baseURL: "https://ark.cn-beijing.volces.com/api/v3",
       apiSpec: "ark",
       models: [
-        // Seedance 2.0(最新,支持首尾帧 / 1-9 多图 / 动作模仿 / 全能参考)。
+        // 官方 2.5：30 秒、多模态参考、音画同生、MP4 / MOV 输出。
+        "doubao-seedance-2-5-260628",
         "doubao-seedance-2-0-260128",
         "doubao-seedance-2-0-fast-260128",
         "doubao-seedance-1-5-pro-251215",
@@ -1760,7 +1761,7 @@ export type GeneratePayload = {
   reference_videos?: string[];
   reference_audio?: string;
   reference_audios?: string[];
-  /** HappyHorse video-edit audio control: "auto" (default) / "origin" (keep source audio). */
+  /** Model-specific audio control: Seedance 2.5 "on"/"off"; HappyHorse "auto"/"origin". */
   audio_setting?: string;
   /** Random seed [0, 2147483647] for reproducible generation. */
   seed?: number;

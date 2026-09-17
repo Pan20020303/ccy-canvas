@@ -123,6 +123,10 @@ func creatorSuiteSystemPrompt(name, description string) string {
 func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (CreatorSuiteAgentSeedReport, error) {
 	seeds := creatorSuiteAgentSeeds()
 	report := CreatorSuiteAgentSeedReport{Total: len(seeds)}
+	industrySkillIDs, err := creatorSuiteIndustrySkillIDs(ctx, queries)
+	if err != nil {
+		return report, err
+	}
 
 	for _, seed := range seeds {
 		_, err := queries.GetAgentByDeployKey(ctx, seed.DeployKey)
@@ -135,6 +139,9 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 			return report, err
 		}
 		if notFound {
+			if creatorSuiteIndustryAgent(seed.DeployKey) {
+				params.SkillIDs = append(params.SkillIDs, industrySkillIDs...)
+			}
 			if _, err := queries.InsertAgent(ctx, params); err != nil {
 				return report, err
 			}
@@ -148,6 +155,65 @@ func EnsureCreatorSuiteAgentSeeds(ctx context.Context, queries *sqlc.Queries) (C
 	}
 
 	return report, nil
+}
+
+var creatorSuiteIndustryPromptPaths = map[string]struct{}{
+	"prompts/logoDesignStyle.md":      {},
+	"prompts/beautyCampaignDesign.md": {},
+	"prompts/restaurantMenuDesign.md": {},
+	"prompts/ecommerceCampaign.md":    {},
+	"prompts/educationCampaign.md":    {},
+	"prompts/tourismCampaign.md":      {},
+	"prompts/realEstateCampaign.md":   {},
+	"prompts/automotiveCampaign.md":   {},
+	"prompts/fitnessCampaign.md":      {},
+	"prompts/corporateCampaign.md":    {},
+}
+
+func creatorSuiteIndustryAgent(deployKey string) bool {
+	switch deployKey {
+	case "productionAgent", "universalAi", "productionAgent:generateAssetsAgent", "productionAgent:storyboardTableAgent":
+		return true
+	default:
+		return false
+	}
+}
+
+func creatorSuiteIndustrySkillIDs(ctx context.Context, queries *sqlc.Queries) ([]pgtype.UUID, error) {
+	rows, err := queries.ListAllSkills(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]pgtype.UUID, 0, len(creatorSuiteIndustryPromptPaths))
+	for _, skill := range rows {
+		var spec struct {
+			Source     string `json:"source"`
+			SourcePath string `json:"source_path"`
+		}
+		if json.Unmarshal(skill.Spec, &spec) == nil && isCreatorSuiteSource(spec.Source) {
+			if _, ok := creatorSuiteIndustryPromptPaths[spec.SourcePath]; ok {
+				ids = append(ids, skill.ID)
+			}
+		}
+	}
+	return ids, nil
+}
+
+func mergeSkillIDs(existing, required []pgtype.UUID) []pgtype.UUID {
+	merged := append([]pgtype.UUID(nil), existing...)
+	seen := make(map[string]struct{}, len(merged))
+	for _, id := range merged {
+		seen[string(id.Bytes[:])] = struct{}{}
+	}
+	for _, id := range required {
+		key := string(id.Bytes[:])
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		merged = append(merged, id)
+		seen[key] = struct{}{}
+	}
+	return merged
 }
 
 func (seed CreatorSuiteAgentSeed) toInsertParams() (sqlc.InsertAgentParams, error) {

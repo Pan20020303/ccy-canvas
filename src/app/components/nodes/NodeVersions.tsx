@@ -5,6 +5,7 @@ import clsx from 'clsx';
 
 import { toRenderableMediaUrl } from '../../reference-media';
 import { useStore, type NodeVersion } from '../../store';
+import { uniqueMediaVersions } from '../../media-result-state';
 
 /**
  * 节点版本历史 —— 两个组件:
@@ -35,6 +36,7 @@ export function NodeVersionsBadge({
   mediaKind: NodeMediaKind;
 }) {
   const [open, setOpen] = useState(false);
+  versions = uniqueMediaVersions(activeUrl, versions);
   // 主图 + history 一共多少个
   const total = (activeUrl ? 1 : 0) + versions.length;
   if (total <= 1) return null;
@@ -77,6 +79,7 @@ export function NodeVersionsModal({
   onClose: () => void;
 }) {
   const setActiveVersion = useStore((s) => s.setActiveVersion);
+  versions = uniqueMediaVersions(activeUrl, versions);
 
   // 排版顺序:主图 在最前,后面跟 versions 时间倒序(versions[] 已经倒序).
   const allCards: Array<{ id: string | null; url: string; prompt?: string; model?: string; timestamp?: number; isActive: boolean }> = [

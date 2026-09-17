@@ -60,7 +60,7 @@ func TestLoadCreatorSuitePromptSeedsIncludesDefaultPromptTemplates(t *testing.T)
 		t.Fatalf("load creator-suite prompt seeds: %v", err)
 	}
 
-	if got, want := len(seeds), 4; got != want {
+	if got, want := len(seeds), 14; got != want {
 		t.Fatalf("prompt seed count = %d, want %d", got, want)
 	}
 
@@ -69,6 +69,16 @@ func TestLoadCreatorSuitePromptSeedsIncludesDefaultPromptTemplates(t *testing.T)
 		"prompts/scriptAssetExtraction.md": "剧本资产提取",
 		"prompts/videoPromptGeneration.md": "视频提示词生成",
 		"prompts/audioBindPrompt.md":       "音色绑定",
+		"prompts/logoDesignStyle.md":       "Logo设计风格",
+		"prompts/beautyCampaignDesign.md":  "美妆宣传广告",
+		"prompts/restaurantMenuDesign.md":  "餐饮宣传与菜单",
+		"prompts/ecommerceCampaign.md":     "电商商品宣传",
+		"prompts/educationCampaign.md":     "教育招生宣传",
+		"prompts/tourismCampaign.md":       "文旅宣传设计",
+		"prompts/realEstateCampaign.md":    "房产宣传物料",
+		"prompts/automotiveCampaign.md":    "汽车营销广告",
+		"prompts/fitnessCampaign.md":       "健身运动宣传",
+		"prompts/corporateCampaign.md":     "企业品牌宣传",
 	}
 	for sourcePath, name := range want {
 		seed, ok := findCreatorSuiteSeed(seeds, sourcePath)

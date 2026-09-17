@@ -1889,7 +1889,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         panOnScrollMode={"free" as never}
         zoomOnPinch={true}
       >
-        {preferences.showGrid && <Background variant={BackgroundVariant.Dots} gap={preferences.gridGap} size={preferences.gridDotSize} color={theme === 'light' ? '#b7bac1' : 'var(--canvas-grid, #3a3d44)'} />}
+        {preferences.showGrid && <Background variant={BackgroundVariant.Dots} gap={preferences.gridGap} size={preferences.gridDotSize} color="var(--canvas-grid, #333)" />}
         {showMiniMap ? (
           <MiniMap
             position="bottom-left"
@@ -1912,7 +1912,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
               right: 'auto',
               bottom: 64,
               // 内联样式 CSS 覆盖不到 — 白天模式按主题取色。
-              backgroundColor: theme === 'light' ? 'rgba(255,255,255,0.92)' : 'rgba(12,14,17,0.9)',
+              backgroundColor: 'var(--canvas-bg, #111111)',
               border: theme === 'light' ? '1px solid rgba(0,0,0,0.1)' : '1px solid rgba(255,255,255,0.1)',
               borderRadius: 14,
               transition: 'width 0.2s, height 0.2s',
@@ -2034,7 +2034,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         const itemClass = 'flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40';
         return (
           <div
-            className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
+            className="canvas-floating-surface absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
             style={{ left, top }}
           >
             {/* Reference trio first: 颜色 | 整理布局 | 解组 */}
@@ -2100,7 +2100,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
             <Plus className="h-4 w-4" />
           </button>
           <div
-            className="absolute z-30 flex flex-wrap -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
+            className="canvas-floating-surface absolute z-30 flex flex-wrap -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full border border-white/10 bg-[#15181d]/90 px-2 py-1.5 shadow-2xl backdrop-blur-xl"
             style={{
               left: Math.max(halfToolbar+16,Math.min(toolbarWidth-halfToolbar-16,viewport.x+(selectionBounds.x+selectionBounds.width/2)*viewport.zoom)),
               top: Math.max(112,Math.min(toolbarHeight-16,viewport.y+selectionBounds.y*viewport.zoom-12)),
@@ -2400,7 +2400,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
       {/* Bottom-left control strip — compact reference proportions: flat icon
           toggles + a zoom readout in one hairline pill. The snap toggle moved
           into the bottom dock (reference keeps the pin there). */}
-      <div className="absolute bottom-6 left-6 z-40 flex items-center gap-1 rounded-full border border-white/10 bg-black/45 px-1.5 py-1 shadow-2xl backdrop-blur-xl">
+      <div className="canvas-floating-surface absolute bottom-6 left-6 z-40 flex items-center gap-1 rounded-full border border-white/10 bg-black/45 px-1.5 py-1 shadow-2xl backdrop-blur-xl">
         <ControlButton
           active={showMiniMap}
           label={language === 'zh' ? '开关小地图' : 'Toggle minimap'}
@@ -2432,7 +2432,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         type="button"
         onClick={() => setGuideOpen(true)}
         title={language === 'zh' ? '使用指南' : 'Canvas guide'}
-        className="absolute bottom-6 left-[150px] z-40 flex h-[34px] w-[34px] items-center justify-center rounded-full border border-white/10 bg-black/45 text-neutral-400 shadow-2xl backdrop-blur-xl transition hover:bg-black/70 hover:text-neutral-100"
+        className="canvas-floating-surface absolute bottom-6 left-[150px] z-40 flex h-[34px] w-[34px] items-center justify-center rounded-full border border-white/10 bg-black/45 text-neutral-400 shadow-2xl backdrop-blur-xl transition hover:bg-black/70 hover:text-neutral-100"
       >
         <HelpCircle className="h-4 w-4" />
       </button>

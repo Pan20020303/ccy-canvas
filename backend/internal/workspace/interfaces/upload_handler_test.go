@@ -3,6 +3,9 @@ package interfaces
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -16,6 +19,30 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+func TestResizeImageToJPEGLimitsWidth(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 1600, 900))
+	for y := 0; y < 900; y++ {
+		for x := 0; x < 1600; x++ {
+			source.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 120, A: 255})
+		}
+	}
+	var original bytes.Buffer
+	if err := png.Encode(&original, source); err != nil {
+		t.Fatal(err)
+	}
+	resized, err := resizeImageToJPEG(bytes.NewReader(original.Bytes()), 640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, format, err := image.Decode(bytes.NewReader(resized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "jpeg" || decoded.Bounds().Dx() != 640 || decoded.Bounds().Dy() != 360 {
+		t.Fatalf("got format=%s bounds=%v", format, decoded.Bounds())
+	}
+}
 
 type notifyingWriter struct {
 	writes chan []byte

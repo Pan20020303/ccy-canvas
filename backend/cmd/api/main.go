@@ -249,12 +249,10 @@ func main() {
 	if durableTaskQueue != nil {
 		agentRunRouter.WithTasks(taskQueueAdapter{q: durableTaskQueue})
 		taskWorker.WithAgentRunProcessor(agentRunRouter)
-		go func() {
-			log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
-			if err := taskWorker.Start(); err != nil {
-				log.Printf("[tasks] Asynq worker exited: %v", err)
-			}
-		}()
+		log.Printf("[tasks] Asynq worker starting (redis=%s db=%d)", cfg.RedisAddr, cfg.RedisDB)
+		if err := taskWorker.Start(); err != nil {
+			log.Fatalf("[tasks] Asynq worker failed to start: %v", err)
+		}
 		log.Printf("[tasks] Asynq queue enabled: %s db=%d", cfg.RedisAddr, cfg.RedisDB)
 	}
 	agentRunRouter.RegisterChi(router)
@@ -271,7 +269,8 @@ func main() {
 	// Graceful-shutdown context: cancelled on SIGINT/SIGTERM so the HTTP server
 	// drains in-flight requests (canvas saves, uploads, submits) instead of
 	// cutting them mid-flight, and background workers stop cleanly. In-flight
-	// generations survive regardless via the durable Asynq queue.
+	// paid generations must finish polling before the process exits; queue
+	// redelivery alone cannot recover a vendor result or safely resubmit it.
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -325,8 +324,8 @@ func main() {
 		log.Printf("http shutdown: %v", err)
 	}
 	if taskWorker != nil {
-		// Let the currently-processing job finish; any unacked task stays in
-		// Redis and is re-delivered after restart (no generation lost).
+		// Wait for active paid jobs. Deployments must also keep Docker's stop
+		// grace above the worker drain and quiesce the queue before recreation.
 		taskWorker.Shutdown()
 	}
 	log.Printf("shutdown complete")

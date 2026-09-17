@@ -60,7 +60,7 @@ func classifyProviderError(status int, upstreamCode string) (apperror.Code, stri
 			"outputvideo", "outputaudio", "content_policy_violation", "sensitivecontentdetected",
 			"authenticationerror", "invalid_api_key", "accessdenied", "permissiondenied",
 			"operationdenied", "accountoverdue", "insufficient_quota", "quotaexceeded",
-			"ratelimit", "throttling", "modelnotfound", "notfound", "internalerror", "server_error"} {
+			"ratelimit", "throttling", "modelnotopen", "modelnotfound", "notfound", "internalerror", "server_error"} {
 			if strings.HasPrefix(code, prefix) {
 				safeCode = upstreamCode
 				break
@@ -69,6 +69,8 @@ func classifyProviderError(status int, upstreamCode string) (apperror.Code, stri
 	}
 	// Use fixed translations, never the upstream message (which may echo secrets).
 	switch {
+	case code == "modelnotopen":
+		return apperror.CodeUpstreamUnavailable, "当前火山账号尚未开通此模型，请管理员前往火山方舟「开通管理」启用所选模型；重复提交不会解决此问题", false, safeCode
 	case strings.HasPrefix(code, "inputimage") && strings.Contains(code, "sensitivecontentdetected"):
 		return apperror.CodeValidation, "参考图片未通过模型服务的安全审核，请检查参考图片", false, safeCode
 	case strings.HasPrefix(code, "inputtext") && strings.Contains(code, "sensitivecontentdetected"):

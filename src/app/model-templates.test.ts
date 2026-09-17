@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isModeSatisfied } from "./reference-modes";
 
 import { VENDOR_TEMPLATES } from "./api/providerConfigs";
 import {
@@ -157,6 +158,49 @@ describe("model templates", () => {
       durationOptions: [10, 15],
       referenceModes: ["first-frame"],
     });
+  });
+
+  it("exposes official Seedance 2.5 controls and accepts the one-image/six-video contract", () => {
+    const template = getModelTemplate("doubao-seedance-2-5-260628");
+    expect(template).toMatchObject({
+      vendor: "Volcengine", serviceType: "video",
+      resolutionOptions: ["480p", "720p", "1080p"],
+      durationRange: { min: 4, max: 30, step: 1, defaultValue: 5 },
+      referenceImageRange: { min: 1, max: 30 },
+      audioSettingOptions: ["on", "off"],
+      supportsOutputFormat: true, outputFormatOptions: ["mp4", "mov"],
+    });
+    const override = template?.referenceRequirements?.["all-in-one"];
+    expect(isModeSatisfied("all-in-one", { images: 1, videos: 6 }, override)).toBe(true);
+    expect(isModeSatisfied("all-in-one", { images: 30, videos: 10, audios: 10 }, override)).toBe(true);
+    for (const counts of [{ images: 31, videos: 0 }, { images: 0, videos: 11 }, { images: 0, videos: 0, audios: 11 }]) {
+      expect(isModeSatisfied("all-in-one", counts, override)).toBe(false);
+    }
+    // 2.0 is still limited to three videos, and gains no 2.5-only controls.
+    const previous = getModelTemplate("doubao-seedance-2-0-260128");
+    expect(isModeSatisfied("all-in-one", { images: 1, videos: 6 }, previous?.referenceRequirements?.["all-in-one"])).toBe(false);
+    expect(previous?.supportsOutputFormat).toBeFalsy();
+  });
+
+  it("keeps 1080p available for official Seedance 2.5 aliases without changing the default", () => {
+    for (const model of ["doubao-seedance-2-5-260628", "doubao-seedance-2.5"]) {
+      const template = getModelTemplate(model, { vendor: "Volcengine", service_type: "video" });
+      expect(template?.resolutionOptions).toEqual(["480p", "720p", "1080p"]);
+      expect(template?.defaults?.resolution).toBe("720p");
+    }
+  });
+
+  it("exposes 4k only for the official Seedance 2.0 standard model", () => {
+    const standard = getModelTemplate("doubao-seedance-2-0-260128");
+    expect(standard?.resolutionOptions).toEqual(["480p", "720p", "1080p", "4k"]);
+    expect(standard?.defaults?.resolution).toBe("720p");
+
+    expect(getModelTemplate("doubao-seedance-2-0-fast-260128")?.resolutionOptions)
+      .toEqual(["480p", "720p"]);
+    expect(getModelTemplate("doubao-seedance-2-5-260628")?.resolutionOptions)
+      .toEqual(["480p", "720p", "1080p"]);
+    expect(getModelTemplate("doubao-seedance-1-5-pro-251215")?.resolutionOptions)
+      .not.toContain("4k");
   });
 
   it("matches HopBase Seedance 2.5 capabilities", () => {

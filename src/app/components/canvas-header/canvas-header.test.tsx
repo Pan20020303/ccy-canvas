@@ -101,13 +101,40 @@ describe('reference-style canvas header', () => {
 });
 
 describe('canvas navigation protections', () => {
-  it('blocks live agents and media without saving or changing projects', async () => {
+  it('keeps live-agent edit protection but lets media continue while creating another canvas', async () => {
     useAgentCanvasActivityStore.setState({runId:'running',finished:false});
     await expect(prepareCanvasNavigation()).rejects.toThrow('Agent');
     expect(mocks.save).not.toHaveBeenCalled();
     useAgentCanvasActivityStore.setState({runId:null,finished:true});
     useStore.setState({activeRun:{nodeId:'run',startedAt:Date.now()}});
-    await expect(createHeaderProject(true,'new')).rejects.toThrow('生成任务'); expect(mocks.create).not.toHaveBeenCalled();
+    await createHeaderProject(true,'new'); expect(mocks.create).toHaveBeenCalledWith('new');
+  });
+  it('lets a running generation leave for home or admin through the real account action', async () => {
+    useStore.setState({activeRun:{nodeId:'run',startedAt:Date.now()}});
+    await render(); await click('我的账户'); await click('管理后台');
+    expect(mocks.navigate).toHaveBeenCalledWith('/admin');
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(useStore.getState().activeRun?.nodeId).toBe('run');
+  });
+  it('allows streamed output during save but still detects user edits', async () => {
+    const node = {id:'run',type:'textNode',position:{x:0,y:0},data:{status:'running',content:'first',prompt:'write'}};
+    useStore.setState({nodes:[node]});
+    mocks.save.mockImplementationOnce(async () => {useStore.setState({nodes:[{...node,data:{...node.data,content:'next'}}],canvasSaveStatus:'saved'});});
+    await prepareCanvasNavigation();
+    mocks.save.mockImplementationOnce(async () => {useStore.setState({nodes:[{...node,position:{x:100,y:0}}],canvasSaveStatus:'saved'});});
+    await expect(prepareCanvasNavigation()).rejects.toThrow('又有修改');
+  });
+  it('does not equate leaving a page with logging out mid-generation', async () => {
+    useStore.setState({activeRun:{nodeId:'run',startedAt:Date.now()}});
+    await expect(prepareCanvasNavigation({logout:true})).rejects.toThrow('退出账号');
+  });
+  it('allows media promotion metadata to arrive while navigation saves', async () => {
+    const node = {id:'run',type:'imageNode',position:{x:0,y:0},data:{status:'running',url:'/uploads/previous.png',poster:'/uploads/previous-poster.png'}};
+    useStore.setState({nodes:[node]});
+    mocks.save.mockImplementationOnce(async () => {
+      useStore.setState({nodes:[{...node,data:{...node.data,status:'done',url:'/uploads/new.png',mediaTaskId:'new-task',poster:undefined}}],canvasSaveStatus:'saved'});
+    });
+    await expect(prepareCanvasNavigation()).resolves.toBeUndefined();
   });
   it('keeps the original canvas after a failed target load', async () => {
     const originalNodes=useStore.getState().nodes;

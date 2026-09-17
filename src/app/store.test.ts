@@ -845,6 +845,49 @@ describe("workspace control bar state", () => {
     }
   });
 
+  it.each(['image', 'video'])("keeps one %s version across preview, promotion and late poll events", async (serviceType) => {
+    let stream: { onmessage: ((event: MessageEvent) => void) | null } | undefined;
+    class MockStream {
+      onmessage = null;
+      onopen = null;
+      onerror = null;
+      close = vi.fn();
+      constructor() { stream = this; }
+    }
+    vi.stubGlobal('EventSource', MockStream);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }))));
+    try {
+      const { useStore } = await loadStore();
+      const old = 'https://example.com/previous.png';
+      useStore.getState().updateNodeData('2', {
+        url: old, status: 'running', taskId: 'preview-task', queuedAfterTimeout: true, versions: [],
+      });
+      const file = '2026-09/11111111-2222-4333-8444-555555555555.png';
+      const preview = `/uploads/staging/generated/${file}`;
+      const final = `https://bucket.oss-cn-beijing.aliyuncs.com/generated/${file}`;
+      const emit = (status: string, url: string, taskId = 'preview-task') => stream!.onmessage?.({ data: JSON.stringify({
+        task_id: taskId, node_id: '2', service_type: serviceType, status, result_url: url,
+      }) } as MessageEvent);
+      const data = () => useStore.getState().nodes.find((node) => node.id === '2')!.data;
+      emit('persisting', preview);
+      expect(data().url).toBe(preview);
+      expect(data().assetSyncing).toBe(true);
+      expect(data().versions).toEqual([expect.objectContaining({ url: old })]);
+      emit('persisting', preview);
+      emit('success', final);
+      const versionId = data().activeVersionId;
+      expect(data().versions).toEqual([expect.objectContaining({ url: old })]);
+      expect(data().assetSyncing).toBe(false);
+      emit('persisting', preview); // stale poll after final SSE
+      emit('success', final); // duplicate success delivery
+      emit('success', 'https://example.com/late.png', 'older-task');
+      expect(data().status).toBe('done');
+      expect(data().url).toBe(final);
+      expect(data().activeVersionId).toBe(versionId);
+      expect(data().versions).toHaveLength(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("recovers a running node without a task id from the batch task poller", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T10:00:00.000Z"));
@@ -1585,6 +1628,70 @@ describe("workspace control bar state", () => {
     const request = fetchMock.mock.calls.find(([url]) => String(url).includes('/generate'));
     if (count > 4) { expect(request).toBeUndefined(); expect(useStore.getState().nodes.find(n => n.id === 'local-ref-test')?.data.status).toBe('error'); }
     else { expect(JSON.parse(String(request![1].body)).reference_images ?? []).toEqual(Array.from({ length: count }, (_, i) => `https://example.com/ref-${i}.png`)); }
+  });
+
+  it.each(["480p", "720p", "1080p"].flatMap((resolution) => ["on", "off"].map((audioSetting) => ({ resolution, audioSetting }))))("submits official Seedance 2.5 mixed references at $resolution, MOV and audio $audioSetting from canvas nodes", async ({ resolution, audioSetting }) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/result.mov" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = "seedance25";
+    useStore.getState().addNode({ id: target, type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    const refs = ["https://example.com/ref.png", ...Array.from({ length: 6 }, (_, i) => `https://example.com/ref${i}.mp4`)];
+    refs.forEach((url, i) => {
+      const id = `seedance25-ref-${i}`;
+      useStore.getState().addNode({ id, type: i ? "referenceVideoNode" : "referenceImageNode", position: { x: 0, y: 0 }, data: { url } } as never);
+      useStore.getState().onConnect({ source: id, target, sourceHandle: null, targetHandle: null });
+    });
+    useStore.getState().updateNodeGenerationParams(target, {
+      durationSeconds: 15, aspectRatio: "16:9", resolution, outputFormat: "mov", audioSetting, referenceVariant: "all-in-one",
+    });
+    await useStore.getState().runNode(target, { prompt: "饼干广告，参考@图像1和@视频1至@视频6", model: "doubao-seedance-2-5-260628" });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      model: "doubao-seedance-2-5-260628", reference_mode: "image_reference",
+      reference_images: refs.slice(0, 1), reference_videos: refs.slice(1),
+      duration: 15, aspect_ratio: "16:9", resolution, output_format: "mov", audio_setting: audioSetting,
+    });
+  });
+
+  it("submits 4k for the official Seedance 2.0 standard model", async () => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/result-4k.mp4" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = "seedance20-4k";
+    const reference = "seedance20-4k-ref";
+    useStore.getState().addNode({ id: target, type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().addNode({
+      id: reference,
+      type: "referenceImageNode",
+      position: { x: 0, y: 0 },
+      data: { url: "https://example.com/reference.png" },
+    } as never);
+    useStore.getState().onConnect({ source: reference, target, sourceHandle: null, targetHandle: null });
+    useStore.getState().updateNodeGenerationParams(target, {
+      durationSeconds: 8, aspectRatio: "16:9", resolution: "4k", referenceVariant: "all-in-one",
+    });
+
+    await useStore.getState().runNode(target, {
+      prompt: "4K 产品广告",
+      model: "doubao-seedance-2-0-260128",
+    });
+
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request![1].body))).toMatchObject({
+      model: "doubao-seedance-2-0-260128",
+      resolution: "4k",
+      aspect_ratio: "16:9",
+      duration: 8,
+    });
   });
 
   it("sends seed + audio_setting for a HappyHorse video-edit run that has them set", async () => {

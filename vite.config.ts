@@ -38,6 +38,7 @@ export default defineConfig(({ mode }) => {
   const canvasBridgeEnabled = (process.env.CCY_CANVAS_AGENT_BRIDGE ?? "").toLowerCase() !== "off";
 
   return {
+    base: fileEnv.VITE_PUBLIC_BASE_PATH ?? "/",
     plugins: [
       react(),
       tailwindcss(),

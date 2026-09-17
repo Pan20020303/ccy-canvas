@@ -615,6 +615,8 @@ type fakeRepository struct {
 	lastLogError      string
 	lastLogResultURLs string
 	lastLogCacheHit   bool
+	persistingCalls   int
+	lastStagedAsset   StagedAsset
 
 	// MarkGenerationLogFailed controls: whether the guarded transition reports
 	// success (markFailedTransitioned), an optional error, and a call counter.
@@ -862,6 +864,7 @@ func TestTryExtractImageFromPollResponse(t *testing.T) {
 		want string // "" means nil (still in progress)
 	}{
 		{"result_url present", `{"status":"success","result_url":"https://manjuapi.com/generated/x.png"}`, "https://manjuapi.com/generated/x.png"},
+		{"manju task result url does not outrank final image", `{"status":"succeeded","result_url":"https://manjuapi.com/v1/tasks/gemini-img-123","final_url":"https://cdn.manjuapi.com/files/result.png","download_url":"https://cdn.manjuapi.com/files/result.png"}`, "https://cdn.manjuapi.com/files/result.png"},
 		{"final_url only", `{"status":"success","result_url":"","download_url":"","final_url":"https://manjuapi.com/generated/final.png"}`, "https://manjuapi.com/generated/final.png"},
 		{"data array url", `{"data":[{"url":"https://manjuapi.com/generated/y.png"}]}`, "https://manjuapi.com/generated/y.png"},
 		{"content markdown", `{"choices":[{"message":{"content":"![img](https://manjuapi.com/generated/z.png)"}}]}`, "https://manjuapi.com/generated/z.png"},
@@ -1154,7 +1157,9 @@ func (r *fakeRepository) SetGenerationLogResultURLs(_ context.Context, _ string,
 	r.lastLogResultURLs = resultURLsJSON
 	return nil
 }
-func (r *fakeRepository) MarkGenerationLogPersisting(context.Context, string, StagedAsset, int32) error {
+func (r *fakeRepository) MarkGenerationLogPersisting(_ context.Context, _ string, staged StagedAsset, _ int32) error {
+	r.persistingCalls++
+	r.lastStagedAsset = staged
 	return nil
 }
 func (r *fakeRepository) MarkGenerationLogAssetReady(context.Context, string, string, int32) error {
@@ -1162,6 +1167,65 @@ func (r *fakeRepository) MarkGenerationLogAssetReady(context.Context, string, st
 }
 func (r *fakeRepository) MarkGenerationLogAssetFailed(context.Context, string, string, string) error {
 	return nil
+}
+
+type fakeAssetPersistQueue struct {
+	calls   int
+	payload AssetPersistPayload
+}
+
+func (q *fakeAssetPersistQueue) EnqueueAssetPersist(_ context.Context, payload AssetPersistPayload) (string, error) {
+	q.calls++
+	q.payload = payload
+	return "asset-task-1", nil
+}
+
+func TestPersistGeneratedAssetReturnsStagedPreviewBeforeObjectStorePromotion(t *testing.T) {
+	t.Setenv("UPLOAD_DIR", t.TempDir())
+	repo := &fakeRepository{}
+	queue := &fakeAssetPersistQueue{}
+	bus := NewTaskEventBus()
+	subscriber, unsubscribe := bus.Subscribe("user-1")
+	defer unsubscribe()
+	service := NewService(repo, []byte("01234567890123456789012345678901")).
+		WithAssetPersistQueue(queue).
+		WithEventBus(bus)
+	result := &GenerateResult{Type: "url", Content: "https://example.com/generated.mp4"}
+	req := GenerateRequest{
+		GenerationLogID: "log-1",
+		UserID:          "user-1",
+		NodeID:          "video-node-1",
+		ServiceType:     "video",
+	}
+
+	outcome, err := service.persistGeneratedAssetForResult(context.Background(), req, result, time.Now(), candidateChannel{})
+	if err != nil {
+		t.Fatalf("persistGeneratedAssetForResult returned error: %v", err)
+	}
+	if !outcome.pending || outcome.cacheHit {
+		t.Fatalf("outcome = %#v, want pending background persistence", outcome)
+	}
+	if !strings.HasPrefix(result.Content, "/uploads/staging/generated/") || !strings.HasSuffix(result.Content, ".mp4") {
+		t.Fatalf("result.Content = %q, want immediately renderable staging URL", result.Content)
+	}
+	if repo.persistingCalls != 1 || repo.lastStagedAsset.StagingURL != result.Content {
+		t.Fatalf("persisting write = (%d, %q), want one write for %q", repo.persistingCalls, repo.lastStagedAsset.StagingURL, result.Content)
+	}
+	if queue.calls != 1 || queue.payload.StagingURL != result.Content || queue.payload.StagingPath == "" {
+		t.Fatalf("queued persistence = (%d, %#v), want staged asset payload", queue.calls, queue.payload)
+	}
+	if _, err := os.Stat(queue.payload.StagingPath); err != nil {
+		t.Fatalf("staged preview file is not readable: %v", err)
+	}
+
+	select {
+	case event := <-subscriber.Events():
+		if event.Status != "persisting" || event.ResultURL != result.Content {
+			t.Fatalf("event = %#v, want persisting event with staging URL", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for staged-preview event")
+	}
 }
 func (r *fakeRepository) ListStaleActiveGenerations(context.Context, time.Time) ([]domain.StaleGeneration, error) {
 	return nil, nil

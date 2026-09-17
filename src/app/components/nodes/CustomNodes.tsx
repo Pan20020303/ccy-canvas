@@ -1,10 +1,10 @@
 import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NodeErrorBanner } from './NodeErrorBanner';
 import { useCanvasPreferences } from '../../canvas-preferences';
+import { useCanvasThemeStyle } from '../../use-canvas-theme';
 import { getNodeErrorPresentation, nodeFailureReason } from './node-errors';
 import { createPortal } from 'react-dom';
-import { ZImageParamsControls } from './ZImageParamsControls';
-import { LocalImageParamsControls } from './LocalImageParamsControls';
+import { Dropdown, MediaParamsPopover } from './NodeGenerationControls';
 import { ReferenceLimitsBar, resolveReferenceLimits } from './ReferenceLimitsBar';
 import { requestMediaPreviewAction, useMediaPreviewAction } from '../media-preview-utils';
 import VideoTrimDialog, { type VideoTrimSelection } from '../VideoTrimDialog';
@@ -279,7 +279,7 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
       </div>
       {/* 阶段徽章 */}
       <div className="absolute inset-0 flex items-center justify-center">
-        <div className="pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/12 bg-[#15181d]/85 px-4 py-2 text-sm font-medium text-neutral-100 shadow-[0_14px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
+        <div className="canvas-floating-surface pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/12 bg-[#15181d]/85 px-4 py-2 text-sm font-medium text-neutral-100 shadow-[0_14px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
           <LoadingSpinner size={16} tone={light ? 'light' : 'dark'} />
           <span>{phaseText}</span>
           {phase === 'queued' ? (
@@ -456,532 +456,6 @@ function composeHappyHorseModel(version: string, suffix: string): string {
   return `happyhorse-${version}-${suffix}`;
 }
 
-const Dropdown = ({
-  label,
-  value,
-  options,
-  onChange,
-  align = 'left',
-  side = 'top',
-  renderOption,
-  menuMinWidth,
-}: {
-  label?: React.ReactNode;
-  value: string;
-  options: string[];
-  onChange: (v: string) => void;
-  align?: 'left' | 'right';
-  side?: 'top' | 'bottom';
-  /** Optional custom renderer for each option row (gets the raw option + selected state). */
-  renderOption?: (option: string, selected: boolean) => React.ReactNode;
-  /** Override the popup min-width — model dropdown needs more room for icons + duration. */
-  menuMinWidth?: number;
-}) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative nodrag">
-      <button
-        onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1.5 text-xs text-neutral-200 transition hover:bg-white/10"
-      >
-        {label}
-        <span>{value}</span>
-        <ChevronDown className="h-3 w-3 text-neutral-500" />
-      </button>
-      {open ? (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div
-            className={clsx(
-              'absolute z-20 mb-1 mt-1 rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-2xl backdrop-blur-xl',
-              align === 'right' ? 'right-0' : 'left-0',
-              side === 'top' ? 'bottom-full' : 'top-full',
-            )}
-            style={{ minWidth: menuMinWidth ?? 140 }}
-          >
-            {options.map((option) => {
-              const selected = option === value;
-              return (
-                <button
-                  key={option}
-                  onClick={() => {
-                    onChange(option);
-                    setOpen(false);
-                  }}
-                  className={clsx(
-                    'w-full px-3 py-1.5 text-left text-xs transition hover:bg-white/5',
-                    selected ? 'text-cyan-300' : 'text-neutral-300',
-                  )}
-                >
-                  {renderOption ? renderOption(option, selected) : option}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-};
-
-const RatioPreview = ({ ratio }: { ratio: string }) => {
-  const wide = ratio === '21:9' || ratio === '16:9';
-  const tall = ratio === '9:21' || ratio === '9:16' || ratio === '1:2';
-  return (
-    <div
-      className="rounded-sm bg-neutral-700"
-      style={{
-        width: wide ? 22 : tall ? 8 : 16,
-        height: wide ? 10 : tall ? 22 : 16,
-      }}
-    />
-  );
-};
-
-/** Unified media params popover: aspect ratio + resolution + duration in one panel. */
-const MediaParamsPopover = ({
-  template,
-  resolution,
-  quality,
-  aspectRatio,
-  duration,
-  outputFormat,
-  onResolution,
-  onQuality,
-  onAspectRatio,
-  onDuration,
-  onOutputFormat,
-  audioSetting,
-  audioSpeed,
-  voiceDescription,
-  voiceLanguage,
-  seed,
-  onAudioSetting,
-  onAudioSpeed,
-  onVoiceDescription,
-  onVoiceLanguage,
-  onSeed,
-  zImage,
-  onZImage,
-  localImage,
-  onLocalImage,
-}: {
-  template: ModelTemplate;
-  resolution: string;
-  quality: string;
-  aspectRatio: string;
-  duration: number;
-  outputFormat: string;
-  audioSetting?: string;
-  audioSpeed?: number;
-  voiceDescription?: string;
-  voiceLanguage?: string;
-  seed?: number;
-  onResolution: (v: string) => void;
-  onQuality: (v: string) => void;
-  onAspectRatio: (v: string) => void;
-  onDuration: (v: number) => void;
-  onOutputFormat: (v: string) => void;
-  onAudioSetting?: (v: string) => void;
-  onAudioSpeed?: (v: number) => void;
-  onVoiceDescription?: (v: string) => void;
-  onVoiceLanguage?: (v: string) => void;
-  onSeed?: (v: number | undefined) => void;
-  zImage?: ZImageParams;
-  localImage?: LocalImageSettings;
-  onLocalImage?: (value: LocalImageSettings) => void;
-  onZImage?: (v: ZImageParams) => void;
-}) => {
-  const [open, setOpen] = useState(false);
-  const language = useStore((state) => state.language);
-
-  const labelParts = [
-    template.supportsAutoAspect && aspectRatio === 'auto' ? (language === 'zh' ? '自适应' : 'Auto') : aspectRatio,
-    template.supportsResolution ? resolution : null,
-    template.supportsQuality ? quality : null,
-    template.supportsOutputFormat ? outputFormat : null,
-    // Only show a duration chip when an actual duration control renders — the
-    // provider schema may set supportsDuration for the family while a specific
-    // mode (e.g. video-edit) has no range/options and doesn't send duration.
-    (template.supportsDuration && (template.durationRange || template.durationOptions?.length)) ? `${duration}s` : null,
-    template.audioSpeedRange ? `${audioSpeed ?? template.audioSpeedRange.defaultValue}×` : null,
-  ].filter(Boolean);
-
-  const hasAspect = template.supportsAspectRatio && template.aspectRatioOptions?.length;
-  const hasResolution = template.supportsResolution && template.resolutionOptions?.length;
-  const hasQuality = template.supportsQuality && template.qualityOptions?.length;
-  const hasOutputFormat = template.supportsOutputFormat && template.outputFormatOptions?.length;
-  // Slider wins when the template declares a range — even if some legacy
-  // schema also dumped a duration_options array in. Otherwise (range
-  // absent) fall back to the explicit-options pill row.
-  const hasDurationSlider = template.supportsDuration && template.durationRange;
-  const hasDurationOptions = template.supportsDuration && template.durationOptions?.length && !template.durationRange;
-  const hasAudioSetting = (template.audioSettingOptions?.length ?? 0) > 0 && !!onAudioSetting;
-  const hasAudioSpeed = !!template.audioSpeedRange && !!onAudioSpeed;
-  const hasVoiceDescription = !!template.supportsVoiceDescription && !!onVoiceDescription;
-  const hasVoiceLanguage = (template.audioLanguageOptions?.length ?? 0) > 0 && !!onVoiceLanguage;
-  const hasSeed = !!template.supportsSeed && !!onSeed;
-  const AUDIO_LABEL: Record<string, string> = {
-    auto: language === 'zh' ? '自动' : 'Auto',
-    origin: language === 'zh' ? '保留原声' : 'Keep source',
-    // 可灵 Kling：audio 是布尔（是否生成音效），复用 audioSetting 通道。
-    off: language === 'zh' ? '无声' : 'Silent',
-    on: language === 'zh' ? '生成音效' : 'With audio',
-  };
-
-  return (
-    <div className="relative nodrag">
-      <button
-        onClick={() => setOpen((current) => !current)}
-        className="flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-xs text-neutral-200 transition hover:bg-white/10"
-      >
-        <LayoutTemplate className="h-3 w-3 text-neutral-400" />
-        <span>{labelParts.join(' · ')}</span>
-        <ChevronDown className="h-3 w-3 text-neutral-500" />
-      </button>
-      {open ? (
-        <>
-          {/* Backdrop catches outside-clicks. Higher than the panel container so
-              clicking anywhere outside closes us — including in adjacent nodes. */}
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full left-0 z-40 mb-3 max-h-[70vh] w-[300px] overflow-y-auto overscroll-contain rounded-2xl border border-white/8 bg-[#15181d]/85 p-4 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.85)] backdrop-blur-[24px]" onWheel={event => event.stopPropagation()}>
-            {/* ── Duration ────────────────────────────────────────────── */}
-            {(hasDurationSlider || hasDurationOptions) ? (
-              <div className="mb-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '时长' : 'Duration'}</div>
-                <div className="mb-2 text-xl font-medium tracking-tight text-white">{duration}s</div>
-                {hasDurationSlider ? (
-                  <>
-                    <input
-                      type="range"
-                      min={template.durationRange!.min}
-                      max={template.durationRange!.max}
-                      step={template.durationRange!.step}
-                      value={duration}
-                      onChange={(event) => onDuration(Number(event.target.value))}
-                      className="prompt-duration-slider w-full accent-white"
-                    />
-                    {/* 只显示范围端点。逐秒把 4s…30s 全部铺开会在窄弹层里
-                        挤成一整串；当前值已经在滑块上方单独显示。 */}
-                    <div className="mt-1 flex justify-between text-[10px] text-neutral-500 tabular-nums">
-                      <span>{template.durationRange!.min}s</span>
-                      <span>{template.durationRange!.max}s</span>
-                    </div>
-                  </>
-                ) : null}
-                {hasDurationOptions ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {template.durationOptions!.map((opt) => (
-                      <PillButton key={opt} active={opt === duration} onClick={() => onDuration(opt)}>{opt}s</PillButton>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {/* ── Resolution (single row, reference UI) ────────────────── */}
-            {hasResolution ? (
-              <div className="mb-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '分辨率' : 'Resolution'}</div>
-                <div className="flex gap-1.5">
-                  {template.resolutionOptions!.map((option) => (
-                    <BlockButton key={option} className="min-w-0 flex-1" active={option === resolution} onClick={() => onResolution(option)}>
-                      {option}
-                    </BlockButton>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* ── Quality (image only) ────────────────────────────────── */}
-            {hasQuality ? (
-              <div className="mb-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '质量' : 'Quality'}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {template.qualityOptions!.map((option) => (
-                    <PillButton key={option} active={option === quality} onClick={() => onQuality(option)}>
-                      {option}
-                    </PillButton>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* ── Output format ──────────────────────────────────────── */}
-            {hasOutputFormat ? (
-              <div className="mb-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '输出格式' : 'Output format'}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {template.outputFormatOptions!.map((option) => (
-                    <PillButton key={option} active={option === outputFormat} onClick={() => onOutputFormat(option)}>
-                      {option.toUpperCase()}
-                    </PillButton>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* ── Aspect ratio (one row of compact shape chips) ────────── */}
-            {hasAspect ? (
-              <div>
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '宽高比' : 'Aspect ratio'}</div>
-                <div className="grid grid-cols-5 gap-1.5">
-                  {template.supportsAutoAspect ? (
-                    <AspectBlockButton
-                      ratio="auto"
-                      active={aspectRatio === 'auto'}
-                      onClick={() => onAspectRatio('auto')}
-                      label={language === 'zh' ? '自适应' : 'Auto'}
-                    />
-                  ) : null}
-                  {template.aspectRatioOptions!.map((option) => (
-                    <AspectBlockButton
-                      key={option}
-                      ratio={option}
-                      active={option === aspectRatio}
-                      onClick={() => onAspectRatio(option)}
-                      label={option}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* ── Audio ──────────────────────────────────────────────────
-                on/off 布尔对(如可灵的生成音效)用单个开关(2026-07 反馈);
-                多档位(HappyHorse 的 auto/origin/off)保留按钮组。 */}
-            {hasAudioSetting ? (
-              template.audioSettingOptions!.length === 2
-                && template.audioSettingOptions!.includes('on')
-                && template.audioSettingOptions!.includes('off') ? (
-                <div className="mt-4 flex items-center justify-between">
-                  <div>
-                    <div className="text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
-                    <div className="mt-0.5 text-[10px] text-neutral-500">
-                      {AUDIO_LABEL[audioSetting === 'on' ? 'on' : 'off']}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={audioSetting === 'on'}
-                    onClick={() => onAudioSetting!(audioSetting === 'on' ? 'off' : 'on')}
-                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-                      audioSetting === 'on' ? 'bg-violet-500/80' : 'bg-neutral-700'
-                    }`}
-                  >
-                    <span
-                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.35)] transition-[left] ${
-                        audioSetting === 'on' ? 'left-[18px]' : 'left-0.5'
-                      }`}
-                    />
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-4">
-                  <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '声音' : 'Audio'}</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {template.audioSettingOptions!.map((option) => (
-                      <BlockButton key={option} active={option === audioSetting} onClick={() => onAudioSetting!(option)}>
-                        {AUDIO_LABEL[option] ?? option}
-                      </BlockButton>
-                    ))}
-                  </div>
-                </div>
-              )
-            ) : null}
-
-            {hasAudioSpeed ? (
-              <div className="mt-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '语速' : 'Speech speed'}</div>
-                <div className="mb-2 text-xl font-medium tracking-tight text-white">{(audioSpeed ?? template.audioSpeedRange!.defaultValue).toFixed(2)}×</div>
-                <input
-                  type="range"
-                  min={template.audioSpeedRange!.min}
-                  max={template.audioSpeedRange!.max}
-                  step={template.audioSpeedRange!.step}
-                  value={audioSpeed ?? template.audioSpeedRange!.defaultValue}
-                  onChange={(event) => onAudioSpeed!(Number(event.target.value))}
-                  className="prompt-duration-slider w-full accent-white"
-                />
-                <div className="mt-1 flex justify-between text-[10px] text-neutral-500 tabular-nums">
-                  <span>{template.audioSpeedRange!.min}×</span>
-                  <span>{template.audioSpeedRange!.max}×</span>
-                </div>
-              </div>
-            ) : null}
-
-            {hasVoiceDescription ? (
-              <div className="mt-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '音色描述' : 'Voice description'}</div>
-                <textarea
-                  value={voiceDescription ?? ''}
-                  onChange={(event) => onVoiceDescription!(event.target.value)}
-                  rows={4}
-                  placeholder={language === 'zh'
-                    ? '例如：年轻女声，声音温柔清晰，普通话自然，语速适中'
-                    : 'e.g. A young warm female voice, clear and natural'}
-                  className="w-full resize-none rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-xs leading-relaxed text-neutral-200 outline-none transition placeholder:text-neutral-600 focus:border-white/25"
-                />
-              </div>
-            ) : null}
-
-            {hasVoiceLanguage ? (
-              <div className="mt-4">
-                <div className="mb-2 text-[11px] text-neutral-400">{language === 'zh' ? '朗读语言' : 'Language'}</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {template.audioLanguageOptions!.map((option) => (
-                    <PillButton key={option} active={option === (voiceLanguage ?? 'Auto')} onClick={() => onVoiceLanguage!(option)}>
-                      {option === 'Auto' && language === 'zh' ? '自动' : option}
-                    </PillButton>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* ── Seed (reproducible generation) ───────────────────────── */}
-            {template.supportsZImageParams && onZImage ? (
-              <ZImageParamsControls value={zImage} onChange={onZImage} zh={language === 'zh'} />
-            ) : null}
-            {template.localImageKind && onLocalImage ? (
-              <LocalImageParamsControls kind={template.localImageKind} value={localImage?.[template.localImageKind]}
-                onChange={value => onLocalImage({ ...localImage, [template.localImageKind!]: value })} zh={language === 'zh'} />
-            ) : null}
-            {hasSeed ? (
-              <div className="mt-4">
-                <div className="mb-2 flex items-center justify-between text-[11px] text-neutral-400">
-                  <span>{language === 'zh' ? '随机种子' : 'Seed'}</span>
-                  {typeof seed === 'number' ? (
-                    <button
-                      type="button"
-                      className="text-neutral-500 transition hover:text-neutral-300"
-                      onClick={() => onSeed!(undefined)}
-                    >
-                      {language === 'zh' ? '改为随机' : 'Randomize'}
-                    </button>
-                  ) : null}
-                </div>
-                <input
-                  type="number"
-                  min={0}
-                  max={2147483647}
-                  value={typeof seed === 'number' ? seed : ''}
-                  placeholder={language === 'zh' ? '留空即随机' : 'Empty = random'}
-                  onChange={(event) => {
-                    const raw = event.target.value.trim();
-                    if (raw === '') { onSeed!(undefined); return; }
-                    const n = Math.floor(Number(raw));
-                    if (Number.isFinite(n)) onSeed!(Math.max(0, Math.min(2147483647, n)));
-                  }}
-                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs tabular-nums text-neutral-200 outline-none transition focus:border-white/25"
-                />
-              </div>
-            ) : null}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-};
-
-/** Pill button used throughout MediaParamsPopover. Captures the glass style:
- *  inactive = subtle translucent fill; active = white text on a brighter
- *  ring + soft inner glow that matches the reference design. */
-function PillButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={clsx(
-        'rounded-full px-3 py-1.5 text-xs transition',
-        active
-          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
-          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** Block-style button used for Resolution + Aspect ratio in the params popover.
- *  Larger tap target, lives inside a 2/3-column grid. Mirrors the reference UI. */
-function BlockButton({
-  active,
-  onClick,
-  children,
-  className,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={clsx(
-        'flex items-center justify-center rounded-xl px-3 py-2 text-xs transition',
-        active
-          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
-          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
-        className,
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** Aspect-ratio chip — compact square: a rect icon scaled to the actual W:H
- *  on top, the bare "W:H" value underneath (reference-style one-row picker). */
-function AspectBlockButton({
-  ratio,
-  active,
-  onClick,
-  label,
-}: {
-  ratio: string;
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  // Parse "W:H"; default to a horizontal box for "auto" / unparseable.
-  const dims = (() => {
-    const m = /^(\d+):(\d+)$/.exec(ratio);
-    if (!m) return { w: 17, h: 11 };
-    const w = Number(m[1]);
-    const h = Number(m[2]);
-    if (!w || !h) return { w: 17, h: 11 };
-    const max = 17;
-    if (w >= h) return { w: max, h: Math.max(7, Math.round((max * h) / w)) };
-    return { w: Math.max(7, Math.round((max * w) / h)), h: max };
-  })();
-  return (
-    <button
-      onClick={onClick}
-      className={clsx(
-        'flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-lg px-1 text-[10px] leading-none transition',
-        active
-          ? 'bg-white/15 text-white ring-1 ring-white/30 shadow-[inset_0_0_12px_rgba(255,255,255,0.08)]'
-          : 'bg-white/[0.04] text-neutral-300 ring-1 ring-white/8 hover:bg-white/[0.07]',
-      )}
-    >
-      <span
-        className={clsx('shrink-0 rounded-[2px] border', active ? 'border-white/80' : 'border-white/40')}
-        style={{ width: dims.w, height: dims.h }}
-      />
-      <span className="max-w-full truncate">{label}</span>
-    </button>
-  );
-}
 
 const getNodeParams = (data: any) => ((data?.generationParams ?? {}) as Record<string, any>);
 
@@ -1020,7 +494,7 @@ function MediaEmptyPlaceholder({
   return (
     <div
       className={clsx(
-        'flex flex-col items-center justify-center gap-3 rounded-[12px] text-neutral-500',
+        'canvas-node-placeholder flex flex-col items-center justify-center gap-3 rounded-[12px] text-neutral-500',
         className,
       )}
       style={style}
@@ -1251,7 +725,7 @@ const NEUTRAL_NODE_SHELL = {
   // 1.5px cool-silver inset ring plus a faint silvery shine (no thick/heavy
   // glow), so it reads delicate and metallic rather than a chunky white border.
   selected: 'shadow-[inset_0_0_0_1.5px_rgba(226,232,240,0.95),inset_0_0_6px_-1px_rgba(226,232,240,0.35),0_0_10px_-2px_rgba(226,232,240,0.35)]',
-  surface: 'border-white/8 bg-[#23242a]',
+  surface: 'canvas-node-surface border-white/8',
 } as const;
 
 const NODE_TONE_STYLES = {
@@ -1416,6 +890,7 @@ const PromptPanel = ({
   const viewport = useViewport();
   const canvasPreferences = useCanvasPreferences(state => state.values);
   const inverseZoom = canvasPreferences.bottomToolbarScale / (viewport.zoom || 1);
+  const themeStyle = useCanvasThemeStyle();
   const language = useStore((state) => state.language);
   const edges = useStore((state) => state.edges);
   const allNodes = useStore((state) => state.nodes);
@@ -2785,7 +2260,8 @@ const PromptPanel = ({
             不再单独占一个底栏 dropdown。 */}
         <Dropdown
           label={<ModelBrandIcon model={activeModel} size={14} />}
-          value={displayNameFor(activeModelDisplay)}
+          value={activeModelDisplay}
+          displayValue={displayNameFor(activeModelDisplay)}
           options={displayModels}
           onChange={handleDisplayPick}
           menuMinWidth={240}
@@ -2805,7 +2281,7 @@ const PromptPanel = ({
             return (
               <div className="flex w-full items-center gap-2">
                 <ModelBrandIcon model={lookupModel} size={18} />
-                <span className={clsx('flex-1 truncate', selected ? 'text-cyan-300' : 'text-neutral-200')}>{displayNameFor(option)}</span>
+                <span className="flex-1 truncate">{displayNameFor(option)}</span>
                 {dur ? <span className="shrink-0 text-[10px] text-neutral-500">{dur}s</span> : null}
               </div>
             );
@@ -2957,7 +2433,7 @@ const PromptPanel = ({
           node's bottom-center as it scales. */}
       <div className="relative" style={{ height: 0, marginTop: `${16 * inverseZoom}px` }}>
         <div
-          className="absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#26272b]/97 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
+          className="canvas-node-prompt absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#26272b]/97 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
           style={{
             transform: `translateX(-50%) scale(${inverseZoom})`,
             transformOrigin: 'top center',
@@ -2984,7 +2460,8 @@ const PromptPanel = ({
           onClick={() => setExpanded(false)}
         >
           <div
-            className="relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 bg-[#1a1d22]/96 px-6 py-5 shadow-2xl"
+            className="canvas-menu-surface relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 px-6 py-5 shadow-2xl"
+            style={themeStyle}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -3434,7 +2911,7 @@ const BaseNode = ({
               className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
               style={{ pointerEvents: 'auto' }}
             >
-              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+              <div className="canvas-floating-surface pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
                 <Plus className="h-3 w-3 text-slate-50" />
               </div>
             </Handle>
@@ -3454,7 +2931,7 @@ const BaseNode = ({
               className="!static !h-6 !w-6 !transform-none !rounded-full !border-0 !bg-transparent"
               style={{ pointerEvents: 'auto' }}
             >
-              <div className="pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
+              <div className="canvas-floating-surface pointer-events-none flex h-6 w-6 items-center justify-center rounded-full border border-white/50 bg-[#1a1d22]/90 shadow-[0_0_10px_rgba(226,232,240,0.4)] backdrop-blur-md">
                 <Plus className="h-3 w-3 text-slate-50" />
               </div>
             </Handle>
@@ -3926,7 +3403,7 @@ function ImageAnnotateToolbar({ zh, tool, setTool, color, setColor, width, setWi
 }) {
   const [showColors, setShowColors] = useState(false);
   return (
-    <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_18px_40px_-18px_rgba(0,0,0,0.9)]">
+    <div className="canvas-floating-surface flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_18px_40px_-18px_rgba(0,0,0,0.9)]">
       <button
         type="button"
         onClick={onExit}
@@ -3953,7 +3430,7 @@ function ImageAnnotateToolbar({ zh, tool, setTool, color, setColor, width, setWi
           <span className="h-4 w-4 rounded-full border border-white/40" style={{ backgroundColor: color }} />
         </button>
         {showColors ? (
-          <div className="absolute left-1/2 top-full z-40 mt-2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-white/10 bg-[#12161d]/95 px-2 py-1.5 shadow-xl backdrop-blur-xl">
+          <div className="canvas-floating-surface absolute left-1/2 top-full z-40 mt-2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-white/10 bg-[#12161d]/95 px-2 py-1.5 shadow-xl backdrop-blur-xl">
             {ANNOTATE_COLORS.map((c) => (
               <button
                 key={c}
@@ -4811,7 +4288,7 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
 
   return (
     <>
-      <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+      <div className="canvas-floating-surface flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
         <Button variant="ghost" size="sm" onClick={() => openDraft('panorama')} className={actionButtonClass}>
           <Globe className="h-3.5 w-3.5" />
           {language === 'zh' ? '全景' : 'Panorama'}
@@ -5441,7 +4918,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
 
   return (
     <>
-      <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+      <div className="canvas-floating-surface flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
         <Button variant="ghost" size="sm" onClick={() => openSession('trim')} className={actionButtonClass}>
           <Scissors className="h-3.5 w-3.5" />
           {language === 'zh' ? '剪辑' : 'Trim'}
@@ -5666,7 +5143,7 @@ function AudioActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const downloadName = `${String(sourceData.customTitle || sourceData.sourceName || sourceNodeId).replace(/[^a-z0-9_\-一-鿿]+/gi, '-') || 'audio'}.mp3`;
 
   return (
-    <div className="flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
+    <div className="canvas-floating-surface flex items-center gap-1 rounded-full border border-white/12 bg-[#0f141d]/88 px-2 py-1.5 text-neutral-100 backdrop-blur-xl shadow-[0_16px_40px_-18px_rgba(2,8,20,0.75),0_0_0_1px_rgba(56,189,248,0.08)]">
       <Button
         variant="ghost"
         size="sm"
@@ -6000,7 +5477,7 @@ const VideoHoverControls = ({
           <Camera className="h-3.5 w-3.5" />
         </button>
         {captureOpen ? (
-          <div className="absolute bottom-full right-0 z-30 mb-0 min-w-[120px] rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-xl backdrop-blur-xl">
+          <div className="canvas-menu-surface absolute bottom-full right-0 z-30 mb-0 min-w-[120px] rounded-lg border border-white/10 bg-[#1a1d22]/95 py-1 shadow-xl backdrop-blur-xl">
             <button onClick={(e) => { e.stopPropagation(); onCapture('first'); setCaptureOpen(false); }} className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5">
               {language === 'zh' ? '截取首帧' : 'First frame'}
             </button>
@@ -7062,7 +6539,7 @@ function ResilientImage({
     slowProxyTimer.current = window.setTimeout(() => {
       triedDirect.current = true;
       setUseProxy(false);
-    }, 3500);
+    }, 15000);
     return () => {
       if (slowProxyTimer.current) {
         clearTimeout(slowProxyTimer.current);
@@ -7461,10 +6938,17 @@ function PanoramaOpenButton({ onClick, compact = false }: { onClick: (event: Rea
   );
 }
 
+function AssetSyncNotice({ zh }: { zh: boolean }) {
+  return <div role="status" className="pointer-events-none absolute bottom-2 left-2 z-10 rounded-md bg-black/65 px-2 py-1 text-[10px] text-white/80">
+    {zh ? '已生成 · 存储同步中，可预览' : 'Generated · syncing storage, preview ready'}
+  </div>;
+}
+
 const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   // Defensive: agent-created nodes (or other producers) may omit `data`.
   // Without this fallback, React crashes the entire workspace on render.
   const data = rawData ?? {};
+  const hasCurrentTaskPreview = hasTaskPreview(data);
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
@@ -7653,7 +7137,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             )
             : undefined
       }
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
@@ -7690,6 +7174,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             mediaKind="image"
           />
           <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
+          {hasCurrentTaskPreview ? <AssetSyncNotice zh={language === 'zh'} /> : null}
           {isPanorama && !annotate ? (
             <PanoramaOpenButton
               onClick={(event) => {
@@ -7730,6 +7215,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
 
 const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
+  const hasCurrentTaskPreview = hasTaskPreview(data);
   const language = useStore((state) => state.language);
   const addNode = useStore((state) => state.addNode);
   const nodes = useStore((state) => state.nodes);
@@ -7808,7 +7294,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       tone="video"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
-      loading={data.status === 'generating' || data.status === 'running'}
+      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       width={videoBox.width}
@@ -7863,6 +7349,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
             />
           ) : null}
           <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
+          {hasCurrentTaskPreview ? <AssetSyncNotice zh={language === 'zh'} /> : null}
         </div>
         {data.url ? <VideoHoverControls videoRef={videoRef} hovered={hovered} onCapture={handleCapture} /> : null}
       </div>
@@ -8198,7 +7685,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   // shellBackground 是内联样式，CSS 主题覆盖不到 — 按主题取底色。
-  const shellBase = useStore((state) => state.theme) === 'light' ? '#ffffff' : '#16181d';
+  const shellBase = 'var(--canvas-node-surface, #16181d99)';
   const nodes = useStore((state) => state.nodes);
   const edges = useStore((state) => state.edges);
   const backendModels = useStore((state) => state.backendModels);
@@ -8431,7 +7918,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       </button>
       {showBgPalette ? (
         <div
-          className="absolute left-0 top-9 z-30 w-[168px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
+          className="canvas-menu-surface absolute left-0 top-9 z-30 w-[168px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="grid grid-cols-6 gap-1.5">
@@ -8479,7 +7966,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
       </button>
       {showHlPalette ? (
         <div
-          className="absolute left-0 top-9 z-30 w-[176px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
+          className="canvas-menu-surface absolute left-0 top-9 z-30 w-[176px] rounded-xl border border-white/10 bg-[#1a1d22]/98 p-2 shadow-2xl backdrop-blur-xl"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div className="grid grid-cols-6 gap-1.5">
@@ -8512,7 +7999,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
   /** Markdown 工具栏：在全屏「编辑」模式的 textarea 上方，点按往光标处插入
    *  Markdown 语法（不再是 execCommand 写 HTML）。内容统一为 Markdown 源。 */
   const renderMarkdownToolbar = () => (
-    <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
+    <div className="canvas-floating-surface flex items-center gap-1 rounded-full border border-white/10 bg-[#1a1d22]/95 px-2 py-1.5 shadow-2xl backdrop-blur-xl">
       {renderHighlightPalette()}
       <div className="mx-0.5 h-4 w-px bg-white/10" />
       {([
@@ -8645,7 +8132,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
                   dangerouslySetInnerHTML={{ __html: renderedHtml }}
                 />
                 {!data.content ? (
-                  <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
+                  <div className="canvas-node-placeholder pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-center">
                     <FileText className="h-6 w-6 text-neutral-600" />
                     <div className="text-sm text-neutral-400">{language === 'zh' ? '输入提示词生成文本' : 'Enter a prompt to generate text'}</div>
                     <div className="text-xs text-neutral-600">{language === 'zh' ? '双击编辑文本' : 'Double-click to edit'}</div>
@@ -8892,6 +8379,7 @@ import { StickyNoteNode } from './StickyNoteNode';
 import { DirectorStageNode } from './DirectorStageNode';
 import { NodeVersionsBadge, NodeVersionsModal } from './NodeVersions';
 import type { NodeVersion } from '../../store';
+import { hasTaskPreview } from '../../media-result-state';
 import { CompositionPreviewNode } from './CompositionPreviewNode';
 import { LayerEditorNode } from './LayerEditorNode';
 import { VideoEditorNode } from './VideoEditorNode';
