@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { ArrowUp, ChevronRight, Layers3, LoaderCircle, Plus, Search, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../auth/AuthProvider';
@@ -20,6 +20,7 @@ import './home/home.css';
 const COLLAPSE_KEY = 'ccy-home-sidebar-collapsed';
 export function HomePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [params, setParams] = useSearchParams();
   const { user, creditSummary, logout } = useAuth();
   const language = useStore(s => s.language);
@@ -92,7 +93,7 @@ export function HomePage() {
   const greeting = zh ? (hour < 6 ? '夜深了' : hour < 12 ? '上午好' : hour < 18 ? '下午好' : '晚上好') : (hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening');
   return <div className={`home-page ${collapsed ? 'is-collapsed' : ''}`} data-theme={theme}>
     {!collapsed && <button className="home-sidebar-scrim" type="button" aria-label={zh ? '收起导航遮罩' : 'Close navigation'} onClick={toggleSidebar} />}
-    <HomeSidebar view={view} collapsed={collapsed} studioOpen={studioOpen} zh={zh} admin={user?.role === 'admin'} onToggle={toggleSidebar} onStudioToggle={() => setStudioOpen(v => !v)} onView={changeView} onCreate={startCreating} onAccount={() => openAccount()} onCli={() => openAccount('cli')} onHelp={() => openAccount('help')} onAdmin={() => navigate('/admin')} />
+    <HomeSidebar view={view} collapsed={collapsed} studioOpen={studioOpen} zh={zh} admin={user?.role === 'admin'} onToggle={toggleSidebar} onStudioToggle={() => setStudioOpen(v => !v)} onView={changeView} onCreate={startCreating} onAccount={() => openAccount()} onCli={() => openAccount('cli')} onHelp={() => openAccount('help')} onAdmin={() => navigate('/admin')} onFilm={() => navigate(location.pathname.startsWith('/__preview/') ? '/__preview/film' : '/studio/film')} />
     <div className="home-main-shell">
       <header className="home-topbar"><button className="home-community" type="button" onClick={() => openAccount('help')}>{zh ? '创作指南' : 'Creator guide'}</button><button className="home-credit-pill" type="button" onClick={() => openAccount('ledger')} aria-label={zh ? '查看我的积分' : 'View my credits'}><Sparkles size={15} /><span>{creditSummary?.current_balance?.toLocaleString() ?? '—'}</span></button><button className="home-membership-pill" type="button" disabled title={zh ? '会员订阅服务尚未开放' : 'Membership is not available yet'}>{zh ? '会员 · 敬请期待' : 'Membership · Soon'}</button><button className="home-avatar-button" type="button" onClick={() => openAccount()} aria-label={zh ? '打开我的账户' : 'Open my account'}><UserAvatar avatar={user?.avatar} name={user?.name || 'CCY'} className="home-user-avatar" fallbackClassName="home-avatar-fallback" /></button></header>
       <div className={`home-page-content ${view === 'tryon' ? 'home-studio-content' : ''}`}>

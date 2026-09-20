@@ -31,7 +31,8 @@ SELECT p.id, p.owner_id, p.name, p.cover_url, p.folder_id, p.is_collaborative,
        p.created_at, p.updated_at
 FROM projects p
 LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
-WHERE p.owner_id = $1 OR pm.user_id = $1
+WHERE (p.owner_id = $1 OR pm.user_id = $1)
+  AND NOT EXISTS (SELECT 1 FROM film_projects f WHERE f.id = p.id)
 ORDER BY p.created_at DESC
 `
 

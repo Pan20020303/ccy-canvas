@@ -34,6 +34,7 @@ export type StoryboardDraft = {
   action?: string;
   continuity?: string;
   prompt?: string;
+  videoPrompt?: string;
   negativePrompt?: string;
   imageModel?: string;
   imageProviderId?: string;
@@ -753,6 +754,7 @@ export function parseStoryboardResponse(content: string, assets: AutomationAsset
       action: readStructuredText(value.action ?? value.actionChain, " → ") || undefined,
       continuity: continuity || undefined,
       prompt: imagePrompt || description,
+      videoPrompt: readPrompt(value.videoPrompt) || undefined,
       negativePrompt: readStructuredText(value.negativePrompt ?? value.negativeConstraints, "；") || undefined,
       assetIds,
       status: "draft" as const,

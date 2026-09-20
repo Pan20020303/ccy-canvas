@@ -511,6 +511,24 @@ describe("AdminModelCatalogPage provider config editor", () => {
     expect(requests.some((request) => request.method === "POST" && request.url.endsWith("/test"))).toBe(true);
   });
 
+  it.each([401, 403, 500])("does not label legacy ok=true HTTP %s probes as usable", async (httpStatus) => {
+    stubAdminApis([makeProviderConfig()], {
+      testResponse: { ok: true, http_status: httpStatus, latency_ms: 12 },
+    });
+    const rendered = await renderPage();
+    root = rendered.root;
+    const testButton = Array.from(rendered.host.querySelectorAll("button")).find((item) => item.textContent?.trim() === "测试");
+    expect(testButton).not.toBeNull();
+    await act(async () => {
+      testButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(document.body.textContent).toContain("连接失败");
+    expect(document.body.textContent).not.toContain("连接可用");
+    expect(document.body.textContent).toContain(`HTTP：${httpStatus}`);
+    if (httpStatus === 401) expect(document.body.textContent).toContain("请检查 API Key");
+  });
+
   it("saves a per-model credit cost from the model editor", async () => {
     const requests = stubAdminApis([makeProviderConfig()]);
     const rendered = await renderPage();

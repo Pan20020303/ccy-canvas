@@ -5,7 +5,7 @@ export type HomeView = 'home' | 'canvases' | 'gallery' | 'tryon';
 type Props = {
   view: HomeView; collapsed: boolean; studioOpen: boolean; zh: boolean; admin: boolean;
   onToggle: () => void; onStudioToggle: () => void; onView: (view: HomeView) => void;
-  onCreate: () => void; onAccount: () => void; onHelp: () => void; onCli: () => void; onAdmin: () => void;
+  onCreate: () => void; onAccount: () => void; onHelp: () => void; onCli: () => void; onAdmin: () => void; onFilm?: () => void;
 };
 
 export function HomeSidebar(p: Props) {
@@ -29,6 +29,7 @@ export function HomeSidebar(p: Props) {
       <button type="button" className="home-nav-item" disabled title={p.zh ? '创作者竞技场 · 筹备中' : 'Creator arena · Coming soon'}><Trophy size={20} strokeWidth={1.6} /><span className="home-nav-label">{p.zh ? '创作者竞技场' : 'Creator arena'}</span><small className="home-nav-label home-soon">{p.zh ? '筹备中' : 'Soon'}</small></button>
       <button type="button" className="home-nav-item" onClick={p.onStudioToggle} aria-expanded={p.studioOpen} aria-controls="home-studio-nav" title={p.zh ? '工作室' : 'Studio'}><WandSparkles size={20} strokeWidth={1.6} /><span className="home-nav-label">{p.zh ? '工作室' : 'Studio'}</span><ChevronDown className={`home-nav-label home-nav-chevron ${p.studioOpen ? 'is-open' : ''}`} size={15} /></button>
       {p.studioOpen && <div id="home-studio-nav" className="home-studio-nav">
+        <button type="button" className="home-nav-item" title={p.zh ? '一键成片' : 'Film studio'} onClick={p.onFilm}><Clapperboard size={16} /><span className="home-nav-label">{p.zh ? '一键成片' : 'Film studio'}</span></button>
         <button type="button" className={`home-nav-item ${p.view === 'tryon' ? 'is-active' : ''}`} aria-current={p.view === 'tryon' ? 'page' : undefined} title={p.zh ? '模特试衣库' : 'Virtual try-on'} onClick={() => p.onView('tryon')}><Shirt size={16} /><span className="home-nav-label">{p.zh ? '模特试衣库' : 'Virtual try-on'}</span></button>
         <button type="button" className="home-nav-item" disabled title={p.zh ? '数字人 · 尚未开放' : 'Digital humans · Coming soon'}><Video size={16} /><span className="home-nav-label">{p.zh ? '数字人' : 'Digital humans'}</span></button>
       </div>}

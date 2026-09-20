@@ -69,11 +69,12 @@ type ChatMessage struct {
 // we need today. More fields (tools, response_format, ...) can be added
 // as later phases use them.
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model       string            `json:"model"`
+	Messages    []ChatMessage     `json:"messages"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Temperature *float64          `json:"temperature,omitempty"`
+	Stream      bool              `json:"stream,omitempty"`
+	Thinking    map[string]string `json:"thinking,omitempty"`
 }
 
 // ChatResponse mirrors OpenAI's response. NewAPI returns the same shape.

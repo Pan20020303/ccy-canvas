@@ -485,6 +485,9 @@ func isPermanentError(err error) bool {
 		if ae.Code == apperror.CodeInvalidInput {
 			return true
 		}
+		if ae.Code == apperror.CodeUpstreamUnavailable || ae.Code == apperror.CodeValidation {
+			return !ae.Retryable
+		}
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

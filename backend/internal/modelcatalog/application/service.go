@@ -1361,14 +1361,12 @@ func (s *Service) generateTextViaNewAPI(ctx context.Context, req GenerateRequest
 			{Role: "user", Content: req.Prompt},
 		},
 		MaxTokens: textMaxTokensForModel(req.Model),
+		Thinking:  filmTextThinking(req),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &GenerateResult{
-		Type:    "text",
-		Content: resp.Choices[0].Message.Content,
-	}, nil
+	return textCompletionResult(resp.Choices[0].Message.Content, resp.Choices[0].FinishReason)
 }
 
 // Generate routes the request to a vendor. Image requests get automatic
@@ -3265,6 +3263,9 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 		"max_tokens": textMaxTokensForModel(req.Model),
 	}
 	applyQwenThinkingDefaults(body, req.Model)
+	if thinking := filmTextThinking(req); thinking != nil {
+		body["thinking"] = thinking
+	}
 	bodyJSON, _ := json.Marshal(body)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(string(bodyJSON)))
@@ -3290,16 +3291,17 @@ func (s *Service) generateText(ctx context.Context, baseURL, apiKey string, req 
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, apperror.Wrap(apperror.CodeInternal, "Failed to parse provider response", err)
 	}
 	if len(result.Choices) == 0 {
-		return nil, apperror.New(apperror.CodeInternal, "Provider returned no completions")
+		return textCompletionResult("", "")
 	}
 
-	return &GenerateResult{Type: "text", Content: result.Choices[0].Message.Content}, nil
+	return textCompletionResult(result.Choices[0].Message.Content, result.Choices[0].FinishReason)
 }
 
 // ─── Video Generation (sora-style: POST /v1/videos → poll GET /v1/videos/{id}) ──

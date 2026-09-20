@@ -1,5 +1,7 @@
 import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { NodeErrorBanner } from './NodeErrorBanner';
+import { PromptMentionInput, type PromptInputHandle } from './PromptMentionInput';
+import { migrateMentionTags, promptMentionTrigger, replacePromptMention, resolvePromptMentions, wrapMentionTag, type PromptMention } from './prompt-mentions';
 import { useCanvasPreferences } from '../../canvas-preferences';
 import { useCanvasThemeStyle } from '../../use-canvas-theme';
 import { getNodeErrorPresentation, nodeFailureReason } from './node-errors';
@@ -507,129 +509,6 @@ function MediaEmptyPlaceholder({
   );
 }
 
-type PromptMention = { tag: string; id: string; thumb: string; kind?: string };
-
-// 提及标签用零宽词连接符(U+2060)包裹干净标签,而非可见的 [@图片 1] ——
-// 镜像层显示成「图片1」这类干净文本(参考需求图),零宽字符在 textarea 与
-// 镜像层都不占宽度,光标依旧逐字对齐;词连接符不可打印,也不会把用户手打的
-// 「图片1」误判成提及(必须两侧都带 U+2060 才匹配)。
-const MENTION_WRAP = String.fromCharCode(0x2060); // WORD JOINER(零宽/非断行/不可打印)
-// 标签开头预留一个全角空格(≈1em)作为缩略图的位置槽:缩略图绝对定位盖在这个槽
-// 上,既不盖住相邻文字、也不破坏 textarea↔镜像层的逐字光标对齐(两层都含这个空格、
-// 宽度一致)。resolveTagsToMentions 会把整段标签替换成 @id,槽字符不会进模型提示词。
-const MENTION_THUMB_SLOT = String.fromCharCode(0x3000); // IDEOGRAPHIC SPACE(全角空格,≈1em)
-const wrapMentionTag = (label: string) => `${MENTION_WRAP}${MENTION_THUMB_SLOT}${label}${MENTION_WRAP}`;
-const OLD_MENTION_TAG_RE = /^\[@(.+)\]$/; // 旧格式 [@图片 1]
-
-/** 把旧的 [@图片 1] 提及迁移为零宽包裹的干净标签(顺手去掉标签里的空格)。
- *  返回 null 表示无需改动。text + mentions 一并改写,持久化后即完成清洗。 */
-function migrateMentionTags(text: string, mentions: PromptMention[]): { text: string; mentions: PromptMention[] } | null {
-  let changed = false;
-  let nextText = text;
-  const rewrite = (m: PromptMention, label: string): PromptMention => {
-    changed = true;
-    const newTag = wrapMentionTag(label);
-    if (nextText.includes(m.tag)) nextText = nextText.split(m.tag).join(newTag);
-    return { ...m, tag: newTag };
-  };
-  const nextMentions = mentions.map((m) => {
-    // 旧格式 [@图片 1] → 零宽包裹 + 缩略图槽(顺手去空格)。
-    const oldMatch = OLD_MENTION_TAG_RE.exec(m.tag);
-    if (oldMatch) return rewrite(m, oldMatch[1].replace(/\s+/g, ''));
-    // v1 包裹(有零宽包裹但无缩略图槽)→ 补上槽,让老提及也显示缩略图。
-    if (m.tag.startsWith(MENTION_WRAP) && m.tag.endsWith(MENTION_WRAP) && m.tag[1] !== MENTION_THUMB_SLOT) {
-      return rewrite(m, m.tag.slice(MENTION_WRAP.length, m.tag.length - MENTION_WRAP.length));
-    }
-    return m;
-  });
-  return changed ? { text: nextText, mentions: nextMentions } : null;
-}
-
-/** 行内 @ 提及开头的小预览图:绝对定位盖在标签开头预留的全角空格槽上,不占布局、
- *  不破坏光标对齐、也不盖住相邻文字。有缩略图(图片/视频封面)显示图片,音频/文本
- *  等无图则显示类型图标底片。 */
-function MentionThumb({ thumb, kind }: { thumb: string; kind?: string }) {
-  const base: React.CSSProperties = {
-    position: 'absolute',
-    left: 0,
-    top: '50%',
-    transform: 'translateY(-50%)',
-    width: 13,
-    height: 13,
-    borderRadius: 3,
-    overflow: 'hidden',
-    pointerEvents: 'none',
-  };
-  if (thumb) {
-    return (
-      <img
-        src={toRenderableMediaUrl(thumb, { thumbWidth: 720 })}
-        alt=""
-        aria-hidden
-        style={{ ...base, objectFit: 'cover', border: '1px solid rgba(255,255,255,0.20)' }}
-      />
-    );
-  }
-  const glyph = kind === 'audio' ? '♪' : kind === 'video' ? '▶' : kind === 'text' ? 'T' : '#';
-  return (
-    <span
-      aria-hidden
-      style={{
-        ...base,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(34,211,238,0.16)',
-        border: '1px solid rgba(34,211,238,0.28)',
-        fontSize: 9,
-        lineHeight: 1,
-        color: '#a5e8f2',
-      }}
-    >
-      {glyph}
-    </span>
-  );
-}
-
-/** Render text with inline mention chips. Splits on the mention tags. The chip is
- *  a caret-aligned colored label (镜像层与透明 textarea 逐字对齐);标签开头预留一个
- *  全角空格槽,缩略图(MentionThumb)绝对定位盖在槽上 —— 既显示缩略图又不破坏光标
- *  对齐、不盖相邻文字。 */
-function renderMentionRichText(text: string, mentions: PromptMention[]): React.ReactNode {
-  if (!mentions.length) return text;
-
-  // Build a regex that matches any of the mention tags.
-  const escaped = mentions.map((m) => m.tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const regex = new RegExp(`(${escaped.join('|')})`, 'g');
-  const parts = text.split(regex);
-
-  return parts.map((part, i) => {
-    const mention = mentions.find((m) => m.tag === part);
-    if (mention) {
-      // 缩略图只在标签带槽(第 2 个字符是全角空格)时渲染 —— 无槽的老标签不放缩略图,
-      // 免得像以前那样盖住相邻文字(迁移后基本都会带槽)。
-      const hasSlot = mention.tag[1] === MENTION_THUMB_SLOT;
-      return (
-        <span
-          key={i}
-          data-mention-id={mention.id}
-          // 只用颜色提亮/加清晰度 —— 镜像层必须与透明 textarea 同字重,
-          // 改 font-weight 会让提及字符变宽、光标错位,故仅提亮颜色。
-          className="relative rounded-sm text-cyan-200"
-          style={{
-            backgroundColor: 'rgba(34, 211, 238, 0.16)',
-            boxShadow: '0 0 0 1px rgba(34, 211, 238, 0.28)',
-          }}
-          title={mention.tag}
-        >
-          {hasSlot ? <MentionThumb thumb={mention.thumb} kind={mention.kind} /> : null}
-          {part}
-        </span>
-      );
-    }
-    return <span key={i}>{part}</span>;
-  });
-}
 
 /** 引用悬停预览(参考交互):图片放大 / 视频静音循环 / 音频迷你播放器。
  *  portal 到 body + fixed 定位 —— RF 节点带 transform,fixed 在其内部会退化
@@ -987,7 +866,9 @@ const PromptPanel = ({
 
   const [mentionOpen, setMentionOpen] = useState(false);
   // 点击某个「图片N」提及时弹出的切换下拉:提及是原子整体,点它切换指向的参考图。
-  const [mentionPicker, setMentionPicker] = useState<{ tag: string; id: string; kind: string; left: number; top: number } | null>(null);
+  const [mentionPicker, setMentionPicker] = useState<{ tag: string; start: number; id: string; kind: string; left: number; top: number } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionRangeRef = useRef<{ start: number; end: number } | null>(null);
 
   // 引用悬停预览:strip 缩略图或行内 @提及 chip 悬停时浮出(屏幕坐标)。
   // 关闭走 220ms 延时,让指针能从 chip 移进浮层里点音频播放。
@@ -1007,32 +888,16 @@ const PromptPanel = ({
     cancelRefHoverClear();
     setRefHover({ id, left: rect.left + rect.width / 2, top: rect.top });
   }, [cancelRefHoverClear]);
-  // 行内 @提及命中检测:镜像层与 textarea 逐字符对齐,提及 span 的屏幕
-  // rect 就是文本里芯片的真实位置 —— textarea 在上层收事件,拿坐标来撞。
-  const hitTestMentionHover = useCallback((event: React.MouseEvent, overlayEl: HTMLElement | null) => {
-    if (!overlayEl) return;
-    const spans = overlayEl.querySelectorAll<HTMLElement>('[data-mention-id]');
-    for (const s of Array.from(spans)) {
-      const r = s.getBoundingClientRect();
-      if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
-        showRefHover(s.dataset.mentionId ?? '', r);
-        return;
-      }
-    }
-    scheduleRefHoverClear();
-  }, [showRefHover, scheduleRefHoverClear]);
   const [expanded, setExpanded] = useState(false);
   // 出图张数选择器:平时收成一个「×N」按钮,点开才展开 1/2/4。
   const [outputMenuOpen, setOutputMenuOpen] = useState(false);
-  const taRef = useRef<HTMLTextAreaElement>(null);
-  const compactOverlayRef = useRef<HTMLDivElement>(null);
-  const expandedOverlayRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<PromptInputHandle>(null);
 
   // 紧凑面板的编辑器自适应高度：初始一两行（参考态），随内容长高，到上限后
   // 改用滚动条。展开弹窗里的编辑器走 flex-1，不参与。
   const [editorHeight, setEditorHeight] = useState(PROMPT_EDITOR_MIN_H);
   useLayoutEffect(() => {
-    const ta = taRef.current;
+    const ta = taRef.current?.element;
     if (!ta || expanded) return;
     // 量内容高度：先压到 0 再读 scrollHeight（同一布局帧内完成，不闪）。
     // 高度变化是瞬时的（不加 CSS 过渡）：面板带 backdrop-blur，逐帧动画高度
@@ -1263,40 +1128,9 @@ const PromptPanel = ({
     return () => { alive = false; };
   }, [slashOpen, isTextNode]);
 
-  /** Measure the SCREEN (viewport) position of the @ trigger character inside
-   *  the textarea, where top points to just below the @ line. Screen coords let
-   *  the dropdown be portaled to <body> with position:fixed and escape the RF
-   *  node's transform stacking context (same trick as RefHoverPreview) — inline
-   *  it was painted under the z-50 bottom controls. */
-  const measureMentionPosition = useCallback((textarea: HTMLTextAreaElement, atIndex: number) => {
-    const mirror = document.createElement('div');
-    const style = getComputedStyle(textarea);
-    mirror.style.cssText = [
-      'position:absolute', 'visibility:hidden', 'white-space:pre-wrap', 'word-wrap:break-word',
-      'overflow:hidden', `width:${textarea.clientWidth}px`,
-      `font:${style.font}`, `letter-spacing:${style.letterSpacing}`,
-      `line-height:${style.lineHeight}`, `padding:${style.padding}`,
-      `border:${style.border}`, 'box-sizing:border-box',
-    ].join(';');
-    const textBefore = textarea.value.slice(0, atIndex);
-    mirror.appendChild(document.createTextNode(textBefore));
-    const span = document.createElement('span');
-    span.textContent = '|';
-    mirror.appendChild(span);
-    document.body.appendChild(mirror);
-    const spanRect = span.getBoundingClientRect();
-    const mirrorRect = mirror.getBoundingClientRect();
-    document.body.removeChild(mirror);
-    const lineHeight = parseFloat(style.lineHeight) || 20;
-    const taRect = textarea.getBoundingClientRect();
-    return {
-      // (spanRect - mirrorRect) = the char offset within the textarea's box;
-      // add the textarea's on-screen rect to get viewport coords for the fixed
-      // portal, then drop below the @ line and account for the scroll offset.
-      left: taRect.left + (spanRect.left - mirrorRect.left),
-      top: taRect.top + (spanRect.top - mirrorRect.top) - textarea.scrollTop + lineHeight,
-    };
-  }, []);
+  /** Use the real DOM caret position; fixed-width chips no longer need a
+   *  character-aligned textarea mirror. The picker remains in a body portal. */
+  const measureMentionPosition = useCallback((input: PromptInputHandle, atIndex: number) => input.caretRect(atIndex), []);
 
   /** Persist text + mentions to the node data — debounced so we don't hammer
    *  the store on every keystroke, and so canvas auto-save batches with it. */
@@ -1331,13 +1165,16 @@ const PromptPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upstreamKey]);
 
-  // 提示词框自带撤销/重做栈:受控 textarea + @提及规范化会让浏览器原生 Ctrl+Z
-  // 失效(React 重设 value 会清空原生撤销栈)。这里维护 {文本,光标} 快照栈。
-  const promptUndoRef = useRef<{ t: string; s: number; e: number }[]>([]);
-  const promptRedoRef = useRef<{ t: string; s: number; e: number }[]>([]);
+  // Preserve both text and reference bindings in each undo/redo snapshot.
+  type PromptSnapshot = { t: string; m: PromptMention[]; s: number; e: number };
+  const promptUndoRef = useRef<PromptSnapshot[]>([]);
+  const promptRedoRef = useRef<PromptSnapshot[]>([]);
   const lastPromptEditRef = useRef(0);
-  const applyPromptSnapshot = (snap: { t: string; s: number; e: number }) => {
+  const snapshotPrompt = (): PromptSnapshot => ({ t: text, m: mentions, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+  const checkpointPrompt = () => { promptUndoRef.current.push(snapshotPrompt()); promptRedoRef.current = []; lastPromptEditRef.current = 0; };
+  const applyPromptSnapshot = (snap: PromptSnapshot) => {
     setText(snap.t);
+    setMentions(snap.m); setMentionOpen(false); setMentionPicker(null);
     requestAnimationFrame(() => {
       const ta = taRef.current;
       if (ta) { ta.focus(); ta.setSelectionRange(snap.s, snap.e); }
@@ -1345,12 +1182,12 @@ const PromptPanel = ({
   };
   const undoPrompt = () => {
     if (!promptUndoRef.current.length) return;
-    promptRedoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+    promptRedoRef.current.push(snapshotPrompt());
     applyPromptSnapshot(promptUndoRef.current.pop()!);
   };
   const redoPrompt = () => {
     if (!promptRedoRef.current.length) return;
-    promptUndoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+    promptUndoRef.current.push(snapshotPrompt());
     applyPromptSnapshot(promptRedoRef.current.pop()!);
   };
 
@@ -1359,7 +1196,7 @@ const PromptPanel = ({
     // 删除单独成步(pop 出来更符合直觉)。
     const now = Date.now();
     if (promptUndoRef.current.length === 0 || now - lastPromptEditRef.current > 350 || value.length < text.length) {
-      promptUndoRef.current.push({ t: text, s: taRef.current?.selectionStart ?? text.length, e: taRef.current?.selectionEnd ?? text.length });
+      promptUndoRef.current.push(snapshotPrompt());
       if (promptUndoRef.current.length > 300) promptUndoRef.current.shift();
     }
     lastPromptEditRef.current = now;
@@ -1367,11 +1204,13 @@ const PromptPanel = ({
     setText(value);
     const cursor = taRef.current?.selectionStart ?? value.length;
     const before = value.slice(0, cursor);
-    const match = /@(\S*)$/.exec(before);
+    const match = promptMentionTrigger(value, cursor);
+    mentionRangeRef.current = match;
+    setMentionPicker(null); setMentionIndex(0);
     const shouldOpen = Boolean(match) && upstreamNodes.length > 0;
     setMentionOpen(shouldOpen);
     if (shouldOpen && match && taRef.current) {
-      const atIndex = before.lastIndexOf('@');
+      const atIndex = match.start;
       setMentionPos(measureMentionPosition(taRef.current, atIndex));
     }
     // 快捷提示词:行首或空白后的 "/xxx" 触发,列出并过滤 prompt 模板(仅文本节点)。
@@ -1391,16 +1230,18 @@ const PromptPanel = ({
 
   const insertMention = (upstream: typeof upstreamNodes[0]) => {
     const ta = taRef.current;
-    // setText 触发的重渲染会把 textarea 的 scrollTop 重置回 0,长提示词里插入提及
-    // 就会「跳到开头」。先记下滚动位置,插入后连同光标一起还原,并同步镜像层。
+    // Restore the real caret and scroll position after inserting an atomic chip.
     const prevScrollTop = ta?.scrollTop ?? 0;
-    const cursor = ta?.selectionStart ?? text.length;
-    const before = text.slice(0, cursor).replace(/@\S*$/, '');
-    const after = text.slice(cursor);
+    const range = mentionRangeRef.current;
+    if (!range || text[range.start] !== '@') return;
+    const before = text.slice(0, range.start);
+    const after = text.slice(range.end);
     const tag = wrapMentionTag(upstream.label);
     const caret = (before + tag + ' ').length;
+    checkpointPrompt();
     setText(before + tag + ' ' + after);
-    setMentions((prev) => [...prev.filter((m) => m.id !== upstream.id), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
+    setMentions((prev) => [...prev.filter((m) => m.tag !== tag), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
+    mentionRangeRef.current = null;
     setMentionOpen(false);
     setTimeout(() => {
       const el = taRef.current;
@@ -1408,48 +1249,23 @@ const PromptPanel = ({
       el.focus();
       el.setSelectionRange(caret, caret);
       el.scrollTop = prevScrollTop;
-      syncOverlayScroll(el, compactOverlayRef.current);
-      syncOverlayScroll(el, expandedOverlayRef.current);
     }, 0);
   };
 
-  /** 点击 textarea:若落在某个「图片N」提及镜像 span 上,把光标吸附到提及边界
-   *  (原子整体,不落在中间),并在该处弹出切换下拉。命中返回 true 已处理。 */
-  const handleEditorClick = (event: React.MouseEvent<HTMLTextAreaElement>, overlayEl: HTMLElement | null) => {
-    if (!overlayEl) return;
-    const ta = event.currentTarget;
-    const spans = overlayEl.querySelectorAll<HTMLElement>('[data-mention-id]');
-    for (const s of Array.from(spans)) {
-      const r = s.getBoundingClientRect();
-      if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
-        const id = s.dataset.mentionId ?? '';
-        const m = mentions.find((mm) => mm.id === id);
-        if (!m) return;
-        // 吸附光标到被点提及的末尾(原子化)。
-        const pos = ta.selectionStart;
-        const val = ta.value;
-        let idx = val.indexOf(m.tag);
-        while (idx >= 0) {
-          if (pos > idx && pos <= idx + m.tag.length) { ta.setSelectionRange(idx + m.tag.length, idx + m.tag.length); break; }
-          idx = val.indexOf(m.tag, idx + 1);
-        }
-        setMentionPicker({ tag: m.tag, id: m.id, kind: m.kind ?? '', left: r.left, top: r.bottom + 4 });
-        setMentionOpen(false);
-        return;
-      }
-    }
-    setMentionPicker(null);
+  const handleMentionClick = (mention: PromptMention, start: number, rect: DOMRect) => {
+    taRef.current?.setSelectionRange(start + mention.tag.length, start + mention.tag.length);
+    setMentionPicker({ tag: mention.tag, start, id: mention.id, kind: mention.kind ?? '', left: rect.left, top: rect.bottom + 4 });
+    setMentionOpen(false);
   };
 
-  /** 把某个提及切换到另一张参考图:替换文本里的标签 + 更新 mentions 表。 */
-  const switchMention = (currentTag: string, next: typeof upstreamNodes[0]) => {
-    const newTag = wrapMentionTag(next.label);
-    if (newTag !== currentTag) {
-      setText(text.split(currentTag).join(newTag));
-      setMentions((prev) => [
-        ...prev.filter((m) => m.tag !== currentTag && m.id !== next.id),
-        { tag: newTag, id: next.id, thumb: next.thumb, kind: next.kind },
-      ]);
+  // Change only this occurrence, not every reference to the same source.
+  const switchMention = (start: number, currentTag: string, next: typeof upstreamNodes[0]) => {
+    const tag = wrapMentionTag(next.label);
+    const changed = replacePromptMention(text, mentions, start, currentTag, { tag, id: next.id, thumb: next.thumb, kind: next.kind });
+    if (changed) {
+      checkpointPrompt();
+      setText(changed.text); setMentions(changed.mentions);
+      requestAnimationFrame(() => { taRef.current?.focus(); taRef.current?.setSelectionRange(start + tag.length, start + tag.length); });
     }
     setMentionPicker(null);
   };
@@ -1469,6 +1285,7 @@ const PromptPanel = ({
     const lead = rawBefore.length > 0 && !/\s$/.test(rawBefore) ? '\n' : '';
     const trail = rawAfter.length > 0 && !/^\s/.test(rawAfter) ? '\n' : '';
     const caret = (rawBefore + lead + body).length;
+    checkpointPrompt();
     setText(rawBefore + lead + body + trail + rawAfter);
     setSlashOpen(false);
     setTimeout(() => {
@@ -1477,21 +1294,10 @@ const PromptPanel = ({
       el.focus();
       el.setSelectionRange(caret, caret);
       el.scrollTop = prevScrollTop;
-      syncOverlayScroll(el, compactOverlayRef.current);
-      syncOverlayScroll(el, expandedOverlayRef.current);
     }, 0);
   };
 
-  const resolveTagsToMentions = (raw: string): string => {
-    let result = raw;
-    for (const m of mentions) {
-      if (result.includes(m.tag)) {
-        result = result.replace(m.tag, `@${m.id.slice(0, 12)}`);
-      }
-    }
-    // 清掉任何残留的零宽包裹符(理论上已随标签替换掉,兜底防止漏进后端提示词)。
-    return result.split(MENTION_WRAP).join('');
-  };
+  const resolveTagsToMentions = (raw: string) => resolvePromptMentions(raw, mentions);
 
   const handleModelChange = (nextModel: string) => {
     const owningConfig = enabledConfigs.find((config) => config.modelList.includes(nextModel));
@@ -1568,7 +1374,7 @@ const PromptPanel = ({
     }
   };
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     // 提示词框自带撤销/重做(原生 Ctrl+Z 在受控+@提及下不可靠)。
     const mod = event.ctrlKey || event.metaKey;
     if (mod && !event.shiftKey && event.key.toLowerCase() === 'z') { event.preventDefault(); undoPrompt(); return; }
@@ -1581,6 +1387,12 @@ const PromptPanel = ({
       setMentionPicker(null);
       return;
     }
+    if (mentionOpen && ['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      if (event.key === 'Enter') { if (upstreamNodes[mentionIndex]) insertMention(upstreamNodes[mentionIndex]); }
+      else setMentionIndex(index => (index + (event.key === 'ArrowDown' ? 1 : -1) + upstreamNodes.length) % upstreamNodes.length);
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -1589,9 +1401,9 @@ const PromptPanel = ({
 
     // Treat each @mention as an atomic unit for editing — backspace /
     // delete / arrow keys jump across the whole tag instead of one
-    // character at a time. The raw text stays in sync (we replace whole
-    // tags), so the overlay never gets a half-broken token.
-    const textarea = event.currentTarget;
+    // character at a time. The saved prompt retains whole reference tokens.
+    const textarea = taRef.current;
+    if (!textarea) return;
     const { selectionStart, selectionEnd, value } = textarea;
     if (selectionStart !== selectionEnd) return; // skip when there's a range selection
 
@@ -1639,11 +1451,6 @@ const PromptPanel = ({
     }
   };
 
-  const syncOverlayScroll = (textarea: HTMLTextAreaElement | null, overlay: HTMLDivElement | null) => {
-    if (!textarea || !overlay) return;
-    overlay.scrollTop = textarea.scrollTop;
-    overlay.scrollLeft = textarea.scrollLeft;
-  };
 
   // Video service type gets a reference-mode tab strip à la Seedance 2.0:
   // each tab is a distinct upstream request shape (first/last keyframes,
@@ -2050,7 +1857,7 @@ const PromptPanel = ({
     <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
       {mediaRefs.map((up, idx) => {
         const tag = `@${up.id.slice(-4)}`;
-        const matched = mentions.find((m) => m.id === up.id);
+        const matched = mentions.find((m) => m.id === up.id && text.includes(m.tag));
         const isUsed = Boolean(matched);
         const slot = activeModeSlots[idx];
         const slotLabel = slot ? (language === 'zh' ? slot.zh : slot.en) : '';
@@ -2169,65 +1976,12 @@ const PromptPanel = ({
     </>
   );
 
-  const renderPromptEditor = (expandedMode = false) => {
-    const overlayRef = expandedMode ? expandedOverlayRef : compactOverlayRef;
-    // 紧凑态高度由 editorHeight 状态驱动（内容自适应，见 useLayoutEffect）；
-    // 展开弹窗仍然填满列（flex-1）。镜像层是 inset-0，跟着 textarea 的
-    // 高度走，不需要单独定高。
-    const heightClass = expandedMode ? 'flex-1' : '';
-    const paddingClass = expandedMode ? 'px-4 py-4' : 'px-3 py-3';
-
-    return (
-      <div className={clsx('relative rounded-xl', expandedMode && 'flex-1 flex flex-col')}>
-        <div
-          ref={overlayRef}
-          className={clsx(
-            // 必须和 textarea 用同款滚动容器（prompt-editor-scroll + overflow-auto）：
-            // 内容超高时 textarea 的滚动条会挤窄内容宽度，若镜像层没有同样的
-            // 滚动条，两边折行点错开 — 看到的字和真实光标就对不上了。
-            // text-neutral-100:提示词整体更亮更清晰(仅颜色,不动字重以免镜像错位)。
-            'prompt-editor-scroll pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-100',
-            heightClass,
-            paddingClass,
-          )}
-          aria-hidden
-        >
-          {text ? renderMentionRichText(text, mentions) : (
-            <span className="text-neutral-500">
-              {language === 'zh' ? '描述你想要生成的画面内容，按/呼出指令' : 'Describe what you want to generate, press / for commands'}
-            </span>
-          )}
-        </div>
-        <textarea
-          ref={taRef}
-          value={text}
-          onFocus={(event) => {
-            taRef.current = event.currentTarget;
-          }}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={onKeyDown}
-          onClick={(event) => handleEditorClick(event, overlayRef.current)}
-          onMouseMove={(event) => hitTestMentionHover(event, overlayRef.current)}
-          onMouseLeave={scheduleRefHoverClear}
-          onScroll={(event) => syncOverlayScroll(event.currentTarget, overlayRef.current)}
-          // Keep wheel inside the textarea — without this, ReactFlow grabs
-          // the wheel event and zooms the canvas instead of scrolling the
-          // prompt. stopPropagation is enough; the browser still applies
-          // its default scroll to the textarea.
-          onWheel={(event) => event.stopPropagation()}
-          className={clsx(
-            // whitespace/break 规则与镜像层严格一致，否则折行不同步。
-            'prompt-editor-scroll relative block w-full resize-none overflow-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-transparent caret-neutral-200 focus:outline-none',
-            expandedMode ? 'flex-1' : '',
-            paddingClass,
-          )}
-          style={expandedMode ? { caretColor: '#e5e5e5' } : { caretColor: '#e5e5e5', height: editorHeight }}
-        />
-        {/* @提及下拉不在这里渲染 —— 见组件根部的 portal(逃出节点 transform 的
-            层叠上下文,避免被底部 z-50 控件盖住;紧凑/展开两态共用一份)。 */}
-      </div>
-    );
-  };
+  const renderPromptEditor = (expandedMode = false) => (
+    <PromptMentionInput ref={taRef} value={text} mentions={mentions} expanded={expandedMode} height={editorHeight}
+      placeholder={language === 'zh' ? '描述你想要生成的画面内容，按/呼出指令' : 'Describe what you want to generate, press / for commands'}
+      onChange={onChange} onKeyDown={onKeyDown} onMentionClick={handleMentionClick}
+      onMentionHover={showRefHover} onMouseLeave={scheduleRefHoverClear} onTextClick={() => setMentionPicker(null)} />
+  );
 
   // 「快捷提示词」入口胶囊(仅文本节点),放在输入框上方。点击呼出模板选择器;
   // 也可直接在输入框里按 / 呼出(见 onChange)。两个调用点(紧凑/展开)共用一份。
@@ -2450,7 +2204,7 @@ const PromptPanel = ({
           {happyHorseTabs ?? referenceTabs}
           {previewStrip}
           {isTextNode ? shortcutPill : null}
-          {renderPromptEditor(false)}
+          {!expanded && renderPromptEditor(false)}
           {bottomControls}
         </div>
       </div>
@@ -2500,6 +2254,7 @@ const PromptPanel = ({
       {mentionOpen && upstreamNodes.length > 0
         ? createPortal(
             <div
+              role="listbox" aria-label="选择引用素材"
               className="fixed z-[140] max-h-[300px] w-[220px] overflow-auto rounded-xl border border-white/10 bg-[#1a1d22]/95 py-1.5 shadow-2xl backdrop-blur-xl"
               style={mentionPos
                 ? {
@@ -2508,11 +2263,14 @@ const PromptPanel = ({
                   }
                 : { left: 12, top: 32 }}
             >
-              {upstreamNodes.map((up) => (
+              {upstreamNodes.map((up, index) => (
                 <button
                   key={up.id}
+                  type="button"
+                  onMouseDown={event => event.preventDefault()}
+                  role="option" aria-selected={index === mentionIndex}
                   onClick={() => insertMention(up)}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5"
+                  className={clsx('flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-neutral-300 transition hover:bg-white/5', index === mentionIndex && 'bg-white/5')}
                 >
                   {up.thumb ? (
                     <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="h-8 w-8 rounded-md object-cover border border-white/10 flex-shrink-0" />
@@ -2523,8 +2281,8 @@ const PromptPanel = ({
                   ) : (
                     <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/[0.06] text-sm flex-shrink-0">{up.icon}</span>
                   )}
-                  <span className="text-neutral-200">{up.label}</span>
-                  <span className="ml-auto text-[10px] text-neutral-600">(@{up.id.slice(-4)})</span>
+                  <span className="min-w-0 flex-1 truncate text-neutral-200" title={up.label}>{up.label}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-neutral-600">(@{up.id.slice(-4)})</span>
                 </button>
               ))}
             </div>,
@@ -2550,12 +2308,13 @@ const PromptPanel = ({
                   >
                     <div className="px-3 pb-1 pt-0.5 text-[10.5px] text-neutral-500">{language === 'zh' ? '切换引用的图片' : 'Switch reference'}</div>
                     {list.map((up) => {
-                      const isCurrent = wrapMentionTag(up.label) === mentionPicker.tag;
+                      const isCurrent = up.id === mentionPicker.id;
                       return (
                         <button
                           key={up.id}
                           data-testid="mention-switch-option"
-                          onClick={() => switchMention(mentionPicker.tag, up)}
+                          onMouseDown={event => event.preventDefault()}
+                          onClick={() => switchMention(mentionPicker.start, mentionPicker.tag, up)}
                           className={clsx(
                             'flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition hover:bg-white/5',
                             isCurrent ? 'text-cyan-300' : 'text-neutral-300',
@@ -2566,7 +2325,7 @@ const PromptPanel = ({
                           ) : (
                             <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-sm">{up.icon}</span>
                           )}
-                          <span className="text-neutral-200">{up.label}</span>
+                          <span className="min-w-0 flex-1 truncate text-neutral-200" title={up.label}>{up.label}</span>
                           {isCurrent ? <Check className="ml-auto h-3.5 w-3.5 text-cyan-300" /> : null}
                         </button>
                       );
