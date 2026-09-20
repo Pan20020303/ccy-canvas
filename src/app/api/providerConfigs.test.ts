@@ -155,8 +155,10 @@ describe("HopBase Seedance provider template", () => {
       queryEndpoint: "/v1/video/tasks/{taskId}",
     });
     expect(template?.models).toContain("dreamina-seedance-2-5-260628");
+    expect(template?.models).toContain("doubao-seedance-2-5-260628-a");
+    expect(template?.parameterSchema?.models?.["doubao-seedance-2-5-260628-a"]?.resolution_options).toEqual(["480p", "720p", "1080p"]);
     expect(template?.models).toContain("doubao-seedance-2-0-260128-a");
-    expect(template?.parameterSchema?.models?.["dreamina-seedance-2-5-260628"]?.resolution_options).toEqual(["480p", "720p"]);
+    expect(template?.parameterSchema?.models?.["dreamina-seedance-2-5-260628"]?.resolution_options).toEqual(["480p", "720p", "1080p"]);
     expect(template?.parameterSchema?.models?.["dreamina-seedance-2-0-260128"]?.resolution_options).toContain("4k");
   });
 });

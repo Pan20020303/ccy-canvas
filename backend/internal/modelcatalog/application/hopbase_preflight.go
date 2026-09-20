@@ -26,6 +26,17 @@ import (
 // The HTTP handler calls this before credits, task rows, or queue submission.
 // It never downloads, uploads, signs media, or invokes a generation provider.
 func (s *Service) PreflightGeneration(ctx context.Context, req GenerateRequest) error {
+	if req.ServiceType == "image" && isSeedreamPro(req.Model) {
+		candidates, err := s.buildCandidates(req)
+		if err != nil {
+			return err
+		}
+		if isVolcengine(candidates[0].cfg) && !isTSProvider(candidates[0].cfg) {
+			_, _, _, err = seedreamProOptions(req)
+			return err
+		}
+		return nil
+	}
 	if req.ServiceType != "video" {
 		return nil
 	}
@@ -209,6 +220,87 @@ func probeHopBaseLocalAudio(ctx context.Context, path string, durationCap float6
 // Swappable only for offline tests: the production implementation uses the
 // existing asset store. Preflight never invokes this function.
 var uploadHopBaseLocalReference = assetstore.UploadFile
+
+// HopBase accepts an MP4 container, but some relay deployments reject MOV
+// files containing HEVC even though the public contract lists MOV as allowed.
+// Normalize non-MP4 references once, before submitting a paid task, so one
+// incompatible asset does not turn a batch into a partial 400 failure.
+var hopBaseTranscodeSlots = make(chan struct{}, 2)
+
+func shouldNormalizeHopBaseVideo(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(parsed.Path))
+	return ext != "" && ext != ".mp4"
+}
+
+func normalizeHopBaseVideoReference(ctx context.Context, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !shouldNormalizeHopBaseVideo(raw) {
+		return raw, nil
+	}
+	select {
+	case hopBaseTranscodeSlots <- struct{}{}:
+		defer func() { <-hopBaseTranscodeSlots }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	ffmpeg, err := localMediaExecutable("ffmpeg")
+	if err != nil {
+		return "", err
+	}
+	ffprobe, err := localMediaExecutable("ffprobe")
+	if err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp("", "ccy-hopbase-video-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(dir)
+	input := filepath.Join(dir, "input.media")
+	output := filepath.Join(dir, "reference.mp4")
+	if err := copyTrimInput(ctx, raw, input); err != nil {
+		return "", err
+	}
+	if _, err := probeTrimVideo(ctx, ffprobe, input); err != nil {
+		return "", apperror.Wrap(apperror.CodeInvalidInput, "参考视频无法读取，请重新上传 MP4 视频", err)
+	}
+	transcodeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(transcodeCtx, ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+		"-protocol_whitelist", "file", "-format_whitelist", trimFormats,
+		"-threads", "2", "-i", input, "-map", "0:v:0", "-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k",
+		"-sn", "-dn", "-map_metadata", "-1", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", "4",
+		"-filter_threads", "1", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+		"-fs", strconv.FormatInt(trimMaxOutputBytes, 10), output)
+	hideMediaProcess(cmd)
+	var stderr limitedTrimBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if transcodeCtx.Err() != nil {
+			return "", apperror.New(apperror.CodeTimeout, "参考视频转换超时，请缩短素材后重试")
+		}
+		return "", apperror.Wrap(apperror.CodeValidation, "参考视频编码不兼容，自动转换失败，请上传 H.264 MP4", fmt.Errorf("%w: %s", err, stderr.String()))
+	}
+	file, err := os.Open(output)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	staged, err := writeStagedAsset(file, ".mp4", "video/mp4")
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeInternal, "保存转换后的参考视频失败", err)
+	}
+	return staged.StagingURL, nil
+}
 
 func hopBaseReferenceMediaURL(ctx context.Context, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)

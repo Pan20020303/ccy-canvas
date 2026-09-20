@@ -283,6 +283,15 @@ const SEEDREAM_TEMPLATE = {
   defaults: { resolution: "2k", aspectRatio: "1:1" },
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
+const SEEDREAM_PRO_TEMPLATE = {
+  ...SEEDREAM_TEMPLATE,
+  resolutionOptions: ["1k", "1.5k", "2k"],
+  supportsOutputFormat: true,
+  outputFormatOptions: ["jpeg", "png"],
+  referenceImageRange: { min: 0, max: 10 },
+  defaults: { resolution: "2k", aspectRatio: "1:1", outputFormat: "jpeg" },
+} satisfies Omit<ModelTemplate, "vendor" | "modelName">;
+
 // apimart 中转站的 Gemini-3.1-Flash-Image (Nano banana2) — 与 GPT-Image-2 同端点
 // (/v1/images/generations)：size=比例 + resolution 0.5k/1k/2k/4k + image_urls 图生图，
 // 由 generateImageApimart(按 base_url 嗅探)处理。
@@ -1048,6 +1057,11 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Volcengine",
     modelName: "doubao-seedream-5-0-260128",
     ...SEEDREAM_TEMPLATE,
+  },
+  "doubao-seedream-5-0-pro-260628": {
+    vendor: "Volcengine",
+    modelName: "doubao-seedream-5-0-pro-260628",
+    ...SEEDREAM_PRO_TEMPLATE,
   },
   "doubao-seedream-4-0-250828": {
     vendor: "Volcengine",

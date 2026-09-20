@@ -300,3 +300,22 @@ func TestHopBaseModelCapabilities(t *testing.T) {
 		t.Fatal("2.0 fast must not support 4k")
 	}
 }
+
+func TestShouldNormalizeHopBaseVideo(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "mov", raw: "https://cdn.example.test/clip.mov", want: true},
+		{name: "mov-query", raw: "https://cdn.example.test/clip.MOV?token=1", want: true},
+		{name: "mp4", raw: "https://cdn.example.test/clip.mp4", want: false},
+		{name: "local-mp4", raw: "/uploads/clip.mp4", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldNormalizeHopBaseVideo(tc.raw); got != tc.want {
+				t.Fatalf("shouldNormalizeHopBaseVideo(%q) = %t, want %t", tc.raw, got, tc.want)
+			}
+		})
+	}
+}

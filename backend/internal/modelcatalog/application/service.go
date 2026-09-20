@@ -1098,6 +1098,9 @@ type GenerateRequest struct {
 	// per-attempt row in generation_attempts back to the request. Empty
 	// string is allowed — attempts are still recorded, just unlinked.
 	GenerationLogID string
+	// Internal recovery handles, never accepted from HTTP/JSON callers.
+	UpstreamTaskID     string `json:"-"`
+	UpstreamProviderID string `json:"-"`
 	// UserID identifies the requesting user. Needed by the detached task
 	// goroutine to fan completion events through TaskEventBus on the
 	// per-user channel. Optional; when empty, completion events are
@@ -1265,6 +1268,13 @@ func providerSupportsCapability(c domain.ProviderConfig, serviceType string) boo
 // routing to the existing vendor-specific helper. Centralizes the switch
 // so the fallback loop in Generate doesn't have to duplicate it.
 func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req GenerateRequest) (*GenerateResult, error) {
+	if req.UpstreamTaskID != "" {
+		// Never send a paid-task recovery through a new adapter or channel.
+		if c.cfg == nil || c.cfg.ID != req.UpstreamProviderID || isTSProvider(c.cfg) || !isHopBaseProvider(c.cfg, c.baseURL) {
+			return nil, apperror.New(apperror.CodeInvalidInput, "原视频任务渠道已变更，请恢复原渠道后查询任务，避免重复生成")
+		}
+		return s.pollHopBaseVideoTask(ctx, c.baseURL, c.apiKey, req.UpstreamTaskID)
+	}
 	// NewAPI gateway fast path. When configured at boot, text generation
 	// bypasses the per-provider direct call and goes through the unified
 	// OpenAI-compatible endpoint. Channel-health bookkeeping (in
@@ -2220,8 +2230,8 @@ func requestedImageCount(req GenerateRequest) int {
 
 // generateImageVolcengine talks to Volcengine ark's /images/generations.
 // The endpoint URL matches OpenAI but the accepted payload fields are
-// different — passing OpenAI-only fields like `quality` / `background` /
-// `output_format` makes ark close the connection (manifesting as EOF in Go).
+// different: OpenAI-only quality is not forwarded. Pro explicitly supports
+// output_format and optimize_prompt_options; legacy models keep their payload.
 // Reference images go in an `image` field (string or []string), not via a
 // separate multipart `/images/edits` endpoint.
 func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
@@ -2236,6 +2246,15 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 		// Ark 的 Seedream 图像端点默认 watermark=true(右下角「AI 生成」水印)。
 		// 与 wan/apimart/视频各通道一致,显式关闭 —— 全站统一不带水印的产品选择。
 		"watermark": false,
+	}
+	if isSeedreamPro(req.Model) {
+		proSize, format, mode, err := seedreamProOptions(req)
+		if err != nil {
+			return nil, err
+		}
+		body["size"] = proSize
+		body["output_format"] = format
+		body["optimize_prompt_options"] = map[string]any{"mode": mode}
 	}
 
 	// Resolve reference images to URLs (preferred by ark) or base64 data URIs.
@@ -2284,6 +2303,10 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 // Volcengine Seedream-compatible size. Seedream image endpoints accept
 // WIDTHxHEIGHT or model-specific buckets like 2k/3k/4k, but not plain ratios.
 func mapAspectRatioToVolcengineSize(modelName, size, resolution, quality string) string {
+	if isSeedreamPro(modelName) {
+		pixels, _ := seedreamProImageSize(size, resolution)
+		return pixels
+	}
 	s := strings.ToLower(strings.TrimSpace(size))
 	// 前端(power user / 旧版)直接把关键字或像素放进 size 字段时,原样透传。
 	switch s {

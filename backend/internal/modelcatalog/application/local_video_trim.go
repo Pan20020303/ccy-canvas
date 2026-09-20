@@ -23,7 +23,11 @@ import (
 
 const trimMaxInputBytes int64 = 512 * 1024 * 1024
 const trimMaxOutputBytes int64 = 190 * 1024 * 1024
-const trimFormats = "mov,matroska,webm,avi"
+
+// Keep the input whitelist aligned with the formats accepted by the video
+// providers. MP4 is intentionally included here: the same probe/transcode
+// path is used to turn MOV/HEVC references into provider-safe H.264 MP4.
+const trimFormats = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi"
 
 var localTrimSlots = make(chan struct{}, 1)
 

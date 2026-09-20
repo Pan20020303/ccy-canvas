@@ -807,11 +807,15 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", generate_audio: true, watermark: false },
   models: {
     "dreamina-seedance-2-5-260628": {
-      resolution_options: ["480p", "720p"],
+      resolution_options: ["480p", "720p", "1080p"],
       supports_aspect_ratio: true,
       supports_auto_aspect: true,
       supports_resolution: true,
       supports_duration: true,
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", return_last_frame: true },
+    },
+    "doubao-seedance-2-5-260628-a": {
+      resolution_options: ["480p", "720p", "1080p"],
       defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", return_last_frame: true },
     },
     "doubao-seedance-2-0-260128-a": {
@@ -1227,6 +1231,7 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       protocol: "native",
       models: [
         "dreamina-seedance-2-5-260628",
+        "doubao-seedance-2-5-260628-a",
         "doubao-seedance-2-0-260128-a",
         "dreamina-seedance-2-0-hc",
         "dreamina-seedance-2-0-ep",

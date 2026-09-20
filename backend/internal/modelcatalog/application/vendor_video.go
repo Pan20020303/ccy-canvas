@@ -245,6 +245,15 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	if duration <= 0 && !(isSeedance25Model(req.Model) && duration == -1) {
 		duration = 5
 	}
+	// When reference videos are present, Ark treats the task as video editing,
+	// which FORCES ratio=adaptive and duration=-1 (output follows the source
+	// video). Passing a concrete ratio/duration here causes
+	// InvalidParameter.TaskTypeConstraint: "ratio must be adaptive" /
+	// "duration must be -1".
+	if len(collectArkReferenceVideos(req)) > 0 {
+		ratio = "adaptive"
+		duration = -1
+	}
 
 	if isSeedance25Model(req.Model) {
 		if err := validateArkSeedance25Request(req); err != nil {

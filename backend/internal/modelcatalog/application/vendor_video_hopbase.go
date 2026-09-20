@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -59,7 +60,10 @@ func hopBaseSeedanceCapabilitiesFor(model string) (hopBaseSeedanceCapabilities, 
 	}
 	switch model {
 	case "dreamina-seedance-2-5-260628":
-		return hopBaseSeedanceCapabilities{is25: true, maxImages: 30, maxVideos: 10, maxAudios: 10, resolutions: set("480p", "720p")}, true
+		// The configured provider reports 1080p support ahead of its public docs.
+		return hopBaseSeedanceCapabilities{is25: true, maxImages: 30, maxVideos: 10, maxAudios: 10, resolutions: set("480p", "720p", "1080p")}, true
+	case "doubao-seedance-2-5-260628-a":
+		return hopBaseSeedanceCapabilities{is25: true, maxImages: 30, maxVideos: 10, maxAudios: 10, resolutions: set("480p", "720p", "1080p")}, true
 	case "doubao-seedance-2-0-260128-a":
 		return hopBaseSeedanceCapabilities{maxImages: 9, maxVideos: 3, maxAudios: 3, resolutions: set("480p", "720p", "1080p")}, true
 	case "dreamina-seedance-2-0-hc", "dreamina-seedance-2-0-ep", "dreamina-seedance-2-0-260128":
@@ -73,6 +77,14 @@ func hopBaseSeedanceCapabilitiesFor(model string) (hopBaseSeedanceCapabilities, 
 }
 
 func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	// A worker redelivery must query the already-paid task, not submit again.
+	// These fields are populated only from the durable DB checkpoint.
+	if req.UpstreamTaskID != "" {
+		if pc == nil || pc.ID != req.UpstreamProviderID {
+			return nil, apperror.New(apperror.CodeInvalidInput, "原视频任务渠道已变更，请恢复原渠道后查询任务，避免重复生成")
+		}
+		return s.pollHopBaseVideoTask(ctx, baseURL, apiKey, req.UpstreamTaskID)
+	}
 	if err := validateHopBaseReferences(ctx, req); err != nil {
 		return nil, err
 	}
@@ -132,11 +144,18 @@ func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderC
 	}
 	// HopBase documents adaptive ratio for Seedance 2.5 frame continuation and
 	// video edit. Normalize it here so a stale UI choice cannot make a paid task
-	// fail after submission. Video edit also requires automatic duration.
-	if caps.is25 && (mode == "start_end" || mode == "first_frame" || mode == "start_frame" || mode == "video_edit") {
+	// fail after submission. Seedance 2.5 decides the task MODE from the prompt
+	// text, not from an explicit flag: any request carrying a reference_video can
+	// be judged as video edit or extension, both of which FORCE ratio=adaptive
+	// and duration=-1. So whenever a reference video is present, we force both —
+	// regardless of what the UI's reference_mode says. Sending a concrete
+	// ratio/duration in that situation makes the task fail at poll time with
+	// InvalidParameter.TaskTypeConstraint ("ratio must be adaptive" /
+	// "duration must be -1").
+	if caps.is25 && (mode == "start_end" || mode == "first_frame" || mode == "start_frame" || mode == "video_edit" || len(videoRefs) > 0) {
 		ratio = "adaptive"
 	}
-	if caps.is25 && mode == "video_edit" {
+	if caps.is25 && (mode == "video_edit" || len(videoRefs) > 0) {
 		duration = -1
 	}
 
@@ -184,7 +203,11 @@ func (s *Service) generateVideoHopBase(ctx context.Context, pc *domain.ProviderC
 		})
 	}
 	for i, raw := range videoRefs {
-		url, err := hopBaseReferenceMediaURL(ctx, raw)
+		normalized, err := normalizeHopBaseVideoReference(ctx, raw)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考视频 #%d 编码处理失败", i+1), err)
+		}
+		url, err := hopBaseReferenceMediaURL(ctx, normalized)
 		if err != nil {
 			return nil, apperror.Wrap(apperror.CodeInvalidInput, fmt.Sprintf("参考视频 #%d 处理失败", i+1), err)
 		}
@@ -520,7 +543,12 @@ func (s *Service) pollHopBaseVideoTask(ctx context.Context, baseURL, apiKey, tas
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		lastBody = body
-		if resp.StatusCode >= 400 {
+		// Rate limits and gateway failures do not mean the async task failed.
+		// Keep querying the same ID; never repeat the non-idempotent POST.
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return nil, parseProviderErrorBytes(resp.StatusCode, body)
 		}
 		var payload map[string]any
@@ -530,12 +558,15 @@ func (s *Service) pollHopBaseVideoTask(ctx context.Context, baseURL, apiKey, tas
 		scope := hopBaseTaskScope(payload)
 		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(scope["status"])))
 		switch status {
-		case "completed", "succeeded", "success":
+		case "completed":
 			if url := hopBaseVideoOutputURL(payload); url != "" {
 				return &GenerateResult{Type: "url", Content: url}, nil
 			}
-			return nil, apperror.ProviderResponseFailure(resp.StatusCode, body, "模型任务报告完成，但未返回生成结果，请检查渠道返回格式")
-		case "failed", "error", "failure", "cancelled", "canceled":
+			// The task status can precede publication of outputs. Re-query
+			// within the bounded poll budget rather than lose the late output.
+			continue
+		case "failed":
+			log.Printf("[hopbase] task %s failed: %s", taskID, apperror.PublicMessage(apperror.ProviderFailure(resp.StatusCode, body)))
 			return nil, apperror.ProviderFailure(resp.StatusCode, body)
 		}
 	}

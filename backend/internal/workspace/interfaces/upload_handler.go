@@ -27,8 +27,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-const maxUploadSize = 50 * 1024 * 1024        // 50 MB
-const maxProxySize = 100 * 1024 * 1024        // 100 MB for images and unknown files
+const maxUploadSize = 2 * 1024 * 1024 * 1024 // 2 GB (large 8K images / videos)
+const maxProxySize = 100 * 1024 * 1024       // 100 MB for images and unknown files
 const maxProxyAVSize = 2 * 1024 * 1024 * 1024 // 2 GB for seekable video/audio
 
 // RegisterUploadRoutes registers file upload and media proxy endpoints.
@@ -52,7 +52,7 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 		if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "File too large (max 50MB)"})
+			httpx.WriteJSON(w, r, http.StatusBadRequest, map[string]string{"error": "File too large (max 2GB)"})
 			return
 		}
 

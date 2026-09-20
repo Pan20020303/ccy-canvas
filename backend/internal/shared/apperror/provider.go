@@ -112,7 +112,7 @@ func providerFields(p map[string]any, depth int) (reason, code, param string) {
 	}
 	// Only well-known diagnostic fields/envelopes. Never serialize whole data,
 	// requests, headers, URLs or object-valued messages.
-	for _, name := range []string{"error", "Error", "ResponseMetadata", "output", "data", "base_resp"} {
+	for _, name := range []string{"error", "Error", "ResponseMetadata", "task", "output", "data", "base_resp"} {
 		if nested, ok := p[name].(map[string]any); ok {
 			r, c, field := providerFields(nested, depth+1)
 			if r != "" || c != "" {
@@ -126,7 +126,7 @@ func providerFields(p map[string]any, depth int) (reason, code, param string) {
 			break
 		}
 	}
-	for _, name := range []string{"code", "Code", "type", "status_code"} {
+	for _, name := range []string{"error_code", "code", "Code", "type", "status_code"} {
 		switch v := p[name].(type) {
 		case string:
 			code = v

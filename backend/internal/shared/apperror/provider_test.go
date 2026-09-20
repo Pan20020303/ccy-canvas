@@ -23,6 +23,8 @@ func TestProviderFailurePreservesRealReason(t *testing.T) {
 		{"rate", 429, `{"error":{"message":"Too many concurrent tasks"}}`, "Too many concurrent tasks", true},
 		{"timeout", 504, `{"message":"gateway timeout"}`, "响应超时", true},
 		{"task", 200, `{"output":{"task_status":"FAILED","code":"InvalidParameter","message":"reference image not supported"}}`, "reference image not supported", false},
+		{"hopbase-task", 200, `{"task":{"status":"failed","error_code":"InvalidParameter.TaskTypeConstraint","error_message":"ratio must be adaptive"}}`, "ratio must be adaptive", false},
+		{"hopbase-error-code", 200, `{"task":{"status":"failed","error_code":"stale_timeout"}}`, "stale_timeout", false},
 		{"volc", 400, `{"ResponseMetadata":{"Error":{"Code":"InvalidParameter","Message":"resolution unsupported"}}}`, "resolution unsupported", false},
 		{"opaque", 502, `<html>password=private debug dump</html>`, "未提供更详细", true},
 	} {

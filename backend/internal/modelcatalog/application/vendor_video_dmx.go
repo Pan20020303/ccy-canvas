@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -56,6 +57,15 @@ func (s *Service) generateVideoDMX(ctx context.Context, pc *domain.ProviderConfi
 	duration := req.Duration
 	if duration <= 0 {
 		duration = 5
+	}
+	// When reference videos are present, the upstream (DMXAPI -> Ark) treats the
+	// task as video editing, which FORCES ratio=adaptive and duration=-1.
+	// Passing a concrete ratio/duration causes
+	// InvalidParameter.TaskTypeConstraint: "ratio must be adaptive" /
+	// "duration must be -1".
+	if len(collectArkReferenceVideos(req)) > 0 {
+		ratio = "adaptive"
+		duration = -1
 	}
 
 	input := make([]map[string]interface{}, 0, 1+len(req.ReferenceImages))
@@ -125,6 +135,8 @@ func (s *Service) generateVideoDMX(ctx context.Context, pc *domain.ProviderConfi
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	log.Printf("[dmx-debug] submit body=%s", string(bodyJSON))
+	log.Printf("[dmx-debug] submit resp status=%d body=%s", resp.StatusCode, string(respBody))
 	if resp.StatusCode >= 400 {
 		return nil, parseProviderErrorBytes(resp.StatusCode, respBody)
 	}

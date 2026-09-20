@@ -116,20 +116,72 @@ func (s *Service) generateImageHopBase(ctx context.Context, pc *domain.ProviderC
 	return parseImageGenerationResponse(respBody)
 }
 
+// seedreamSizeMap maps an explicit aspect ratio to the exact <w>x<h> pixels
+// per official Volcengine Seedream resolution tier. Sending exact pixels
+// (method 1) makes the requested ratio actually take effect; sending only a
+// tier string like "2K" leaves the aspect ratio to the model's discretion,
+// which is why picking 16:9 used to come back square.
+var seedreamSizeMap = map[string]map[string]string{
+	"1K": {
+		"1:1":  "1024x1024",
+		"4:3":  "1152x864",
+		"3:4":  "864x1152",
+		"16:9": "1312x736",
+		"9:16": "736x1312",
+		"3:2":  "1248x832",
+		"2:3":  "832x1248",
+		"21:9": "1568x672",
+	},
+	"2K": {
+		"1:1":  "2048x2048",
+		"4:3":  "2304x1728",
+		"3:4":  "1728x2304",
+		"16:9": "2848x1600",
+		"9:16": "1600x2848",
+		"3:2":  "2496x1664",
+		"2:3":  "1664x2496",
+		"21:9": "3136x1344",
+	},
+}
+
+func seedreamSizeForRatio(tier, ratio string) (string, bool) {
+	if m, ok := seedreamSizeMap[tier]; ok {
+		if px, ok := m[ratio]; ok {
+			return px, true
+		}
+	}
+	return "", false
+}
+
 func hopBaseImageSize(req GenerateRequest) string {
 	resolution := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(req.Resolution), " ", ""))
 	model := strings.ToLower(strings.TrimSpace(req.Model))
+	aspectRatio := strings.ToLower(strings.TrimSpace(req.Size))
 	if strings.HasPrefix(model, "seedream-") {
-		if resolution == "" || resolution == "720P" || resolution == "1K" {
-			if model == "seedream-5-0-lite" || model == "seedream-4-5" {
-				return "2K"
-			}
-			return "1.5K"
-		}
+		// Resolve tier. Seedream 5.0 Pro only supports 1K / 2K (1.5K is NOT a
+		// valid tier for Pro and was silently ignored by the upstream, which
+		// produced wrong/cropped images).
+		tier := "1K"
 		switch resolution {
-		case "1.5K", "2K", "3K", "4K":
-			return resolution
+		case "2K", "3K", "4K":
+			tier = "2K"
+		case "1.5K", "720P", "1K", "":
+			tier = "1K"
 		}
+		// 5.0 Lite / 4.5 default to 2K when no explicit tier is chosen.
+		if (model == "seedream-5-0-lite" || model == "seedream-4-5") &&
+			(resolution == "" || resolution == "720P" || resolution == "1K" || resolution == "1.5K") {
+			tier = "2K"
+		}
+		// If the user picked an explicit aspect ratio, map it to exact pixels
+		// for the chosen tier so the ratio actually takes effect.
+		if aspectRatio != "" && aspectRatio != "auto" && aspectRatio != "1x1" {
+			if px, ok := seedreamSizeForRatio(tier, aspectRatio); ok {
+				return px
+			}
+		}
+		// No explicit ratio — send the tier string and let the model decide.
+		return tier
 	}
 	if size := mapAspectRatioToOpenAIImageSize(req.Size); size != "" {
 		return size

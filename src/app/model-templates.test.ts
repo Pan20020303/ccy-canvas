@@ -316,4 +316,13 @@ describe("model templates", () => {
     expect(template?.supportsQuality).not.toBe(true);
     expect(template?.supportsAspectRatio).toBe(true);
   });
+
+  it("uses Pro-specific tiers, formats and references for the official Seedream channel", () => {
+    const template = getModelTemplate("doubao-seedream-5-0-pro-260628", { vendor: "Volcengine", service_type: "image" });
+    expect(template?.resolutionOptions).toEqual(["1k", "1.5k", "2k"]);
+    expect(template?.supportsAspectRatio).toBe(true);
+    expect(template?.outputFormatOptions).toEqual(["jpeg", "png"]);
+    expect(template?.referenceImageRange).toEqual({ min: 0, max: 10 });
+    expect(template?.supportsQuality).not.toBe(true);
+  });
 });

@@ -228,6 +228,7 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	if err := json.Unmarshal(row.RequestPayload, &req); err != nil {
 		return fmt.Errorf("decode request_payload: %w: %w", err, asynq.SkipRetry)
 	}
+	restoreProviderCheckpoint(&req, row.RequestPayload)
 	// Ensure the worker knows which log row to update.
 	req.GenerationLogID = p.LogID
 	req.UserID = p.UserID
@@ -344,6 +345,20 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	}
 	log.Printf("[tasks] transient failure for log %s (attempt %d/%d), will retry: %v", p.LogID, retried+1, maxRetry, runErr)
 	return runErr
+}
+
+// Only the worker's database payload may supply recovery handles. The public
+// GenerateRequest JSON decoder deliberately ignores these internal fields.
+func restoreProviderCheckpoint(req *modelapp.GenerateRequest, payload []byte) {
+	var checkpoint struct {
+		TaskID     string `json:"_upstream_task_id"`
+		ProviderID string `json:"_upstream_provider_id"`
+	}
+	if json.Unmarshal(payload, &checkpoint) == nil && checkpoint.TaskID != "" && checkpoint.ProviderID != "" {
+		req.UpstreamTaskID = checkpoint.TaskID
+		req.UpstreamProviderID = checkpoint.ProviderID
+		req.ProviderConfigID = checkpoint.ProviderID
+	}
 }
 
 // shouldSkipRedeliveredGeneration protects the at-least-once Redis delivery
