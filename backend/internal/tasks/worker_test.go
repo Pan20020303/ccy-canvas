@@ -7,10 +7,28 @@ import (
 	"time"
 
 	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
+	"ccy-canvas/backend/internal/shared/apperror"
 	"github.com/hibiken/asynq"
 )
 
 type stubAgentRunProcessor struct{ err error }
+
+func TestTypedProviderRetryPolicyIsRespected(t *testing.T) {
+	for _, tc := range []struct {
+		code                 apperror.Code
+		retryable, permanent bool
+	}{
+		{apperror.CodeUpstreamUnavailable, false, true},
+		{apperror.CodeUpstreamUnavailable, true, false},
+		{apperror.CodeValidation, false, true},
+		{apperror.CodeRateLimited, true, false},
+	} {
+		err := apperror.WithRetryable(apperror.New(tc.code, "安全的模型错误"), tc.retryable)
+		if got := isPermanentError(err); got != tc.permanent {
+			t.Errorf("%s retryable=%t: permanent=%t", tc.code, tc.retryable, got)
+		}
+	}
+}
 
 func TestShutdownCoversVideoRuntime(t *testing.T) {
 	if workerShutdownTimeout < timeoutForServiceType("video")+time.Minute {

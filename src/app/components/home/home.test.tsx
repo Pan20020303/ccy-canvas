@@ -59,6 +59,10 @@ describe('home and account contracts', () => {
     await renderHome(); await click('无限画布'); expect(host.querySelector('[data-testid="canvas-library"]')).toBeTruthy(); expect(host.querySelector('#home-sidebar')).toBeTruthy();
     await click('首页'); expect(host.querySelector('.home-hero')).toBeTruthy();
   });
+  it('opens the one-click film workspace from Studio', async () => {
+    await renderHome(); await click('工作室'); await click('一键成片');
+    expect(mocks.navigate).toHaveBeenCalledWith('/studio/film');
+  });
   it('prefills prompt chips and saves a submitted idea as a text node without generation', async () => {
     await renderHome(); await click('角色设定'); expect(host.querySelector<HTMLInputElement>('[aria-label="你的创意"]')?.value).toContain('角色设定');
     await fill('你的创意', '一位旅人来到云上的城市'); await click('用这个创意创建画布');

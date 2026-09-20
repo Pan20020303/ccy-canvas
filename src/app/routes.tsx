@@ -1,5 +1,5 @@
 import { createBrowserRouter, Navigate } from "react-router";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { useCanvasThemeStyle } from "./use-canvas-theme";
 import './components/canvas-surfaces.css';
 import { CanvasGenerationNotifications } from "./components/settings/CanvasPreferencesRuntime";
@@ -28,6 +28,9 @@ import { RunTimer } from "./components/RunTimer";
 import { SettingsModal } from "./components/SettingsModal";
 import { Toolbar } from "./components/Toolbar";
 import { useStore } from "./store";
+
+const OneClickFilm = lazy(() => import('./components/film/OneClickFilm').then(module => ({ default: module.OneClickFilm })));
+const FilmPage = () => <Suspense fallback={<div className="flex h-screen items-center justify-center bg-[#1c1f20] text-neutral-400">正在打开一键成片…</div>}><OneClickFilm /></Suspense>;
 
 const Workspace = () => {
   const canvasThemeStyle = useCanvasThemeStyle();
@@ -104,6 +107,10 @@ export const router = createBrowserRouter([
       Component: HomePage,
     },
     {
+      path: "/__preview/film",
+      Component: FilmPage,
+    },
+    {
       path: "/__preview/automation",
       Component: () => <Navigate to="/home?view=tryon" replace />,
     },
@@ -127,6 +134,10 @@ export const router = createBrowserRouter([
         <HomePage />
       </ProtectedRoute>
     ),
+  },
+  {
+    path: "/studio/film/:projectId?",
+    Component: () => <ProtectedRoute><FilmPage /></ProtectedRoute>,
   },
   {
     path: "/app",

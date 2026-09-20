@@ -1521,13 +1521,21 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
     });
     try {
       const result = await testChannelConnectivity(config.id);
+      // Older backends used ok=true for reachable 4xx responses. Reachability
+      // alone must not present rejected credentials as a usable connection.
+      const ok = result.ok && result.http_status >= 200 && result.http_status < 300;
+      const failureMessage = result.http_status === 401
+        ? "模型渠道鉴权失败，请检查 API Key"
+        : result.http_status === 403
+          ? "模型渠道无访问权限，请检查模型授权"
+          : "渠道连接验证未通过，请检查接口地址与配置";
       setModelTestResult({
         ...target,
-        status: result.ok ? "success" : "failed",
-        ok: result.ok,
+        status: ok ? "success" : "failed",
+        ok,
         httpStatus: result.http_status,
         latencyMs: result.latency_ms,
-        errorMsg: result.error_msg,
+        errorMsg: result.error_msg || (ok ? undefined : failureMessage),
       });
       void loadConfigs().catch((err) => {
         console.warn("Failed to refresh provider configs after connectivity test", err);

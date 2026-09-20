@@ -227,6 +227,7 @@ func main() {
 	workspaceRepo := workspaceinfra.NewRepository(queries)
 	workspaceHandler := workspacehttp.NewHandler(workspaceRepo, creditService)
 	workspaceHandler.RegisterRoutes(api)
+	workspacehttp.NewFilmHandler(pool).RegisterRoutes(api)
 	// Prompt template library (shared templates + votes; admin audit view).
 	workspacehttp.NewPromptTemplateHandler(queries).RegisterRoutes(api)
 	// Live-collaboration presence (chi-direct: SSE stream + throttled report).

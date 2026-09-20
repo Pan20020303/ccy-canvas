@@ -367,8 +367,8 @@ func (s *Service) ResetChannelHealth(ctx context.Context, providerID string) err
 }
 
 // ChannelTestReport is what TestChannelConnectivity returns. OK=true means
-// the upstream answered any HTTP status; the admin still gets to see the
-// concrete code (e.g. 401 means "reachable but credentials bad").
+// the model-list probe succeeded, not merely that the server is reachable.
+// This does not guarantee that every configured model supports generation.
 type ChannelTestReport struct {
 	OK         bool
 	HTTPStatus int
@@ -421,11 +421,14 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	}
 	defer resp.Body.Close()
 	report.HTTPStatus = resp.StatusCode
-	// Anything that isn't a 5xx counts as "reachable". 401/403 still
-	// communicate something useful: the URL is correct, the key is wrong.
-	report.OK = resp.StatusCode < 500
+	report.OK = resp.StatusCode >= 200 && resp.StatusCode < 300
 	if !report.OK {
-		report.ErrorMsg = "upstream " + resp.Status
+		_, message, _, _ := classifyProviderError(resp.StatusCode, "")
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			message = "渠道未提供可用的模型列表接口，无法验证凭据；请检查接口地址与协议配置"
+		}
+		// Never expose a raw provider body: it may echo the credential.
+		report.ErrorMsg = message + " (HTTP " + strconv.Itoa(resp.StatusCode) + ")"
 		s.CreateAdminAlert(ctx, domain.AdminAlert{
 			ProviderConfigID: cfg.ID,
 			ServiceType:      cfg.ServiceType,
