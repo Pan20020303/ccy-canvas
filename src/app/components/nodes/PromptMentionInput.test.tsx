@@ -51,6 +51,38 @@ describe('real canvas prompt editor interactions', () => {
     expect(chips().every(c => c.contentEditable === 'false')).toBe(true);
     expect(readPromptInput(input())).toBe(mentions[0].tag + mentions[1].tag);
   });
+  it('shows only the image in a borderless hover preview for both chips and thumbnails', async () => {
+    await render(mentions[0].tag);
+    await act(async () => chips()[0].dispatchEvent(new MouseEvent('mousemove', { bubbles: true })));
+    const preview = () => document.querySelector<HTMLElement>('[data-testid="reference-hover-preview"]')!;
+    expect(preview()).not.toBeNull();
+    expect(preview().className).toBe('fixed z-[140] w-max border-0 bg-transparent p-0 shadow-none');
+    expect(preview().children).toHaveLength(1);
+    expect(preview().textContent).toBe('');
+    expect(preview().querySelector('img')?.alt).toContain(names[0]);
+    expect(preview().querySelector('img')?.classList.contains('w-auto')).toBe(true);
+    const thumbnail = document.querySelector<HTMLImageElement>('.group\\/ref img')!;
+    await act(async () => thumbnail.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+    expect(document.querySelectorAll('[data-testid="reference-hover-preview"]')).toHaveLength(1);
+    expect(preview().children).toHaveLength(1);
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it('keeps video playback and audio controls without adding a preview card', async () => {
+    await render(mentions[0].tag);
+    for (const type of ['referenceVideoNode', 'referenceAudioNode']) {
+      await act(async () => useStore.setState(state => ({ nodes: state.nodes.map(node => node.id === 'ref1' ? { ...node, type, data: { url: type === 'referenceVideoNode' ? '/clip.mp4' : '/clip.mp3', sourceName: '素材' } } : node) })));
+      await act(async () => chips()[0].dispatchEvent(new MouseEvent('mousemove', { bubbles: true })));
+      const preview = document.querySelector<HTMLElement>('[data-testid="reference-hover-preview"]')!;
+      expect(preview.children).toHaveLength(1);
+      expect(preview.textContent).toBe('');
+      if (type === 'referenceVideoNode') {
+        const video = preview.querySelector('video')!;
+        expect(video.autoplay && video.muted && video.loop).toBe(true);
+        expect(video.classList.contains('w-auto')).toBe(true);
+        expect(video.classList.contains('bg-black')).toBe(false);
+      } else expect(preview.querySelector('audio')?.controls).toBe(true);
+    }
+  });
   it('switches only the clicked occurrence, including when the target is already referenced', async () => {
     await render(mentions[0].tag + mentions[0].tag + mentions[1].tag);
     await act(async () => chips()[1].click());

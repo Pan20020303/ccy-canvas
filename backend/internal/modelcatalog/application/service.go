@@ -276,6 +276,16 @@ func ClampVideoDuration(d int) int {
 	return d
 }
 
+// ClampModelVideoDuration delegates Wan 3's strict 2..30 / -1 validation to
+// its adapter without silently changing invalid values. Other models retain
+// the existing clamp behavior.
+func ClampModelVideoDuration(model string, d int) int {
+	if model == "wan3.0-video" {
+		return d
+	}
+	return ClampVideoDuration(d)
+}
+
 // billableUnits returns how many charge units a request costs. Image relays
 // bill PER IMAGE, so the reserved credits must scale with the (clamped) output
 // count; everything else is per-call. This ties reserved credits to what the

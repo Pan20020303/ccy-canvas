@@ -18,6 +18,11 @@ import (
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
+	// HopBase Wan 3 retains DashScope's /api/v1 contract, not the
+	// /v1/video gateway used by HopBase Seedance and Grok.
+	if isHopBaseProvider(pc, baseURL) && req.Model == "wan3.0-video" {
+		return s.generateVideoHopBaseWan3(ctx, pc, baseURL, apiKey, req)
+	}
 	if isComfyWanAnimate2Provider(pc, req.Model) {
 		return s.generateVideoComfyWanAnimate2(ctx, baseURL, req)
 	}

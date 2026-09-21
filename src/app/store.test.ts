@@ -1680,6 +1680,30 @@ describe("workspace control bar state", () => {
     });
   });
 
+  it.each([-1, 30])("sends Wan 3 duration %s with all references, audio off and seed zero", async (duration) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/wan.mp4" }, request_id: "wan-req" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "wan3-gen", type: "videoNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().updateNodeGenerationParams("wan3-gen", {
+      durationSeconds: duration, resolution: "1080P", aspectRatio: "16:9", seed: 0, audioSetting: "off", referenceVariant: "all-in-one",
+      referenceImages: Array.from({ length: 10 }, (_, i) => `https://example.com/${i}.png`),
+      referenceVideos: Array.from({ length: 5 }, (_, i) => `https://example.com/${i}.mp4`),
+      referenceAudios: Array.from({ length: 5 }, (_, i) => `https://example.com/${i}.mp3`),
+    });
+    await useStore.getState().runNode("wan3-gen", { prompt: "雨庭交锋", model: "wan3.0-video" });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/generate"));
+    expect(request).toBeDefined();
+    const body = JSON.parse(String(request![1].body));
+    expect(body).toMatchObject({ model: "wan3.0-video", duration, resolution: "1080P", seed: 0, audio_setting: "off", reference_mode: "image_reference" });
+    expect(body.reference_images).toHaveLength(10);
+    expect(body.reference_videos).toHaveLength(5);
+    expect(body.reference_audios).toHaveLength(5);
+  });
+
   it("sends seed + audio_setting for a HappyHorse video-edit run that has them set", async () => {
     const { useStore } = await loadStore();
     const fetchMock = vi.fn().mockResolvedValue({

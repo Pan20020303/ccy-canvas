@@ -704,6 +704,17 @@ const MANJU_GROK_15_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const HOPBASE_WAN3_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["resolution", "duration", "ratio", "audio", "prompt_extend", "watermark", "seed"],
+  resolution_options: ["480P", "720P", "1080P"],
+  aspect_ratio_options: ["16:9", "4:3", "1:1", "3:4", "9:16"],
+  supports_resolution: true,
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_duration: true,
+  defaults: { resolution: "1080P", duration: 5, aspect_ratio: "16:9", audio: true },
+};
+
 const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
     "model", "content", "duration", "resolution", "ratio", "generate_audio",
@@ -1147,6 +1158,18 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       queryEndpoint: "/v1/video/tasks/{taskId}",
       parameterSchema: HOPBASE_GROK_15_VIDEO_SCHEMA,
       iconKey: "grok",
+    },
+    {
+      vendor: "HopBase",
+      label: "HopBase · 万相 3.0（官方直连）",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["wan3.0-video"],
+      submitEndpoint: "/api/v1/services/aigc/video-generation/video-synthesis",
+      queryEndpoint: "/api/v1/tasks/{taskId}",
+      parameterSchema: HOPBASE_WAN3_VIDEO_SCHEMA,
+      iconKey: "qwen",
     },
     {
       vendor: "ManjuAPI",

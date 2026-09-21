@@ -23,6 +23,8 @@ export type ModelTemplate = {
   supportsAspectRatio?: boolean;
   supportsAutoAspect?: boolean;
   supportsDuration?: boolean;
+  /** -1 asks the provider to choose the duration from the prompt/materials. */
+  supportsAutoDuration?: boolean;
   supportsOutputFormat?: boolean;
   /** When set, exposes an audio-control selector (HappyHorse video-edit:
    *  ["auto","origin"] — auto lets the model decide, origin keeps source audio). */
@@ -552,6 +554,29 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     resolutionOptions: ["512p", "768p", "1080p"],
     durationOptions: [5, 10],
     defaults: { resolution: "768p" },
+  },
+  "wan3.0-video": {
+    vendor: "HopBase",
+    modelName: "wan3.0-video",
+    serviceType: "video",
+    supportsResolution: true,
+    supportsAspectRatio: true,
+    supportsAutoAspect: true,
+    supportsDuration: true,
+    supportsAutoDuration: true,
+    supportsSeed: true,
+    audioSettingOptions: ["on", "off"],
+    resolutionOptions: ["480P", "720P", "1080P"],
+    aspectRatioOptions: ["16:9", "4:3", "1:1", "3:4", "9:16"],
+    durationRange: { min: 2, max: 30, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-frame", "first-last", "all-in-one"],
+    referenceRequirements: {
+      "text-to-video": { images: { min: 0, max: 0 }, videos: { min: 0, max: 0 }, audios: { min: 0, max: 0 } },
+      "first-frame": { images: { min: 1, max: 1 }, videos: { min: 0, max: 0 }, audios: { min: 0, max: 0 } },
+      "first-last": { images: { min: 1, max: 2 }, videos: { min: 0, max: 0 }, audios: { min: 0, max: 0 } },
+      "all-in-one": { images: { min: 0, max: 10 }, videos: { min: 0, max: 5 }, audios: { min: 0, max: 5 } },
+    },
+    defaults: { resolution: "1080P", aspectRatio: "16:9" },
   },
   "wan2.7": {
     vendor: "Alibaba",

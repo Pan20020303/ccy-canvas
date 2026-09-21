@@ -522,7 +522,7 @@ function RefHoverPreview({ up, left, top, onEnter, onLeave }: {
   onLeave: () => void;
 }) {
   const style: React.CSSProperties = {
-    left: Math.max(8, Math.min(left - 134, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 276)),
+    left: Math.max(8, Math.min(left - 126, (typeof window !== 'undefined' ? window.innerWidth : 1280) - 260)),
     top: Math.max(8, top - 8),
     transform: 'translateY(-100%)',
   };
@@ -531,23 +531,23 @@ function RefHoverPreview({ up, left, top, onEnter, onLeave }: {
     body = <audio src={toRenderableMediaUrl(up.mediaUrl)} controls preload="metadata" className="h-9 w-[252px]" />;
   } else if (up.kind === 'video' && (up.mediaUrl || up.thumb)) {
     body = up.mediaUrl ? (
-      <video src={toRenderableMediaUrl(up.mediaUrl)} muted autoPlay loop playsInline className="max-h-[180px] w-[252px] rounded-md bg-black object-contain" />
+      <video src={toRenderableMediaUrl(up.mediaUrl)} aria-label={up.label} muted autoPlay loop playsInline className="block h-auto max-h-[180px] w-auto max-w-[252px] rounded-md object-contain" />
     ) : (
-      <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="max-h-[180px] w-[252px] rounded-md object-contain" />
+      <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt={up.label} className="block h-auto max-h-[180px] w-auto max-w-[252px] rounded-md object-contain" />
     );
   } else if (up.thumb) {
-    body = <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt="" className="max-h-[200px] max-w-[252px] rounded-md object-contain" />;
+    body = <img src={toRenderableMediaUrl(up.thumb, { thumbWidth: 720 })} alt={up.label} className="block h-auto max-h-[200px] w-auto max-w-[252px] rounded-md object-contain" />;
   }
   if (!body) return null;
   return createPortal(
     <div
-      className="fixed z-[140] rounded-lg border border-white/12 bg-[#101114]/95 p-2 shadow-2xl backdrop-blur-md"
+      data-testid="reference-hover-preview"
+      className="fixed z-[140] w-max border-0 bg-transparent p-0 shadow-none"
       style={style}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
     >
       {body}
-      <div className="mt-1 text-center text-[10px] text-neutral-500">{up.label}</div>
     </div>,
     document.body,
   );
@@ -1025,7 +1025,7 @@ const PromptPanel = ({
     && (lastAsp === 'auto' ? template?.supportsAutoAspect : template?.aspectRatioOptions?.includes(lastAsp))
     ? lastAsp : undefined;
   const lastDuration = lastDur !== undefined
-    && (template?.durationOptions?.includes(lastDur)
+    && ((template?.supportsAutoDuration && lastDur === -1) || template?.durationOptions?.includes(lastDur)
       || (template?.durationRange ? lastDur >= template.durationRange.min && lastDur <= template.durationRange.max : false))
     ? lastDur : undefined;
 

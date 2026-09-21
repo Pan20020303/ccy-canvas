@@ -64,6 +64,21 @@ describe('film workspace interactions', () => {
     await click('返回'); await click('点击编辑'); expect(document.querySelector('.film-output-summary')?.textContent).toContain('1080p');
     expect(store.getState().project.shots[0].generation?.video).toMatchObject({ resolution: '1080p', outputFormat: 'mov' });
   });
+  it('exposes Wan 3 auto duration and keeps it when reopening the shot', async () => {
+    state.configs.mockResolvedValue([{ id: 'wan3', service_type: 'video', vendor: 'HopBase', name: '万相官方直连', default_model: 'wan3.0-video', model_list: ['wan3.0-video'], priority: 1 }]);
+    const store = filmStore(state.user);
+    store.getState().patch(p => ({ step: 4, settings: { ...p.settings, videoModel: 'wan3:wan3.0-video' }, shots: [{ id: 'wan-shot', title: '雨庭', description: '雨庭交锋', shot: '全景', duration: '30s', assetIds: [], status: 'draft', history: [] }] }));
+    await render(); await click('点击编辑'); await click('输出参数');
+    expect(document.querySelector<HTMLInputElement>('[aria-label="视频时长"]')?.max).toBe('30');
+    expect(document.querySelector('[aria-label="分辨率 1080P"]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="生成音频"]')).toBeTruthy();
+    await click('自动时长'); await click('关闭输出参数');
+    expect(document.querySelector('.film-output-summary')?.textContent).toContain('自动');
+    expect(store.getState().project.shots[0].generation?.video?.duration).toBe(-1);
+    await click('返回'); await click('点击编辑');
+    expect(document.querySelector('.film-output-summary')?.textContent).toContain('自动');
+    expect(state.generate).not.toHaveBeenCalled();
+  });
   it('renders per-shot asset layers and inserts a real inline thumbnail mention without generating', async () => {
     const store = filmStore(state.user);
     store.getState().patch({ step: 4, assets: [{ id: 'a', name: '旅人', type: 'character', description: '', source: 'uploaded', locked: false, url: '/person.png', history: [] }, { id: 'b', name: '信封', type: 'prop', description: '', source: 'uploaded', locked: false, history: [] }], shots: [{ id: 's', title: '镜头', description: '走来', shot: '全景', duration: '4s', assetIds: ['a','b'], status: 'draft', history: [] }] });
