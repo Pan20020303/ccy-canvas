@@ -92,7 +92,7 @@ export function getModelBrand(
   if (m.includes('happyhorse'))   return { kind: 'qwen',       color: '#e879f9', vendor: 'Alibaba · HappyHorse' };
   if (m.includes('qwen') || m.includes('tongyi') || m.includes('cosyvoice') || m.includes('sambert'))
                                    return { kind: 'qwen',       color: '#a78bfa', vendor: 'Alibaba · 通义' };
-  if (m.includes('wanx') || m.includes('wan2') || m.includes('wan-'))
+  if (m.includes('wanx') || m.includes('wan2') || m.includes('wan3') || m.includes('wan-'))
                                   return { kind: 'qwen',       color: '#c084fc', vendor: 'Alibaba · 万相' };
 
   // OpenAI family

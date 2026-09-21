@@ -123,7 +123,7 @@ export function filmMediaPayload(model: FilmModel, project: FilmProject, prompt:
   if (kind === 'video' && !isModeSatisfied(params.mode, { images: images.length, videos: videos.length, audios: audios.length }, template?.referenceRequirements?.[params.mode])) throw new Error(REFERENCE_MODE_SPECS[params.mode].disabledHint.zh + '，请检查导入素材的数量。');
   if (kind === 'image' && images.length > (template?.referenceImageRange?.max ?? 16)) throw new Error('参考图片超过当前模型支持的数量。');
   if (kind === 'video' && template?.durationOptions && !template.durationOptions.includes(params.duration)) throw new Error('当前模型不支持所选时长。');
-  if (kind === 'video' && template?.durationRange && (params.duration < template.durationRange.min || params.duration > template.durationRange.max)) throw new Error('生成时长超出模型支持范围。');
+  if (kind === 'video' && template?.durationRange && !(template.supportsAutoDuration && params.duration === -1) && (params.duration < template.durationRange.min || params.duration > template.durationRange.max)) throw new Error('生成时长超出模型支持范围。');
   if (params.quality && template?.qualityOptions?.length && !template.qualityOptions.includes(params.quality)) throw new Error('当前模型不支持所选质量。');
   if (params.outputFormat && template?.outputFormatOptions?.length && !template.outputFormatOptions.includes(params.outputFormat)) throw new Error('当前模型不支持所选输出格式。');
   const style = FILM_STYLES.find(s => s.id === project.settings.style)?.prompt;

@@ -123,12 +123,15 @@ export const MediaParamsPopover = ({
   const language = useStore((state) => state.language);
   const themeStyle = useCanvasThemeStyle();
 
+  const autoDuration = template.supportsAutoDuration && duration === -1;
+  const durationLabel = autoDuration ? (language === 'zh' ? '自动' : 'Auto') : `${duration}s`;
+
   const labelParts = [
     template.supportsResolution ? resolution : null,
     // Only show a duration chip when an actual duration control renders — the
     // provider schema may set supportsDuration for the family while a specific
     // mode (e.g. video-edit) has no range/options and doesn't send duration.
-    (template.supportsDuration && (template.durationRange || template.durationOptions?.length)) ? `${duration}s` : null,
+    (template.supportsDuration && (template.durationRange || template.durationOptions?.length)) ? durationLabel : null,
     template.supportsAspectRatio ? (aspectRatio === 'auto' ? (language === 'zh' ? '自适应' : 'Auto') : aspectRatio) : null,
     template.supportsQuality ? quality : null,
     template.serviceType === 'audio' && template.supportsOutputFormat ? outputFormat : null,
@@ -171,7 +174,8 @@ export const MediaParamsPopover = ({
             {/* ── Duration ────────────────────────────────────────────── */}
             {(hasDurationSlider || hasDurationOptions) ? (
               <div className="mb-4">
-                <div className="node-param-heading"><span>{language === 'zh' ? '时长' : 'Duration'}</span><output>{duration}s</output></div>
+                <div className="node-param-heading"><span>{language === 'zh' ? '时长' : 'Duration'}</span><output>{durationLabel}</output></div>
+                {template.supportsAutoDuration && <div className="mb-2"><PillButton active={!!autoDuration} onClick={() => onDuration(autoDuration ? template.durationRange?.defaultValue ?? 5 : -1)}>{language === 'zh' ? '自动时长' : 'Auto duration'}</PillButton></div>}
                 {hasDurationSlider ? (
                   <>
                     <input
@@ -180,7 +184,7 @@ export const MediaParamsPopover = ({
                       min={template.durationRange!.min}
                       max={template.durationRange!.max}
                       step={template.durationRange!.step}
-                      value={duration}
+                      value={autoDuration ? template.durationRange!.defaultValue : duration}
                       onChange={(event) => onDuration(Number(event.target.value))}
                       className="prompt-duration-slider w-full accent-white"
                     />

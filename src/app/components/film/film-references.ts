@@ -56,7 +56,7 @@ export function filmGenerationValues(model: FilmModel | undefined, p: FilmProjec
   }
   return { ratio: ratios.includes(saved.ratio || p.settings.ratio) ? saved.ratio || p.settings.ratio : ratios[0],
     resolution: resolutions.includes(saved.resolution || '') ? saved.resolution! : t?.defaults?.resolution || resolutions[0] || '',
-    duration: t?.durationOptions?.length ? (t.durationOptions.includes(finiteDuration) ? finiteDuration : t.durationOptions[0]) : Math.max(t?.durationRange?.min ?? 1, Math.min(t?.durationRange?.max ?? 30, Math.round(finiteDuration / (t?.durationRange?.step || 1)) * (t?.durationRange?.step || 1))),
+    duration: t?.supportsAutoDuration && finiteDuration === -1 ? -1 : t?.durationOptions?.length ? (t.durationOptions.includes(finiteDuration) ? finiteDuration : t.durationOptions[0]) : Math.max(t?.durationRange?.min ?? 1, Math.min(t?.durationRange?.max ?? 30, Math.round(finiteDuration / (t?.durationRange?.step || 1)) * (t?.durationRange?.step || 1))),
     mode: modes.includes(mode) ? mode : modes[0], audio: saved.audio ?? true,
     quality: t?.qualityOptions?.includes(saved.quality || '') ? saved.quality : t?.defaults?.quality || t?.qualityOptions?.[0] || '',
     outputFormat: t?.outputFormatOptions?.includes(saved.outputFormat || '') ? saved.outputFormat : t?.defaults?.outputFormat || t?.outputFormatOptions?.[0] || '' };
