@@ -1,4 +1,5 @@
 import type { LayerEditorLayer } from './LayerEditorNode';
+import { croppedAspect, normalizeCrop, type LayerCrop } from './layer-editor-crop';
 
 export type LayerBounds = { width: number; height: number };
 export type LayerRect = LayerBounds & { x: number; y: number };
@@ -10,7 +11,7 @@ const positive = (v: number | undefined, fallback: number) => v && Number.isFini
 
 export function layerRect(layer: LayerEditorLayer, canvas: LayerBounds): LayerRect {
   const width = positive(layer.wPct, 0.5) * canvas.width;
-  const height = layer.hPct === undefined ? width / positive(layer.aspect, 1) : positive(layer.hPct, 0.5) * canvas.height;
+  const height = layer.hPct === undefined ? width / croppedAspect(layer.aspect, layer.crop) : positive(layer.hPct, 0.5) * canvas.height;
   return { x: layer.xPct * canvas.width - width / 2, y: layer.yPct * canvas.height - height / 2, width, height };
 }
 
@@ -23,6 +24,18 @@ export function fitLayerRect(rect: LayerRect, canvas: LayerBounds): LayerRect {
 
 export function rectToLayer(layer: LayerEditorLayer, rect: LayerRect, canvas: LayerBounds): LayerEditorLayer {
   return { ...layer, xPct: (rect.x + rect.width / 2) / canvas.width, yPct: (rect.y + rect.height / 2) / canvas.height, wPct: rect.width / canvas.width, hPct: rect.height / canvas.height };
+}
+
+/** Trim in place, preserving the source-image placement/scale rather than stretching the crop to fill. */
+export function applyLayerCrop(layer: LayerEditorLayer, crop: LayerCrop, canvas: LayerBounds, bounded = true): LayerEditorLayer {
+  const before = normalizeCrop(layer.crop), after = normalizeCrop(crop), rect = layerRect(layer, canvas);
+  const next = {
+    x: rect.x + (after.x - before.x) * rect.width / before.width,
+    y: rect.y + (after.y - before.y) * rect.height / before.height,
+    width: rect.width * after.width / before.width,
+    height: rect.height * after.height / before.height,
+  };
+  return rectToLayer({ ...layer, crop: after }, bounded ? fitLayerRect(next, canvas) : next, canvas);
 }
 
 /** Preserve displayed proportions (including intentional edge stretching) when the canvas ratio changes. */
@@ -50,15 +63,15 @@ function nearest(points: number[], targets: number[], threshold: number) {
 }
 
 /** Pure screen-space geometry, shared by every drag handle. No center-based resizing. */
-export function transformLayerRect(start: LayerRect, mode: 'move' | LayerHandle, dx: number, dy: number, canvas: LayerBounds, targets: Targets, snap = true, threshold = 7): { rect: LayerRect; guides: LayerGuides } {
-  const r = fitLayerRect(start, canvas), guides: LayerGuides = {};
+export function transformLayerRect(start: LayerRect, mode: 'move' | LayerHandle, dx: number, dy: number, canvas: LayerBounds, targets: Targets, snap = true, threshold = 7, bounded = true): { rect: LayerRect; guides: LayerGuides } {
+  const r = bounded ? fitLayerRect(start, canvas) : start, guides: LayerGuides = {};
   if (mode === 'move') {
-    let x = clamp(r.x + dx, 0, canvas.width - r.width), y = clamp(r.y + dy, 0, canvas.height - r.height);
+    let x = bounded ? clamp(r.x + dx, 0, canvas.width - r.width) : r.x + dx, y = bounded ? clamp(r.y + dy, 0, canvas.height - r.height) : r.y + dy;
     if (snap) {
       const sx = nearest([x, x + r.width / 2, x + r.width], targets.x, threshold);
       const sy = nearest([y, y + r.height / 2, y + r.height], targets.y, threshold);
-      if (sx && x + sx.delta >= 0 && x + sx.delta + r.width <= canvas.width) { x += sx.delta; guides.x = sx.target; }
-      if (sy && y + sy.delta >= 0 && y + sy.delta + r.height <= canvas.height) { y += sy.delta; guides.y = sy.target; }
+      if (sx && (!bounded || x + sx.delta >= 0 && x + sx.delta + r.width <= canvas.width)) { x += sx.delta; guides.x = sx.target; }
+      if (sy && (!bounded || y + sy.delta >= 0 && y + sy.delta + r.height <= canvas.height)) { y += sy.delta; guides.y = sy.target; }
     }
     return { rect: { ...r, x, y }, guides };
   }
@@ -67,7 +80,7 @@ export function transformLayerRect(start: LayerRect, mode: 'move' | LayerHandle,
   const horizontal = west || east, vertical = north || south;
   const signX = west ? -1 : 1, signY = north ? -1 : 1;
   const anchorX = west ? r.x + r.width : r.x, anchorY = north ? r.y + r.height : r.y;
-  const maxW = west ? anchorX : canvas.width - anchorX, maxH = north ? anchorY : canvas.height - anchorY;
+  const maxW = bounded ? (west ? anchorX : canvas.width - anchorX) : Infinity, maxH = bounded ? (north ? anchorY : canvas.height - anchorY) : Infinity;
   let width = r.width, height = r.height;
 
   if (horizontal && vertical) {

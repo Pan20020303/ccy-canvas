@@ -23,7 +23,7 @@ type CanvasRecord = { canvas: HTMLCanvasElement; options?: CanvasRenderingContex
 describe('layer editor transparent PNG and borderless preview', () => {
   let host: HTMLDivElement, root: Root, canvases: CanvasRecord[], downloads: HTMLAnchorElement[];
   const render = async (data: LayerEditorData = {}) => {
-    mocks.state.nodes[0].data = { layers: [layer], ratio: '16:9', transparent: true, ...data };
+    mocks.state.nodes[0].data = { layers: [layer], ratio: '16:9', boardSize: { width: 800, height: 450 }, transparent: true, ...data };
     await act(async () => root.render(<LayerEditorOverlay />));
   };
   const click = async (label: string) => {
@@ -91,7 +91,8 @@ describe('layer editor transparent PNG and borderless preview', () => {
     host.innerHTML = renderToStaticMarkup(<LayerEditorNode {...nodeProps} data={{ output: '/output.png' }} />);
     expect(host.querySelector('img')?.getAttribute('src')).toBe('/output.png');
   });
-  it.each([['16:9', 1600, 900], ['9:16', 900, 1600], ['1:1', 1600, 1600]] as const)('downloads %s PNG with alpha and no painted background', async (ratio, width, height) => {
+  it.each(['16:9', '9:16', '1:1'])('ignores legacy %s export ratio and fits actual image content with alpha', async ratio => {
+    const width = 1600, height = 800;
     await render({ ratio }); await click('下载 PNG');
     expect(canvases[0].canvas.width).toBe(width); expect(canvases[0].canvas.height).toBe(height);
     expect(canvases[0].options).toEqual({ alpha: true });
@@ -101,18 +102,18 @@ describe('layer editor transparent PNG and borderless preview', () => {
     expect(downloads[0].href).toBe(PNG); expect(downloads[0].download).toMatch(/\.png$/);
     expect(mocks.upload).not.toHaveBeenCalled();
   });
-  it('keeps solid background optional and switches it back off for export', async () => {
-    await render({ bg: '#123456' });
-    await click('透明背景'); await click('下载 PNG');
-    expect(canvases[0].fillStyle).toBe('#123456'); expect(canvases[0].fillRect).toHaveBeenCalledWith(0, 0, 1600, 900);
-    await click('透明背景'); await click('下载 PNG');
-    expect(canvases[1].fillRect).not.toHaveBeenCalled();
+  it('has a full white board without ratio/background controls and never paints the board into export', async () => {
+    await render({ bg: '#123456', transparent: false });
+    expect(document.querySelector('[data-free-artboard]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="透明背景"]')).toBeNull(); expect(document.querySelector('input[type="color"]')).toBeNull();
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === '16:9')).toBe(false);
+    await click('下载 PNG'); expect(canvases[0].fillRect).not.toHaveBeenCalled();
   });
   it('saves the same alpha-enabled PNG and editable background settings back to the node', async () => {
     await render(); await click('保存到节点');
     expect(canvases[0].fillRect).not.toHaveBeenCalled();
     expect(mocks.upload.mock.calls[0][0].type).toBe('image/png');
-    expect(mocks.update).toHaveBeenCalledWith('editor', expect.objectContaining({ url: '/uploads/composition.png', output: '/uploads/composition.png', layers: [expect.objectContaining(layer)], ratio: '16:9', transparent: true }));
+    expect(mocks.update).toHaveBeenCalledWith('editor', expect.objectContaining({ url: '/uploads/composition.png', output: '/uploads/composition.png', layers: [expect.objectContaining(layer)], editorMode: 'free', boardSize: { width: 800, height: 450 }, transparent: true }));
     expect(mocks.close).toHaveBeenCalledOnce();
   });
   it('keeps PNG data locally if upload is unavailable instead of flattening it', async () => {
@@ -123,14 +124,14 @@ describe('layer editor transparent PNG and borderless preview', () => {
   });
   it('leaves grid empty cells and gaps transparent by default, including after final download', async () => {
     await render({ layers: [] }); await chooseGridImage();
-    expect(document.querySelector('[aria-label="宫格透明背景"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('[aria-label="宫格背景颜色"]')).toBeNull();
     await click('应用到画布'); await click('下载 PNG');
     expect(canvases).toHaveLength(2);
     for (const canvas of canvases) { expect(canvas.options).toEqual({ alpha: true }); expect(canvas.fillRect).not.toHaveBeenCalled(); expect(canvas.drawImage).toHaveBeenCalledTimes(1); }
   });
-  it('supports intentionally opaque collage backgrounds', async () => {
-    await render({ layers: [] }); await chooseGridImage(); await click('宫格透明背景'); await click('应用到画布');
-    expect(canvases[0].fillRect).toHaveBeenCalledWith(0, 0, 1600, 900);
+  it('cannot save an empty board as a misleading blank output', async () => {
+    await render({ layers: [] }); await click('保存到节点'); await click('下载 PNG');
+    expect(canvases).toHaveLength(0); expect(mocks.update).not.toHaveBeenCalled();
   });
   it.each(['下载 PNG', '保存到节点'])('does not silently drop a broken layer during %s', async action => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -178,13 +179,13 @@ describe('layer editor transparent PNG and borderless preview', () => {
     await pointer(window, 'pointerup', 450, 225);
   });
   it('shows snap guides and allows temporary Alt bypass', async () => {
-    await render(); await selectLayer();
+    await render({ layers: [layer, { ...layer, id: 'target', xPct: 0.5, yPct: 0.85, wPct: 0.4 }] }); await selectLayer();
     await pointer(layerElement(), 'pointerdown', 400, 225);
-    await pointer(window, 'pointermove', 205, 225);
-    expect(document.querySelector<HTMLElement>('[data-snap-guide="x"]')?.style.left).toBe('0%');
-    expect(layerElement().style.left).toBe('25%');
-    await pointer(window, 'pointermove', 205, 225, { altKey: true });
-    expect(Number.parseFloat(layerElement().style.left)).toBeCloseTo(25.625);
+    await pointer(window, 'pointermove', 436, 225);
+    expect(document.querySelector('[data-snap-guide="x"]')).toBeTruthy();
+    const snapped = Number.parseFloat(layerElement().style.left);
+    await pointer(window, 'pointermove', 436, 225, { altKey: true });
+    expect(Number.parseFloat(layerElement().style.left)).toBeCloseTo(snapped - 4);
     expect(document.querySelector('[data-snap-guide]')).toBeNull();
     await pointer(window, 'pointerup', 205, 225);
   });
@@ -196,30 +197,26 @@ describe('layer editor transparent PNG and borderless preview', () => {
     await click('保存到节点');
     const saved = mocks.update.mock.calls[0][1].layers[0];
     expect(saved.wPct).toBeCloseTo(0.5); expect(saved.hPct).toBeCloseTo(250 / 450);
-    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([400, 250, 800, 500]);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 1000]);
     expect(layerElement().querySelector('img')?.className).toContain('object-fill');
     const savedData = JSON.parse(JSON.stringify(mocks.update.mock.calls[0][1]));
     await act(async () => root.render(null));
     await render(savedData); await click('下载 PNG');
-    expect(canvases[1].drawImage.mock.calls[0].slice(1)).toEqual([400, 250, 800, 500]);
+    expect(canvases[1].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 1000]);
   });
-  it('fits old oversized layers and keeps them contained after changing canvas ratio', async () => {
-    await render({ layers: [{ ...layer, wPct: 3 }] }); await selectLayer();
-    await click('16:9'); await click('9:16'); await click('保存到节点');
-    const saved = mocks.update.mock.calls[0][1].layers[0];
-    expect(saved.xPct - saved.wPct / 2).toBeGreaterThanOrEqual(0);
-    expect(saved.yPct - saved.hPct / 2).toBeGreaterThanOrEqual(0);
-    expect(saved.xPct + saved.wPct / 2).toBeLessThanOrEqual(1);
-    expect(saved.yPct + saved.hPct / 2).toBeLessThanOrEqual(1);
-    expect(saved.wPct * (9 / 16) / saved.hPct).toBeCloseTo(2);
+  it('preserves oversized legacy layers and exports all content beyond the former frame', async () => {
+    const large = { ...layer, wPct: 3, xPct: -2 };
+    await render({ layers: [large] }); await click('适应内容'); await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers[0]).toEqual(large);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 800]);
   });
   it('restores source proportions with Fit canvas and remembers the snapping switch', async () => {
     await render({ layers: [{ ...layer, hPct: 0.9 }] }); await selectLayer();
-    await click('适应底图'); await click('磁吸对齐'); await click('保存到节点');
+    await click('还原比例'); await click('磁吸对齐'); await click('保存到节点');
     const saved = mocks.update.mock.calls[0][1];
     expect(saved.snapEnabled).toBe(false);
     expect(saved.layers[0].wPct * 800 / (saved.layers[0].hPct * 450)).toBeCloseTo(2);
-    expect(saved.layers[0].wPct).toBe(1);
+    expect(saved.layers[0].wPct).toBe(0.5);
   });
 
   const overlapLayers = () => ['bottom', 'middle', 'top'].map(id => ({ ...layer, id, image: `/${id}.png` }));
@@ -265,7 +262,8 @@ describe('layer editor transparent PNG and borderless preview', () => {
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'BracketRight', key: ']', ctrlKey: true, shiftKey: true, bubbles: true })); });
     expect(previewOrder()).toEqual(['middle', 'top', 'bottom']);
     expect(actionButton('上移一层').disabled).toBe(true); expect(actionButton('置顶').disabled).toBe(true);
-    await act(async () => { document.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown', { code: 'BracketLeft', key: '[', ctrlKey: true, bubbles: true })); });
+    const input = document.createElement('input'); host.append(input);
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { code: 'BracketLeft', key: '[', ctrlKey: true, bubbles: true })); });
     expect(previewOrder()).toEqual(['middle', 'top', 'bottom']);
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'BracketLeft', key: '[', metaKey: true, bubbles: true })); });
     expect(previewOrder()).toEqual(['middle', 'bottom', 'top']);
@@ -294,5 +292,143 @@ describe('layer editor transparent PNG and borderless preview', () => {
     expect(previewOrder()).toEqual(['bottom', 'middle', 'top']);
     await act(async () => { finishUpload({ url: '/saved.png' }); });
     expect(mocks.update.mock.calls[0][1].layers.map((l: { id: string }) => l.id)).toEqual(['bottom', 'middle', 'top']);
+  });
+
+  const openCrop = async () => {
+    await click('裁切图片');
+    const img = document.querySelector<HTMLImageElement>('[data-crop-source] img')!;
+    Object.defineProperty(img, 'naturalWidth', { value: 200 }); Object.defineProperty(img, 'naturalHeight', { value: 100 });
+    await act(async () => { img.dispatchEvent(new Event('load')); });
+  };
+  const dragCrop = async (edge: string, dx: number, dy = 0) => {
+    await pointer(document.querySelector(`[data-crop-handle="${edge}"]`)!, 'pointerdown', 0, 0);
+    await pointer(window, 'pointermove', dx, dy); await pointer(window, 'pointerup', dx, dy);
+  };
+  const cropSquare = async () => {
+    await dragCrop('w', 100); await dragCrop('e', -100);
+  };
+  it('crops only the selected layer, preserves the original, and exports the same crop after reopening', async () => {
+    await render({ layers: [layer, ...overlapLayers()] }); await selectRow('layer'); await openCrop();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.querySelector('[data-crop-source] img')?.className).toContain('opacity-25');
+    expect(document.querySelectorAll('[data-crop-handle]')).toHaveLength(8);
+    await cropSquare(); await click('应用裁切');
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const preview = layerElement().querySelector('img')!;
+    expect(preview.style.width).toBe('200%'); expect(preview.style.left).toBe('-50%');
+    await click('保存到节点');
+    const saved = JSON.parse(JSON.stringify(mocks.update.mock.calls[0][1]));
+    expect(saved.layers[0]).toEqual(expect.objectContaining({ image: '/source.png', aspect: 2, crop: { x: 0.25, y: 0, width: 0.5, height: 1 } }));
+    expect(saved.layers.slice(1).every((l: any) => l.crop === undefined)).toBe(true);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([50, 0, 100, 100, 400, 0, 800, 800]);
+    await act(async () => root.render(null)); await render(saved); await click('下载 PNG');
+    expect(canvases[1].drawImage.mock.calls[0].slice(1)).toEqual(canvases[0].drawImage.mock.calls[0].slice(1));
+    await selectRow('layer'); await openCrop();
+    expect(document.querySelector('[data-crop-source] img')?.getAttribute('src')).toBe('/source.png');
+    expect(document.querySelector<HTMLElement>('[data-crop-selection]')?.style.width).toBe('50%');
+    await click('恢复完整原图'); await click('应用裁切'); await click('下载 PNG');
+    expect(canvases[2].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 200, 100, 0, 0, 1600, 800]);
+  });
+  it('cancels crop drafts without changing the layer or leaking Delete/order shortcuts to the editor', async () => {
+    await render(); await selectRow('layer'); const before = layerElement().getAttribute('style');
+    await openCrop(); await dragCrop('s', 0, -80);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })); });
+    expect(layerElement()).toBeTruthy();
+    await click('取消裁切');
+    expect(layerElement().getAttribute('style')).toBe(before);
+    await click('保存到节点'); expect(mocks.update.mock.calls[0][1].layers[0].crop).toBeUndefined();
+  });
+  it.each(['pointerup', 'pointercancel', 'lostpointercapture', 'blur', 'resize', 'released'])('stops crop dragging after %s', async end => {
+    await render(); await selectRow('layer'); await openCrop();
+    await pointer(document.querySelector('[data-crop-handle="w"]')!, 'pointerdown', 0, 200);
+    await pointer(window, 'pointermove', 80, 200);
+    const before = document.querySelector('[data-crop-selection]')!.getAttribute('style');
+    if (end === 'blur' || end === 'resize') await act(async () => { window.dispatchEvent(new Event(end)); });
+    else await pointer(window, end === 'released' ? 'pointermove' : end, 80, 200, { buttons: 0 });
+    await pointer(window, 'pointermove', 600, 200);
+    expect(document.querySelector('[data-crop-selection]')!.getAttribute('style')).toBe(before);
+    await click('应用裁切'); await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers[0].crop.x).toBeCloseTo(0.2);
+  });
+  it('moves the crop window within the original, ignores other pointers and fits the cropped aspect', async () => {
+    await render(); await selectRow('layer'); await openCrop(); await cropSquare();
+    await pointer(document.querySelector('[data-crop-selection]')!, 'pointerdown', 400, 200);
+    await pointer(window, 'pointermove', 800, 200, { pointerId: 2 });
+    expect(document.querySelector<HTMLElement>('[data-crop-selection]')!.style.left).toBe('25%');
+    await pointer(window, 'pointermove', 440, 200); await pointer(window, 'pointerup', 440, 200);
+    await click('应用裁切'); await click('还原比例'); await click('保存到节点');
+    const result = mocks.update.mock.calls[0][1].layers[0];
+    expect(result.crop.x).toBeCloseTo(0.35); expect(result.wPct * 800 / (result.hPct * 450)).toBeCloseTo(1);
+  });
+  it('does not allow applying a crop if the original image fails to load', async () => {
+    await render(); await selectRow('layer'); await click('裁切图片');
+    const img = document.querySelector('[data-crop-source] img')!;
+    await act(async () => { img.dispatchEvent(new Event('error')); });
+    const apply = [...document.querySelectorAll('button')].find(b => b.textContent === '应用裁切')!;
+    expect(apply.disabled).toBe(true); await click('取消裁切');
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    expect(layerElement().querySelector('img')!.getAttribute('src')).toBe('/source.png');
+  });
+
+  it('pans and zooms the viewport without changing saved placement, size or exported pixels', async () => {
+    await render();
+    const board = document.querySelector<HTMLElement>('[data-layer-canvas]')!;
+    const original = layerElement().getAttribute('style');
+    await pointer(board, 'pointerdown', 20, 20); await pointer(window, 'pointermove', 120, 70); await pointer(window, 'pointerup', 120, 70);
+    expect(layerElement().getAttribute('style')).not.toBe(original);
+    const panned = layerElement().getAttribute('style');
+    await pointer(window, 'pointermove', 250, 200); expect(layerElement().getAttribute('style')).toBe(panned);
+    await act(async () => { board.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: 300, clientY: 300, deltaY: -200 })); });
+    expect(Number(board.dataset.boardScale)).toBeGreaterThan(1);
+    await click('放大画板'); await click('缩小画板');
+    await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers).toEqual([layer]);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 800]);
+  });
+
+  it('hand mode drags images as part of the view, not as moved layers', async () => {
+    await render(); await click('抓手平移');
+    const before = layerElement().getAttribute('style');
+    await pointer(layerElement(), 'pointerdown', 400, 225); await pointer(window, 'pointermove', 500, 275);
+    expect(layerElement().getAttribute('style')).not.toBe(before);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    const after = layerElement().getAttribute('style');
+    await pointer(window, 'pointermove', 900, 800); expect(layerElement().getAttribute('style')).toBe(after);
+    await click('保存到节点'); expect(mocks.update.mock.calls[0][1].layers).toEqual([layer]);
+  });
+
+  it('keeps crop geometry correct when zoomed and permits Enter and Escape without closing the editor', async () => {
+    await render(); await selectRow('layer'); await click('放大画板'); await openCrop();
+    await dragCrop('w', 120); await dragCrop('e', -120);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); });
+    expect(document.querySelector('[data-crop-source]')).toBeNull();
+    await openCrop(); await dragCrop('s', 0, -80);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    expect(mocks.close).not.toHaveBeenCalled(); await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers[0].crop).toEqual({ x: 0.25, y: 0, width: 0.5, height: 1 });
+    expect(canvases[0].canvas.width).toBe(1600); expect(canvases[0].canvas.height).toBe(1600);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([50, 0, 100, 100, 0, 0, 1600, 1600]);
+  });
+
+  it('moves a layer beyond the former canvas boundary without clipping on save', async () => {
+    await render(); await selectLayer(); await pointer(layerElement(), 'pointerdown', 400, 225);
+    await pointer(window, 'pointermove', -800, 1225); await pointer(window, 'pointerup', -800, 1225);
+    await click('保存到节点');
+    const saved = mocks.update.mock.calls[0][1].layers[0];
+    expect(saved.xPct).toBe(-1); expect(saved.yPct).toBeCloseTo(1225 / 450);
+    expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 800]);
+  });
+
+  it('does not steal Enter or Space from crop toolbar buttons', async () => {
+    await render(); await selectRow('layer'); await openCrop(); await cropSquare();
+    const cancel = [...document.querySelectorAll('button')].find(b => b.textContent === '取消裁切')!;
+    const key = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => { cancel.dispatchEvent(key); });
+    expect(key.defaultPrevented).toBe(false); expect(document.querySelector('[data-crop-source]')).toBeTruthy();
+    const space = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
+    await act(async () => { cancel.dispatchEvent(space); });
+    expect(space.defaultPrevented).toBe(false);
+    await click('取消裁切'); await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers[0].crop).toBeUndefined();
   });
 });

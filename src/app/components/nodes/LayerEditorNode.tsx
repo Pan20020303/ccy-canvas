@@ -5,20 +5,21 @@ import clsx from 'clsx';
 
 import Magnet from '../Magnet';
 import { useStore } from '../../store';
+import type { LayerCrop } from './layer-editor-crop';
 
 /**
  * 图层编辑节点 —— inline 卡片(参考样式):
  *   - 未编辑:占位「双击开始编辑图层」+ 右下角编辑小按钮
  *   - 已保存:合成图全面屏显示(图即整卡),双击 / 编辑按钮重新进编辑器
- *   - 输出:data.url = 合成 PNG(COS URL),下游拉线即作图片参考
+ *   - 输出:data.url = 合成 PNG，下游拉线即作图片参考
  * 交互与其他节点一致:全卡 target 命中区、贴边渲染锚点、磁吸快连 + 泡泡。
  */
 
 export type LayerEditorLayer = {
   id: string;
-  /** 图层图片(URL;保存时 dataURL 会被上传替换) */
+  /** 原始图层图片 URL 或 dataURL，裁切/导出不覆盖原图。 */
   image: string;
-  /** 中心点位置,画布宽/高的百分比 0..1 */
+  /** 中心点相对 boardSize 的坐标，可为负数或超过 1；自由画板不设边界。 */
   xPct: number;
   yPct: number;
   /** 图层宽度占画布宽度的比例 */
@@ -27,6 +28,8 @@ export type LayerEditorLayer = {
   hPct?: number;
   /** 原图宽高比(w/h)，用于旧数据兼容与还原比例。 */
   aspect: number;
+  /** 非破坏性裁切：原图坐标 0..1，保留原图以便重新裁切。 */
+  crop?: LayerCrop;
 };
 
 export type LayerEditorData = {
@@ -35,10 +38,14 @@ export type LayerEditorData = {
   output?: string;
   /** 可重进编辑的图层描述 */
   layers?: LayerEditorLayer[];
+  /** 旧版底图比例，仅用于首次换算坐标；新画板不显示或限制此比例。 */
   ratio?: string;
   transparent?: boolean;
   bg?: string;
   snapEnabled?: boolean;
+  /** 自由画板的坐标单位；仅用于兼容旧图层，不限制位置或导出比例。 */
+  boardSize?: { width: number; height: number };
+  editorMode?: 'free';
   status?: string;
   customTitle?: string;
 };
