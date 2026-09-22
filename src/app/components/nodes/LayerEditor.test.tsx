@@ -105,6 +105,9 @@ describe('layer editor transparent PNG and borderless preview', () => {
   it('has a full white board without ratio/background controls and never paints the board into export', async () => {
     await render({ bg: '#123456', transparent: false });
     expect(document.querySelector('[data-free-artboard]')).toBeTruthy();
+    expect(document.querySelector('[aria-label="图层层级"]')?.className).toContain('bg-white');
+    await click('画布图片');
+    expect(document.querySelector('[data-asset-panel]')?.className).toContain('bg-white');
     expect(document.querySelector('[aria-label="透明背景"]')).toBeNull(); expect(document.querySelector('input[type="color"]')).toBeNull();
     expect([...document.querySelectorAll('button')].some(b => b.textContent === '16:9')).toBe(false);
     await click('下载 PNG'); expect(canvases[0].fillRect).not.toHaveBeenCalled();
@@ -374,7 +377,9 @@ describe('layer editor transparent PNG and borderless preview', () => {
     await render();
     const board = document.querySelector<HTMLElement>('[data-layer-canvas]')!;
     const original = layerElement().getAttribute('style');
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true })); });
     await pointer(board, 'pointerdown', 20, 20); await pointer(window, 'pointermove', 120, 70); await pointer(window, 'pointerup', 120, 70);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true })); });
     expect(layerElement().getAttribute('style')).not.toBe(original);
     const panned = layerElement().getAttribute('style');
     await pointer(window, 'pointermove', 250, 200); expect(layerElement().getAttribute('style')).toBe(panned);
@@ -386,15 +391,62 @@ describe('layer editor transparent PNG and borderless preview', () => {
     expect(canvases[0].drawImage.mock.calls[0].slice(1)).toEqual([0, 0, 1600, 800]);
   });
 
-  it('hand mode drags images as part of the view, not as moved layers', async () => {
-    await render(); await click('抓手平移');
+  it('only pans while Space is held and treats an ordinary blank drag as a selection marquee', async () => {
+    await render();
+    const board = document.querySelector<HTMLElement>('[data-layer-canvas]')!;
     const before = layerElement().getAttribute('style');
+    await pointer(board, 'pointerdown', 180, 260); await pointer(window, 'pointermove', 650, 410);
+    expect(document.querySelector('[data-selection-marquee]')).toBeTruthy();
+    await pointer(window, 'pointerup', 650, 410);
+    expect(layerElement().getAttribute('style')).toBe(before);
+    expect(document.querySelector('[data-layer-row="layer"]')?.getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true })); });
     await pointer(layerElement(), 'pointerdown', 400, 225); await pointer(window, 'pointermove', 500, 275);
     expect(layerElement().getAttribute('style')).not.toBe(before);
-    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await pointer(window, 'pointerup', 500, 275);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', bubbles: true })); });
     const after = layerElement().getAttribute('style');
     await pointer(window, 'pointermove', 900, 800); expect(layerElement().getAttribute('style')).toBe(after);
     await click('保存到节点'); expect(mocks.update.mock.calls[0][1].layers).toEqual([layer]);
+  });
+
+  it('undoes and redoes layer movement with Ctrl+Z and Ctrl+Shift+Z', async () => {
+    await render(); await selectLayer();
+    const original = layerElement().getAttribute('style');
+    await pointer(layerElement(), 'pointerdown', 400, 225);
+    await pointer(window, 'pointermove', 470, 265);
+    await pointer(window, 'pointerup', 470, 265);
+    const moved = layerElement().getAttribute('style');
+    expect(moved).not.toBe(original);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', ctrlKey: true, bubbles: true })); });
+    expect(layerElement().getAttribute('style')).toBe(original);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', code: 'KeyZ', ctrlKey: true, shiftKey: true, bubbles: true })); });
+    expect(layerElement().getAttribute('style')).toBe(moved);
+  });
+
+  it('drags a canvas asset directly from the white asset panel onto the artboard', async () => {
+    await render(); await click('画布图片');
+    const asset = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.draggable && button.querySelector('img')?.getAttribute('src') === '/source.png');
+    expect(asset).toBeTruthy();
+    const values = new Map<string, string>();
+    const dataTransfer = { effectAllowed: 'none', dropEffect: 'none', setData: (type: string, value: string) => values.set(type, value), getData: (type: string) => values.get(type) ?? '' };
+    const dragStart = new Event('dragstart', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStart, 'dataTransfer', { value: dataTransfer });
+    await act(async () => { asset!.dispatchEvent(dragStart); });
+    const drop = new MouseEvent('drop', { bubbles: true, cancelable: true, clientX: 700, clientY: 500 });
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
+    await act(async () => { document.querySelector('[data-layer-canvas]')!.dispatchEvent(drop); await Promise.resolve(); });
+    expect(document.querySelectorAll('[data-layer-id]')).toHaveLength(2);
+  });
+
+  it('opens layer ordering from the right-click menu', async () => {
+    const top = { ...layer, id: 'top', image: '/top.png', xPct: 0.6 };
+    await render({ layers: [layer, top] });
+    await act(async () => { layerElement().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 420, clientY: 240 })); });
+    expect(document.querySelector('[aria-label="图层右键菜单"]')).toBeTruthy();
+    await click('置于顶层');
+    await click('保存到节点');
+    expect(mocks.update.mock.calls[0][1].layers.map((item: { id: string }) => item.id)).toEqual(['top', 'layer']);
   });
 
   it('keeps crop geometry correct when zoomed and permits Enter and Escape without closing the editor', async () => {
