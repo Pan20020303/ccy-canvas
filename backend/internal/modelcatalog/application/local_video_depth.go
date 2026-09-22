@@ -227,8 +227,9 @@ func depthRunnerArgs(runner, input, outputDir string) []string {
 
 func findDepthVideo(root string) (string, error) {
 	type candidate struct {
-		path string
-		size int64
+		path     string
+		size     int64
+		priority int
 	}
 	var files []candidate
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -238,7 +239,21 @@ func findDepthVideo(root string) (string, error) {
 		switch strings.ToLower(filepath.Ext(path)) {
 		case ".mp4", ".mov", ".mkv", ".webm", ".avi":
 			if stat, err := entry.Info(); err == nil && stat.Size() > 0 {
-				files = append(files, candidate{path: path, size: stat.Size()})
+				// Video Depth Anything writes both <input>_src.mp4 (the RGB
+				// source frames) and <input>_vis.mp4 (the actual rendered depth
+				// map). The RGB file is commonly larger, so choosing by size alone
+				// silently returned the original-looking video instead of depth.
+				name := strings.ToLower(strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+				priority := 0
+				switch {
+				case strings.HasSuffix(name, "_vis"):
+					priority = 100
+				case strings.Contains(name, "depth"):
+					priority = 80
+				case strings.HasSuffix(name, "_src") || strings.Contains(name, "source"):
+					priority = -100
+				}
+				files = append(files, candidate{path: path, size: stat.Size(), priority: priority})
 			}
 		}
 		return nil
@@ -246,7 +261,12 @@ func findDepthVideo(root string) (string, error) {
 	if len(files) == 0 {
 		return "", apperror.New(apperror.CodeValidation, "Video Depth Anything 未生成深度视频")
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].priority != files[j].priority {
+			return files[i].priority > files[j].priority
+		}
+		return files[i].size > files[j].size
+	})
 	return files[0].path, nil
 }
 

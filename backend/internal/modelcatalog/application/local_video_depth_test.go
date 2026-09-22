@@ -38,6 +38,22 @@ func TestFindDepthVideoUsesLargestValidVideo(t *testing.T) {
 	}
 }
 
+func TestFindDepthVideoPrefersRenderedDepthOverLargerSourceCopy(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "input_src.mp4")
+	depth := filepath.Join(dir, "input_vis.mp4")
+	if err := os.WriteFile(source, []byte("much-larger-rgb-source-copy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(depth, []byte("depth"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := findDepthVideo(dir)
+	if err != nil || got != depth {
+		t.Fatalf("got %q, %v; want rendered depth %q", got, err, depth)
+	}
+}
+
 func TestResolveVideoDepthRuntimeRequiresConfiguredInstall(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("VIDEO_DEPTH_ANYTHING_DIR", dir)
