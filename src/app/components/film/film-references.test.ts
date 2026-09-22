@@ -31,7 +31,7 @@ describe('per-shot reference layers and output parameters', () => {
     expect(() => filmReferencePrompt(text, refs.slice(0, 1))).toThrow('已移除');
   });
   it('uses the identical per-shot model, references, prompt and parameters for batch and individual generation', () => {
-    const p = project(); p.shots[0].generation = { video: { modelKey: models[0].key, ratio: '16:9', resolution: '1080p', duration: 8, mode: 'all-in-one', outputFormat: 'mov', audio: true } };
+    const p = project(); p.shots[0].assetIds = ['person', 'scene']; p.shots[0].generation = { video: { modelKey: models[0].key, ratio: '16:9', resolution: '1080p', duration: 8, mode: 'all-in-one', outputFormat: 'mov', audio: true } };
     const shot = p.shots[0], refs = filmReferences(p, shot.id, 'video'), values = filmGenerationValues(models[0], p, shot.generation!.video!, shot);
     const individual = filmMediaPayload(models[0], p, filmReferencePrompt(filmShotPrompt(shot, true), refs), 'video', refs, values);
     expect(filmShotVideoRequest(p, shot, models)).toEqual(individual);

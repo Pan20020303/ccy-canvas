@@ -622,6 +622,7 @@ export function reconcileStoryboardAssetReferences(
       storyboard.action,
       storyboard.continuity,
       storyboard.prompt,
+      storyboard.videoPrompt,
     ].filter(Boolean).join("\n");
     const mentionedIds = assets
       .filter((asset) =>
@@ -736,6 +737,9 @@ export function parseStoryboardResponse(content: string, assets: AutomationAsset
       ...collectAssetIds(value.assetIds),
       ...collectAssetIds(value.assets),
       ...collectAssetIds(value.assetRefs),
+      ...collectAssetIds(value.characters),
+      ...collectAssetIds(value.scenes ?? value.scene),
+      ...collectAssetIds(value.props),
     ]);
     const cameraObject = value.camera && typeof value.camera === "object"
       ? value.camera as Record<string, unknown>

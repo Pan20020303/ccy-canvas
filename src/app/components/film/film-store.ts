@@ -9,6 +9,7 @@ import { editorId, editorExportPayload, validateEditorProject, type VideoEditPro
 import { newFilmProject, SCRIPT_LIMIT, type FilmProject, type FilmJob, type FilmJobPhase } from './film-project';
 import { prepareFilmResult } from './film-result';
 import type { LocalVideoTrimResult } from '../../api/video-edit';
+import { scriptDoctorIssue, scriptDoctorResult } from './film-script-doctor';
 
 type State = { project: FilmProject; saved: boolean; syncStatus?: 'saved' | 'saving' | 'error' | 'conflict'; syncError?: string; flush?: () => Promise<void>; patch: (change: Partial<FilmProject> | ((p: FilmProject) => Partial<FilmProject>)) => void; reset: () => void };
 const stores = new Map<string, ReturnType<typeof createFilmStore>>();
@@ -31,7 +32,7 @@ function createFilmStore(userId: string, cloudId?: string) {
       if (!cloudId) try { localStorage.setItem(filmStorageKey(userId), JSON.stringify(next)); } catch { saved = false; }
       set({ project: next, saved });
     },
-    reset: () => get().patch({ ...newFilmProject(), backendId: undefined, editProject: undefined, exportUrl: undefined, exportError: undefined, exporting: false }),
+    reset: () => get().patch({ ...newFilmProject(), scriptDoctor: undefined, backendId: undefined, editProject: undefined, exportUrl: undefined, exportError: undefined, exporting: false }),
   }));
 }
 export function filmStore(userId: string, cloudId?: string) {
@@ -56,6 +57,13 @@ export function applyFilmResult(project: FilmProject, job: FilmJob, content: str
   if (!content.trim()) throw new Error('任务已结束，但模型没有返回有效内容。');
   if (['extract', 'split', 'write'].includes(job.kind) && project.script !== job.sourceScript) throw new Error('剧本已修改，旧任务结果未覆盖当前内容。请按新剧本重新生成。');
   if (job.kind === 'write') return { script: content.slice(0, SCRIPT_LIMIT), scriptHistory: [...project.scriptHistory, { text: project.script, at: job.startedAt }].slice(-20) };
+  if (job.kind === 'doctor') return scriptDoctorResult(project, job, content);
+  if (job.kind === 'describe') {
+    const asset = project.assets.find(a => a.id === job.targetId);
+    if (!asset) throw new Error('资产已移除，描述结果保留在任务记录中。');
+    if (project.script !== job.sourceScript || (asset.generationPrompt || '') !== (job.sourceAssetPrompt || '')) throw new Error('剧本或资产提示词已修改，未覆盖手工内容。可在任务中下载原始返回。');
+    return { assets: project.assets.map(a => a.id === job.targetId ? { ...a, generationPrompt: content.trim() } : a) };
+  }
   if (job.kind === 'extract') {
     const assets = parseExtractedAssetsResponse(content).filter(a => a.type !== 'audio');
     if (!assets.length) throw new Error('模型没有提取出场景、角色或道具。可以手动添加后继续。');
@@ -72,7 +80,7 @@ export function applyFilmResult(project: FilmProject, job: FilmJob, content: str
     const shots = parseStoryboardResponse(content, project.assets);
     if (!shots.length) throw new Error('模型没有返回可用分镜。');
     if (shots.length + project.shots.length > 32) throw new Error('当前工程最多支持32个分镜，请减少分镜数量后重试，已有内容已保留。');
-    return { shots: [...project.shots, ...shots.map((s, number) => ({ ...s, id: `film-${job.id}-shot-${number}`, history: [] }))] };
+    return { shots: [...project.shots, ...shots.map((s, number) => ({ ...s, id: `film-${job.id}-shot-${number}`, autoBindReferences: true, history: [] }))] };
   }
   const version = { id: job.id, url: content, createdAt: job.startedAt, label: job.payload.model, kind: job.kind === 'video' ? 'video' as const : 'image' as const };
   if (job.kind === 'asset') return { assets: project.assets.map(a => a.id === job.targetId ? { ...a, url: content, history: [...a.history, version] } : a) };
@@ -108,7 +116,7 @@ function finish(userId: string, projectId: string, jobId: string, content?: stri
 // Re-read a finished server task. This path must never submit generation or charge.
 export async function recoverFilmJob(userId: string, id: string, cloudId?: string) {
   const store = filmStore(userId, cloudId), p = store.getState().project, job = p.jobs.find(j => j.id === id);
-  if (!job || job.status !== 'error' || job.appliedAt || !['split', 'extract'].includes(job.kind)) return;
+  if (!job || job.status !== 'error' || job.appliedAt || !['split', 'extract', 'doctor'].includes(job.kind)) return;
   let raw = job.rawResult;
   if (!raw) {
     const task = job.taskId ? await getTask(job.taskId) : (await batchTasksByNodeIds([job.nodeId])).find(t => t.node_id === job.nodeId);
@@ -121,10 +129,12 @@ export async function recoverFilmJob(userId: string, id: string, cloudId?: strin
 export async function startFilmJob(userId: string, kind: FilmJob['kind'], payload: GeneratePayload, targetId?: string, cloudId?: string) {
   if (!userId) throw new Error('请先登录后使用生成服务。');
   const store = filmStore(userId, cloudId), p = store.getState().project;
+  if (kind === 'split') { const issue = scriptDoctorIssue(p); if (issue) throw new Error(issue); }
   if (p.jobs.some(j => activeFilmJob(j) && j.kind === kind && j.targetId === targetId)) throw new Error('这个任务正在处理中，请等待完成。');
   const id = editorId();
   const nodeId = `automation-film-${kind}-${p.id}-${id}`;
   const job: FilmJob = { id, kind, targetId, nodeId, startedAt: Date.now(), status: 'submitting', phase: 'preparing', steps: [{ phase: 'preparing', at: Date.now() }], sourceScript: p.script,
+    sourceAssetPrompt: kind === 'describe' ? p.assets.find(a => a.id === targetId)?.generationPrompt || '' : undefined,
     payload: { ...payload, node_id: nodeId, request_id: id } };
   store.getState().patch(current => ({ jobs: [...current.jobs, job] }));
   try {
@@ -134,6 +144,7 @@ export async function startFilmJob(userId: string, kind: FilmJob['kind'], payloa
     store.getState().patch(current => ({ jobs: current.jobs.map(j => j.id === id ? { ...j, payload: job.payload } : j) }));
     // Persist request/node IDs before any billable request. Refresh can recover it.
     await store.getState().flush?.();
+    if (kind === 'doctor' && store.getState().project.script !== job.sourceScript) throw new Error('剧本在准备期间已修改，未提交旧优化任务。请重新点击优化。');
     await submitFilmJob(userId, p.id, job, cloudId);
   } catch (error) {
     finish(userId, p.id, id, undefined, filmError(error), cloudId);
@@ -193,7 +204,7 @@ export async function retryFilmJob(userId: string, id: string, replacementPayloa
     const current = filmStore(userId, cloudId).getState().project.jobs.find(j => j.id === id);
     if (current?.status === 'unknown') await submitFilmJob(userId, p.id, current, cloudId);
   } else if (job.status === 'error') {
-    if (['write', 'extract', 'split'].includes(job.kind) && p.script !== job.sourceScript) throw new Error('剧本已经修改，请在对应步骤重新生成，避免沿用旧剧本。');
+    if (['write', 'doctor', 'extract', 'split'].includes(job.kind) && p.script !== job.sourceScript) throw new Error('剧本已经修改，请在对应步骤重新生成，避免沿用旧剧本。');
     await startFilmJob(userId, job.kind, replacementPayload ?? job.payload, job.targetId, cloudId);
   }
 }

@@ -6,6 +6,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { FilmWorkspace } from './OneClickFilm';
 import { filmStore } from './film-store';
 import type { AppProviderConfig } from '../../api/providerConfigs';
+import { adoptScriptRevision, scriptDoctorResult } from './film-script-doctor';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const state = vi.hoisted(() => ({ user: '', configs: vi.fn(), skills: vi.fn(), createSkill: vi.fn(), generate: vi.fn(), navigate: vi.fn() }));
@@ -34,6 +35,11 @@ describe('film workspace interactions', () => {
     const field = document.querySelector<HTMLSelectElement>(`[aria-label="${label}"]`)!; expect(field).toBeTruthy();
     await act(async () => { field.value = value; field.dispatchEvent(new Event('change', { bubbles: true })); });
   };
+  const approveScript = () => {
+    const store = filmStore(state.user), p = store.getState().project;
+    const reviewed = { ...p, ...scriptDoctorResult(p, { id: 'reviewed', kind: 'doctor', sourceScript: p.script, nodeId: 'reviewed', startedAt: 1, status: 'success', payload: { service_type: 'text', model: 'test', prompt: '' } }, JSON.stringify({ optimizedScript: p.script })) };
+    store.getState().patch({ ...reviewed, ...adoptScriptRevision(reviewed, 'reviewed') });
+  };
   beforeEach(() => {
     state.user = crypto.randomUUID(); state.configs.mockResolvedValue(configs);
     state.skills.mockResolvedValue([
@@ -51,8 +57,41 @@ describe('film workspace interactions', () => {
     filmStore(state.user).getState().patch({ script: '旅人来到车站', step: 2 });
     await render(); await click('提取场景角色道具');
     expect(document.querySelector('[aria-label="生成任务与执行步骤"]')).toBeTruthy();
+    await act(async () => { await vi.waitFor(() => expect(filmStore(state.user).getState().project.jobs.some(j => j.status === 'success')).toBe(true)); });
     expect(document.querySelector('.film-job-steps')?.textContent).toContain('解析与校验内容');
     expect(document.querySelector('.film-job-result')?.textContent).toContain('已写入 1 个资产');
+    expect(state.generate.mock.calls[0][0].prompt).toContain('【创作工作台 v2.5.2');
+    expect(document.querySelector('.film-job')?.textContent).toContain('个技能章节');
+  });
+  it('reviews and edits an independently saved doctor draft, explicitly adopts it and requires asset rechecking before splitting', async () => {
+    const store = filmStore(state.user);
+    store.getState().patch(p => ({ script: '旅人来到车站。', step: 2, settings: { ...p.settings, doctorModel: 'text-channel:gpt-4.1-mini', creativeSkills: { enabled: false } }, assets: [{ id: 'scene', name: '车站', type: 'scene', description: '站台', url: '/scene.png', source: 'uploaded', locked: false, history: [] }] }));
+    state.generate.mockResolvedValue({ type: 'text', content: JSON.stringify({ optimizedScript: '旅人提着行李，走上车站台阶。', summary: '动作更清楚', changes: ['明确持物和移动'], questions: [], assetNotes: ['行李需核对'] }) });
+    await render(); await click('剧本医生优化');
+    expect(state.generate).not.toHaveBeenCalled(); await click('开始诊断并优化');
+    await act(async () => { await vi.waitFor(() => expect(store.getState().project.scriptDoctor?.revisions).toHaveLength(1)); });
+    expect(store.getState().project.script).toBe('旅人来到车站。');
+    expect(state.generate.mock.calls[0][0]).toMatchObject({ model: 'gpt-4.1-mini', prompt: expect.stringContaining('【技能资料：剧情、情绪与动作诊断】') });
+    await fill('[aria-label="剧本医生优化稿"]', '旅人握住行李把手，走上车站台阶。');
+    await click('暂不采用，保留草稿'); await click('查看剧本优化稿');
+    expect(document.querySelector<HTMLTextAreaElement>('[aria-label="剧本医生优化稿"]')?.value).toContain('握住');
+    await click('确认采用优化稿');
+    expect(store.getState().project.script).toContain('握住'); expect(store.getState().project.scriptHistory.at(-1)?.text).toBe('旅人来到车站。');
+    expect(store.getState().project.assets[0].url).toBe('/scene.png');
+    await click('下一步·分镜脚本'); expect(store.getState().project.step).toBe(2);
+    expect(document.querySelector('[aria-label="优化后资产核对"]')).toBeTruthy();
+    await click('已核对资产，继续使用'); await click('下一步·分镜脚本'); expect(store.getState().project.step).toBe(3);
+    state.generate.mockResolvedValue({ type: 'text', content: '{"shots":[{"description":"旅人进入车站"}]}' });
+    await click('生成分镜脚本');
+    await act(async () => { await vi.waitFor(() => expect(store.getState().project.shots).toHaveLength(1)); });
+    expect(state.generate.mock.calls[1][0].prompt).toContain('旅人握住行李把手，走上车站台阶。');
+    expect(state.generate).toHaveBeenCalledTimes(2);
+  });
+  it('lets old storyboards remain editable but opens the doctor before append, without a paid call', async () => {
+    const store = filmStore(state.user); store.getState().patch({ script: '原稿', step: 3, shots: [{ id: 'old', title: '旧镜', description: '旧描述', shot: '全景', duration: '4s', assetIds: [], history: [], status: 'draft' }] });
+    await render(); await fill('[aria-label="当前分镜脚本"]', '手工修改的旧镜');
+    await click('追加分镜'); expect(document.querySelector('.film-doctor-dialog')).toBeTruthy(); expect(state.generate).not.toHaveBeenCalled();
+    expect(store.getState().project.shots[0].description).toBe('手工修改的旧镜');
   });
   it('keeps generation parameters independent across shots, close/reopen and saves', async () => {
     const store = filmStore(state.user);
@@ -140,6 +179,24 @@ describe('film workspace interactions', () => {
     expect(store.getState().project.jobs[1].status).toBe('success');
     expect(store.getState().project.assets[0].name).toBe('车站');
   });
+  it('persists workbench switches per project and cancellation leaves settings untouched', async () => {
+    await render(); await click('制作设置');
+    const enabled = () => document.querySelector<HTMLInputElement>('.film-creative-heading input')!;
+    expect(enabled().checked).toBe(true);
+    await select('打斗上下文', 'off'); await act(async () => enabled().click()); await click('保存设置');
+    expect(filmStore(state.user).getState().project.settings.creativeSkills).toMatchObject({ enabled: false, fightMode: 'off' });
+    await click('制作设置'); expect(enabled().checked).toBe(false);
+    await act(async () => enabled().click()); await click('取消');
+    expect(filmStore(state.user).getState().project.settings.creativeSkills?.enabled).toBe(false);
+    expect(state.generate).not.toHaveBeenCalled();
+  });
+  it('does not append workbench content when disabled and keeps a manually selected skill', async () => {
+    filmStore(state.user).getState().patch(p => ({ step: 2, script: '旅人来到车站', settings: { ...p.settings, extractSkillId: 'extract-skill', creativeSkills: { enabled: false } } }));
+    await render(); await click('提取场景角色道具');
+    await act(async () => { await vi.waitFor(() => expect(state.generate).toHaveBeenCalledOnce()); });
+    expect(state.generate.mock.calls[0][0].prompt).not.toContain('【创作工作台');
+    expect(state.generate.mock.calls[0][0].prompt).toContain('锁定角色的外貌和场景细节');
+  });
   it('shows unavailable saved skills, blocks saving, and lets the user recover with built-in rules', async () => {
     filmStore(state.user).getState().patch(p => ({ settings: { ...p.settings, extractSkillId: 'deleted' } }));
     await render(); await click('制作设置');
@@ -186,6 +243,7 @@ describe('film workspace interactions', () => {
     expect(host.textContent).toContain('选择画面风格'); expect(filmStore(state.user).getState().project.script).toBe('旅人来到车站。');
   });
   it('supports manual assets without pretending that a generated image exists', async () => {
+    filmStore(state.user).getState().patch({ script: '旅人来到车站。' });
     await render(); await click('场景角色道具'); await click('添加资产');
     await fill('.film-dialog input', '云上车站'); await click('添加并编辑');
     expect(document.querySelector('.film-media-editor')).toBeTruthy();
@@ -194,15 +252,64 @@ describe('film workspace interactions', () => {
     expect(filmStore(state.user).getState().project.assets[0]).toMatchObject({ name: '云上车站', generationPrompt: '白色浮云中的古老车站' });
     expect(filmStore(state.user).getState().project.assets[0].url).toBeUndefined();
   });
-  it('does not overwrite a newly completed video when saving an already-open shot editor', async () => {
-    await render(); await click('分镜脚本'); await click('新增分镜');
-    await fill('[aria-label="分镜脚本内容"]', '列车缓缓驶来。');
+  it('never starts a paid task merely by advancing steps and blocks incomplete asset preparation', async () => {
+    await render(); await click('视频设定');
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('剧本');
+    await act(async () => filmStore(state.user).getState().patch({ script: '旅人来到车站。' }));
+    await click('下一步·视频设定'); await click('下一步·场景角色道具');
+    expect(filmStore(state.user).getState().project.step).toBe(2);
+    expect(state.generate).not.toHaveBeenCalled();
+    await click('下一步·分镜脚本'); expect(filmStore(state.user).getState().project.step).toBe(2);
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('剧本医生');
+    expect(document.querySelector('.film-doctor-dialog')).toBeTruthy(); expect(state.generate).not.toHaveBeenCalled();
+  });
+  it('fills split prompts and asset groups immediately and edits bindings independently per shot', async () => {
+    const store = filmStore(state.user);
+    store.getState().patch({ script: '旅人走入车站，手持信封。', step: 2, assets: [
+      { id: 'person', name: '旅人', type: 'character', description: '旅人', url: '/person.png', source: 'uploaded', locked: false, history: [] },
+      { id: 'scene', name: '车站', type: 'scene', description: '车站', url: '/scene.png', source: 'uploaded', locked: false, history: [] },
+      { id: 'letter', name: '信封', type: 'prop', description: '信封', url: '/letter.png', source: 'uploaded', locked: false, history: [] },
+    ] });
+    state.generate.mockResolvedValue({ type: 'text', content: JSON.stringify({ shots: [ { title: '进站', description: '旅人走入车站', videoPrompt: '旅人举起信封' }, { title: '站台', description: '车站空镜' } ] }) });
+    approveScript();
+    await render(); await click('下一步·分镜脚本'); await click('生成分镜脚本');
+    await act(async () => { await vi.waitFor(() => expect(filmStore(state.user).getState().project.shots).toHaveLength(2)); });
+    expect(document.querySelector('[aria-label="本镜头的人物"] img')?.getAttribute('src')).toContain('/person.png');
+    expect(document.querySelector('[aria-label="本镜头的场景"] img')?.getAttribute('src')).toContain('/scene.png');
+    expect(document.querySelector('[aria-label="本镜头的道具"] img')?.getAttribute('src')).toContain('/letter.png');
+    expect(document.querySelector('[aria-label="生成描述"]')?.textContent).toContain('旅人举起信封');
+    await click('取消关联信封'); expect(store.getState().project.shots[0].assetIds).not.toContain('letter');
+    await click('选择站台'); expect(document.querySelector('[aria-label="本镜头的人物"] img')).toBeNull();
+    await fill('[aria-label="生成描述"]', '车站的阳光');
+    expect(store.getState().project.shots[0].videoPrompt).toBe('旅人举起信封');
+    expect(store.getState().project.shots[1].videoPrompt).toBe('车站的阳光');
+    await click('选择进站'); await click('添加道具参考'); await click('信封参考图已就绪'); await click('完成选择');
+    expect(store.getState().project.shots[0].assetIds).toContain('letter');
+    expect(store.getState().project.shots[1].assetIds).toEqual(['scene']);
+    expect(state.generate).toHaveBeenCalledTimes(1);
+  });
+  it('uses saved templates for asset descriptions and updates the open editor after completion', async () => {
+    const store = filmStore(state.user);
+    store.getState().patch(p => ({ script: '旅人来到车站', step: 2, settings: { ...p.settings, assetPromptTemplates: { scene: '表现站台空间层次' } }, assets: [{ id: 'scene', name: '车站', type: 'scene', description: '早晨', source: 'uploaded', locked: false, history: [] }] }));
+    state.generate.mockResolvedValue({ type: 'text', content: '清晨站台，雾中铁轨，明亮的纵深空间。' });
+    await render(); await click('编辑素材'); await click('AI完善描述');
+    expect(state.generate).toHaveBeenCalledWith(expect.objectContaining({ service_type: 'text', prompt: expect.stringContaining('表现站台空间层次') }));
+    expect(document.querySelector('[aria-label="生成描述"]')?.textContent).toContain('雾中铁轨');
+    expect(store.getState().project.assets[0].url).toBeUndefined();
+  });
+  it('does not overwrite a newly completed video when editing the inline storyboard', async () => {
+    filmStore(state.user).getState().patch({ script: '旅人来到车站。', step: 3 });
+    approveScript();
+    await render(); await click('新增分镜');
+    await fill('[aria-label="当前分镜脚本"]', '列车缓缓驶来。');
     await act(async () => filmStore(state.user).getState().patch(p => ({ shots: p.shots.map(s => ({ ...s, videoUrl: '/completed.mp4', history: [{ id: 'completed', url: '/completed.mp4', kind: 'video', label: '新视频', createdAt: Date.now() }] })) })));
-    await click('保存'); const shot = filmStore(state.user).getState().project.shots[0];
+    await fill('[aria-label="当前镜头名称"]', '列车到站'); const shot = filmStore(state.user).getState().project.shots[0];
     expect(shot.description).toBe('列车缓缓驶来。'); expect(shot.videoUrl).toBe('/completed.mp4'); expect(shot.history).toHaveLength(1);
   });
   it('offers live-model 1080p and MOV controls in the video editor', async () => {
-    await render(); await click('分镜脚本'); await click('新增分镜'); await fill('[aria-label="分镜脚本内容"]', '一个镜头'); await click('保存'); await click('分镜视频'); await click('点击编辑');
+    filmStore(state.user).getState().patch({ script: '旅人来到车站。', step: 3 });
+    approveScript();
+    await render(); await click('新增分镜'); await fill('[aria-label="当前分镜脚本"]', '一个镜头'); await click('分镜视频'); await click('点击编辑');
     await click('输出参数');
     expect(document.querySelector('[aria-label="分辨率 1080p"]')).toBeTruthy();
     expect(document.querySelector('[aria-label="输出格式 mov"]')).toBeTruthy();

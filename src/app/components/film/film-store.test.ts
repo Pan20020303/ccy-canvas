@@ -5,6 +5,7 @@ import { ApiClientError } from '../../api/client';
 import { applyFilmResult, filmStore, filmStorageKey, pollFilmJobs, recoverFilmJob, retryFilmJob, startFilmJob, exportFilm } from './film-store';
 import { newFilmProject, type FilmJob } from './film-project';
 import { emptyVideoProject } from '../../video-editor-project';
+import { adoptScriptRevision, scriptDoctorResult } from './film-script-doctor';
 
 const mocks = vi.hoisted(() => ({ generate: vi.fn(), create: vi.fn(), get: vi.fn(), batch: vi.fn(), export: vi.fn() }));
 vi.mock('../../api/providerConfigs', async () => ({ ...await vi.importActual('../../api/providerConfigs'), generate: mocks.generate }));
@@ -20,6 +21,9 @@ const latest = () => filmStore(user).getState().project;
 
 describe('one-click film durable task workflow', () => {
   it('persists real phases, survives disconnection and applies cached output once after reconnection', async () => {
+    const p = newFilmProject(); p.script = '列车驶来。';
+    Object.assign(p, scriptDoctorResult(p, { id: 'd', kind: 'doctor', nodeId: 'd', status: 'success', startedAt: 1, sourceScript: p.script, payload }, JSON.stringify({ optimizedScript: p.script })));
+    filmStore(user).getState().patch({ ...p, ...adoptScriptRevision(p, 'd') });
     await startFilmJob(user, 'split', payload);
     const id = latest().jobs[0].id, node = latest().jobs[0].nodeId;
     expect(latest().jobs[0].phase).toBe('queued');
@@ -102,6 +106,27 @@ describe('one-click film durable task workflow', () => {
     expect(other.getState().project.script).toBe('');
     store.getState().reset();
     expect(latest().backendId).toBeUndefined(); expect(latest().exportUrl).toBeUndefined(); expect(latest().editProject).toBeUndefined(); expect(latest().exporting).toBe(false);
+  });
+  it('caches doctor results once after reconnection, restores drafts on reload and never replaces the source automatically', async () => {
+    const store = filmStore(user); store.getState().patch({ script: '原剧本' });
+    await startFilmJob(user, 'doctor', payload);
+    const node = latest().jobs[0].nodeId;
+    mocks.get.mockRejectedValueOnce(new Error('断网'));
+    await pollFilmJobs(user); expect(latest().jobs[0].connectionLostAt).toBeDefined();
+    const raw = JSON.stringify({ optimizedScript: '优化后的完整剧本', summary: '说明', changes: [], questions: [], assetNotes: [] });
+    mocks.get.mockResolvedValue({ id: 'task1', node_id: node, status: 'success', result_url: raw });
+    await pollFilmJobs(user); await pollFilmJobs(user);
+    expect(latest().script).toBe('原剧本'); expect(latest().scriptDoctor?.revisions).toHaveLength(1);
+    expect(latest().jobs[0]).toMatchObject({ kind: 'doctor', status: 'success', rawResult: raw });
+    const copyUser = user + '-reload'; localStorage.setItem(filmStorageKey(copyUser), localStorage.getItem(filmStorageKey(user))!);
+    expect(filmStore(copyUser).getState().project.scriptDoctor?.revisions[0].optimizedScript).toBe('优化后的完整剧本');
+    store.getState().reset(); expect(latest().scriptDoctor).toBeUndefined(); expect(mocks.generate).toHaveBeenCalledTimes(1);
+  });
+  it('prevents direct split submission and failed retries from bypassing doctor approval', async () => {
+    filmStore(user).getState().patch({ script: '原稿' });
+    await expect(startFilmJob(user, 'split', payload)).rejects.toThrow('剧本医生');
+    filmStore(user).getState().patch({ jobs: [{ id: 'old', kind: 'split', nodeId: 's', sourceScript: '原稿', startedAt: 1, status: 'error', payload }] });
+    await expect(retryFilmJob(user, 'old')).rejects.toThrow('剧本医生'); expect(mocks.generate).not.toHaveBeenCalled();
   });
   it('surfaces storage failures and does not pretend the draft is saved', () => {
     const fail = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });

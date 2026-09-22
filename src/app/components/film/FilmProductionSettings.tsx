@@ -3,16 +3,17 @@ import { FileUp, RefreshCw, Sparkles } from 'lucide-react';
 import { createSkill, listSkills, type Skill } from '../../api/skills';
 import { parseSkillMarkdown } from '../settings/skill-import';
 import { FilmDialog } from './FilmControls';
-import { filmPromptSkills, filmSkillBody, type FilmModel, type FilmProject } from './film-project';
+import { ASSET_PROMPT_TEMPLATES, filmPromptSkills, filmSkillBody, type FilmModel, type FilmProject } from './film-project';
 import { filmError } from './film-store';
+import { FilmSkillContextSettings } from './FilmSkillContextSettings';
 
-export type FilmProductionConfig = Pick<FilmProject['settings'], 'textModel' | 'extractModel' | 'extractSkillId' | 'splitModel' | 'splitSkillId'>;
+export type FilmProductionConfig = Pick<FilmProject['settings'], 'textModel' | 'doctorModel' | 'extractModel' | 'extractSkillId' | 'splitModel' | 'splitSkillId' | 'assetPromptTemplates' | 'creativeSkills'>;
 
-export function FilmProductionSettings({ settings, models, modelsLoading, modelError, userId, onRefreshModels, onSave, onClose }: {
+export function FilmProductionSettings({ settings, models, modelsLoading, modelError, userId, onRefreshModels, onSave, onClose, script }: {
   settings: FilmProject['settings']; models: FilmModel[]; modelsLoading: boolean; modelError: string; userId: string;
-  onRefreshModels: () => void; onSave: (settings: FilmProductionConfig) => void; onClose: () => void;
+  onRefreshModels: () => void; onSave: (settings: FilmProductionConfig) => void; onClose: () => void; script?: string;
 }) {
-  const [draft, setDraft] = useState<FilmProductionConfig>(() => ({ textModel: settings.textModel, extractModel: settings.extractModel, extractSkillId: settings.extractSkillId, splitModel: settings.splitModel, splitSkillId: settings.splitSkillId }));
+  const [draft, setDraft] = useState<FilmProductionConfig>(() => ({ textModel: settings.textModel, doctorModel: settings.doctorModel || '', extractModel: settings.extractModel, extractSkillId: settings.extractSkillId, splitModel: settings.splitModel, splitSkillId: settings.splitSkillId, creativeSkills: settings.creativeSkills, assetPromptTemplates: { ...ASSET_PROMPT_TEMPLATES, ...settings.assetPromptTemplates } }));
   const [skills, setSkills] = useState<Skill[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState(''), [reload, setReload] = useState(0);
   const [importing, setImporting] = useState(false), [markdown, setMarkdown] = useState(''), [importError, setImportError] = useState(''), [savingSkill, setSavingSkill] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null), importLock = useRef(false);
@@ -44,10 +45,10 @@ export function FilmProductionSettings({ settings, models, modelsLoading, modelE
     return () => { ignore = true; };
   }, [userId, reload]);
   const textModels = models.filter(m => m.type === 'text');
-  const missingModel = (key: string) => Boolean(key && !textModels.some(m => m.key === key));
+  const missingModel = (key?: string) => Boolean(key && !textModels.some(m => m.key === key));
   const missingSkill = (id: string) => Boolean(id && !skills.some(s => s.id === id));
-  const invalid = [draft.textModel, draft.extractModel, draft.splitModel].some(missingModel) || [draft.extractSkillId, draft.splitSkillId].some(missingSkill);
-  const modelSelect = (key: 'textModel' | 'extractModel' | 'splitModel', label: string) => <select className="film-select" aria-label={label} value={draft[key]} disabled={modelsLoading} onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}>
+  const invalid = [draft.textModel, draft.doctorModel, draft.extractModel, draft.splitModel].some(missingModel) || [draft.extractSkillId, draft.splitSkillId].some(missingSkill);
+  const modelSelect = (key: 'textModel' | 'doctorModel' | 'extractModel' | 'splitModel', label: string) => <select className="film-select" aria-label={label} value={draft[key] || ''} disabled={modelsLoading} onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}>
     <option value="">{key === 'textModel' ? (textModels[0] ? `自动 · ${textModels[0].name} · ${textModels[0].provider.name}` : '暂无可用文字模型') : '跟随默认文字模型'}</option>
     {missingModel(draft[key]) && <option value={draft[key]} disabled>已保存的模型不可用，请重新选择</option>}
     {textModels.map(m => <option value={m.key} key={m.key}>{m.name} · {m.provider.name}</option>)}
@@ -58,6 +59,7 @@ export function FilmProductionSettings({ settings, models, modelsLoading, modelE
     {error && <p className="film-error" role="alert">技能加载失败：{error}。可刷新重试，或选择内置规则。</p>}
     {!userId && <p className="film-muted" role="status">登录后可读取技能和模型。</p>}
     <label className="film-production-default"><span>默认文字模型</span>{modelSelect('textModel', '默认文字模型')}<small className="film-muted">用于 AI 帮写，以及未单独指定模型的制作步骤。</small></label>
+    <label className="film-production-default"><span>剧本医生模型</span>{modelSelect('doctorModel', '剧本医生模型')}<small className="film-muted">使用内置剧本医生核心技能，先生成独立优化稿，确认采用后才用于分镜。原稿和已有镜头保留。</small></label>
     <div className="film-production-stages">{([{ kind: 'extract', title: '场景角色道具提取', description: '从剧本中识别场景、角色、道具，并生成资产描述。' }, { kind: 'split', title: '分镜脚本', description: '把剧本拆解为镜头，规划景别、运镜、动作与连续性。' }] as const).map(({ kind, title, description }) => {
       const skillKey = `${kind}SkillId` as const, selected = skills.find(s => s.id === draft[skillKey]);
       return <section className="film-production-card" key={kind}><h3><Sparkles size={16} />{title}</h3><p className="film-muted">{description}</p>
@@ -71,6 +73,8 @@ export function FilmProductionSettings({ settings, models, modelsLoading, modelE
       </section>;
     })}</div>
     <button className="film-button film-import-skill" disabled={!userId || loading} onClick={() => { setImportError(''); setImporting(true); }}><FileUp size={15} />导入分镜技能</button>
+    <FilmSkillContextSettings value={draft.creativeSkills} script={script} onChange={creativeSkills => setDraft(d => ({ ...d, creativeSkills }))} />
+    <details className="film-asset-templates" open><summary>资产参考图描述模板</summary><p className="film-muted film-small">提取时由文字模型按模板填写生图提示词；手动导入的资产也可点击“AI完善描述”。之后再调用图片模型生成参考图。</p>{(['character', 'scene', 'prop'] as const).map(type => <label className="film-form-field" key={type}>{{ character: '人物', scene: '场景', prop: '道具' }[type]}描述模板<textarea aria-label={`${{ character: '人物', scene: '场景', prop: '道具' }[type]}描述模板`} rows={3} maxLength={2000} value={draft.assetPromptTemplates?.[type] ?? ASSET_PROMPT_TEMPLATES[type]} onChange={e => { const value = e.target.value; setDraft(d => ({ ...d, assetPromptTemplates: { ...d.assetPromptTemplates, [type]: value } })); }} /></label>)}</details>
     <p className="film-production-note film-muted" role="status">{loading ? '正在读取技能…' : `可用提示词技能 ${skills.length} 个。`}技能用于指导生成，工作台按统一格式整理镜头，视频提示词保持自然语言。保存只影响新任务和失败重试，不会修改正在运行的任务。</p>
     {invalid && !loading && !modelsLoading && <p className="film-error" role="alert">部分已选技能或模型不可用，请重新选择后保存。</p>}
     <footer className="film-dialog-footer"><button className="film-button" onClick={onClose}>取消</button><button className="film-primary" disabled={loading || modelsLoading || Boolean(modelError) || invalid || !textModels.length} onClick={() => onSave(draft)}>保存设置</button></footer>

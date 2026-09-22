@@ -19,6 +19,7 @@ export function FilmDialog({ title, children, onClose, className = '' }: { title
 export function FilmModelSelect({ models, value, onChange, label = '生成模型' }: { models: FilmModel[]; value: string; onChange: (value: string) => void; label?: string }) {
   return <label className="film-model-select"><Film size={15} /><select className="film-select" aria-label={label} value={value} onChange={e => onChange(e.target.value)}>
     {!models.length && <option value="">暂无可用模型</option>}
+    {models.length > 0 && !models.some(m => m.key === value) && <option value={value}>{value ? '已选模型不可用，请重新选择' : '请选择模型'}</option>}
     {models.map(m => <option key={m.key} value={m.key}>{m.name} · {m.provider.name}</option>)}
   </select><ChevronDown size={13} /></label>;
 }
@@ -51,7 +52,7 @@ export function FilmSettings({ project: p, models, patch, uploadStyle }: { proje
     </section>
     <section className="film-setting-section film-model-section"><h2 className="film-section-title">制作模型</h2><p className="film-muted film-small">来自后台已启用的服务渠道，生成时使用对应模型计费。</p><div className="film-models-row">{(['text', 'image', 'video'] as const).map((type, i) => {
       const options = models.filter(m => m.type === type), key = `${type}Model` as 'textModel' | 'imageModel' | 'videoModel';
-      return <div className="film-model-field" key={type}><span className="film-muted">{['剧本与分镜', '场景与分镜图', '分镜视频'][i]}</span><FilmModelSelect models={options} value={options.find(m => m.key === p.settings[key])?.key || options[0]?.key || ''} onChange={value => patch({ [key]: value })} label={['文字模型', '图片模型', '视频模型'][i]} /></div>;
+      return <div className="film-model-field" key={type}><span className="film-muted">{['剧本与分镜', '场景与分镜图', '分镜视频'][i]}</span><FilmModelSelect models={options} value={p.settings[key] || options[0]?.key || ''} onChange={value => patch({ [key]: value })} label={['文字模型', '图片模型', '视频模型'][i]} /></div>;
     })}</div></section>
     {showStyles && <FilmDialog title="全部风格" onClose={() => setShowStyles(false)} className="film-styles-dialog"><div className="film-tabs">{['全部', '真人', '3D', '2D'].map(c => <button className={category === c ? 'is-active' : ''} onClick={() => setCategory(c)} key={c}>{c}</button>)}</div><div className="film-style-grid">{FILM_STYLES.filter(s => category === '全部' || s.category === category).map(s => <StyleCard key={s.id} style={s} active={pending === s.id} onClick={() => setPending(s.id)} />)}</div><footer className="film-dialog-footer"><button className="film-button" onClick={() => setShowStyles(false)}>取消</button><button className="film-primary" onClick={() => { patch({ style: pending }); setShowStyles(false); }}>确认</button></footer></FilmDialog>}
   </div>;

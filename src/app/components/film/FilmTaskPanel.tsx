@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { AlertTriangle, CheckCircle2, CircleX, Download, LoaderCircle, X } from 'lucide-react';
 import { activeFilmJob } from './film-store';
 import type { FilmJob, FilmJobPhase } from './film-project';
+import { creativeContextTitles } from './film-skill-context';
 
-const names: Record<FilmJob['kind'], string> = { write: 'AI编写剧本', extract: '提取场景角色道具', split: '生成分镜脚本', asset: '生成资产图片', image: '生成分镜图', video: '生成分镜视频' };
+const names: Record<FilmJob['kind'], string> = { write: 'AI编写剧本', doctor: '剧本医生优化', extract: '提取场景角色道具', split: '生成分镜脚本', describe: '完善资产描述', asset: '生成资产图片', image: '生成分镜图', video: '生成分镜视频' };
 const phases: Record<FilmJobPhase, string> = { preparing: '准备并保存请求', submitted: '提交后台任务', queued: '后台排队', generating: '模型正在处理', received: '收到模型结果', parsing: '解析与校验内容', applied: '结果写入项目', error: '任务需要处理' };
 function downloadResult(job: FilmJob) {
   const url = URL.createObjectURL(new Blob([job.rawResult || ''], { type: 'text/plain;charset=utf-8' }));
@@ -13,12 +14,15 @@ function downloadResult(job: FilmJob) {
 function JobCard({ job, preparing, onRetry, onRecover }: { job: FilmJob; preparing: boolean; onRetry: (job: FilmJob) => Promise<void>; onRecover: (job: FilmJob) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const active = activeFilmJob(job), partial = job.status === 'partial';
-  const recoverable = job.status === 'error' && (job.kind === 'split' || job.kind === 'extract');
+  const contextTitles = creativeContextTitles(job.payload.prompt);
+  const recoverable = job.status === 'error' && (job.kind === 'split' || job.kind === 'extract' || job.kind === 'doctor');
   const action = async (fn: (job: FilmJob) => Promise<void>) => { setBusy(true); try { await fn(job); } finally { setBusy(false); } };
   return <article className="film-job">
     {active ? <LoaderCircle size={16} className="film-spin" aria-label="任务处理中" /> : job.status === 'error' ? <CircleX size={16} className="film-job-error-icon" aria-label="生成失败" /> : partial ? <AlertTriangle size={16} className="film-job-warning" aria-label="部分恢复" /> : <CheckCircle2 size={16} aria-label="生成成功" />}
     <div><strong>{names[job.kind]}</strong><small className="film-muted film-job-model">{job.payload.model}</small>
       <p className={job.status === 'error' ? 'film-error' : partial ? 'film-job-warning' : 'film-muted'}>{job.warning || job.error || (job.phase ? phases[job.phase] : active ? '正在接入后台任务…' : '已完成')}</p>
+      {!!contextTitles.length && <details className="film-job-details"><summary>已使用 {contextTitles.length} 个技能章节</summary><ul>{contextTitles.map(title => <li key={title}>{title}</li>)}</ul></details>}
+      {job.kind === 'doctor' && job.status === 'success' && <p className="film-muted">优化稿已单独保存，请打开“剧本医生”查看并确认采用；生成成功不代表已替换原稿。</p>}
       {job.connectionLostAt && active && <p className="film-job-warning" role="status">连接中断，已保留任务记录。后台任务不受影响，恢复连接后自动接入；不会重复提交。</p>}
       {job.phase === 'generating' && active && <p className="film-muted">正在{job.kind === 'extract' ? '分析剧本中的场景、角色和道具' : job.kind === 'split' ? '编排分镜与提示词' : '生成内容'}。模型未提供精确百分比，请等待返回。</p>}
       {job.lastSyncedAt && <small className="film-muted">上次同步 {new Date(job.lastSyncedAt).toLocaleTimeString('zh-CN', { hour12: false })}</small>}

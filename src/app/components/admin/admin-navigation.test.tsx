@@ -60,11 +60,11 @@ async function setValue(element: HTMLInputElement | HTMLTextAreaElement, value: 
 }
 
 describe('后台分级导航', () => {
-  it('保留全部 13 个原有路由且每个只出现一次', () => {
+  it('保留原有路由并加入媒体存储和资源监控，每个只出现一次', () => {
     const routes = [adminOverview, ...adminNavGroups.flatMap((group) => group.items)].map((item) => item.to);
-    expect(routes).toHaveLength(13);
-    expect(new Set(routes).size).toBe(13);
-    expect(routes.sort()).toEqual(['/admin', '/admin/overview', '/admin/members', '/admin/credits', '/admin/invitations', '/admin/announcements', '/admin/agents', '/admin/prompts', '/admin/skills', '/admin/memory', '/admin/agent-runs', '/admin/prompt-templates', '/admin/logs'].sort());
+    expect(routes).toHaveLength(15);
+    expect(new Set(routes).size).toBe(15);
+    expect(routes.sort()).toEqual(['/admin', '/admin/overview', '/admin/members', '/admin/credits', '/admin/invitations', '/admin/announcements', '/admin/agents', '/admin/prompts', '/admin/skills', '/admin/memory', '/admin/agent-runs', '/admin/prompt-templates', '/admin/logs', '/admin/storage', '/admin/resources'].sort());
   });
   it('准确匹配所属分组，不把所有后台页都归为模型服务', () => {
     expect(getAdminNavGroup('/admin')?.id).toBe('models');

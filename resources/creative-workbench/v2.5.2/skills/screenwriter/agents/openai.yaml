@@ -1,0 +1,4 @@
+interface:
+  display_name: "劇本醫生｜寫劇本"
+  short_description: "先診斷平台適配、人物轉變、因果與短劇節奏，也支援劇本創作及修訂"
+  default_prompt: "使用 $screenwriter 當劇本醫生，先檢查我的本子在平台適配、人物轉變、因果與短劇節奏上的問題。"

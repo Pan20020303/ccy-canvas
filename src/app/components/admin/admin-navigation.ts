@@ -22,6 +22,8 @@ export const adminNavGroups: AdminNavGroup[] = [
     { to: '/admin/memory', label: 'Agent 记忆', icon: BrainCircuit },
   ] },
   { id: 'monitoring', label: '运行监控', icon: Activity, items: [
+    { to: '/admin/storage', label: '媒体存储', icon: Layers3 },
+    { to: '/admin/resources', label: '服务器资源', icon: Activity },
     { to: '/admin/agent-runs', label: 'Agent 调度台', icon: Bot },
     { to: '/admin/logs', label: '日志', icon: Logs },
   ] },

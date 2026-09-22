@@ -21,6 +21,7 @@ import (
 	"ccy-canvas/backend/internal/modelcatalog/infrastructure"
 	modelhttp "ccy-canvas/backend/internal/modelcatalog/interfaces"
 	"ccy-canvas/backend/internal/platform/adminaudit"
+	"ccy-canvas/backend/internal/platform/adminsystem"
 	"ccy-canvas/backend/internal/platform/assetstore"
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/cache"
@@ -57,6 +58,13 @@ func main() {
 	defer pool.Close()
 
 	queries := sqlc.New(pool)
+	storageManager := adminsystem.NewStorageManager(pool, cfg.EncryptionKey)
+	if err := storageManager.Sync(ctx); err != nil {
+		log.Fatalf("[storage] %v", err)
+	}
+	storageContext, stopStorageSync := context.WithCancel(ctx)
+	defer stopStorageSync()
+	go storageManager.Watch(storageContext)
 	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
 	passwordService := password.NewService()
 
@@ -213,8 +221,9 @@ func main() {
 	api.UseMiddleware(adminaudit.Middleware(api, queries))
 
 	// Admin management routes (users, invitations, stats, logs).
-	adminHandler := identityhttp.NewAdminHandler(queries, passwordService)
+	adminHandler := identityhttp.NewAdminHandler(queries, passwordService).WithPool(pool)
 	adminHandler.RegisterRoutes(api)
+	adminsystem.NewHandler(storageManager).RegisterRoutes(api)
 
 	// Model catalog routes.
 	catalogHandler.RegisterRoutes(api)
