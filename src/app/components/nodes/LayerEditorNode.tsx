@@ -23,7 +23,9 @@ export type LayerEditorLayer = {
   yPct: number;
   /** 图层宽度占画布宽度的比例 */
   wPct: number;
-  /** 图片自身宽高比(w/h),摆放与导出共用 */
+  /** 独立调节后的高度占画布高度的比例；旧图层缺省时沿用原图比例。 */
+  hPct?: number;
+  /** 原图宽高比(w/h)，用于旧数据兼容与还原比例。 */
   aspect: number;
 };
 
@@ -36,6 +38,7 @@ export type LayerEditorData = {
   ratio?: string;
   transparent?: boolean;
   bg?: string;
+  snapEnabled?: boolean;
   status?: string;
   customTitle?: string;
 };
@@ -47,6 +50,7 @@ export function LayerEditorNode({ id, data: rawData, selected }: NodeProps) {
   const isConnectionDragging = useStore((state) => state.isConnectionDragging);
   const connectionDragType = useStore((state) => state.connectionDragType);
   const title = data.customTitle || (language === 'zh' ? '图层编辑' : 'Layer Editor');
+  const preview = data.url || data.output;
 
   const [hovered, setHovered] = useState(false);
   const [leftPull, setLeftPull] = useState(false);
@@ -70,8 +74,10 @@ export function LayerEditorNode({ id, data: rawData, selected }: NodeProps) {
       <div className="relative">
       <div
         className={clsx(
-          'relative overflow-hidden rounded-[20px] bg-[rgba(24,24,27,0.98)] transition-shadow',
-          selected ? 'shadow-[0_0_0_1px_rgb(255,255,255)]' : '',
+          'relative',
+          // 合成图本身就是节点：不加底色、圆角裁切或选中描边，保留 PNG 的透明通道。
+          !preview && 'overflow-hidden rounded-[20px] bg-[rgba(24,24,27,0.98)] transition-shadow',
+          !preview && selected && 'shadow-[0_0_0_1px_rgb(255,255,255)]',
         )}
         onDoubleClick={(event) => {
           event.stopPropagation();
@@ -108,9 +114,9 @@ export function LayerEditorNode({ id, data: rawData, selected }: NodeProps) {
           style={{ pointerEvents: 'none' }}
         />
 
-        {data.url ? (
-          <div className="relative aspect-[16/10] w-full bg-black">
-            <img src={data.url} alt="layer composition" className="absolute inset-0 h-full w-full object-contain" />
+        {preview ? (
+          <div className="relative w-full">
+            <img src={preview} alt="layer composition" draggable={false} className="block h-auto w-full" />
             <button
               type="button"
               onClick={handleOpen}

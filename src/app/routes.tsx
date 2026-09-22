@@ -12,6 +12,8 @@ import { AdminAnnouncementsPage } from "./components/admin/AdminAnnouncementsPag
 import { AdminInvitationsPage } from "./components/admin/AdminInvitationsPage";
 import { AdminLogsPage } from "./components/admin/AdminLogsPage";
 import { AdminMembersPage } from "./components/admin/AdminMembersPage";
+import { AdminStoragePage } from "./components/admin/AdminStoragePage";
+import { AdminResourcesPage } from "./components/admin/AdminResourcesPage";
 import { AdminModelCatalogPage } from "./components/admin/AdminModelCatalogPage";
 import { AdminOverviewPage } from "./components/admin/AdminOverviewPage";
 import { AdminAgentRunsPage } from "./components/admin/AdminAgentRunsPage";
@@ -194,6 +196,14 @@ export const router = createBrowserRouter([
         <AdminMembersPage />
       </ProtectedRoute>
     ),
+  },
+  {
+    path: "/admin/storage",
+    Component: () => <ProtectedRoute requireRole="admin"><AdminStoragePage /></ProtectedRoute>,
+  },
+  {
+    path: "/admin/resources",
+    Component: () => <ProtectedRoute requireRole="admin"><AdminResourcesPage /></ProtectedRoute>,
   },
   {
     path: "/admin/credits",

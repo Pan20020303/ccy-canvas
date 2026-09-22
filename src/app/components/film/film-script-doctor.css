@@ -1,0 +1,18 @@
+.film-dialog.film-doctor-dialog { width: min(1160px, calc(100vw - 40px)); }
+.film-doctor-intro, .film-doctor-actions, .film-doctor-banner { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.film-doctor-intro p { flex: 1; min-width: 240px; line-height: 1.75; margin: 0; font-size: 13px; }
+.film-doctor-actions { margin: 20px 0; }
+.film-doctor-approved { display: inline-flex; align-items: center; gap: 6px; color: #8adb58; font-size: 12px; }
+.film-doctor-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+.film-doctor-columns .film-form-field { margin: 0; }
+.film-doctor-columns textarea { width: 100%; min-height: 310px; resize: vertical; font-size: 13px; line-height: 1.9; }
+.film-doctor-columns textarea[readonly] { color: #b0bcbb; background: #1a2020; }
+.film-doctor-report { margin-top: 22px; border-top: 1px solid #38413f; padding-top: 16px; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.film-doctor-report h3 { margin: 0 0 8px; font-size: 15px; }
+.film-doctor-report section { margin-top: 12px; }
+.film-doctor-report ul { padding-left: 22px; color: #b6c0bf; }
+.film-doctor-banner { margin: 14px 24px; padding: 14px 16px; background: #232b29; border: 1px solid #38463d; border-radius: 10px; }
+.film-doctor-banner > div { flex: 1; min-width: 210px; }
+.film-doctor-banner strong { font-size: 13px; }
+.film-doctor-banner p { margin: 5px 0 0; font-size: 12px; line-height: 1.6; color: #a5b4af; }
+@media (max-width: 750px) { .film-doctor-columns { grid-template-columns: 1fr; } .film-doctor-columns textarea { min-height: 200px; } .film-doctor-banner { margin: 12px; } }

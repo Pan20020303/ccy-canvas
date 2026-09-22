@@ -10,16 +10,22 @@ import { extractScriptDocumentText } from '../../document-text';
 import { toRenderableMediaUrl } from '../../reference-media';
 import { editorId, type EditorAsset } from '../../video-editor-project';
 import { FILM_STEPS, SCRIPT_LIMIT, filmModels, filmTextPayload, type FilmAsset, type FilmJob, type FilmModel, type FilmShot, type FilmTextKind } from './film-project';
+import { applyCreativeContext } from './film-skill-context';
 import { activeFilmJob, filmError, filmStore, pollFilmJobs, recoverFilmJob, retryFilmJob, startFilmJob } from './film-store';
 import { FilmDialog, FilmModelSelect, FilmSettings } from './FilmControls';
 import { FilmMediaEditor } from './FilmMediaEditor';
 import { FilmPreview } from './FilmPreview';
 import { FilmProductionSettings } from './FilmProductionSettings';
 import { FilmLibrary } from './FilmLibrary';
-import { downloadFilmBackup, loadCloudFilm, syncCloudFilm, useCloudVersion } from './film-cloud';
+import { downloadFilmBackup, keepLocalFilmVersion, loadCloudFilm, syncCloudFilm, useCloudVersion } from './film-cloud';
 import { filmImageRequest, filmShotVideoRequest } from './film-references';
 import { FilmTaskPanel } from './FilmTaskPanel';
+import { FilmStoryboard } from './FilmStoryboard';
+import { FilmScriptDoctor } from './FilmScriptDoctor';
+import { adoptScriptRevision, scriptDoctorApproved, scriptDoctorIssue } from './film-script-doctor';
+import { filmAssetDescriptionPayload, filmAssetPreparationIssue, filmStepIssue } from './film-workflow';
 import './film.css';
+import './film-storyboard.css';
 
 export function OneClickFilm() {
   const { user } = useAuth();
@@ -52,8 +58,12 @@ export function FilmWorkspace({ userId, cloudId }: { userId: string; cloudId?: s
   const undo = useRef<string[]>([]), redo = useRef<string[]>([]), scriptRef = useRef<HTMLTextAreaElement>(null), fileRef = useRef<HTMLInputElement>(null), styleRef = useRef<HTMLInputElement>(null);
   const [historyTick, setHistoryTick] = useState(0);
   const [showProductionSettings, setShowProductionSettings] = useState(false), [preparingText, setPreparingText] = useState(false);
+  const [showDoctor, setShowDoctor] = useState(false);
+  const [confirmLocalVersion, setConfirmLocalVersion] = useState(false), [resolvingConflict, setResolvingConflict] = useState(false);
   const textSubmitLock = useRef(false);
-  const running = p.jobs.filter(activeFilmJob), textRunning = preparingText || running.some(j => ['write', 'extract', 'split'].includes(j.kind));
+  const [selectedShotId, setSelectedShotId] = useState(''), [workflowMessage, setWorkflowMessage] = useState(''), [uploadingAssets, setUploadingAssets] = useState(false);
+  const assetUpload = useRef<HTMLInputElement>(null), assetUploadLock = useRef(false);
+  const running = p.jobs.filter(activeFilmJob), textRunning = preparingText || running.some(j => ['write', 'doctor', 'extract', 'split'].includes(j.kind));
   const textModels = models.filter(m => m.type === 'text'), textModel = textModels.find(m => m.key === p.settings.textModel) || textModels[0];
   useEffect(() => {
     let ignore = false; setModelsLoading(true);
@@ -99,20 +109,21 @@ export function FilmWorkspace({ userId, cloudId }: { userId: string; cloudId?: s
     catch (e) { toast.error(filmError(e)); } finally { setReading(false); }
   };
   const runText = async (kind: FilmTextKind, retryId?: string) => {
-    if (textSubmitLock.current || useFilm.getState().project.jobs.some(j => activeFilmJob(j) && ['write', 'extract', 'split'].includes(j.kind))) throw new Error('剧本任务正在处理中，请等待完成。');
+    if (textSubmitLock.current || useFilm.getState().project.jobs.some(j => activeFilmJob(j) && ['write', 'doctor', 'extract', 'split'].includes(j.kind))) throw new Error('剧本任务正在处理中，请等待完成。');
     if (!userId) throw new Error('请先登录后使用生成服务。');
     const snapshot = useFilm.getState().project;
     if (kind !== 'write' && !snapshot.script.trim()) throw new Error('请先添加剧本。');
+    if (kind === 'split') { const doctor = scriptDoctorIssue(snapshot); if (doctor) { setShowDoctor(true); setWorkflowMessage(doctor); return; } const issue = filmAssetPreparationIssue(snapshot); if (issue) { setWorkflowMessage(issue); throw new Error(issue); } }
     if (kind === 'write' && !idea.trim()) throw new Error('请先描述你的创意。');
     textSubmitLock.current = true; setPreparingText(true); setShowJobs(true);
     try {
-      const skillId = kind === 'write' ? '' : snapshot.settings[`${kind}SkillId`];
+      const skillId = kind === 'extract' || kind === 'split' ? snapshot.settings[`${kind}SkillId`] : '';
       // Refresh availability before a billable submission; never silently replace a saved selection.
       const [configs, skills] = await Promise.all([listAppProviderConfigs(), skillId ? listSkills(true) : Promise.resolve([])]);
+      const payload = await applyCreativeContext(filmTextPayload(snapshot, kind, filmModels(configs), skills, idea), { stage: kind, settings: snapshot.settings.creativeSkills, text: kind === 'write' ? idea : snapshot.script });
       const current = useFilm.getState().project;
-      if (current.id !== snapshot.id || current.script !== snapshot.script || current.settings !== snapshot.settings) throw new Error('制作内容或设置已改变，请重新点击生成。');
+      if (current.id !== snapshot.id || current.script !== snapshot.script || JSON.stringify(current.settings) !== JSON.stringify(snapshot.settings) || (['split', 'doctor'].includes(kind) && JSON.stringify(current.assets) !== JSON.stringify(snapshot.assets))) throw new Error('制作内容或设置已改变，请重新点击生成。');
       const availableModels = filmModels(configs); setModels(availableModels); setModelError('');
-      const payload = filmTextPayload(snapshot, kind, availableModels, skills, idea);
       setModal(null);
       if (retryId) await retryFilmJob(userId, retryId, payload, cloudId);
       else await startFilmJob(userId, kind, payload, undefined, cloudId);
@@ -120,21 +131,50 @@ export function FilmWorkspace({ userId, cloudId }: { userId: string; cloudId?: s
     } finally { textSubmitLock.current = false; setPreparingText(false); }
   };
   const retryJob = async (job: FilmJob) => {
-    if (job.status === 'error' && (job.kind === 'extract' || job.kind === 'split')) await runText(job.kind, job.id);
+    if (job.status === 'error' && (job.kind === 'extract' || job.kind === 'split' || job.kind === 'doctor')) await runText(job.kind, job.id);
+    else if (job.status === 'error' && job.kind === 'describe') {
+      const [configs, skills] = await Promise.all([listAppProviderConfigs(), listSkills(true)]);
+      const current = useFilm.getState().project, asset = current.assets.find(a => a.id === job.targetId);
+      if (!asset) throw new Error('资产已移除。');
+      const payload = await applyCreativeContext(filmAssetDescriptionPayload(current, asset, filmModels(configs), skills), { stage: 'describe', assetType: asset.type, text: current.script, settings: current.settings.creativeSkills });
+      const latest = useFilm.getState().project;
+      if (latest.id !== current.id || latest.script !== current.script || JSON.stringify(latest.settings) !== JSON.stringify(current.settings) || JSON.stringify(latest.assets.find(a => a.id === asset.id)) !== JSON.stringify(asset)) throw new Error('资产或制作设置已改变，请重新点击。');
+      await retryFilmJob(userId, job.id, payload, cloudId);
+    }
     else await retryFilmJob(userId, job.id, undefined, cloudId);
   };
-  const nextStep = async () => {
-    if (p.step === 0) { if (!p.script.trim()) { toast.error('请先粘贴、上传或生成剧本。'); return; } patch({ step: 1 }); }
-    else if (p.step === 1) { patch({ step: 2 }); if (!p.assets.length && !textRunning && textModel) await safeAction(() => runText('extract')); }
-    else if (p.step === 2) { patch({ step: 3 }); if (!p.shots.length && !textRunning && textModel) await safeAction(() => runText('split')); }
-    else if (p.step < 5) patch({ step: p.step + 1 });
+  const goStep = async (step: number) => {
+    const current = useFilm.getState().project;
+    // Backtracking must remain possible while repairing incomplete or unsynced data.
+    if (step <= current.step) { setWorkflowMessage(''); setSearch(''); patch({ step }); return; }
+    if (step >= 3 && assetUploadLock.current) { setWorkflowMessage('参考图正在上传，请等待上传完成后再进入分镜。'); return; }
+    const issue = filmStepIssue(current, step);
+    if (issue) { setWorkflowMessage(issue); if (step >= 3 && scriptDoctorIssue(current)) setShowDoctor(true); return; }
+    try { await useFilm.getState().flush?.(); }
+    catch (e) { setWorkflowMessage(`请先处理项目保存问题，再继续：${filmError(e)}`); return; }
+    setWorkflowMessage(''); setSearch(''); patch({ step });
+  };
+  const nextStep = () => goStep(Math.min(5, p.step + 1));
+  const importAssets = async (files: File[]) => {
+    if (!files.length || assetUploadLock.current) return;
+    assetUploadLock.current = true; setUploadingAssets(true);
+    const type = assetType;
+    try {
+      if (!userId) throw new Error('请先登录后上传素材。');
+      for (const file of files) {
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 20 * 1024 * 1024) throw new Error('资产参考图支持 PNG、JPG、WebP，单张不超过20MB。');
+        const result = await uploadFile(file, file.name), id = editorId();
+        patch(current => ({ assets: [...current.assets, { id, name: file.name.replace(/\.[^.]+$/, ''), type, url: result.url, description: '', source: 'uploaded', locked: false, history: [{ id, url: result.url, label: '本地上传', kind: 'image', createdAt: Date.now() }] }] }));
+      }
+      await useFilm.getState().flush?.(); setWorkflowMessage(''); toast.success('参考图已导入，可修改名称与描述后用于分镜');
+    } catch (e) { toast.error(filmError(e)); } finally { assetUploadLock.current = false; setUploadingAssets(false); }
   };
   const addAsset = () => {
     if (!assetName.trim()) return;
     const asset: FilmAsset = { id: editorId(), type: assetType, name: assetName.trim(), description: '', source: 'uploaded', locked: false, history: [] };
     patch(current => ({ assets: [...current.assets, asset] })); setModal(null); setAssetName(''); setMediaEditor({ kind: 'asset', id: asset.id });
   };
-  const addShot = () => { if (p.shots.length >= 32) { toast.error('每个项目最多32个分镜。'); return; } const shot: FilmShot = { id: editorId(), title: `分镜 ${String(p.shots.length + 1).padStart(2, '0')}`, description: '', shot: '中景', duration: '4s', assetIds: [], status: 'draft', history: [] }; patch(current => ({ shots: [...current.shots, shot] })); setEditingShot(shot); };
+  const addShot = () => { const current = useFilm.getState().project; const issue = scriptDoctorIssue(current); if (issue) { setWorkflowMessage(issue); setShowDoctor(true); return; } if (current.shots.length >= 32) { toast.error('每个项目最多32个分镜。'); return; } const shot: FilmShot = { id: editorId(), title: `分镜 ${String(current.shots.length + 1).padStart(2, '0')}`, description: '', shot: '中景', duration: '4s', assetIds: [], autoBindReferences: true, status: 'draft', history: [] }; patch(current => ({ shots: [...current.shots, shot] })); setSelectedShotId(shot.id); if (p.step !== 3) setEditingShot(shot); };
   const batchVideo = async () => {
     const pending = p.shots.filter(s => !s.videoUrl && !running.some(j => j.targetId === s.id && j.kind === 'video'));
     if (!pending.length) throw new Error('暂无需要生成的分镜。');
@@ -146,17 +186,18 @@ export function FilmWorkspace({ userId, cloudId }: { userId: string; cloudId?: s
   };
   const batchImages = async () => {
     const kind = p.step === 2 ? 'asset' : 'image';
+    if (kind === 'asset' && running.some(j => j.kind === 'describe' || j.kind === 'extract')) throw new Error('资产描述仍在处理中，请等待完成后再批量生成参考图。');
     const pending = kind === 'asset' ? p.assets.filter(a => !a.url && !running.some(j => j.kind === kind && j.targetId === a.id)) : p.shots.filter(s => !s.imageUrl && !running.some(j => j.kind === kind && j.targetId === s.id));
     if (!pending.length) throw new Error('暂无需要生成的图片。');
     const requests = pending.map(item => ({ id: item.id, payload: filmImageRequest(p, item.id, kind, models) }));
     setShowJobs(true); setBatching(true);
     try { for (const req of requests) await startFilmJob(userId, kind, req.payload, req.id, cloudId); } finally { setBatching(false); }
   };
-  const complete = [Boolean(p.script.trim()), Boolean(p.script.trim()), p.assets.length > 0 && p.assets.every(a => a.url), p.shots.length > 0, p.shots.length > 0 && p.shots.every(s => s.videoUrl), Boolean(p.exportUrl)];
+  const complete = [Boolean(p.script.trim()), Boolean(p.script.trim()), !filmAssetPreparationIssue(p), p.shots.length > 0 && p.shots.every(s => Boolean(s.description.trim() || s.prompt?.trim() || s.videoPrompt?.trim())), p.shots.length > 0 && p.shots.every(s => s.videoUrl), Boolean(p.exportUrl)];
   const failed = p.jobs.filter(j => j.status === 'error' || j.status === 'unknown' || j.status === 'partial');
   return <main className={`film-workspace ${collapsed ? 'is-collapsed' : ''} ${showJobs ? 'has-task-panel' : ''}`}>
     <aside className="film-sidebar"><div className="film-project-heading"><button className="film-icon" aria-label="返回项目列表" onClick={() => navigate(location.pathname.startsWith('/__preview/') ? '/__preview/home' : '/studio/film')}><ArrowLeft size={19} /></button><input className="film-project-name" aria-label="项目名称" maxLength={60} value={p.name} onChange={e => patch({ name: e.target.value })} onBlur={() => { if (!p.name.trim()) patch({ name: '未命名项目' }); }} /></div>
-      <nav className="film-step-list" aria-label="一键成片制作流程">{FILM_STEPS.map((step, i) => <button className={`film-step ${p.step === i ? 'is-active' : ''}`} key={step} aria-current={p.step === i ? 'step' : undefined} title={step} onClick={() => patch({ step: i })}><span className="film-step-number">{i + 1}</span><span className="film-step-name">{step}</span>{complete[i] && <CheckCircle2 size={15} className="film-step-check" />}</button>)}</nav>
+      <nav className="film-step-list" aria-label="一键成片制作流程">{FILM_STEPS.map((step, i) => <button className={`film-step ${p.step === i ? 'is-active' : ''}`} key={step} aria-current={p.step === i ? 'step' : undefined} title={step} onClick={() => void goStep(i)}><span className="film-step-number">{i + 1}</span><span className="film-step-name">{step}</span>{complete[i] && <CheckCircle2 size={15} className="film-step-check" />}</button>)}</nav>
       <div className="film-sidebar-bottom"><span className={`film-save-state ${saved ? '' : 'film-error'}`}>{saved ? <Check size={12} /> : <Clock3 size={12} />}{cloudId ? ({ saved: '已保存到数据库', saving: '正在保存到数据库…', error: '保存失败，请重试', conflict: '版本冲突，修改已保留' })[syncStatus || 'saving'] : saved ? '预览草稿已保存到本机' : '本机保存失败，请导出备份'}</span><button className="film-sidebar-action" onClick={() => cloudId ? navigate('/studio/film') : setModal('reset')}><Plus size={15} />新建项目</button><button className="film-sidebar-action" onClick={() => { const url = URL.createObjectURL(new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = `${p.name}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}><Download size={15} />导出项目备份</button></div>
     </aside>
     <div className="film-body"><header className="film-topbar"><button className="film-icon" aria-label={collapsed ? '展开步骤导航' : '收起步骤导航'} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button><span className="film-header-summary">{p.step === 2 ? <>共 <b>{p.assets.length}</b> 个资产，已完成 <b>{p.assets.filter(a => a.url).length}</b> 个</> : p.step === 3 || p.step === 4 ? <>共 <b>{p.shots.length}</b> 个{p.step === 3 ? '分镜' : '视频'}，已完成 <b>{p.shots.filter(s => p.step === 3 ? Boolean(s.description) : Boolean(s.videoUrl)).length}</b> 个</> : <span className="film-header-brand"><Clapperboard size={15} />一键成片</span>}</span><span className="film-spacer" />
@@ -165,36 +206,48 @@ export function FilmWorkspace({ userId, cloudId }: { userId: string; cloudId?: s
       {p.step === 0 && <label className="film-shot-count">分镜数量：<select className="film-select" aria-label="分镜数量" value={p.settings.shotCount} onChange={e => patch({ settings: { ...p.settings, shotCount: Number(e.target.value) } })}>{[0, 4, 8, 12, 16, 24, 32].map(v => <option key={v} value={v}>{v || '自动'}</option>)}</select></label>}
       {p.step === 4 && <button className="film-button film-accent" disabled={!p.shots.length || batching} onClick={() => void safeAction(batchVideo)}><Video size={15} />{batching ? '正在提交…' : '批量生视频'}</button>}
       {(p.step === 2 || p.step === 3) && <button className="film-button film-accent" disabled={!(p.step === 2 ? p.assets.length : p.shots.length) || batching} onClick={() => void safeAction(batchImages)}><ImagePlus size={15} />{batching ? '正在提交…' : p.step === 2 ? '批量生成参考图' : '批量生分镜图'}</button>}
+      {p.step === 3 && p.settings.method === 'reference' && <button className="film-button film-accent" disabled={!p.shots.length || batching} onClick={() => void safeAction(batchVideo)}><Video size={15} />批量生视频</button>}
       {p.step < 5 && <button className="film-primary film-next" disabled={p.step === 0 && !p.script.trim()} onClick={() => void nextStep()}>下一步·{FILM_STEPS[p.step + 1]}<ChevronRight size={14} /></button>}
     </header>
-    {cloudId && syncError && <div className="film-connection-notice film-error" role="alert">{syncError}{!saved && ' 本机备份也未能写入，请立即导出备份。'}<button className="film-button" onClick={() => void safeAction(() => useFilm.getState().flush!())}>重试保存</button>{syncStatus === 'conflict' && <button className="film-button" onClick={() => void safeAction(() => useCloudVersion(userId, cloudId))}>备份并载入云端</button>}<button className="film-button" onClick={() => downloadFilmBackup(p)}>导出本机备份</button></div>}
+    {cloudId && syncError && <div className="film-connection-notice film-error" role="alert">{syncError}{!saved && ' 本机备份也未能写入，请立即导出备份。'}<button className="film-button" disabled={resolvingConflict} onClick={() => void safeAction(() => useFilm.getState().flush!())}>重试保存</button>{syncStatus === 'conflict' && <><button className="film-button" disabled={resolvingConflict} onClick={() => setConfirmLocalVersion(true)}>保留本机版本</button><button className="film-button" disabled={resolvingConflict} onClick={() => void safeAction(() => useCloudVersion(userId, cloudId))}>备份并载入云端</button></>}<button className="film-button" onClick={() => downloadFilmBackup(p)}>导出本机备份</button></div>}
+    {cloudId && confirmLocalVersion && <FilmDialog title="保留本机版本" onClose={() => { if (!resolvingConflict) setConfirmLocalVersion(false); }}><p className="film-dialog-copy">将以当前浏览器中的剧本、素材、分镜及设置替换云端版本。会先保存并下载本机与云端的双版本备份；其他浏览器之后会同步此版本。</p><footer className="film-dialog-footer"><button className="film-button" disabled={resolvingConflict} onClick={() => setConfirmLocalVersion(false)}>取消</button><button className="film-primary" disabled={resolvingConflict} onClick={() => void safeAction(async () => { setResolvingConflict(true); try { await keepLocalFilmVersion(userId, cloudId); setConfirmLocalVersion(false); toast.success('已保留本机版本并保存到数据库'); } finally { setResolvingConflict(false); } })}>{resolvingConflict ? '正在备份并保存…' : '备份并保留本机'}</button></footer></FilmDialog>}
     {(!userId || modelError) && <div className="film-connection-notice" role="status">{!userId ? '当前为页面预览。登录后可使用模型生成、上传和视频导出。' : `模型加载失败：${modelError}`}<button className="film-plain" onClick={() => !userId ? navigate('/login') : setReload(v => v + 1)}>{!userId ? '登录' : '重试'}</button></div>}
     {showJobs && <FilmTaskPanel jobs={p.jobs} preparing={preparingText} syncStatus={syncStatus} onClose={() => setShowJobs(false)} onRetry={job => safeAction(() => retryJob(job))} onRecover={job => safeAction(() => recoverFilmJob(userId, job.id, cloudId))} />}
-    {showProductionSettings && <FilmProductionSettings settings={p.settings} models={models} modelsLoading={modelsLoading} modelError={modelError} userId={userId} onRefreshModels={() => setReload(v => v + 1)} onClose={() => setShowProductionSettings(false)} onSave={settings => { patch(current => ({ settings: { ...current.settings, ...settings } })); setShowProductionSettings(false); toast.success('制作设置已保存，后续提取和分镜任务将使用新设置'); }} />}
+    {showProductionSettings && <FilmProductionSettings settings={p.settings} script={p.script} models={models} modelsLoading={modelsLoading} modelError={modelError} userId={userId} onRefreshModels={() => setReload(v => v + 1)} onClose={() => setShowProductionSettings(false)} onSave={settings => { patch(current => ({ settings: { ...current.settings, ...settings } })); setShowProductionSettings(false); toast.success('制作设置已保存，后续提取和分镜任务将使用新设置'); }} />}
     <div className={`film-stage film-stage-${p.step}`}>
+      {[0, 2, 3].includes(p.step) && p.script.trim() && <section className="film-doctor-banner" aria-label="分镜前剧本优化"><div><strong>剧本医生 · {scriptDoctorApproved(p) ? '已确认采用' : p.scriptDoctor?.adopted ? '剧本已修改，需重新优化' : p.scriptDoctor?.revisions.length ? '优化稿待核对采用' : '分镜前必需'}</strong><p>{scriptDoctorApproved(p) ? '后续提取与分镜使用已采用的剧本；已有分镜保持不变。' : '建议在提取资产前优化因果、情绪与动作；生成分镜前需核对并采用优化稿。'}</p></div><button className="film-button" onClick={() => setShowDoctor(true)}><Sparkles size={14} />{p.scriptDoctor?.revisions.length ? '查看剧本优化稿' : '剧本医生优化'}</button></section>}
+      {p.step === 2 && scriptDoctorApproved(p) && !p.scriptDoctor?.adopted?.assetsReviewed && <section className="film-doctor-banner" aria-label="优化后资产核对"><div><strong>优化稿已采用，请核对资产</strong><p>人物、场景、道具若有描述或状态变化，请补齐参考图并检查已有绑定；旧素材不会自动删除。</p></div><button className="film-button" disabled={textRunning || running.some(j => ['extract', 'describe', 'asset'].includes(j.kind)) || uploadingAssets} onClick={() => patch(current => { const doctor = current.scriptDoctor; return scriptDoctorApproved(current) && doctor?.adopted ? { scriptDoctor: { ...doctor, adopted: { ...doctor.adopted, assetsReviewed: true } } } : {}; })}>已核对资产，继续使用</button></section>}
+      {workflowMessage && <div className="film-workflow-notice" role="alert"><span>{workflowMessage}</span><button className="film-plain" onClick={() => setWorkflowMessage('')}>知道了</button></div>}
       {p.step === 0 && <><div className="film-editor-toolbar"><button className="film-button film-rounded" disabled={textRunning || !textModel} onClick={() => setModal('write')}><Sparkles size={15} />橙次元AI帮写</button><button className="film-button film-rounded" disabled={reading || textRunning} onClick={() => fileRef.current?.click()}><FolderUp size={15} />{reading ? '读取中…' : '上传剧本'}</button><span className="film-toolbar-separator" /><button className="film-icon" title="撤销" disabled={!undo.current.length || textRunning} onClick={() => restore('undo')}><Undo2 size={15} /></button><button className="film-icon" title="重做" disabled={!redo.current.length || textRunning} onClick={() => restore('redo')}><Redo2 size={15} /></button><button className="film-button film-plain" disabled={!p.script} onClick={() => void navigator.clipboard.writeText(p.script).then(() => toast.success('剧本已复制')).catch(() => toast.error('复制失败'))}><Copy size={14} />复制</button><button className="film-button film-plain" disabled={!p.script || textRunning} onClick={() => setModal('clear')}><Trash2 size={14} />清空</button><button className="film-button film-plain" disabled={!p.script || textRunning} onClick={() => setModal('replace')}><Replace size={14} />替换</button><span className="film-spacer" /><button className="film-button film-plain" onClick={() => setModal('history')}><History size={15} />历史版本</button></div>
         {textRunning && <div className="film-progress-line"><LoaderCircle className="film-spin" size={16} />正在处理剧本…可在任务列表查看实时状态</div>}
         {p.script || scriptEditing ? <div className="film-script-area" data-history={historyTick}><textarea className="film-script" ref={scriptRef} aria-label="剧本正文" placeholder="在这里粘贴或编写你的剧本，描述场景、人物、动作与对白…" value={p.script} disabled={textRunning} onChange={e => setScript(e.target.value)} onBlur={() => { const latest = p.scriptHistory.at(-1); if (p.script.trim() && latest?.text !== p.script) patch({ scriptHistory: [...p.scriptHistory, { text: p.script, at: Date.now() }].slice(-20) }); }} /><footer className="film-script-footer"><span>支持 TXT、Markdown、DOCX、PDF</span><span>{p.script.length.toLocaleString()} / {SCRIPT_LIMIT.toLocaleString()} 字</span></footer></div> : <div className="film-script-empty"><div className="film-script-illustration"><div className="film-script-paper"><i /><i /><i /></div></div><p>选择一种方式添加剧本</p><div className="film-script-options"><button className="film-script-option" onClick={() => { setScriptEditing(true); setTimeout(() => scriptRef.current?.focus(), 0); }}><Copy size={18} /><span><strong>粘贴剧本</strong><small>已有内容可直接粘贴修改</small></span></button><button className="film-script-option" disabled={reading} onClick={() => fileRef.current?.click()}><FolderUp size={20} /><span><strong>上传剧本</strong><small>支持文档导入后继续编辑</small></span></button><button className="film-script-option" onClick={() => setModal('write')}><WandSparkles size={20} /><span><strong>橙次元AI帮写</strong><small>从想法开始生成完整剧本</small></span></button></div></div>}</>}
       {p.step === 1 && <FilmSettings project={p} models={models} patch={settings => patch({ settings: { ...p.settings, ...settings } })} uploadStyle={() => styleRef.current?.click()} />}
-      {(p.step === 2 || p.step === 3 || p.step === 4) && <>
+      {p.step === 3 && <FilmStoryboard project={p} userId={userId} models={models} selectedId={selectedShotId} onSelect={setSelectedShotId} onAdd={addShot} onGenerateScript={() => void safeAction(() => runText('split'))} onEditAsset={id => setMediaEditor({ kind: 'asset', id })} onMedia={(id, kind) => setMediaEditor({ id, kind })} onTasks={() => setShowJobs(true)} preparing={textRunning || modelsLoading} search={search} onSearch={setSearch} onSettings={() => setShowProductionSettings(true)} />}
+      {(p.step === 2 || p.step === 4) && <>
+        {p.step === 2 && <div className="film-asset-workflow"><div><strong>准备本集的场景、角色与道具</strong><p>先从剧本提取并描述资产，或直接导入已有图片；参考图全部就绪后进入分镜。</p></div><span>{p.assets.filter(a => a.url).length} / {p.assets.length} 参考图就绪</span><button className="film-button" onClick={() => setShowProductionSettings(true)}><Settings2 size={14} />描述模板与模型</button></div>}
         <div className="film-content-toolbar">
           {p.step === 2 ? <div className="film-tabs">
             {([['scene', '场景'], ['character', '角色'], ['prop', '道具']] as const).map(([key, label]) =>
               <button key={key} className={assetType === key ? 'is-active' : ''} onClick={() => setAssetType(key)}>
                 {label}<span>{p.assets.filter(a => a.type === key).length}</span>
               </button>)}
-          </div> : <span className="film-muted">{p.step === 3 ? '逐镜编辑描述、运镜与关联资产' : '点击镜头，开始制作你的分镜视频'}</span>}
+          </div> : <span className="film-muted">点击镜头，开始制作你的分镜视频</span>}
           <span className="film-spacer" />
+          {p.step === 2 && <button className="film-button" disabled={uploadingAssets} onClick={() => assetUpload.current?.click()}><FolderUp size={15} />{uploadingAssets ? '正在导入…' : '导入参考图'}</button>}
           <label className="film-search"><Search size={14} /><input aria-label="搜索素材与分镜" placeholder="搜索" value={search} onChange={e => setSearch(e.target.value)} /></label>
           <button className="film-button" onClick={() => p.step === 2 ? setModal('addAsset') : addShot()}><Plus size={16} />新增</button>
           {p.step !== 4 && <button className="film-button film-accent" disabled={textRunning || !p.script || !textModel || modelsLoading} onClick={() => void safeAction(() => runText(p.step === 2 ? 'extract' : 'split'))}><Sparkles size={15} />{p.step === 2 ? '提取场景角色道具' : p.shots.length ? '追加分镜' : '生成分镜脚本'}</button>}
         </div>
         {textRunning && <div className="film-progress-line"><LoaderCircle className="film-spin" size={17} />{p.step === 2 ? '正在为您提取场景、角色和道具…' : '正在为您拆解分镜…'}</div>}
         <div className="film-card-grid">{p.step === 2 ? p.assets.filter(a => a.type === assetType && (a.name + a.description).includes(search)).map(a => <article className="film-asset-card" key={a.id}><div className="film-card-heading"><span>{a.name}</span><span className="film-muted film-small">{a.url ? '已完成' : '待制作'}</span></div><button className="film-card-image" onClick={() => setMediaEditor({ kind: 'asset', id: a.id })}>{a.url ? <img className="film-cover" src={toRenderableMediaUrl(a.url)} alt={a.name} /> : <><ImagePlus size={27} strokeWidth={1.3} /><span>点击生成 / 上传</span></>}</button><p className="film-card-description">{a.description || '添加视觉描述，统一角色与场景'}</p><button className="film-card-edit" onClick={() => setMediaEditor({ kind: 'asset', id: a.id })}><PencilLine size={14} />编辑素材<ChevronRight size={14} /></button></article>) : p.shots.filter(s => (s.title + s.description).includes(search)).map((s, i) => { const job = [...p.jobs].reverse().find(j => j.targetId === s.id && j.kind === (p.step === 4 ? 'video' : 'image')); return <article className="film-shot-card" key={s.id}><div className="film-card-heading"><Clapperboard size={16} /><strong>{String(i + 1).padStart(2, '0')}</strong><span className="film-truncate">{s.title}</span><button className="film-icon" title="编辑分镜脚本" onClick={() => setEditingShot(s)}><PencilLine size={14} /></button></div><button className="film-card-image" onClick={() => setMediaEditor({ kind: p.step === 4 ? 'video' : 'image', id: s.id })}>{p.step === 4 && s.videoUrl ? <video className="film-cover" src={toRenderableMediaUrl(s.videoUrl)} preload="metadata" muted /> : s.imageUrl ? <img className="film-cover" src={toRenderableMediaUrl(s.imageUrl)} alt={s.title} /> : <><PencilLine size={27} /><span>点击编辑</span></>}{job && activeFilmJob(job) && <span className="film-card-status"><LoaderCircle className="film-spin" size={14} />生成中</span>}</button>{p.step === 3 && <><p className="film-card-description">{s.description || '尚未填写分镜内容'}</p><div className="film-shot-meta"><span>{s.shot}</span><span>{s.duration}</span><span>{s.assetIds.length} 个资产</span></div></>}{job?.status === 'error' && <p className="film-error film-card-error">{job.error}</p>}</article>; })}</div>
-        {(p.step === 2 ? !p.assets.some(a => a.type === assetType) : !p.shots.length) && !textRunning && <div className="film-collection-empty"><div className="film-empty-art">{p.step === 2 ? <ImagePlus size={40} /> : <Clapperboard size={40} />}</div><h3>{p.step === 2 ? '为故事准备场景、角色和道具' : p.step === 3 ? '把剧本，变成看得见的镜头' : '从第一个镜头开始'}</h3><p className="film-muted">{p.step === 2 ? '从剧本自动提取资产，或手动添加并上传参考图片' : '可自动拆解剧本，也可以手动新增分镜'}</p><button className="film-button" onClick={() => p.step === 2 ? setModal('addAsset') : addShot()}><Plus size={16} />{p.step === 2 ? '添加资产' : '新增分镜'}</button></div>}</>}
+        {(p.step === 2 ? !p.assets.some(a => a.type === assetType) : !p.shots.length) && !textRunning && <div className="film-collection-empty"><div className="film-empty-art">{p.step === 2 ? <ImagePlus size={40} /> : <Clapperboard size={40} />}</div><h3>{p.step === 2 ? '为故事准备场景、角色和道具' : '从第一个镜头开始'}</h3><p className="film-muted">{p.step === 2 ? '从剧本自动提取资产，或手动添加并上传参考图片' : '可自动拆解剧本，也可以手动新增分镜'}</p><button className="film-button" onClick={() => p.step === 2 ? setModal('addAsset') : addShot()}><Plus size={16} />{p.step === 2 ? '添加资产' : '新增分镜'}</button></div>}</>}
       {p.step === 5 && <FilmPreview project={p} userId={userId} onVideoStep={() => patch({ step: 4 })} />}
     </div></div>
+    {showDoctor && <FilmScriptDoctor project={p} busy={textRunning} canGenerate={Boolean(userId && textModel && !modelsLoading)} onGenerate={() => runText('doctor')} onClose={() => setShowDoctor(false)} onTasks={() => { setShowDoctor(false); setShowJobs(true); }} onSettings={() => { setShowDoctor(false); setShowProductionSettings(true); }}
+      onEdit={(id, text) => patch(current => current.scriptDoctor ? { scriptDoctor: { ...current.scriptDoctor, revisions: current.scriptDoctor.revisions.map(r => r.id === id ? { ...r, editedScript: text } : r) } } : {})}
+      onAdopt={async (id, acknowledged) => { const state = useFilm.getState(); state.patch(adoptScriptRevision(state.project, id, acknowledged)); await useFilm.getState().flush?.(); setScriptEditing(true); setShowDoctor(false); setWorkflowMessage(''); if (!useFilm.getState().project.scriptDoctor?.adopted?.assetsReviewed) patch({ step: 2 }); toast.success('优化稿已采用，原稿已保留；后续提取与分镜使用此版本。'); }} />}
     <input className="film-hidden" ref={fileRef} type="file" accept=".txt,.md,.docx,.pdf" onChange={e => { void importScript(e.target.files?.[0]); e.target.value = ''; }} />
+    <input hidden ref={assetUpload} type="file" multiple accept="image/png,image/jpeg,image/webp" onChange={e => { void importAssets(Array.from(e.target.files || [])); e.target.value = ''; }} />
     <input className="film-hidden" ref={styleRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void safeAction(async () => { if (file.size > 20 * 1024 * 1024) throw new Error('风格参考图不能超过20MB。'); const result = await uploadFile(file, file.name); patch(current => ({ settings: { ...current.settings, styleImage: result.url } })); }); }} />
     {modal && <FilmDialog title={{ write: '橙次元AI帮写', history: '剧本历史版本', replace: '查找与替换', reset: '新建项目', clear: '清空剧本', addAsset: '添加资产' }[modal]} onClose={() => setModal(null)}>
       {modal === 'write' && <><p className="film-dialog-copy">告诉我故事的主角、情节、时长或想传达的感受。</p><textarea className="film-dialog-textarea" aria-label="剧本创意" placeholder="例如：一个在深夜便利店工作的机器人，第一次感受到人类的善意…" value={idea} maxLength={4000} onChange={e => setIdea(e.target.value)} /><FilmModelSelect models={textModels} value={textModel?.key || ''} onChange={key => patch({ settings: { ...p.settings, textModel: key } })} label="编剧模型" /><footer className="film-dialog-footer"><button className="film-button" onClick={() => setModal(null)}>取消</button><button className="film-primary" disabled={!idea.trim() || !textModel || textRunning} onClick={() => void safeAction(() => runText('write'))}><Sparkles size={15} />生成剧本</button></footer></>}

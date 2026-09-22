@@ -1,458 +1,107 @@
-import { useCallback, useEffect, useState } from "react";
-import { Loader2, ShieldCheck, User, Ban, Trash2, RefreshCw, Zap, XCircle, KeyRound, Eye, EyeOff, ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, RefreshCw, Search, ShieldCheck, Users, UserCheck, Settings2, AlertTriangle } from 'lucide-react';
+import { type AdminUser, listUsers, updateUserRole, updateUserStatus, deleteUser, adjustCredits, resetUserPassword } from '../../api/admin';
+import { AdminShell } from './AdminShell';
+import { AdminActionDialog } from './AdminActionDialog';
 
-import type { AdminUser, AdjustCreditsPayload } from "../../api/admin";
-import { listUsers, updateUserRole, updateUserStatus, deleteUser, adjustCredits, resetUserPassword } from "../../api/admin";
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { AdminShell } from "./AdminShell";
+type Action = 'choose' | 'role' | 'status' | 'credits' | 'password' | 'delete';
+const failure = (error: unknown) => error instanceof Error ? error.message : '操作失败，请稍后重试';
+const PAGE_SIZE = 15;
 
-// ─── Credits Drawer ─────────────────────────────────────────────────────────
-
-function CreditsDrawer({ user, open, onClose, onSaved }: {
-  user: AdminUser | null;
-  open: boolean;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [addAmount, setAddAmount] = useState(100);
-  const [newQuota, setNewQuota] = useState(0);
-  const [changeQuota, setChangeQuota] = useState(false);
-  const [reason, setReason] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (open && user) {
-      setAddAmount(100);
-      setNewQuota(user.daily_quota);
-      setChangeQuota(false);
-      setReason("");
-      setError("");
-    }
-  }, [open, user]);
-
-  if (!open || !user) return null;
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      const payload: AdjustCreditsPayload = { reason: reason.trim() || undefined };
-      if (addAmount !== 0) payload.add_balance = addAmount;
-      if (changeQuota) payload.set_quota = newQuota;
-      await adjustCredits(user.id, payload);
-      onSaved();
-      onClose();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "操作失败");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative z-10 flex w-[400px] flex-col bg-[#141414] border-l border-white/[0.08] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-4">
-          <h3 className="text-sm font-semibold text-white">积分管理 — {user.name}</h3>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white transition">
-            <XCircle className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
-          {/* Current */}
-          <div className="flex gap-4">
-            <div className="flex-1 rounded-xl border border-white/[0.08] bg-black/30 p-3">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-500">当前余额</p>
-              <p className="mt-1 text-2xl font-semibold text-white">{user.current_balance}</p>
-            </div>
-            <div className="flex-1 rounded-xl border border-white/[0.08] bg-black/30 p-3">
-              <p className="text-[10px] uppercase tracking-wider text-neutral-500">每日配额</p>
-              <p className="mt-1 text-2xl font-semibold text-white">{user.daily_quota}</p>
-            </div>
-          </div>
-
-          {/* Add balance */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-neutral-400">充值积分</label>
-            <div className="flex gap-2">
-              {[50, 100, 500, 1000].map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setAddAmount(v)}
-                  className={`rounded-lg border px-3 py-1.5 text-xs transition ${addAmount === v ? "border-[#ff6a1f]/40 bg-[#ff6a1f]/15 text-[#ff9b68]" : "border-white/[0.08] bg-[#1a1a1a] text-neutral-300 hover:bg-white/5"}`}
-                >
-                  +{v}
-                </button>
-              ))}
-            </div>
-            <Input
-              type="number"
-              value={addAmount}
-              onChange={(e) => setAddAmount(Number(e.target.value))}
-              className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white mt-1"
-            />
-            <p className="text-[10px] text-neutral-600">输入负数可扣减积分</p>
-          </div>
-
-          {/* Quota toggle */}
-          <div className="space-y-1.5">
-            <label className="flex items-center gap-2 text-xs font-medium text-neutral-400">
-              <button
-                onClick={() => setChangeQuota(!changeQuota)}
-                className={`relative h-5 w-9 rounded-full transition ${changeQuota ? "bg-[#ff6a1f]" : "bg-neutral-700"}`}
-              >
-                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition ${changeQuota ? "left-[18px]" : "left-0.5"}`} />
-              </button>
-              同时修改每日配额
-            </label>
-            {changeQuota && (
-              <Input
-                type="number"
-                value={newQuota}
-                onChange={(e) => setNewQuota(Number(e.target.value))}
-                min={0}
-                className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
-              />
-            )}
-          </div>
-
-          {/* Reason */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-neutral-400">原因（可选）</label>
-            <Input
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="如：月度充值"
-              className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
-            />
-          </div>
-
-          {error && <p className="text-xs text-red-400">{error}</p>}
-        </div>
-
-        <div className="flex gap-3 border-t border-white/[0.06] px-6 py-4">
-          <Button onClick={onClose} variant="outline" className="border-white/10 text-neutral-300 hover:bg-white/5 rounded-full px-5">取消</Button>
-          <Button onClick={handleSave} disabled={saving || (addAmount === 0 && !changeQuota)} className="bg-[#ff6a1f] text-white hover:bg-[#ff7b35] rounded-full px-5">
-            {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            确认
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Password Dialog ────────────────────────────────────────────────────────
-
-function PasswordDialog({ user, open, onClose }: {
-  user: AdminUser | null;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
+function MemberDialog({ user, onClose, onSaved }: { user: AdminUser; onClose: () => void; onSaved: (message: string) => void }) {
+  const [action, setAction] = useState<Action>('choose');
+  const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const [error, setError] = useState('');
+  const [email, setEmail] = useState('');
+  const [amount, setAmount] = useState('0');
+  const [quota, setQuota] = useState(String(user.daily_quota));
+  const [reason, setReason] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [show, setShow] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
-
-  useEffect(() => {
-    if (open) { setPassword(""); setConfirm(""); setError(""); setDone(false); setShow(false); }
-  }, [open]);
-
-  if (!open || !user) return null;
-
-  const handleSave = async () => {
-    setError("");
-    if (password.length < 6) { setError("密码至少 6 位"); return; }
-    if (password !== confirm) { setError("两次输入不一致"); return; }
-    setSaving(true);
+  const titles = { choose: '管理成员', role: '确认更改角色', status: user.status === 'active' ? '确认停用账号' : '确认启用账号', credits: '调整积分与额度', password: '重置登录密码', delete: '删除成员' };
+  const balanceAfter = user.current_balance + Number(amount);
+  const validCredits = amount.trim() !== '' && quota.trim() !== '' && Number.isSafeInteger(Number(amount)) && Number.isSafeInteger(Number(quota)) && Number(quota) >= 0 && Number(quota) <= 2147483647 && balanceAfter >= 0 && balanceAfter <= 2147483647 && (Number(amount) !== 0 || Number(quota) !== user.daily_quota) && reason.trim().length > 0;
+  const valid = action === 'credits' ? validCredits : action === 'delete' ? email.trim() === user.email : action === 'password' ? password.length >= 8 && password === confirm : true;
+  const select = (value: Action) => { setAction(value); setError(''); };
+  const submit = async () => {
+    if (submitting.current || !valid || action === 'choose') return;
+    submitting.current = true; setBusy(true); setError('');
     try {
-      await resetUserPassword(user.id, password);
-      setDone(true);
-      setTimeout(onClose, 1200);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "重置失败");
-    } finally { setSaving(false); }
+      if (action === 'role') await updateUserRole(user.id, user.role === 'admin' ? 'member' : 'admin');
+      if (action === 'status') await updateUserStatus(user.id, user.status === 'active' ? 'disabled' : 'active');
+      if (action === 'delete') await deleteUser(user.id);
+      if (action === 'credits') await adjustCredits(user.id, { add_balance: Number(amount), set_quota: Number(quota), reason: reason.trim() });
+      if (action === 'password') await resetUserPassword(user.id, password);
+      onSaved(`${user.name || user.email}：${titles[action]}已完成`);
+    } catch (e) { setError(failure(e)); }
+    finally { submitting.current = false; setBusy(false); }
   };
-
-  const genRandom = () => {
-    const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    let pwd = "";
-    for (let i = 0; i < 12; i++) pwd += chars[Math.floor(Math.random() * chars.length)];
-    setPassword(pwd); setConfirm(pwd); setShow(true);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-sm">
-      <div className="w-[440px] max-w-[92vw] rounded-2xl border border-white/[0.08] bg-[#141414] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
-          <div>
-            <h3 className="text-sm font-semibold text-white">重置密码</h3>
-            <p className="mt-0.5 text-xs text-neutral-500">{user.name} · {user.email}</p>
-          </div>
-          <button onClick={onClose} className="text-neutral-500 hover:text-white transition">
-            <XCircle className="h-4 w-4" />
-          </button>
-        </div>
-        {done ? (
-          <div className="px-5 py-8 text-center text-sm text-emerald-400">密码已重置成功</div>
-        ) : (
-          <>
-            <div className="space-y-4 px-5 py-5">
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-neutral-400">新密码</label>
-                  <button onClick={genRandom} className="text-[11px] text-neutral-500 transition hover:text-neutral-200">生成随机密码</button>
-                </div>
-                <div className="relative">
-                  <Input
-                    type={show ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="至少 6 位"
-                    className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white pr-9"
-                  />
-                  <button onClick={() => setShow((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200">
-                    {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-neutral-400">再次输入</label>
-                <Input
-                  type={show ? "text" : "password"}
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  className="border-white/[0.08] bg-[#1a1a1a] text-sm text-white"
-                />
-              </div>
-              {error && <p className="text-xs text-red-400">{error}</p>}
-              <p className="text-[10px] text-neutral-600">该用户下次登录需用新密码。请通过安全渠道告知。</p>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-white/[0.06] px-5 py-4">
-              <Button onClick={onClose} variant="outline" className="border-white/10 text-neutral-300 hover:bg-white/5 rounded-full px-5">取消</Button>
-              <Button onClick={handleSave} disabled={saving || !password || !confirm} className="bg-[#ff6a1f] text-white hover:bg-[#ff7b35] rounded-full px-5">
-                {saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                确认重置
-              </Button>
-            </div>
-          </>
-        )}
+  return <AdminActionDialog title={titles[action]} description="所有更改均需确认后提交，操作将记录在后台审计日志中。" busy={busy} onClose={onClose}>
+    <div className="admin-member-identity"><span className="admin-avatar">{(user.name || user.email).slice(0, 1)}</span><div><strong>{user.name || '未命名成员'}</strong><p>{user.email}</p></div><span className="admin-status">{user.role === 'admin' ? '管理员' : '成员'}</span></div>
+    {action === 'choose' ? <>
+      <div className="admin-action-options">
+        <button onClick={() => select('credits')}><strong>积分与额度</strong><span>余额 {user.current_balance.toLocaleString()} · 每日额度 {user.daily_quota.toLocaleString()}</span></button>
+        <button onClick={() => select('role')}><strong>更改成员角色</strong><span>{user.role === 'admin' ? '管理员 → 普通成员' : '普通成员 → 管理员'}</span></button>
+        <button onClick={() => select('password')}><strong>重置密码</strong><span>设置新的登录密码</span></button>
+        <button onClick={() => select('status')}><strong>{user.status === 'active' ? '停用账号' : '启用账号'}</strong><span>{user.status === 'active' ? '阻止后续访问，保留账号数据' : '恢复账号访问权限'}</span></button>
       </div>
-    </div>
-  );
+      <div className="admin-danger-zone"><span>不可恢复的操作</span><button className="admin-button danger-text" onClick={() => select('delete')}>删除成员…</button></div>
+    </> : <form onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+      <fieldset disabled={busy} className="admin-form-stack">
+        {action === 'role' && <div className="admin-notice warning"><ShieldCheck size={18} /><p>{user.role === 'admin' ? '该成员将失去后台管理权限。' : '该成员将能管理平台成员、模型、密钥和存储配置。请仅向可信任人员授予管理员权限。'}</p></div>}
+        {action === 'status' && <div className="admin-notice warning"><AlertTriangle size={18} /><p>{user.status === 'active' ? '账号停用后将无法继续访问受保护接口。已有项目和素材不会被删除。' : '账号启用后可重新登录并访问已有项目。'}</p></div>}
+        {action === 'delete' && <><div className="admin-notice error"><AlertTriangle size={18} /><p>删除账号后无法通过此页面恢复。有项目或流水等关联记录时，系统可能拒绝删除；不会自动清理云端媒体。建议优先使用「停用账号」。</p></div><label>输入成员邮箱以确认<input autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={user.email} /></label></>}
+        {action === 'credits' && <>
+          <label>积分调整量（正数增加，负数扣减）<input type="number" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+          <div className="admin-change-preview"><span>当前余额 <b>{user.current_balance.toLocaleString()}</b></span><span>→</span><span>调整后 <b>{amount.trim() && Number.isFinite(balanceAfter) ? balanceAfter.toLocaleString() : '—'}</b></span></div>
+          <label>每日额度<input type="number" min="0" max="2147483647" step="1" value={quota} onChange={(e) => setQuota(e.target.value)} /></label>
+          <label>调整原因 <span>必填，记录到积分流水</span><input maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例如：补偿失败任务扣费" /></label>
+          {!validCredits && <p className="admin-help">请填写整数和调整原因，调整后余额及额度不能为负数；至少修改一项。</p>}
+        </>}
+        {action === 'password' && <><label>新密码（至少 8 位）<input type={show ? 'text' : 'password'} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} /></label><label>再次输入新密码<input type={show ? 'text' : 'password'} autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label><label className="admin-checkbox"><input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />显示密码</label><p className="admin-help">重置后旧密码不能用于新登录；不会强制注销已有会话。</p></>}
+      </fieldset>
+      {error && <div role="alert" className="admin-notice error">{error}</div>}
+      <div className="admin-form-actions"><button type="button" className="admin-button" disabled={busy} onClick={() => select('choose')}>返回，不更改</button><button className={`admin-button ${action === 'delete' ? 'danger' : 'primary'}`} type="submit" disabled={busy || !valid}>{busy ? '正在提交…' : action === 'delete' ? '确认永久删除' : '确认更改'}</button></div>
+    </form>}
+  </AdminActionDialog>;
 }
-
-// ─── Main Page ──────────────────────────────────────────────────────────────
-
-const PAGE_SIZE = 20;
 
 export function AdminMembersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [creditUser, setCreditUser] = useState<AdminUser | null>(null);
-  const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [selected, setSelected] = useState<AdminUser | null>(null);
+  const [search, setSearch] = useState('');
+  const [role, setRole] = useState('');
+  const [status, setStatus] = useState('');
   const [page, setPage] = useState(0);
-
+  const request = useRef(0);
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setUsers(await listUsers()); } catch { /* */ }
-    setLoading(false);
+    const id = ++request.current; setLoading(true); setError('');
+    try { const data = await listUsers(); if (id === request.current) setUsers(data); }
+    catch (e) { if (id === request.current) setError(failure(e)); }
+    finally { if (id === request.current) setLoading(false); }
   }, []);
-
-  const totalPages = Math.max(1, Math.ceil(users.length / PAGE_SIZE));
-
-  useEffect(() => {
-    if (page > totalPages - 1) setPage(totalPages - 1);
-  }, [page, totalPages]);
-
-  const safePage = Math.min(page, totalPages - 1);
-  const pagedUsers = users.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
-
-  useEffect(() => { load(); }, [load]);
-
-  const handleToggleRole = async (u: AdminUser) => {
-    setBusyId(u.id);
-    try {
-      await updateUserRole(u.id, u.role === "admin" ? "member" : "admin");
-      await load();
-    } finally { setBusyId(null); }
-  };
-
-  const handleToggleStatus = async (u: AdminUser) => {
-    setBusyId(u.id);
-    try {
-      await updateUserStatus(u.id, u.status === "active" ? "disabled" : "active");
-      await load();
-    } finally { setBusyId(null); }
-  };
-
-  const handleDelete = async (u: AdminUser) => {
-    setBusyId(u.id);
-    try {
-      await deleteUser(u.id);
-      setUsers((prev) => prev.filter((x) => x.id !== u.id));
-    } finally { setBusyId(null); }
-  };
-
-  return (
-    <AdminShell
-      title="成员管理"
-      description="查看和管理所有注册用户，包括角色、状态和积分配额。"
-      action={
-        <Button variant="outline" size="sm" onClick={load} disabled={loading} aria-label="刷新成员列表" className="border-white/10 text-neutral-300 hover:bg-white/5 gap-1.5">
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          刷新
-        </Button>
-      }
-    >
-      <div className="space-y-5">
-        <div className="grid gap-4 md:grid-cols-3">
-          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">成员总数</p>
-            <p className="mt-2 text-3xl font-semibold text-white">{users.length}</p>
-          </div>
-          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">管理员</p>
-            <p className="mt-2 text-3xl font-semibold text-white">{users.filter((u) => u.role === "admin").length}</p>
-          </div>
-          <div data-admin-card className="rounded-[24px] border border-white/[0.08] bg-[#101010]/90 p-4">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">当前活跃</p>
-            <p className="mt-2 text-3xl font-semibold text-white">{users.filter((u) => u.status === "active").length}</p>
-          </div>
-        </div>
-        <div
-          data-admin-panel
-          className="overflow-hidden rounded-[30px] border border-white/[0.08] bg-[#111111]/95 shadow-[0_30px_80px_-40px_rgba(0,0,0,0.9)]"
-        >
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-white/[0.06] bg-white/[0.02]">
-              {["成员名", "邮箱", "角色", "状态", "积分", "最后登录", "操作"].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-neutral-500">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-white/[0.04]">
-            {loading ? (
-              <tr><td colSpan={7} className="py-16 text-center text-neutral-500"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></td></tr>
-            ) : users.length === 0 ? (
-              <tr><td colSpan={7} className="py-16 text-center text-sm text-neutral-600">暂无用户</td></tr>
-            ) : pagedUsers.map((u) => (
-              <tr key={u.id} className="group hover:bg-white/[0.02] transition">
-                <td className="px-4 py-3 font-medium text-neutral-200">{u.name}</td>
-                <td className="px-4 py-3 text-neutral-400">{u.email}</td>
-                <td className="px-4 py-3">
-                  <Badge className={u.role === "admin" ? "bg-[#ff6a1f]/15 text-[#ff9b68] border-[#ff6a1f]/20" : "bg-white/[0.06] text-neutral-300 border-white/10"}>
-                    {u.role === "admin" ? "管理员" : "成员"}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="flex items-center gap-1.5 text-xs">
-                    <span className={`h-2 w-2 rounded-full ${u.status === "active" ? "bg-emerald-400" : "bg-neutral-600"}`} />
-                    <span className="text-neutral-300">{u.status === "active" ? "正常" : "已禁用"}</span>
-                  </span>
-                </td>
-                <td className="px-4 py-3">
-                  <button
-                    onClick={() => setCreditUser(u)}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2 py-1 text-xs text-neutral-300 transition hover:border-[#ff6a1f]/30 hover:bg-[#ff6a1f]/5 hover:text-[#ff9b68]"
-                  >
-                    <Zap className="h-3 w-3" />
-                    <span className="tabular-nums">{u.current_balance}</span>
-                    <span className="text-neutral-600">/</span>
-                    <span className="tabular-nums text-neutral-500">{u.daily_quota}</span>
-                  </button>
-                </td>
-                <td className="px-4 py-3 text-xs text-neutral-500">
-                  {u.last_login_at ? new Date(u.last_login_at).toLocaleString("zh-CN") : "—"}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2 opacity-0 transition group-hover:opacity-100">
-                    <button onClick={() => handleToggleRole(u)} disabled={busyId === u.id} title="切换角色" className="text-neutral-500 hover:text-[#ff6a1f] disabled:opacity-30 transition">
-                      <ShieldCheck className="h-3.5 w-3.5" />
-                    </button>
-                    <button onClick={() => setPasswordUser(u)} disabled={busyId === u.id} title="重置密码" className="text-neutral-500 hover:text-cyan-300 disabled:opacity-30 transition">
-                      <KeyRound className="h-3.5 w-3.5" />
-                    </button>
-                    <button onClick={() => handleToggleStatus(u)} disabled={busyId === u.id} title={u.status === "active" ? "禁用" : "启用"} className="text-neutral-500 hover:text-amber-400 disabled:opacity-30 transition">
-                      {u.status === "active" ? <Ban className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
-                    </button>
-                    <button onClick={() => handleDelete(u)} disabled={busyId === u.id} title="删除" className="text-neutral-500 hover:text-red-400 disabled:opacity-30 transition">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!loading && users.length > 0 && (
-          <div className="relative border-t border-white/[0.04] bg-white/[0.01] px-4 py-3 text-xs text-neutral-600">
-            共 {users.length} 位用户
-            {totalPages > 1 && (
-              <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center justify-center gap-1 pointer-events-none">
-                <button
-                  onClick={() => setPage(0)}
-                  disabled={safePage === 0}
-                  title="第一页"
-                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronsLeft className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={safePage === 0}
-                  title="上一页"
-                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronLeft className="h-3.5 w-3.5" />
-                </button>
-                <span className="px-1.5 text-[11px] tabular-nums text-neutral-400">
-                  {safePage + 1} / {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  disabled={safePage >= totalPages - 1}
-                  title="下一页"
-                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronRight className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  onClick={() => setPage(totalPages - 1)}
-                  disabled={safePage >= totalPages - 1}
-                  title="最后一页"
-                  className="pointer-events-auto flex h-6 w-6 items-center justify-center rounded text-neutral-400 transition hover:bg-white/[0.08] hover:text-neutral-200 disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronsRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        </div>
-      </div>
-
-      <CreditsDrawer
-        user={creditUser}
-        open={creditUser !== null}
-        onClose={() => setCreditUser(null)}
-        onSaved={load}
-      />
-
-      <PasswordDialog
-        user={passwordUser}
-        open={passwordUser !== null}
-        onClose={() => setPasswordUser(null)}
-      />
-    </AdminShell>
-  );
+  useEffect(() => { void load(); return () => { request.current++; }; }, [load]);
+  const filtered = useMemo(() => users.filter((u) => (!role || u.role === role) && (!status || u.status === status) && `${u.name} ${u.email}`.toLowerCase().includes(search.trim().toLowerCase())), [users, search, role, status]);
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const current = Math.min(page, pages - 1);
+  return <AdminShell title="成员管理" description="查看成员、分配权限与额度。先选择成员，再确认更改，避免误操作。" action={<button className="admin-button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? 'animate-spin' : ''} />刷新</button>}>
+    <div className="admin-summary-grid">{[
+      { label: '成员总数', value: users.length, icon: Users }, { label: '管理员', value: users.filter((u) => u.role === 'admin').length, icon: ShieldCheck }, { label: '正常账号', value: users.filter((u) => u.status === 'active').length, icon: UserCheck },
+    ].map(({ label, value, icon: Icon }) => <div data-admin-card className="admin-summary-card" key={label}><span><Icon size={17} />{label}</span><strong>{loading && !users.length ? '—' : value}</strong></div>)}</div>
+    {error && <div role="alert" className="admin-notice error">{error} <button className="admin-button" onClick={() => void load()}>重试</button></div>}
+    {notice && <div role="status" className="admin-notice success">{notice}<button className="admin-button" onClick={() => setNotice('')}>知道了</button></div>}
+    <section className="admin-panel" aria-label="成员列表">
+      <div className="admin-filter-bar"><label className="admin-search"><Search size={16} /><input aria-label="搜索成员" placeholder="搜索姓名或邮箱" value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} /></label><select aria-label="筛选角色" value={role} onChange={(e) => { setRole(e.target.value); setPage(0); }}><option value="">全部角色</option><option value="admin">管理员</option><option value="member">成员</option></select><select aria-label="筛选状态" value={status} onChange={(e) => { setStatus(e.target.value); setPage(0); }}><option value="">全部状态</option><option value="active">正常</option><option value="disabled">已停用</option></select><span>{filtered.length} 位成员</span></div>
+      <div className="admin-table-scroll" aria-busy={loading}><table className="admin-members-table"><thead><tr><th>成员</th><th>角色</th><th>状态</th><th>积分余额 / 每日额度</th><th>最后登录</th><th>操作</th></tr></thead><tbody>
+        {filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE).map((u) => <tr key={u.id}><td><div className="admin-member-name"><span className="admin-avatar">{(u.name || u.email).slice(0, 1)}</span><div><strong title={u.name}>{u.name || '未命名成员'}</strong><span title={u.email}>{u.email}</span></div></div></td><td><span className={`admin-role ${u.role}`}>{u.role === 'admin' ? '管理员' : '成员'}</span></td><td><span className={`admin-status ${u.status}`}>{u.status === 'active' ? '正常' : '已停用'}</span></td><td className="admin-number"><strong>{u.current_balance.toLocaleString()}</strong><span className="admin-help"> / {u.daily_quota.toLocaleString()}</span></td><td className="admin-help">{u.last_login_at ? new Date(u.last_login_at).toLocaleString('zh-CN', { hour12: false }) : '尚未登录'}</td><td><button className="admin-button" aria-label={`管理 ${u.name || u.email}`} onClick={() => setSelected(u)}><Settings2 size={14} />管理</button></td></tr>)}
+      </tbody></table>{filtered.length === 0 && <div className="admin-empty">{loading ? '正在加载成员…' : error ? '成员列表暂不可用，请重试。' : '没有匹配的成员，试试调整搜索或筛选条件。'}</div>}</div>
+      <div className="admin-pagination"><span>第 {current + 1} / {pages} 页 · 每页 {PAGE_SIZE} 位</span><div><button className="admin-button" aria-label="上一页" disabled={current === 0} onClick={() => setPage(current - 1)}><ChevronLeft size={16} /></button><button className="admin-button" aria-label="下一页" disabled={current === pages - 1} onClick={() => setPage(current + 1)}><ChevronRight size={16} /></button></div></div>
+    </section>
+    {selected && <MemberDialog key={selected.id} user={selected} onClose={() => setSelected(null)} onSaved={(message) => { setSelected(null); setNotice(message); void load(); }} />}
+  </AdminShell>;
 }

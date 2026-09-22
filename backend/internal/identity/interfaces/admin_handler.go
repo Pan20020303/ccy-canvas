@@ -3,10 +3,13 @@ package interfaces
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/jackc/pgx/v5"
 
 	"ccy-canvas/backend/internal/platform/authn"
 	"ccy-canvas/backend/internal/platform/database/sqlc"
@@ -15,17 +18,21 @@ import (
 	"ccy-canvas/backend/internal/shared/httpx"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AdminHandler provides admin-only huma endpoints for users, invitations, stats, logs.
 type AdminHandler struct {
 	q        *sqlc.Queries
 	password password.Service
+	pool     *pgxpool.Pool
 }
 
 func NewAdminHandler(q *sqlc.Queries, passwordSvc password.Service) *AdminHandler {
 	return &AdminHandler{q: q, password: passwordSvc}
 }
+
+func (h *AdminHandler) WithPool(pool *pgxpool.Pool) *AdminHandler { h.pool = pool; return h }
 
 var adminSec = []map[string][]string{{httpapi.SecuritySchemeName: {authn.ScopeAdmin}}}
 
@@ -260,9 +267,17 @@ func (h *AdminHandler) updateUserRole(ctx context.Context, input *updateUserRole
 	if err != nil {
 		return nil, huma.Error400BadRequest("Invalid user ID")
 	}
-	u, err := h.q.UpdateUserRole(ctx, sqlc.UpdateUserRoleParams{ID: pgID, Role: input.Body.Role})
+	tx, q, err := h.beginMemberChange(ctx, input.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	u, err := q.UpdateUserRole(ctx, sqlc.UpdateUserRoleParams{ID: pgID, Role: input.Body.Role})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to update role")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("更改角色未保存")
 	}
 	out := &userOutput{}
 	out.Body.Data = UserItem{ID: formatUUID(u.ID.Bytes), Email: u.Email, Name: u.Name, Role: u.Role, Status: u.Status, LastLoginAt: timePtr(u.LastLoginAt), CreatedAt: u.CreatedAt.Time.Format(time.RFC3339)}
@@ -282,9 +297,17 @@ func (h *AdminHandler) updateUserStatus(ctx context.Context, input *updateUserSt
 	if err != nil {
 		return nil, huma.Error400BadRequest("Invalid user ID")
 	}
-	u, err := h.q.UpdateUserStatus(ctx, sqlc.UpdateUserStatusParams{ID: pgID, Status: input.Body.Status})
+	tx, q, err := h.beginMemberChange(ctx, input.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	u, err := q.UpdateUserStatus(ctx, sqlc.UpdateUserStatusParams{ID: pgID, Status: input.Body.Status})
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to update status")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("账号状态未保存")
 	}
 	out := &userOutput{}
 	out.Body.Data = UserItem{ID: formatUUID(u.ID.Bytes), Email: u.Email, Name: u.Name, Role: u.Role, Status: u.Status, LastLoginAt: timePtr(u.LastLoginAt), CreatedAt: u.CreatedAt.Time.Format(time.RFC3339)}
@@ -301,8 +324,16 @@ func (h *AdminHandler) deleteUser(ctx context.Context, input *deleteUserInput) (
 	if err != nil {
 		return nil, huma.Error400BadRequest("Invalid user ID")
 	}
-	if err := h.q.DeleteUser(ctx, pgID); err != nil {
-		return nil, huma.Error500InternalServerError("Failed to delete user")
+	tx, q, err := h.beginMemberChange(ctx, input.ID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if err := q.DeleteUser(ctx, pgID); err != nil {
+		return nil, huma.Error409Conflict("无法删除：成员可能仍有关联数据，请优先停用账号")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("删除未完成")
 	}
 	return nil, nil
 }
@@ -310,7 +341,7 @@ func (h *AdminHandler) deleteUser(ctx context.Context, input *deleteUserInput) (
 type resetUserPasswordInput struct {
 	ID   string `path:"id"`
 	Body struct {
-		Password string `json:"password" minLength:"6" doc:"New password (min 6 chars)"`
+		Password string `json:"password" minLength:"8" doc:"New password (min 8 chars)"`
 	}
 }
 
@@ -334,8 +365,16 @@ func (h *AdminHandler) resetUserPassword(ctx context.Context, input *resetUserPa
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to hash password")
 	}
-	if err := h.q.UpdateUserPassword(ctx, sqlc.UpdateUserPasswordParams{ID: pgID, PasswordHash: hash}); err != nil {
+	tx, q, err := h.beginMemberChange(ctx, input.ID, false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if err := q.UpdateUserPassword(ctx, sqlc.UpdateUserPasswordParams{ID: pgID, PasswordHash: hash}); err != nil {
 		return nil, huma.Error500InternalServerError("Failed to update password")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("密码更改未保存")
 	}
 	out := &resetUserPasswordOutput{}
 	out.Body.Data.UserID = input.ID
@@ -349,8 +388,8 @@ type adjustCreditsInput struct {
 	ID   string `path:"id"`
 	Body struct {
 		AddBalance *int32 `json:"add_balance,omitempty" doc:"Amount to add to current balance (can be negative)"`
-		SetQuota   *int32 `json:"set_quota,omitempty" doc:"Set daily quota to this value"`
-		Reason     string `json:"reason,omitempty" doc:"Reason for adjustment"`
+		SetQuota   *int32 `json:"set_quota,omitempty" minimum:"0" doc:"Set daily quota to this value"`
+		Reason     string `json:"reason,omitempty" maxLength:"300" doc:"Reason for adjustment"`
 	}
 }
 
@@ -373,60 +412,61 @@ func (h *AdminHandler) adjustCredits(ctx context.Context, input *adjustCreditsIn
 		return nil, huma.Error400BadRequest("Invalid user ID")
 	}
 
-	// Ensure credit account exists (auto-create if missing, e.g. for admin users).
-	if _, err := h.q.GetCreditAccountByUserID(ctx, pgID); err != nil {
-		_, _ = h.q.CreateCreditAccount(ctx, sqlc.CreateCreditAccountParams{
-			UserID:     pgID,
-			DailyQuota: 100,
-		})
+	if strings.TrimSpace(input.Body.Reason) == "" {
+		return nil, huma.Error400BadRequest("请填写积分调整原因")
 	}
-
-	// Adjust balance if requested.
-	if input.Body.AddBalance != nil && *input.Body.AddBalance != 0 {
-		_, err := h.q.AdjustCreditBalance(ctx, sqlc.AdjustCreditBalanceParams{
-			UserID:         pgID,
-			CurrentBalance: *input.Body.AddBalance,
-		})
-		if err != nil {
-			return nil, huma.Error500InternalServerError("Failed to adjust balance")
-		}
-
-		// Record ledger entry.
-		acct, _ := h.q.GetCreditAccountByUserID(ctx, pgID)
-		if acct.ID.Valid {
-			reason := input.Body.Reason
-			if reason == "" {
-				reason = "admin adjustment"
-			}
-			claims, _ := authn.ClaimsFromContext(ctx)
-			adminID, _ := parseUUID(claims.UserID)
-			_ = h.q.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{
-				UserID:       pgID,
-				AccountID:    acct.ID,
-				Type:         "admin_adjustment",
-				Amount:       *input.Body.AddBalance,
-				BalanceAfter: acct.CurrentBalance,
-				Reason:       reason,
-				CreatedBy:    adminID,
-			})
-		}
+	if input.Body.SetQuota != nil && *input.Body.SetQuota < 0 {
+		return nil, huma.Error400BadRequest("每日额度不能为负数")
 	}
-
-	// Set quota if requested.
-	if input.Body.SetQuota != nil {
-		_, err := h.q.AdjustCreditQuota(ctx, sqlc.AdjustCreditQuotaParams{
-			UserID:     pgID,
-			DailyQuota: *input.Body.SetQuota,
-		})
-		if err != nil {
-			return nil, huma.Error500InternalServerError("Failed to set quota")
-		}
-	}
-
-	// Return updated values.
-	acct, err := h.q.GetCreditAccountByUserID(ctx, pgID)
+	tx, q, err := h.beginMemberChange(ctx, input.ID, false)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("Failed to read credit account")
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	acct, err := q.GetCreditAccountByUserID(ctx, pgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		acct, err = q.CreateCreditAccount(ctx, sqlc.CreateCreditAccountParams{UserID: pgID, DailyQuota: 100})
+	}
+	if err != nil {
+		return nil, huma.Error500InternalServerError("无法读取积分账户")
+	}
+	// Also coordinate with generation charges/refunds via the account row lock.
+	if _, err = tx.Exec(ctx, `SELECT id FROM credit_accounts WHERE user_id=$1 FOR UPDATE`, pgID); err != nil {
+		return nil, huma.Error500InternalServerError("无法锁定积分账户")
+	}
+	acct, err = q.GetCreditAccountByUserID(ctx, pgID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("无法读取积分余额")
+	}
+	var amount int32
+	if input.Body.AddBalance != nil {
+		amount = *input.Body.AddBalance
+	}
+	if amount == 0 && (input.Body.SetQuota == nil || *input.Body.SetQuota == acct.DailyQuota) {
+		return nil, huma.Error400BadRequest("未修改积分或额度")
+	}
+	if next := int64(acct.CurrentBalance) + int64(amount); next < 0 || next > 2147483647 {
+		return nil, huma.Error400BadRequest("调整后积分超出有效范围，请刷新余额")
+	}
+	if amount != 0 {
+		acct, err = q.AdjustCreditBalance(ctx, sqlc.AdjustCreditBalanceParams{UserID: pgID, CurrentBalance: amount})
+		if err != nil {
+			return nil, huma.Error500InternalServerError("积分调整未保存")
+		}
+	}
+	if input.Body.SetQuota != nil {
+		acct, err = q.AdjustCreditQuota(ctx, sqlc.AdjustCreditQuotaParams{UserID: pgID, DailyQuota: *input.Body.SetQuota})
+		if err != nil {
+			return nil, huma.Error500InternalServerError("每日额度未保存")
+		}
+	}
+	claims, _ := authn.ClaimsFromContext(ctx)
+	adminID, _ := parseUUID(claims.UserID)
+	if err = q.CreateCreditLedgerEntry(ctx, sqlc.CreateCreditLedgerEntryParams{UserID: pgID, AccountID: acct.ID, Type: "admin_adjustment", Amount: amount, BalanceAfter: acct.CurrentBalance, Reason: strings.TrimSpace(input.Body.Reason), CreatedBy: adminID}); err != nil {
+		return nil, huma.Error500InternalServerError("积分流水未保存，本次调整已撤销")
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, huma.Error500InternalServerError("积分更改未完成")
 	}
 
 	out := &creditsOutput{}
@@ -831,7 +871,7 @@ func (h *AdminHandler) listAuditLogs(ctx context.Context, input *listAuditLogsIn
 
 func parseUUID(s string) (pgtype.UUID, error) {
 	var u pgtype.UUID
-	if len(s) != 36 {
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
 		return u, huma.Error400BadRequest("Invalid UUID format")
 	}
 	// Parse hex nibbles from "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"

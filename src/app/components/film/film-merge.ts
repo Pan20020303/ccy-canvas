@@ -5,11 +5,19 @@ import type { FilmJob, FilmProject } from './film-project';
 const same = (a: unknown, b: unknown): boolean => {
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
-  const ak = Object.keys(a), bk = Object.keys(b);
+  // JSON omits undefined object fields. A live generation payload can contain
+  // them even though its identical database/API copy cannot.
+  const keys = (value: object) => Object.keys(value).filter(k => Array.isArray(value) || (value as Record<string, unknown>)[k] !== undefined);
+  const ak = keys(a), bk = keys(b);
   return Array.isArray(a) === Array.isArray(b) && ak.length === bk.length && ak.every(k =>
     Object.prototype.hasOwnProperty.call(b, k) && same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 };
 export const sameFilmDocument = same;
+// View/runtime state is local to a tab, not a collaborative document edit.
+export const sameFilmContent = (a: FilmProject, b: FilmProject) => same(
+  { ...a, step: 0, updatedAt: 0, exporting: false },
+  { ...b, step: 0, updatedAt: 0, exporting: false },
+);
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const identified = (v: unknown): v is { id: string }[] => Array.isArray(v) && v.every(x => object(x) && typeof x.id === 'string') && new Set(v.map(x => x.id)).size === v.length;
 class MergeConflict extends Error {}
@@ -31,6 +39,9 @@ function merge(base: unknown, local: unknown, remote: unknown, path: string): un
   if (path === 'updatedAt') return Math.max(Number(local) || 0, Number(remote) || 0);
   // Navigation and transient export flags aren't collaborative content.
   if (path === 'step' || path === 'exporting') return local;
+  // Adoption and its asset-review flag form one approval. Never combine an old
+  // browser's approval with another browser's newly adopted screenplay.
+  if (path === 'scriptDoctor.adopted') throw new MergeConflict();
   if (path.startsWith('jobs.') && path.split('.').length === 2 && object(local) && object(remote)) return mergeJob(local as FilmJob, remote as FilmJob);
   if ((base === undefined || object(base)) && object(local) && object(remote)) {
     const result: Record<string, unknown> = {};
@@ -61,7 +72,13 @@ export function mergeFilmProjects(base: FilmProject, local: FilmProject, remote:
     const result = merge(base, local, remote, '') as FilmProject;
     // A new completion based on an older script cannot be silently applied to
     // a script concurrently replaced in another browser.
-    if (result.jobs.some(j => ['extract', 'split'].includes(j.kind) && j.appliedAt && !base.jobs.find(b => b.id === j.id)?.appliedAt && j.sourceScript !== result.script)) return null;
+    if (result.jobs.some(j => {
+      if (!['extract', 'split'].includes(j.kind) || !j.appliedAt || base.jobs.find(b => b.id === j.id)?.appliedAt || j.sourceScript === result.script) return false;
+      // Protect cross-branch stale results, not an authoritative snapshot in
+      // which its owner already completed a task and THEN edited the script.
+      return (local.jobs.some(l => l.id === j.id && l.appliedAt) && local.script !== result.script)
+        || (remote.jobs.some(r => r.id === j.id && r.appliedAt) && remote.script !== result.script);
+    })) return null;
     return result;
   } catch { return null; }
 }

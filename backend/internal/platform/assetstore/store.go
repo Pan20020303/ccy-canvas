@@ -27,11 +27,14 @@ type Store interface {
 }
 
 var (
-	defaultOnce   sync.Once
-	defaultStore  Store
-	defaultErr    error
-	presignOnce   sync.Once
-	presignStores []Store
+	defaultOnce    sync.Once
+	defaultStore   Store
+	defaultErr     error
+	presignOnce    sync.Once
+	presignStores  []Store
+	runtimeMu      sync.RWMutex
+	runtimeStore   Store
+	runtimeReaders []Store
 )
 
 func Save(ctx context.Context, key string, body io.Reader, contentType string) (string, error) {
@@ -77,9 +80,12 @@ func PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (strin
 // unreadable. Saves still go only to Default(), while reads may be signed by
 // whichever configured store owns the URL.
 func configuredPresignStores() []Store {
+	runtimeMu.RLock()
+	readers := append([]Store(nil), runtimeReaders...)
+	runtimeMu.RUnlock()
 	presignOnce.Do(func() {
 		backend := strings.ToLower(strings.TrimSpace(os.Getenv("STORAGE_BACKEND")))
-		if store, err := Default(); err == nil {
+		if store, err := fromEnv(); err == nil {
 			presignStores = append(presignStores, store)
 		}
 		if backend != "cos" && hasCOSConfig() {
@@ -93,7 +99,7 @@ func configuredPresignStores() []Store {
 			}
 		}
 	})
-	return presignStores
+	return append(readers, presignStores...)
 }
 
 func hasCOSConfig() bool {
@@ -111,6 +117,12 @@ func hasOSSConfig() bool {
 }
 
 func Default() (Store, error) {
+	runtimeMu.RLock()
+	active := runtimeStore
+	runtimeMu.RUnlock()
+	if active != nil {
+		return active, nil
+	}
 	defaultOnce.Do(func() {
 		defaultStore, defaultErr = fromEnv()
 	})
@@ -133,15 +145,16 @@ func fromEnv() (Store, error) {
 }
 
 func newCOSStore() (Store, error) {
-	bucket := strings.TrimSpace(os.Getenv("COS_BUCKET"))
-	region := strings.TrimSpace(os.Getenv("COS_REGION"))
-	secretID := strings.TrimSpace(os.Getenv("COS_SECRET_ID"))
-	secretKey := strings.TrimSpace(os.Getenv("COS_SECRET_KEY"))
+	return newCOSStoreConfig(EnvironmentConfig().COS)
+}
+
+func newCOSStoreConfig(c CloudConfig) (Store, error) {
+	bucket, region, secretID, secretKey := c.Bucket, c.Region, c.AccessKeyID, c.AccessKeySecret
 	if bucket == "" || region == "" || secretID == "" || secretKey == "" {
 		return nil, fmt.Errorf("COS storage requires COS_BUCKET, COS_REGION, COS_SECRET_ID, and COS_SECRET_KEY")
 	}
 
-	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("COS_ENDPOINT")), "/")
+	endpoint := strings.TrimRight(c.Endpoint, "/")
 	if endpoint == "" {
 		endpoint = fmt.Sprintf("https://%s.cos.%s.myqcloud.com", bucket, region)
 	}
@@ -149,7 +162,7 @@ func newCOSStore() (Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse COS_ENDPOINT: %w", err)
 	}
-	publicBase := strings.TrimRight(strings.TrimSpace(os.Getenv("COS_PUBLIC_BASE_URL")), "/")
+	publicBase := strings.TrimRight(c.PublicBaseURL, "/")
 	if publicBase == "" {
 		publicBase = endpoint
 	}
@@ -163,7 +176,7 @@ func newCOSStore() (Store, error) {
 	return cosStore{
 		client:     client,
 		publicBase: publicBase,
-		keyPrefix:  cleanObjectKey(os.Getenv("COS_KEY_PREFIX")),
+		keyPrefix:  cleanObjectKey(c.KeyPrefix),
 		secretID:   secretID,
 		secretKey:  secretKey,
 	}, nil
@@ -306,17 +319,18 @@ func (s cosStore) UploadFile(ctx context.Context, key string, localPath string, 
 // contract exactly (public-read objects, long cache, same key layout) so the
 // migration is a drop-in backend swap plus a host-prefix URL rewrite.
 func newOSSStore() (Store, error) {
-	bucket := strings.TrimSpace(os.Getenv("OSS_BUCKET"))
-	region := strings.TrimSpace(os.Getenv("OSS_REGION"))
-	keyID := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_ID"))
-	keySecret := strings.TrimSpace(os.Getenv("OSS_ACCESS_KEY_SECRET"))
+	return newOSSStoreConfig(EnvironmentConfig().OSS)
+}
+
+func newOSSStoreConfig(c CloudConfig) (Store, error) {
+	bucket, region, keyID, keySecret := c.Bucket, c.Region, c.AccessKeyID, c.AccessKeySecret
 	if bucket == "" || region == "" || keyID == "" || keySecret == "" {
 		return nil, fmt.Errorf("OSS storage requires OSS_BUCKET, OSS_REGION, OSS_ACCESS_KEY_ID, and OSS_ACCESS_KEY_SECRET")
 	}
 
 	// Default public host is the standard virtual-hosted OSS domain. Override
 	// OSS_PUBLIC_BASE_URL when serving via a bound custom domain / CDN.
-	publicBase := strings.TrimRight(strings.TrimSpace(os.Getenv("OSS_PUBLIC_BASE_URL")), "/")
+	publicBase := strings.TrimRight(c.PublicBaseURL, "/")
 	if publicBase == "" {
 		publicBase = fmt.Sprintf("https://%s.oss-%s.aliyuncs.com", bucket, region)
 	}
@@ -326,7 +340,7 @@ func newOSSStore() (Store, error) {
 		WithRegion(region)
 	// OSS_ENDPOINT is optional: set it for a custom/internal endpoint, else the
 	// SDK derives the public endpoint from the region.
-	if endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("OSS_ENDPOINT")), "/"); endpoint != "" {
+	if endpoint := strings.TrimRight(c.Endpoint, "/"); endpoint != "" {
 		cfg = cfg.WithEndpoint(endpoint)
 	}
 
@@ -334,7 +348,7 @@ func newOSSStore() (Store, error) {
 		client:     oss.NewClient(cfg),
 		bucket:     bucket,
 		publicBase: publicBase,
-		keyPrefix:  cleanObjectKey(os.Getenv("OSS_KEY_PREFIX")),
+		keyPrefix:  cleanObjectKey(c.KeyPrefix),
 	}, nil
 }
 

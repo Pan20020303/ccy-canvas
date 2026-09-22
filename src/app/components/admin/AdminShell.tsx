@@ -13,6 +13,7 @@ import {
 import { AdminSidebar } from "./AdminSidebar";
 import { ADMIN_COLLAPSED_KEY, getAdminNavGroup, readAdminCollapsed } from "./admin-navigation";
 import "./admin.css";
+import "./admin-operations.css";
 import { useAdminWorkbenchMotion } from "./useAdminWorkbenchMotion";
 
 type AdminShellProps = {
