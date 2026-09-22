@@ -1,6 +1,7 @@
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
 $installFile = "$root\run\nginx-install-dir.txt"
-$installDir = if (Test-Path $installFile) { (Get-Content $installFile).Trim() } else { 'C:\nginx' }
+$defaultInstallDir = [IO.Path]::GetFullPath((Join-Path $root '..\..\nginx'))
+$installDir = if (Test-Path $installFile) { (Get-Content $installFile).Trim() } else { $defaultInstallDir }
 
 if (-not (Test-Path "$installDir\nginx.exe")) {
   Write-Host "nginx not found at $installDir" -ForegroundColor Red

@@ -1,6 +1,8 @@
 # Start multiple backend API instances.
 param(
-  [int[]]$Ports = @(9090, 9091, 9092),
+  # Keep these outside the Hyper-V/WinNAT exclusion ranges commonly allocated
+  # around 9000 after Docker Desktop restarts.
+  [int[]]$Ports = @(12090, 12091, 12092),
   [string]$ExecutablePath = ''
 )
 $ErrorActionPreference = 'Stop'

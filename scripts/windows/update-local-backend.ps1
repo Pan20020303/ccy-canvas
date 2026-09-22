@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$ExecutablePath,
   [string]$PreviousExecutablePath = '',
-  [int[]]$Ports = @(9090, 9091, 9092)
+  [int[]]$Ports = @(12090, 12091, 12092)
 )
 $ErrorActionPreference = 'Stop'
 $deployRoot = (Resolve-Path "$PSScriptRoot\..\..").Path

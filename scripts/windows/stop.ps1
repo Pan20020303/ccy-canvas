@@ -27,7 +27,7 @@ foreach ($pf in $pidFiles) {
     continue
   }
 
-  $port = 9090
+  $port = 12090
   if ($name -match 'api-(\d+)') { $port = [int]$Matches[1] }
 
     Write-Host "${name}: stopping pid $apiPid via :${port}/admin/shutdown ..."
