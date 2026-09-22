@@ -135,3 +135,21 @@ export function upscaleLocalSeedVR2(payload: {
 }): Promise<LocalSeedVR2UpscaleResult> {
   return apiClient.post<LocalSeedVR2UpscaleResult>("/api/app/upscale/local-seedvr2", payload);
 }
+
+export type LocalVideoDepthResult = {
+  url: string;
+  engine: "video-depth-anything-small";
+  duration: number;
+  width: number;
+  height: number;
+  inverted: boolean;
+  task_id?: string;
+};
+
+export function createLocalVideoDepth(payload: {
+  media_url: string;
+  invert?: boolean;
+  node_id: string;
+}): Promise<LocalVideoDepthResult> {
+  return apiClient.post<LocalVideoDepthResult>("/api/app/video/depth", payload);
+}

@@ -64,6 +64,7 @@ import {
   ArrowRightLeft,
   Mic,
   ShieldCheck,
+  ScanLine,
   Quote,
   Code,
   Link as LinkIcon,
@@ -73,8 +74,8 @@ import {
 import clsx from 'clsx';
 import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
-import { resolveApiUrl } from '../../api/client';
-import { upscaleLocalSeedVR2 } from '../../api/models';
+import { ApiClientError, resolveApiUrl } from '../../api/client';
+import { createLocalVideoDepth, upscaleLocalSeedVR2 } from '../../api/models';
 import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
@@ -4481,6 +4482,72 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
   };
 
+  const createDepthMotionReference = useCallback(async () => {
+    if (!sourceNode || !sourceUrl || busy) return;
+    const base = sourceNode.position ?? { x: 0, y: 0 };
+    const derivedId = `video-depth-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const startedAt = Date.now();
+    const generationParams = {
+      model: 'video-depth-anything-small',
+      referenceVideo: sourceUrl,
+      referenceRole: 'motion_depth',
+      invert: false,
+    };
+    addNode({
+      id: derivedId,
+      type: 'videoNode',
+      position: { x: base.x + 380, y: base.y + Math.random() * 40 - 20 },
+      data: {
+        customTitle: language === 'zh' ? '深度动作参考' : 'Depth motion reference',
+        sourceName: 'depth-motion-reference.mp4',
+        status: 'generating',
+        taskPhase: 'generating',
+        runningStartedAt: startedAt,
+        queuedAfterTimeout: true,
+        sourceKind: 'derived',
+        derivedFromNodeId: sourceNodeId,
+        derivationAction: 'video_depth',
+        referenceRole: 'motion_depth',
+        depthVideo: true,
+        depthSourceNodeId: sourceNodeId,
+        generationParams,
+      },
+    } as never);
+    onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+    setBusy(true);
+    try {
+      const result = await createLocalVideoDepth({ media_url: sourceUrl, node_id: derivedId, invert: false });
+      updateNodeData(derivedId, {
+        url: result.url,
+        output: result.url,
+        status: 'done',
+        taskPhase: undefined,
+        runningStartedAt: undefined,
+        queuedAfterTimeout: false,
+        error: undefined,
+        mediaDuration: result.duration,
+        mediaWidth: result.width,
+        mediaHeight: result.height,
+        referenceRole: 'motion_depth',
+        depthVideo: true,
+        depthSourceNodeId: sourceNodeId,
+        generationParams: { ...generationParams, invert: result.inverted },
+      });
+      toast.success(language === 'zh' ? '深度动作参考已生成，可连到动作模仿或视频生成节点。' : 'Depth motion reference created. Connect it to motion mimic or video generation.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof ApiClientError && error.status === 0 && error.code !== 'REQUEST_CANCELLED') {
+        updateNodeData(derivedId, { status: 'generating', taskPhase: 'generating', queuedAfterTimeout: true, error: undefined });
+        toast.info(language === 'zh' ? '连接已中断，后台任务若已接收会在重新连接后自动恢复。' : 'Connection lost. An accepted background task will recover after reconnecting.');
+      } else {
+        updateNodeData(derivedId, { status: 'error', taskPhase: undefined, runningStartedAt: undefined, queuedAfterTimeout: false, error: message });
+        toast.error(language === 'zh' ? `深度动作转换失败：${message}` : `Depth motion conversion failed: ${message}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [addNode, busy, language, onConnect, sourceNode, sourceNodeId, sourceUrl, updateNodeData]);
+
   const openSession = (action: VideoActionKind, draft: Partial<VideoActionDraft> = {}) => {
     if (action === 'trim') {
       void import('../video-editor/VideoEditorHost').then(m => m.createVideoEditorNode(sourceNodeId));
@@ -4685,6 +4752,17 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         <Button variant="ghost" size="sm" onClick={() => setHdOpen(true)} className={actionButtonClass}>
           <Sparkles className="h-3.5 w-3.5" />
           {language === 'zh' ? '超分' : 'Upscale'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy}
+          onClick={() => void createDepthMotionReference()}
+          className={actionButtonClass}
+          title={language === 'zh' ? '生成可用于动作模仿的时序深度参考视频' : 'Create a temporal depth reference for motion mimic'}
+        >
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ScanLine className="h-3.5 w-3.5" />}
+          {language === 'zh' ? '深度动作' : 'Depth motion'}
         </Button>
         {/* 未开发:裁剪 / 高清 / 解析 / 智能去字幕 —— 整体隐藏(见 SHOW_WIP_MEDIA_ACTIONS)。 */}
         {SHOW_WIP_MEDIA_ACTIONS ? (

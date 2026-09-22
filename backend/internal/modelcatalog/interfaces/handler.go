@@ -499,6 +499,14 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.localVideoTrim)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "local-video-depth", Method: http.MethodPost,
+		Path:    "/api/app/video/depth",
+		Summary: "Create a temporally consistent grayscale depth video for motion reference",
+		Tags:    []string{"App", "Generation"}, Security: userSecurity,
+		DefaultStatus: http.StatusOK,
+	}, h.localVideoDepth)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "local-video-editor", Method: http.MethodPost,
 		Path: "/api/app/video/edit", Summary: "Render a local FFmpeg editing timeline",
 		Tags: []string{"App", "Generation"}, Security: userSecurity,
