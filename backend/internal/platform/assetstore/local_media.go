@@ -37,6 +37,9 @@ type LocalMediaHandler struct {
 	cacheDir string
 	slots    chan struct{}
 	flights  singleflight.Group
+	// promotedURL repairs legacy canvas snapshots that still reference the
+	// short-lived staging path after the object was moved to cloud storage.
+	promotedURL func(string) (string, bool)
 }
 
 // NewLocalMediaHandler expects the FULL /uploads/... request path; do not use
@@ -51,10 +54,31 @@ func NewLocalMediaHandler(root string) http.Handler {
 		root = absolute
 	}
 	return &LocalMediaHandler{
-		root:     root,
-		cacheDir: filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+"-thumb-cache"),
-		slots:    make(chan struct{}, 2),
+		root:        root,
+		cacheDir:    filepath.Join(filepath.Dir(root), "."+filepath.Base(root)+"-thumb-cache"),
+		slots:       make(chan struct{}, 2),
+		promotedURL: promotedStagingURL,
 	}
+}
+
+type publicURLStore interface {
+	PublicURL(string) string
+}
+
+func promotedStagingURL(key string) (string, bool) {
+	if !strings.HasPrefix(key, "staging/generated/") {
+		return "", false
+	}
+	store, err := Default()
+	if err != nil {
+		return "", false
+	}
+	builder, ok := store.(publicURLStore)
+	if !ok {
+		return "", false
+	}
+	target := builder.PublicURL(strings.TrimPrefix(key, "staging/"))
+	return target, target != ""
 }
 
 func localMediaKey(path string) (string, bool) {
@@ -115,6 +139,11 @@ func (h *LocalMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer root.Close()
 	source, err := root.Open(filepath.FromSlash(key))
 	if err != nil {
+		if target, ok := h.promotedURL(key); ok {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}

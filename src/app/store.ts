@@ -21,6 +21,7 @@ import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import type { ServiceType } from './model-config';
 import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
+import { taskMediaPatch } from './media-result-state';
 import { batchTasksByNodeIds, getTask, listActiveTasks, cancelTask, type TaskItem } from './api/tasks';
 import { publishTaskUpdate, subscribeTaskUpdates, taskAccountSession, invalidateTaskAccountSession } from './task-events';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
@@ -1143,6 +1144,9 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
       const targetNode = getStore().nodes.find((n) => n.id === task.node_id);
       const targetData = targetNode?.data as Record<string, unknown> | undefined;
       const nodeTaskId = typeof targetData?.taskId === 'string' ? targetData.taskId : undefined;
+      // A poll that started before completion can arrive after the success SSE.
+      // Never roll a completed task back to its staging URL or running state.
+      if (nodeTaskId === task.id && targetData?.status === 'done' && targetData?.queuedAfterTimeout !== true) return;
       if (targetNode && (!nodeTaskId || nodeTaskId === task.id)) {
         setStore((state) => {
           const nodes = state.nodes.map((node) => node.id === task.node_id
@@ -1166,8 +1170,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
                         // rendering happens at the render boundary, so the
                         // persisted value stays env-agnostic and download /
                         // capture paths don't double-wrap it.
-                        url: task.result_url,
-                        output: task.result_url,
+                        ...taskMediaPatch((node.data ?? {}) as Record<string, unknown>, task.result_url, task.id),
                         assetStatus: task.status,
                         assetSyncing: true,
                       }
@@ -1248,26 +1251,7 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         // Persist the raw upstream URL; proxy wrapping is applied at render time.
         const resultUrl = task.result_url;
         const prevData = (node.data ?? {}) as Record<string, unknown>;
-        let nextVersions: NodeVersion[] | undefined;
-        let nextActiveVersionId: string | undefined;
         const nextTs = Date.now();
-        if (isUrl) {
-          const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
-          const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
-          if (prevUrl && prevUrl !== resultUrl) {
-            const snapshot: NodeVersion = {
-              id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
-              url: prevUrl,
-              prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : undefined,
-              model: typeof prevData.model === 'string' ? prevData.model as string : undefined,
-              timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
-            };
-            nextVersions = [snapshot, ...existing];
-          } else {
-            nextVersions = existing;
-          }
-          nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
-        }
         return {
           ...node,
           data: {
@@ -1283,12 +1267,8 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             assetSyncing: false,
             ...(isUrl
               ? {
-                  url: resultUrl,
-                  output: resultUrl,
+                  ...taskMediaPatch(prevData, resultUrl, task.id, nextTs),
                   originalUrl: task.result_url,
-                  versions: nextVersions,
-                  activeVersionId: nextActiveVersionId,
-                  activeVersionTimestamp: nextTs,
                 }
               : { content: resultUrl, output: resultUrl }),
           },
@@ -4660,26 +4640,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
           // (同步路径 + SSE / 轮询恢复路径) 都维护历史.
           const prevData = (node.data ?? {}) as Record<string, unknown>;
           const isUrlResult = result.type === 'url';
-          let nextVersions: NodeVersion[] | undefined;
-          let nextActiveVersionId: string | undefined;
           const nextTs = Date.now();
-          if (isUrlResult) {
-            const prevUrl = typeof prevData.url === 'string' ? prevData.url : '';
-            const existing = Array.isArray(prevData.versions) ? (prevData.versions as NodeVersion[]) : [];
-            if (prevUrl && prevUrl !== persistedContent) {
-              const snap: NodeVersion = {
-                id: typeof prevData.activeVersionId === 'string' ? prevData.activeVersionId as string : `v-${nextTs - 1}-${Math.random().toString(36).slice(2, 6)}`,
-                url: prevUrl,
-                prompt: typeof prevData.prompt === 'string' ? prevData.prompt as string : payload.prompt,
-                model: typeof prevData.model === 'string' ? prevData.model as string : payload.model,
-                timestamp: typeof prevData.activeVersionTimestamp === 'number' ? prevData.activeVersionTimestamp as number : nextTs - 1,
-              };
-              nextVersions = [snap, ...existing];
-            } else {
-              nextVersions = existing;
-            }
-            nextActiveVersionId = `v-${nextTs}-${Math.random().toString(36).slice(2, 6)}`;
-          }
           return {
             ...node,
             data: {
@@ -4695,12 +4656,8 @@ export const useStore = create<AppState>()(persist((set, get) => ({
               lastGenerationFailedAt: undefined,
               ...(isUrlResult
                 ? {
-                    url: persistedContent,
-                    output: persistedContent,
+                    ...taskMediaPatch(prevData, persistedContent, result.task_id || `sync-${nodeId}-${startedAt}`, nextTs),
                     originalUrl: result.content,
-                    versions: nextVersions,
-                    activeVersionId: nextActiveVersionId,
-                    activeVersionTimestamp: nextTs,
                     prompt: payload.prompt,
                     model: payload.model,
                   }

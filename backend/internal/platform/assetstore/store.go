@@ -1,10 +1,10 @@
 package assetstore
 
 import (
-	"log"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -240,6 +240,17 @@ type cosStore struct {
 	secretKey  string
 }
 
+func (s cosStore) PublicURL(key string) string {
+	key = cleanObjectKey(key)
+	if key == "" || s.publicBase == "" {
+		return ""
+	}
+	if s.keyPrefix != "" {
+		key = s.keyPrefix + "/" + key
+	}
+	return s.publicBase + "/" + key
+}
+
 func (s cosStore) PresignGet(ctx context.Context, rawURL string, expiry time.Duration) (string, error) {
 	prefix := s.publicBase + "/"
 	if s.publicBase == "" || !strings.HasPrefix(rawURL, prefix) {
@@ -359,6 +370,17 @@ type ossStore struct {
 	bucket     string
 	publicBase string
 	keyPrefix  string
+}
+
+func (s ossStore) PublicURL(key string) string {
+	key = cleanObjectKey(key)
+	if key == "" || s.publicBase == "" {
+		return ""
+	}
+	if s.keyPrefix != "" {
+		key = s.keyPrefix + "/" + key
+	}
+	return s.publicBase + "/" + key
 }
 
 func (s ossStore) objectKey(key string) (string, error) {

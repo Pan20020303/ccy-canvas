@@ -125,6 +125,31 @@ func TestLocalThumbnailRejectsTraversalAndEscapingSymlinks(t *testing.T) {
 	}
 }
 
+func TestMissingGeneratedStagingAssetRedirectsToPromotedObject(t *testing.T) {
+	handler := NewLocalMediaHandler(t.TempDir()).(*LocalMediaHandler)
+	handler.promotedURL = func(key string) (string, bool) {
+		if key != "staging/generated/2026-09/11111111-2222-4333-8444-555555555555.jpeg" {
+			return "", false
+		}
+		return "https://assets.example/generated/2026-09/11111111-2222-4333-8444-555555555555.jpeg", true
+	}
+	response := requestMedia(handler, "/uploads/staging/generated/2026-09/11111111-2222-4333-8444-555555555555.jpeg?w=768")
+	if response.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Location"); got != "https://assets.example/generated/2026-09/11111111-2222-4333-8444-555555555555.jpeg" {
+		t.Fatalf("location=%q", got)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache=%q", response.Header().Get("Cache-Control"))
+	}
+
+	missing := requestMedia(handler, "/uploads/ordinary-missing.png")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("ordinary missing status=%d", missing.Code)
+	}
+}
+
 func TestLocalThumbnailUnsupportedAndBusyFallBackWithoutCaching(t *testing.T) {
 	dir, original := fixtureMedia(t, "photo.png", 80, 40)
 	handler := NewLocalMediaHandler(dir).(*LocalMediaHandler)
