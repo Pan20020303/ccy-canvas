@@ -181,10 +181,23 @@ func localMediaExecutable(name string) (string, error) {
 	if os.PathSeparator == '\\' {
 		suffix = ".exe"
 	}
+	candidates := make([]string, 0, 4)
 	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "tools", "ffmpeg", name+suffix)
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "tools", "ffmpeg", name+suffix),
+			filepath.Join(exeDir, "..", "backend", "tools", "ffmpeg", name+suffix),
+		)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(cwd, "tools", "ffmpeg", name+suffix),
+			filepath.Join(cwd, "backend", "tools", "ffmpeg", name+suffix),
+		)
+	}
+	for _, candidate := range candidates {
 		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
-			return candidate, nil
+			return filepath.Clean(candidate), nil
 		}
 	}
 	if path, err := exec.LookPath(name); err == nil {
