@@ -16,9 +16,10 @@ import (
 
 type localVideoDepthInput struct {
 	Body struct {
-		MediaURL string `json:"media_url" minLength:"1" maxLength:"8192"`
-		Invert   bool   `json:"invert,omitempty" doc:"Invert near/far grayscale values"`
-		NodeID   string `json:"node_id" minLength:"1" maxLength:"200"`
+		MediaURL  string `json:"media_url" minLength:"1" maxLength:"8192"`
+		Invert    bool   `json:"invert,omitempty" doc:"Invert near/far grayscale values"`
+		NodeID    string `json:"node_id" minLength:"1" maxLength:"200"`
+		ProjectID string `json:"project_id,omitempty" maxLength:"64" doc:"Owning canvas project id for task recovery"`
 	}
 }
 
@@ -50,6 +51,11 @@ func (h *Handler) localVideoDepth(ctx context.Context, input *localVideoDepthInp
 	if err != nil {
 		return nil, toHTTPError(err)
 	}
+	if projectID := strings.TrimSpace(input.Body.ProjectID); projectID != "" {
+		if err := h.q.SetGenerationLogProjectID(ctx, row.ID, projectID); err != nil {
+			return nil, toHTTPError(err)
+		}
+	}
 	_ = h.q.MarkGenerationLogRunning(ctx, row.ID)
 
 	// This task deliberately outlives the browser request. If the user refreshes
@@ -76,6 +82,7 @@ func (h *Handler) localVideoDepth(ctx context.Context, input *localVideoDepthInp
 	}
 	out := &localVideoDepthOutput{}
 	out.Body.Data = *result
+	out.Body.Data.TaskID = formatPgUUID(row.ID)
 	out.Body.RequestID = httpx.RequestIDFrom(ctx)
 	out.Body.TaskID = formatPgUUID(row.ID)
 	return out, nil

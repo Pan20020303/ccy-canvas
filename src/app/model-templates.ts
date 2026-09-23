@@ -1412,7 +1412,18 @@ function inferProviderTemplate(modelName: string, provider?: Pick<AppProviderCon
 }
 
 function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSchema): ModelTemplate {
-  schema = schema?.models?.[template.modelName] ?? schema;
+  const providerSchema = schema;
+  const modelSchema = providerSchema?.models?.[template.modelName];
+  // Per-model settings override provider-wide settings, but should not discard
+  // unrelated provider defaults (aspect ratios, formats, aliases, etc.).
+  schema = modelSchema
+    ? {
+        ...providerSchema,
+        ...modelSchema,
+        defaults: { ...(providerSchema?.defaults ?? {}), ...(modelSchema.defaults ?? {}) },
+        models: providerSchema?.models,
+      }
+    : providerSchema;
   if (!schema || Object.keys(schema).length === 0) {
     return template;
   }
@@ -1423,7 +1434,7 @@ function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSc
   const durationOptions = schemaArray<number>(schema, "duration_options", "durationOptions");
   const outputFormatOptions = schemaArray<string>(schema, "output_format_options", "outputFormatOptions");
 
-  return {
+  const applied: ModelTemplate = {
     ...template,
     supportsQuality: schemaBool(schema, "supports_quality", "supportsQuality") ?? template.supportsQuality ?? Boolean(qualityOptions?.length),
     supportsAspectRatio: schemaBool(schema, "supports_aspect_ratio", "supportsAspectRatio") ?? template.supportsAspectRatio ?? Boolean(aspectRatioOptions?.length),
@@ -1435,6 +1446,7 @@ function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSc
     aspectRatioOptions: aspectRatioOptions ?? template.aspectRatioOptions,
     resolutionOptions: resolutionOptions ?? template.resolutionOptions,
     durationOptions: durationOptions ?? template.durationOptions,
+    durationRange: durationOptions !== undefined ? undefined : template.durationRange,
     outputFormatOptions: outputFormatOptions ?? template.outputFormatOptions,
     defaults: {
       ...template.defaults,
@@ -1444,6 +1456,20 @@ function applyParameterSchema(template: ModelTemplate, schema?: ModelParameterSc
       outputFormat: schemaDefault(schema, "output_format") ?? template.defaults?.outputFormat,
     },
   };
+  // A disabled admin option must also invalidate an old/default selection.
+  // Match case-insensitively while preserving the provider-required spelling
+  // (some APIs require 1080P rather than 1080p).
+  if (applied.resolutionOptions) {
+    const configuredDefault = applied.defaults?.resolution;
+    const canonicalDefault = configuredDefault
+      ? applied.resolutionOptions.find((item) => item.toLowerCase() === configuredDefault.toLowerCase())
+      : undefined;
+    applied.defaults = {
+      ...applied.defaults,
+      resolution: canonicalDefault ?? applied.resolutionOptions[0],
+    };
+  }
+  return applied;
 }
 
 // 按 model id 模式识别 Seedance 家族。中转站/自定义配置里模型 id 五花八门

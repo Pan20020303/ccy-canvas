@@ -150,6 +150,7 @@ export function createLocalVideoDepth(payload: {
   media_url: string;
   invert?: boolean;
   node_id: string;
+  project_id?: string;
 }): Promise<LocalVideoDepthResult> {
   return apiClient.post<LocalVideoDepthResult>("/api/app/video/depth", payload);
 }

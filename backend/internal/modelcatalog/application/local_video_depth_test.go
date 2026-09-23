@@ -16,6 +16,26 @@ func TestDepthRunnerArgsUseSmallTemporalModelAndGrayscale(t *testing.T) {
 	}
 }
 
+func TestDepthInputPreparationCoversOddAndHighResolutionFrames(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		width       int
+		height      int
+		wantPrepare bool
+	}{
+		{name: "common 1366 by 720 source", width: 1366, height: 720, wantPrepare: true},
+		{name: "odd source dimension", width: 1279, height: 720, wantPrepare: true},
+		{name: "already safe HD source", width: 1280, height: 720, wantPrepare: false},
+		{name: "already safe portrait source", width: 720, height: 1280, wantPrepare: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := depthInputNeedsPreparation(tc.width, tc.height); got != tc.wantPrepare {
+				t.Fatalf("depthInputNeedsPreparation(%d, %d) = %v, want %v", tc.width, tc.height, got, tc.wantPrepare)
+			}
+		})
+	}
+}
+
 func TestFindDepthVideoUsesLargestValidVideo(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("ignore"), 0600); err != nil {

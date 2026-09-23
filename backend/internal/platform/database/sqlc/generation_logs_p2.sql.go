@@ -29,6 +29,18 @@ WHERE id = $1`, id, providerID, taskID)
 	return err
 }
 
+// SetGenerationLogProjectID scopes synchronous local-media tasks to their
+// canvas. If the browser/proxy disconnects before the long request returns,
+// task recovery can safely attach the finished asset to the original node.
+func (q *Queries) SetGenerationLogProjectID(ctx context.Context, id pgtype.UUID, projectID string) error {
+	_, err := q.db.Exec(ctx, `
+UPDATE generation_logs
+SET request_payload = COALESCE(request_payload, '{}'::jsonb) ||
+    jsonb_build_object('project_id', $2::text)
+WHERE id = $1`, id, projectID)
+	return err
+}
+
 // ─── Insert queued task with full request payload ─────────────────────
 
 type InsertGenerationLogQueuedParams struct {

@@ -489,6 +489,49 @@ describe("AdminModelCatalogPage provider config editor", () => {
     });
   });
 
+  it("persists enabled video resolutions into the per-model runtime schema", async () => {
+    const config = makeProviderConfig({
+      service_type: "video",
+      vendor: "HopBase",
+      name: "HopBase 视频",
+      model_list: ["wan3.0-video"],
+      default_model: "wan3.0-video",
+      capabilities: ["video"],
+      parameter_schema: {
+        vendor_models: [{ name: "wan3.0-video", modelName: "wan3.0-video", type: "video", mode: ["text"] }],
+      },
+    });
+    const requests = stubAdminApis([config]);
+    const rendered = await renderPage();
+    root = rendered.root;
+
+    const editButton = Array.from(rendered.host.querySelectorAll("button")).find((item) => item.textContent?.trim() === "编辑");
+    expect(editButton).toBeTruthy();
+    await act(async () => editButton!.click());
+
+    const resolutionInput = Array.from(document.body.querySelectorAll<HTMLInputElement>("input")).find((item) =>
+      item.value.includes("1080P"),
+    );
+    expect(resolutionInput).toBeTruthy();
+    await act(async () => setInputValue(resolutionInput!, "480P, 720P"));
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find((item) => item.textContent?.trim() === "保存");
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton!.click());
+
+    const update = requests.find((request) => request.method === "PUT" && request.url.includes("/api/admin/provider-configs/provider-1"));
+    expect(update?.body).toMatchObject({
+      parameter_schema: {
+        models: {
+          "wan3.0-video": {
+            resolution_options: ["480P", "720P"],
+            supports_resolution: true,
+          },
+        },
+      },
+    });
+  });
+
   it("shows visible feedback when testing a creator-suite model fails", async () => {
     const requests = stubAdminApis([makeProviderConfig()], {
       testResponse: { ok: false, http_status: 0, latency_ms: 12, error_msg: "network timeout" },

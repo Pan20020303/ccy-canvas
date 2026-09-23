@@ -72,6 +72,7 @@ import {
   type SkillUpsert,
 } from "../../api/skills";
 import { getSkillCategoryLabel, getSkillDisplayName } from "../../skill-display";
+import { getModelTemplate } from "../../model-templates";
 import { getSkillCommandName, getSkillTemplateBody, isPromptTemplateSkill } from "../settings/skill-agent-presenters";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -272,7 +273,7 @@ function normalizeModeList(value: unknown): Array<string | string[]> {
     .filter((item): item is string | string[] => (Array.isArray(item) ? item.length > 0 : Boolean(item)));
 }
 
-function normalizeDurationResolutionMap(value: unknown): VendorModelDefinition["durationResolutionMap"] {
+function normalizeDurationResolutionMap(value: unknown): Array<{ duration: number[]; resolution: string[] }> {
   if (!Array.isArray(value)) return [];
   return value
     .map((row) => {
@@ -320,6 +321,7 @@ function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackN
   if (!modelName) return null;
   const type = modelTypeFromValue(raw.type, fallbackType);
   const mode = normalizeModeList(raw.mode);
+  const durationResolutionMap = normalizeDurationResolutionMap(raw.durationResolutionMap ?? raw.duration_resolution_map);
   return {
     name: cleanString(raw.name) || fallbackName || modelName,
     modelName,
@@ -328,7 +330,7 @@ function normalizeVendorModel(raw: unknown, fallbackType: ServiceType, fallbackN
     think: Boolean(raw.think),
     mode: mode.length ? mode : undefined,
     audio: raw.audio === true || raw.audio === false || raw.audio === "optional" ? raw.audio : undefined,
-    durationResolutionMap: normalizeDurationResolutionMap(raw.durationResolutionMap ?? raw.duration_resolution_map),
+    durationResolutionMap: durationResolutionMap.length ? durationResolutionMap : undefined,
     hidden: raw.hidden === true ? true : undefined,
   };
 }
@@ -464,6 +466,17 @@ function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition)
     }
   });
   const type = source.type;
+  const configuredTemplate = type === "video" ? getModelTemplate(source.modelName, config) : null;
+  const durationResolutionMap = source.durationResolutionMap?.length
+    ? source.durationResolutionMap
+    : (configuredTemplate?.durationOptions?.length || configuredTemplate?.resolutionOptions?.length)
+      ? [{
+          // A continuous built-in duration range is not a one-value allowlist.
+          // Only prefill durations when the template itself declares discrete choices.
+          duration: configuredTemplate.durationOptions ?? [],
+          resolution: configuredTemplate.resolutionOptions ?? [],
+        }]
+      : [];
   return {
     name: source.name,
     modelName: source.modelName,
@@ -474,8 +487,8 @@ function createModelDraft(config: ProviderConfig, model?: VendorModelDefinition)
     mixedMode,
     mixedModeCount,
     audio: source.audio ?? "optional",
-    durationResolutionMap: source.durationResolutionMap?.length
-      ? source.durationResolutionMap.map((row) => ({
+    durationResolutionMap: durationResolutionMap.length
+      ? durationResolutionMap.map((row) => ({
           duration: row.duration.join(", "),
           resolution: row.resolution.join(", "),
         }))
@@ -557,19 +570,39 @@ function syncModelCreditCostsIntoSchema(schema: ModelParameterSchema, models: Ve
   });
   models.forEach((model) => {
     const existing = nextModels[model.modelName] ?? {};
-    if (model.creditCost === undefined) {
-      const { credit_cost: _creditCost, ...rest } = existing;
-      if (Object.keys(rest).length > 0) {
-        nextModels[model.modelName] = rest;
+    const next: ModelParameterSchema = { ...existing };
+    if (model.creditCost === undefined) delete next.credit_cost;
+    else next.credit_cost = model.creditCost;
+
+    // 管理端的「时长 / 分辨率」必须写入前台真正消费的 per-model schema。
+    // vendor_models 只负责展示元数据；若不在这里同步，删掉 1080P 后画布仍会
+    // 从内置模板把 1080P 重新显示出来。
+    if (model.type === "video" && model.durationResolutionMap !== undefined) {
+      const durationOptions = Array.from(new Set(
+        (model.durationResolutionMap ?? []).flatMap((row) => row.duration),
+      )).sort((a, b) => a - b);
+      const resolutionOptions = Array.from(new Set(
+        (model.durationResolutionMap ?? []).flatMap((row) => row.resolution.map((item) => item.trim())).filter(Boolean),
+      ));
+      next.resolution_options = resolutionOptions;
+      next.supports_resolution = resolutionOptions.length > 0;
+      if (durationOptions.length > 0) {
+        next.duration_options = durationOptions;
+        next.supports_duration = true;
       } else {
-        delete nextModels[model.modelName];
+        delete next.duration_options;
+        delete next.supports_duration;
       }
-      return;
+      const defaults = { ...(next.defaults ?? {}) };
+      const currentResolution = typeof defaults.resolution === "string" ? defaults.resolution : "";
+      if (resolutionOptions.length > 0 && !resolutionOptions.some((item) => item.toLowerCase() === currentResolution.toLowerCase())) {
+        defaults.resolution = resolutionOptions[0];
+      }
+      next.defaults = defaults;
     }
-    nextModels[model.modelName] = {
-      ...existing,
-      credit_cost: model.creditCost,
-    };
+
+    if (Object.keys(next).length > 0) nextModels[model.modelName] = next;
+    else delete nextModels[model.modelName];
   });
   if (Object.keys(nextModels).length === 0) {
     const { models: _models, ...rest } = schema;
@@ -1732,6 +1765,10 @@ export function AdminModelCatalogPage({ panel = "model-service" }: { panel?: Set
     const model = buildModelFromDraft(modelEditor.draft);
     if (!model) {
       setModelEditorError("请填写显示名称和模型 ID");
+      return;
+    }
+    if (model.type === "video" && !(model.durationResolutionMap ?? []).some((row) => row.resolution.length > 0)) {
+      setModelEditorError("请至少保留一个可用分辨率");
       return;
     }
     const models = getVendorModels(modelEditor.config);

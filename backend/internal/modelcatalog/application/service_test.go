@@ -145,6 +145,26 @@ func TestApplyProviderModelRoutesByOutputResolution(t *testing.T) {
 	}
 }
 
+func TestValidateConfiguredGenerationOptionsRejectsDisabledResolution(t *testing.T) {
+	pc := &domain.ProviderConfig{
+		ParameterSchema: json.RawMessage(`{
+			"resolution_options":["480P","720P","1080P"],
+			"models":{"wan3.0-video":{"resolution_options":["480P","720P"],"duration_options":[4,6]}}
+		}`),
+	}
+	if err := validateConfiguredGenerationOptions(pc, GenerateRequest{Model: "wan3.0-video", Resolution: "720p", Duration: 4}); err != nil {
+		t.Fatalf("enabled options were rejected: %v", err)
+	}
+	err := validateConfiguredGenerationOptions(pc, GenerateRequest{Model: "wan3.0-video", Resolution: "1080P", Duration: 4})
+	if err == nil || !strings.Contains(err.Error(), "1080P") {
+		t.Fatalf("disabled resolution error = %v, want 1080P rejection", err)
+	}
+	err = validateConfiguredGenerationOptions(pc, GenerateRequest{Model: "wan3.0-video", Resolution: "720P", Duration: 10})
+	if err == nil || !strings.Contains(err.Error(), "10") {
+		t.Fatalf("disabled duration error = %v, want 10-second rejection", err)
+	}
+}
+
 func TestBuildDashScopeVideoMediaUsesReferenceImagesForHappyHorseR2V(t *testing.T) {
 	media, err := buildDashScopeVideoMedia(context.Background(), GenerateRequest{
 		Model:           "happyhorse-1.1-r2v",

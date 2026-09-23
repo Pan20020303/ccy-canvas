@@ -116,7 +116,7 @@ export function MediaPreviewModal({ kind, src, nodeId, onClose, onDownload, onNo
             if (!selected || downloading) return;
             setDownloading(true); setDownloadError('');
             try { await onDownload(selected.src, previewDownloadName(selected)); }
-            catch { setDownloadError(zh ? '下载失败，请检查网络后重试。' : 'Download failed. Check your connection and retry.'); }
+            catch (error) { setDownloadError(`${zh ? '下载失败' : 'Download failed'}：${error instanceof Error ? error.message : (zh ? '请检查网络后重试' : 'Check your connection and retry')}`); }
             finally { setDownloading(false); }
           }}>{downloading ? <Loader2 className="media-preview-spin" /> : <Download />}</PreviewButton>
           <PreviewButton className="media-preview-pill media-preview-close" label={zh ? '关闭预览' : 'Close preview'} onClick={onClose}><X /><kbd>Esc</kbd></PreviewButton>

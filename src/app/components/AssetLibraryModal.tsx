@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { useStore, ASSET_CATEGORIES, type AssetFolder, type SavedAsset, type SavedAssetCategory } from '../store';
 import { getCanvas } from '../api/projects';
 import { toRenderableMediaUrl } from '../reference-media';
+import { downloadMediaFile } from '../media-download';
 import { MediaThumb } from './MediaThumb';
 import Folder from './ui/Folder';
 
@@ -93,22 +94,21 @@ function nodeToAsset(node: { id?: unknown; type?: unknown; data?: unknown }, zh:
 }
 
 async function downloadUrl(src: string, filename: string) {
-  const proxied = toRenderableMediaUrl(src);
-  if (!proxied) return;
+  const toastId = toast.loading('正在准备下载…');
+  let lastUpdate = 0;
   try {
-    const res = await fetch(proxied, { credentials: 'include' });
-    if (!res.ok) throw new Error(String(res.status));
-    const blob = await res.blob();
-    const obj = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = obj;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(obj), 4000);
-  } catch {
-    toast.error('下载失败,请稍后重试');
+    await downloadMediaFile(src, filename, ({ loaded, total, attempt }) => {
+      const now = Date.now();
+      if (loaded > 0 && now - lastUpdate < 300 && loaded !== total) return;
+      lastUpdate = now;
+      toast.loading(attempt > 1 ? `下载中断，正在重试（${attempt}/3）…` : total
+        ? `正在下载… ${Math.min(100, Math.round(loaded / total * 100))}%`
+        : `正在下载… ${(loaded / 1024 / 1024).toFixed(1)} MB`, { id: toastId });
+    });
+    toast.success('已开始保存文件', { id: toastId });
+  } catch (error) {
+    toast.dismiss(toastId);
+    toast.error(error instanceof Error ? error.message : '下载失败，请稍后重试');
   }
 }
 

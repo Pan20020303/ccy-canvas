@@ -16,6 +16,8 @@ type providerParameterSchema struct {
 	RequestFormat     string                             `json:"request_format"`
 	ReferenceFormat   string                             `json:"reference_request_format"`
 	QualityOptions    []string                           `json:"quality_options"`
+	ResolutionOptions []string                           `json:"resolution_options"`
+	DurationOptions   []int                              `json:"duration_options"`
 	// CreditCost is the per-call price in credits for this provider config
 	// (or per-model when set inside Models). Resolved by resolveCreditCost.
 	// nil → fall back to the config-level value, then the global default.
@@ -129,6 +131,12 @@ func overlayProviderParameterSchema(dst *providerParameterSchema, src providerPa
 	}
 	if len(src.QualityOptions) > 0 {
 		dst.QualityOptions = src.QualityOptions
+	}
+	if src.ResolutionOptions != nil {
+		dst.ResolutionOptions = src.ResolutionOptions
+	}
+	if src.DurationOptions != nil {
+		dst.DurationOptions = src.DurationOptions
 	}
 	if src.CreditCost != nil {
 		dst.CreditCost = src.CreditCost

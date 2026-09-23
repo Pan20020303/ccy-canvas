@@ -1121,7 +1121,20 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   const boundNode = getStore().nodes.find(node => node.id === task.node_id);
   // Legacy unscoped events may update an exact task binding, never claim a
   // same-ID node in another project. Scoped lookup/polling recovers missed events.
-  if (!task.project_id && boundNode?.data.taskId !== task.id) return;
+  if (!task.project_id && boundNode?.data.taskId !== task.id) {
+    const data = boundNode?.data as Record<string, unknown> | undefined;
+    // Local depth jobs used to outlive the browser request without persisting
+    // their project id or returning a task id first. Recover only the exact
+    // purpose-built depth node while it is explicitly waiting; the timestamp
+    // window below still rejects stale rows. This keeps old in-flight jobs
+    // recoverable while newer backends persist project_id normally.
+    const recoverableLegacyDepth = task.model === 'video-depth-anything-small'
+      && task.service_type === 'video'
+      && data?.depthVideo === true
+      && data?.queuedAfterTimeout === true
+      && (data?.status === 'running' || data?.status === 'generating');
+    if (!recoverableLegacyDepth) return;
+  }
   if (boundNode?.data.taskId === task.id && boundNode.data.status === 'cancelled') return;
   if (task.status === 'cancelled' || task.status === 'canceled') {
     // Cancellation is terminal only after server confirmation. Keep its task
@@ -1955,7 +1968,7 @@ function applyLightPrefsOverride() {
   bindCanvasPreferences(storageUserId, legacy);
 }
 
-export function bindStorageToUser(userId: string) {
+export async function bindStorageToUser(userId: string): Promise<void> {
   if (storageUserId === userId) return;
   cancelCanvasSubmissions();
   // Flush any debounced persist BEFORE the key switches — appStorage resolves
@@ -1975,12 +1988,18 @@ export function bindStorageToUser(userId: string) {
   ensureTaskStreamStarted(useStore.getState, useStore.setState as never);
   void hydrateActiveTasks(useStore.getState, useStore.setState as never);
   const rehydrated = useStore.persist.rehydrate();
-  // 独立小键在整仓 rehydrate 之后覆盖,保证大 blob 里的旧值压不过它。
-  if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') {
-    void (rehydrated as Promise<void>).then(applyLightPrefsOverride);
-  } else {
-    applyLightPrefsOverride();
+  // 项目列表/画布加载必须等账号自己的持久化状态恢复完成。之前这里 fire-and-forget，
+  // AuthProvider 紧接着 loadBackendProjects() 时经常读到 null，于是每次刷新都打开
+  // projects[0]（用户看到的就是固定跳回「古偶甜宠」）。
+  try {
+    if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') {
+      await rehydrated;
+    }
+  } catch {
+    // 损坏/不可用的本地存储不应阻断登录；项目加载会安全退回服务端第一项。
   }
+  // 独立小键在整仓 rehydrate 之后覆盖,保证大 blob 里的旧值压不过它。
+  applyLightPrefsOverride();
 }
 
 function extractProxyMediaOriginalUrl(url: string): string {

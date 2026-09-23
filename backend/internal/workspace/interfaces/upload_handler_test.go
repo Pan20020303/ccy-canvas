@@ -3,6 +3,7 @@ package interfaces
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -133,7 +134,7 @@ func TestMediaCacheStoreWhileServingDoesNotWaitForEOF(t *testing.T) {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- cache.storeWhileServing("generated-image", "image/png", dst, reader)
+		done <- cache.storeWhileServing("generated-image", "image/png", dst, reader, int64(len("first-frame")))
 	}()
 
 	first := []byte("first-frame")
@@ -165,5 +166,17 @@ func TestMediaCacheStoreWhileServingDoesNotWaitForEOF(t *testing.T) {
 	}
 	if !bytes.Equal(body, first) {
 		t.Fatalf("cached body = %q, want %q", body, first)
+	}
+}
+
+func TestMediaCacheDoesNotKeepTruncatedResponse(t *testing.T) {
+	cache := &mediaCache{dir: t.TempDir(), maxSize: 1 << 20}
+	var dst bytes.Buffer
+	err := cache.storeWhileServing("truncated-video", "video/mp4", &dst, bytes.NewReader([]byte("partial")), 100)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("error = %v, want unexpected EOF", err)
+	}
+	if _, _, ok := cache.lookup("truncated-video"); ok {
+		t.Fatal("truncated response was cached")
 	}
 }

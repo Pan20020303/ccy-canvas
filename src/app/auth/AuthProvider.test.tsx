@@ -16,11 +16,13 @@ let root: Root;
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   mocks.get.mockResolvedValue({ user: { id: 'test-user', name: 'Test', email: 'test@example.invalid', role: 'member' } });
-  mocks.post.mockReset(); mocks.bind.mockClear();
+  mocks.post.mockReset(); mocks.bind.mockReset().mockResolvedValue(undefined);
+  mocks.state.loadBackendProjects.mockReset();
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root')!);
   await act(async () => { root.render(<AuthProvider><Probe /></AuthProvider>); });
   mocks.bind.mockClear();
+  mocks.state.loadBackendProjects.mockClear();
 });
 afterEach(() => { act(() => root.unmount()); vi.unstubAllGlobals(); });
 
@@ -41,4 +43,23 @@ it('keeps the current owner when logout fails', async () => {
   await act(async () => { await expect(auth.logout()).rejects.toThrow('offline'); });
   expect(mocks.bind).not.toHaveBeenCalled();
   expect(auth.user?.id).toBe('test-user');
+});
+
+it('waits for account storage restoration before loading backend projects', async () => {
+  let finishBinding!: () => void;
+  mocks.bind.mockImplementationOnce(() => new Promise<void>(resolve => { finishBinding = resolve; }));
+  mocks.post.mockResolvedValueOnce({ user: { id: 'returning-user', name: 'Returning', email: 'returning@example.invalid', role: 'member' } });
+
+  let result!: Promise<unknown>;
+  act(() => { result = auth.login({ email: 'returning@example.invalid', password: 'secret' }); });
+  await act(async () => { await Promise.resolve(); });
+  expect(mocks.bind).toHaveBeenCalledWith('returning-user');
+  expect(mocks.state.loadBackendProjects).not.toHaveBeenCalled();
+
+  await act(async () => {
+    finishBinding();
+    await result;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(mocks.state.loadBackendProjects).toHaveBeenCalledTimes(1);
 });

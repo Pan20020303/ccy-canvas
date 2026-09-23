@@ -126,7 +126,7 @@ func (c *mediaCache) store(key, contentType string, r io.Reader) (string, error)
 // writing the first response byte. That is barely noticeable for a tiny icon,
 // but it leaves generated images blank and videos grey until the whole object
 // has downloaded. A tee keeps the cache benefit without blocking first paint.
-func (c *mediaCache) storeWhileServing(key, contentType string, dst io.Writer, src io.Reader) error {
+func (c *mediaCache) storeWhileServing(key, contentType string, dst io.Writer, src io.Reader, expectedBytes int64) error {
 	body, meta := c.paths(key)
 	tmpFile, err := os.CreateTemp(c.dir, filepath.Base(body)+".*.tmp")
 	if err != nil {
@@ -148,8 +148,14 @@ func (c *mediaCache) storeWhileServing(key, contentType string, dst io.Writer, s
 	}()
 
 	tee := &bestEffortCacheWriter{dst: dst, cache: tmpFile}
-	if _, err := io.Copy(tee, src); err != nil {
+	written, err := io.Copy(tee, src)
+	if err != nil {
 		return err
+	}
+	// Never publish a truncated upstream response as an immutable cache hit.
+	// Without this check, one dropped connection poisons every later download.
+	if expectedBytes >= 0 && written != expectedBytes {
+		return io.ErrUnexpectedEOF
 	}
 	if tee.cacheErr != nil {
 		return tee.cacheErr

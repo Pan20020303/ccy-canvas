@@ -77,6 +77,7 @@ import Magnet from '../Magnet';
 import { ApiClientError, resolveApiUrl } from '../../api/client';
 import { createLocalVideoDepth, upscaleLocalSeedVR2 } from '../../api/models';
 import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
+import { downloadMediaFile } from '../../media-download';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
 import { copyTextToClipboard, copyWithToast } from '../../clipboard';
@@ -138,39 +139,25 @@ import {
 } from '../ui/dropdown-menu';
 import { PositionStudio } from './PositionStudio';
 
-// downloadAsset fetches media through the backend proxy (which can read our
-// own — possibly private — COS bucket) into a Blob, then saves it with a real
-// filename. Going through fetch+Blob avoids the cross-origin `<a download>`
-// problem where the browser ignores the filename and a failed request gets
-// saved as "proxy-media.txt". `src` may be a raw URL or one that is already
-// proxy-wrapped (legacy persisted data) — toRenderableMediaUrl collapses both
-// to exactly one proxy layer, so the request can never double-wrap (which the
-// backend would reject with 401→502).
 async function downloadAsset(src: string, filename: string, propagateError = false) {
-  if (!src) return;
-  const proxied = toRenderableMediaUrl(src);
-  if (!proxied) return;
+  const toastId = toast.loading('正在准备下载…');
+  let lastUpdate = 0;
   try {
-    const res = await fetch(proxied, { credentials: 'include' });
-    if (!res.ok) throw new Error(`download failed (${res.status})`);
-    const blob = await res.blob();
-    const objUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = objUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+    await downloadMediaFile(src, filename, ({ loaded, total, attempt }) => {
+      const now = Date.now();
+      if (loaded > 0 && now - lastUpdate < 300 && loaded !== total) return;
+      lastUpdate = now;
+      const amount = (loaded / 1024 / 1024).toFixed(1);
+      const progress = total ? `${Math.min(100, Math.round(loaded / total * 100))}%` : `${amount} MB`;
+      toast.loading(attempt > 1 ? `下载中断，正在重试（${attempt}/3）… ${progress}` : `正在下载… ${progress}`, { id: toastId });
+    });
+    toast.success('已开始保存文件', { id: toastId });
   } catch (err) {
-    // The fullscreen viewer owns its inline error/retry state. Other node
-    // buttons keep the existing toast-only behavior.
+    toast.dismiss(toastId);
     if (propagateError) throw err;
-    // No silent <a download> fallback: navigating to the proxy URL on failure
-    // just saved a mis-named "proxy-media.txt" error page. Tell the user instead.
     // eslint-disable-next-line no-console
     console.error('[downloadAsset] failed', err);
-    toast.error('下载失败，请稍后重试');
+    toast.error(err instanceof Error ? err.message : '下载失败，请稍后重试');
   }
 }
 
@@ -4433,6 +4420,7 @@ export function PositionStudioHost() {
 function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [trimOpen, setTrimOpen] = useState(false);
   const language = useStore((state) => state.language);
+  const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const updateNodeData = useStore((state) => state.updateNodeData);
@@ -4516,11 +4504,17 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
     setBusy(true);
     try {
-      const result = await createLocalVideoDepth({ media_url: sourceUrl, node_id: derivedId, invert: false });
+      const result = await createLocalVideoDepth({
+        media_url: sourceUrl,
+        node_id: derivedId,
+        project_id: activeBackendProjectId ?? undefined,
+        invert: false,
+      });
       updateNodeData(derivedId, {
         url: result.url,
         output: result.url,
         status: 'done',
+        taskId: result.task_id,
         taskPhase: undefined,
         runningStartedAt: undefined,
         queuedAfterTimeout: false,
@@ -4546,7 +4540,7 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
     } finally {
       setBusy(false);
     }
-  }, [addNode, busy, language, onConnect, sourceNode, sourceNodeId, sourceUrl, updateNodeData]);
+  }, [activeBackendProjectId, addNode, busy, language, onConnect, sourceNode, sourceNodeId, sourceUrl, updateNodeData]);
 
   const openSession = (action: VideoActionKind, draft: Partial<VideoActionDraft> = {}) => {
     if (action === 'trim') {

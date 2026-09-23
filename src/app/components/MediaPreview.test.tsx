@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function(this: HTMLAnchorElement) { saves.push(this.download); });
   const NativeURL = URL;
   vi.stubGlobal('URL', class extends NativeURL { static createObjectURL() { return 'blob:test-download'; } static revokeObjectURL() {} });
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['media']) });
+  fetchMock = vi.fn().mockImplementation(async () => new Response('media', { headers: { 'content-type': 'video/webm', 'content-length': '5' } }));
   vi.stubGlobal('fetch', fetchMock);
   useStore.setState({ ...originalState, nodes: fixtures, language: 'zh' });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
@@ -71,7 +71,7 @@ describe('production canvas preview wiring', () => {
     expect(saves).toEqual(['referenceVideoNode.webm']);
   });
   it('surfaces production download failures in the new viewer without saving an error page', async () => {
-    await openNode('referenceImageNode'); fetchMock.mockResolvedValueOnce({ ok: false, status: 503 });
+    await openNode('referenceImageNode'); fetchMock.mockResolvedValueOnce(new Response('missing', { status: 404 }));
     await click('下载原文件');
     expect(document.querySelector('.media-preview-download-error')?.textContent).toContain('下载失败');
     expect(saves).toHaveLength(0);

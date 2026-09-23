@@ -325,4 +325,24 @@ describe("model templates", () => {
     expect(template?.referenceImageRange).toEqual({ min: 0, max: 10 });
     expect(template?.supportsQuality).not.toBe(true);
   });
+
+  it("lets per-model admin settings remove a built-in resolution and repairs the default", () => {
+    const template = getModelTemplate("wan3.0-video", {
+      vendor: "HopBase",
+      service_type: "video",
+      parameter_schema: {
+        aspect_ratio_options: ["16:9", "9:16"],
+        models: {
+          "wan3.0-video": {
+            resolution_options: ["480P", "720P"],
+            supports_resolution: true,
+          },
+        },
+      },
+    });
+    expect(template?.resolutionOptions).toEqual(["480P", "720P"]);
+    expect(template?.resolutionOptions).not.toContain("1080P");
+    expect(template?.defaults?.resolution).toBe("480P");
+    expect(template?.aspectRatioOptions).toEqual(["16:9", "9:16"]);
+  });
 });

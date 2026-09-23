@@ -27,8 +27,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-const maxUploadSize = 2 * 1024 * 1024 * 1024 // 2 GB (large 8K images / videos)
-const maxProxySize = 100 * 1024 * 1024       // 100 MB for images and unknown files
+const maxUploadSize = 2 * 1024 * 1024 * 1024  // 2 GB (large 8K images / videos)
+const maxProxySize = 100 * 1024 * 1024        // 100 MB for images and unknown files
 const maxProxyAVSize = 2 * 1024 * 1024 * 1024 // 2 GB for seekable video/audio
 
 // RegisterUploadRoutes registers file upload and media proxy endpoints.
@@ -194,7 +194,7 @@ func localMediaThumbnailHandler(sm session.Manager, cache *mediaCache) http.Hand
 		w.Header().Set("Content-Length", strconv.Itoa(len(thumb)))
 		if cache != nil {
 			w.Header().Set("X-Cache", "MISS")
-			if err := cache.storeWhileServing(cacheKey, "image/jpeg", w, bytes.NewReader(thumb)); err != nil {
+			if err := cache.storeWhileServing(cacheKey, "image/jpeg", w, bytes.NewReader(thumb), int64(len(thumb))); err != nil {
 				log.Printf("[media-thumbnail] cache fill failed: %v", err)
 			}
 			return
@@ -404,6 +404,19 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		if useResize {
 			ct = "image/webp"
 		}
+		proxyLimit := int64(maxProxySize)
+		if strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") {
+			proxyLimit = int64(maxProxyAVSize)
+		}
+		if resp.ContentLength > proxyLimit {
+			http.Error(w, "Media exceeds download size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		// An unknown-length response could hit the proxy cap without a detectable
+		// EOF. Stream it, but never turn that possibly partial result into a hit.
+		if resp.ContentLength < 0 {
+			caching = false
+		}
 
 		w.Header().Set("Content-Type", ct)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -442,13 +455,9 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 		// Cache misses stream to the browser and cache simultaneously. This must
 		// happen after response headers are prepared so first paint is not held
 		// hostage by a multi-megabyte image or video download.
-		proxyLimit := int64(maxProxySize)
-		if strings.HasPrefix(ct, "video/") || strings.HasPrefix(ct, "audio/") {
-			proxyLimit = int64(maxProxyAVSize)
-		}
 		if caching {
 			w.Header().Set("X-Cache", "MISS")
-			if cerr := cache.storeWhileServing(cacheKey, ct, w, io.LimitReader(body, proxyLimit)); cerr != nil {
+			if cerr := cache.storeWhileServing(cacheKey, ct, w, io.LimitReader(body, proxyLimit), resp.ContentLength); cerr != nil {
 				log.Printf("[proxy-media] streaming cache fill failed: %v", cerr)
 			}
 			return

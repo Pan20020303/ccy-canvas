@@ -961,6 +961,59 @@ describe("workspace control bar state", () => {
     }
   });
 
+  it("recovers a legacy unscoped local depth task after the long request disconnects", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-23T07:30:00.000Z"));
+    const createdAt = new Date(Date.now() - 30_000).toISOString();
+    const task = {
+      id: "task-local-depth",
+      node_id: "2",
+      service_type: "video",
+      model: "video-depth-anything-small",
+      status: "success",
+      result_url: "/uploads/staging/generated/depth.mp4",
+      error_msg: "",
+      duration_ms: 48_000,
+      created_at: createdAt,
+    };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/app/tasks/active") {
+        return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+      }
+      if (url === "/api/app/tasks/batch") {
+        return Promise.resolve(new Response(JSON.stringify({ data: [task] }), { status: 200 }));
+      }
+      if (url === "/api/app/tasks/task-local-depth") {
+        return Promise.resolve(new Response(JSON.stringify({ data: task }), { status: 200 }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    try {
+      const { useStore } = await loadStore();
+      useStore.setState({ activeBackendProjectId: "depth-project" });
+      useStore.getState().updateNodeData("2", {
+        status: "running",
+        taskId: undefined,
+        queuedAfterTimeout: true,
+        runningStartedAt: Date.now(),
+        depthVideo: true,
+      });
+
+      await vi.advanceTimersByTimeAsync(8000);
+
+      const node = useStore.getState().nodes.find((candidate) => candidate.id === "2");
+      expect(node?.data.status).toBe("done");
+      expect(node?.data.taskId).toBe("task-local-depth");
+      expect(node?.data.url).toBe("/uploads/staging/generated/depth.mp4");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("upgrades uploaded reference images to public urls for chat-image providers", async () => {
     vi.stubEnv("VITE_API_BASE_URL", "https://canvas.example.com");
     try {
@@ -2084,8 +2137,7 @@ describe("usage preferences (生成前确认 + last video params)", () => {
     storage.setItem("cineflow-prefs-u1", JSON.stringify({ confirmBeforeGenerate: false }));
     const { useStore, bindStorageToUser } = await loadStore(storage, { keepConfirmDefault: true });
 
-    bindStorageToUser("u1");
-    await new Promise((resolve) => setTimeout(resolve, 0)); // flush async rehydrate → override
+    await bindStorageToUser("u1");
 
     expect(useStore.getState().confirmBeforeGenerate).toBe(false);
   });
@@ -2094,9 +2146,23 @@ describe("usage preferences (生成前确认 + last video params)", () => {
     const storage = createStorageMock();
     const { useStore, bindStorageToUser } = await loadStore(storage, { keepConfirmDefault: true });
 
-    bindStorageToUser("u-new");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await bindStorageToUser("u-new");
 
     expect(useStore.getState().confirmBeforeGenerate).toBe(true);
+  });
+
+  it("finishes restoring the last active backend project before auth starts loading canvases", async () => {
+    const storage = createStorageMock();
+    storage.setItem("cineflow-store-u-refresh", JSON.stringify({
+      state: { activeBackendProjectId: "project-last-opened" },
+      version: 5,
+    }));
+    const { useStore, bindStorageToUser } = await loadStore(storage, { keepConfirmDefault: true });
+
+    const binding = bindStorageToUser("u-refresh");
+    expect(binding).toBeInstanceOf(Promise);
+    await binding;
+
+    expect(useStore.getState().activeBackendProjectId).toBe("project-last-opened");
   });
 });

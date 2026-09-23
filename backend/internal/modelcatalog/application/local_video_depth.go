@@ -29,6 +29,7 @@ type LocalVideoDepthResult struct {
 	Width    int     `json:"width"`
 	Height   int     `json:"height"`
 	Inverted bool    `json:"inverted"`
+	TaskID   string  `json:"task_id,omitempty"`
 }
 
 type videoDepthRuntime struct {
@@ -85,8 +86,15 @@ func (s *Service) CreateLocalDepthVideo(ctx context.Context, req LocalVideoDepth
 	if err != nil {
 		return nil, err
 	}
+	modelInput := input
+	if depthInputNeedsPreparation(width, height) {
+		modelInput = filepath.Join(dir, "depth-input.mp4")
+		if err := prepareDepthInput(ctx, ffmpeg, input, modelInput); err != nil {
+			return nil, err
+		}
+	}
 
-	cmd := exec.CommandContext(ctx, runtime.Python, depthRunnerArgs(runtime.Runner, input, rawDir)...)
+	cmd := exec.CommandContext(ctx, runtime.Python, depthRunnerArgs(runtime.Runner, modelInput, rawDir)...)
 	cmd.Dir = runtime.Root
 	hideMediaProcess(cmd)
 	var stderr limitedTrimBuffer
@@ -223,6 +231,29 @@ func videoDepthPython(root string) (string, error) {
 
 func depthRunnerArgs(runner, input, outputDir string) []string {
 	return []string{runner, "--input_video", input, "--output_dir", outputDir, "--encoder", "vits", "--max_res", "1280", "--target_fps", "-1", "--grayscale"}
+}
+
+func depthInputNeedsPreparation(width, height int) bool {
+	return width > 1280 || height > 1280 || width%2 != 0 || height%2 != 0
+}
+
+// prepareDepthInput keeps both dimensions even before Video Depth Anything
+// sees the file. Its OpenCV fallback can otherwise turn a common 1366x720
+// source into 1280x675, which libx264/yuv420p refuses to encode after the
+// depth inference has already finished.
+func prepareDepthInput(ctx context.Context, ffmpeg, input, output string) error {
+	filter := "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+	args := []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-protocol_whitelist", "file", "-format_whitelist", trimFormats,
+		"-i", input, "-map", "0:v:0", "-an", "-sn", "-dn", "-map_metadata", "-1", "-vf", filter,
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-threads", "4", "-filter_threads", "1", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output}
+	cmd := exec.CommandContext(ctx, ffmpeg, args...)
+	hideMediaProcess(cmd)
+	var stderr limitedTrimBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return apperror.Wrap(apperror.CodeValidation, "深度动作输入预处理失败", fmt.Errorf("%w: %s", err, stderr.String()))
+	}
+	return nil
 }
 
 func findDepthVideo(root string) (string, error) {

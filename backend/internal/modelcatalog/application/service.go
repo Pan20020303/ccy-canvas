@@ -1243,6 +1243,9 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 			return nil, apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("No enabled provider found for model %q", req.Model))
 		}
 	}
+	if err := validateConfiguredGenerationOptions(matches[anchor].cfg, req); err != nil {
+		return nil, err
+	}
 
 	poolID := comfyWorkerPoolID(matches[anchor].cfg)
 	if poolID == "" {
@@ -1260,6 +1263,58 @@ func (s *Service) buildCandidates(req GenerateRequest) ([]candidateChannel, erro
 		pooled = append(pooled, matches[i])
 	}
 	return pooled, nil
+}
+
+// validateConfiguredGenerationOptions is the server-side authority for options
+// disabled in the admin model editor. The frontend also removes these choices,
+// but old canvas nodes and direct API callers must not be able to submit a
+// resolution that an administrator has turned off.
+func validateConfiguredGenerationOptions(pc *domain.ProviderConfig, req GenerateRequest) error {
+	if pc == nil || len(pc.ParameterSchema) == 0 || string(pc.ParameterSchema) == "{}" {
+		return nil
+	}
+	var schema providerParameterSchema
+	if err := json.Unmarshal(pc.ParameterSchema, &schema); err != nil {
+		return nil
+	}
+	if len(schema.Models) > 0 {
+		if modelSchema, ok := schema.Models[req.Model]; ok {
+			overlayProviderParameterSchema(&schema, modelSchema)
+		} else {
+			lowerModel := strings.ToLower(strings.TrimSpace(req.Model))
+			for name, modelSchema := range schema.Models {
+				if strings.ToLower(strings.TrimSpace(name)) == lowerModel {
+					overlayProviderParameterSchema(&schema, modelSchema)
+					break
+				}
+			}
+		}
+	}
+	if resolution := strings.TrimSpace(req.Resolution); resolution != "" && len(schema.ResolutionOptions) > 0 {
+		allowed := false
+		for _, option := range schema.ResolutionOptions {
+			if strings.EqualFold(strings.TrimSpace(option), resolution) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("当前模型未启用分辨率 %s，请重新选择", resolution))
+		}
+	}
+	if req.Duration > 0 && len(schema.DurationOptions) > 0 {
+		allowed := false
+		for _, option := range schema.DurationOptions {
+			if option == req.Duration {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return apperror.New(apperror.CodeInvalidInput, fmt.Sprintf("当前模型未启用 %d 秒时长，请重新选择", req.Duration))
+		}
+	}
+	return nil
 }
 
 func providerSupportsCapability(c domain.ProviderConfig, serviceType string) bool {
