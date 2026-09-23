@@ -109,6 +109,7 @@ import { getGenerationProgressPercent } from './loading-progress';
 import { PrecisionStudio } from './PrecisionStudio';
 import { PromptTemplateLibrary } from './PromptTemplateLibrary';
 import { MaskEditor } from './MaskEditor';
+import RefineFrame, { type RefineFrameStatus } from './RefineFrame';
 import {
   ANGLE_STUDIO_PRESETS,
   LIGHT_RIG_PRESETS,
@@ -161,45 +162,19 @@ async function downloadAsset(src: string, filename: string, propagateError = fal
   }
 }
 
-// ─── Node Loading Overlay (water-fill + timer) ─────────────────────────────
+// ─── Node generation refinement + timer ───────────────────────────────────
 
-/** 单层波峰 — 宽 200% 的双拼波形沿 X 轴循环平移（从左往右涌）。两层不同
- *  速度叠加出视差，就有了"物理感"。波形首尾斜率一致，平移半宽无缝循环。 */
-function WaterWave({ fill, height, duration, phaseShift = false }: {
-  fill: string;
-  height: number;
-  duration: number;
-  /** 错开半个波长，两层波峰不同步。 */
-  phaseShift?: boolean;
+/** 图片 / 视频 / 音频 / 全景共用的生成覆盖层。
+ *  阶段完全由后端 taskPhase 驱动，不伪造进度：排队 → 生成 → 精修 → 完成。
+ *  有图片预览时使用 RefineFrame 的逐行像素精修；视频和无预览节点使用柔焦扫光。
+ *  刷新后 runningStartedAt、taskPhase 仍来自持久化节点，因此动画能接回真实阶段。 */
+function GenerationOverlay({
+  nodeId,
+  statusOverride,
+}: {
+  nodeId: string;
+  statusOverride?: Extract<RefineFrameStatus, 'complete' | 'error'>;
 }) {
-  const wave = (
-    <svg className="h-full w-1/2 shrink-0" viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden>
-      <path d="M0 22 Q 75 8, 150 22 T 300 22 T 450 22 T 600 22 L 600 40 L 0 40 Z" fill={fill} />
-    </svg>
-  );
-  return (
-    <div className="absolute inset-x-0 top-0" style={{ height, transform: `translateY(-${height - 2}px)` }}>
-      <div
-        className="flex h-full w-[200%]"
-        style={{
-          animation: `ccy-water-drift ${duration}s linear infinite`,
-          marginLeft: phaseShift ? '-25%' : undefined,
-        }}
-      >
-        {wave}
-        {wave}
-      </div>
-    </div>
-  );
-}
-
-/** 统一的生成中覆盖层 — 图片 / 视频 / 音频 / 全景共用（消除两套动画）。
- *  - 水面从底部随（伪）进度上涨，双层石墨色波峰从左向右涌动并整体浮沉；
- *  - 中央阶段徽章：发起任务 → 排队中 → 生成中 → 生成完成·返回中，
- *    文案由 store 写入的 data.taskPhase（真实后端任务状态）驱动；
- *  - 右上角石墨灰 mm:ss 计时（persisted runningStartedAt，刷新不清零）；
- *  - 取消只在「排队中」提供 — 任务一旦开始执行就不可取消。 */
-function GenerationOverlay({ nodeId }: { nodeId: string }) {
   const language = useStore((state) => state.language);
   const light = useStore((state) => state.theme) === 'light';
   const cancelNode = useStore((state) => state.cancelNode);
@@ -216,10 +191,16 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
     const node = state.nodes.find((n) => n.id === nodeId);
     return Boolean((node?.data as { taskId?: string } | undefined)?.taskId);
   });
-  const hasPreview = useStore((state) => {
+  const nodeType = useStore((state) => state.nodes.find((node) => node.id === nodeId)?.type ?? '');
+  const previewUrl = useStore((state) => {
     const node = state.nodes.find((n) => n.id === nodeId);
     const d = (node?.data ?? {}) as { url?: string; poster?: string };
-    return Boolean(d.url || d.poster);
+    return d.poster || d.url || '';
+  });
+  const videoUrl = useStore((state) => {
+    const node = state.nodes.find((n) => n.id === nodeId);
+    const d = (node?.data ?? {}) as { url?: string; poster?: string };
+    return d.poster ? '' : d.url || '';
   });
 
   const mountedAt = useRef(Date.now());
@@ -230,62 +211,84 @@ function GenerationOverlay({ nodeId }: { nodeId: string }) {
   }, []);
   const t0 = startedAt ?? mountedAt.current;
   const elapsedMs = Math.max(0, now - t0);
-  // 水位 = 缓动伪进度（3%→95%，永不到顶；完成时整层直接消失）。
-  const level = getGenerationProgressPercent(t0, now);
 
-  const phase: 'submitting' | 'queued' | 'generating' | 'persisting' =
-    taskPhase === 'queued'
-      ? 'queued'
-      : taskPhase === 'persisting'
-        ? 'persisting'
-        : !hasTaskId && elapsedMs < 2500
-          ? 'submitting'
-          : 'generating';
+  const phase: 'submitting' | 'queued' | 'generating' | 'persisting' | 'complete' | 'error' =
+    statusOverride === 'complete'
+      ? 'complete'
+      : statusOverride === 'error'
+        ? 'error'
+        : taskPhase === 'queued'
+          ? 'queued'
+          : taskPhase === 'persisting'
+            ? 'persisting'
+            : !hasTaskId && elapsedMs < 2500
+              ? 'submitting'
+              : 'generating';
   const PHASE_TEXT: Record<typeof phase, [string, string]> = {
     submitting: ['发起任务', 'Submitting'],
     queued: ['排队中', 'Queued'],
     generating: ['生成中', 'Generating'],
-    persisting: ['生成完成 · 返回中', 'Finalizing'],
+    persisting: ['精修并保存', 'Refining'],
+    complete: ['生成完成', 'Ready'],
+    error: ['生成失败', 'Failed'],
   };
   const phaseText = PHASE_TEXT[phase][language === 'zh' ? 0 : 1];
-
-  // 石墨水体配色（高级感：低饱和石墨蓝 + 银灰波峰）。
-  const bodyGrad = light
-    ? 'linear-gradient(180deg, rgba(148,158,172,0.30), rgba(108,118,132,0.42))'
-    : 'linear-gradient(180deg, rgba(74,86,102,0.5), rgba(18,22,29,0.85))';
-  const crestA = light ? 'rgba(104,116,132,0.34)' : 'rgba(152,166,186,0.30)';
-  const crestB = light ? 'rgba(104,116,132,0.20)' : 'rgba(152,166,186,0.16)';
+  const refineStatus: RefineFrameStatus =
+    phase === 'persisting'
+      ? 'refining'
+      : phase === 'submitting'
+        ? 'queued'
+        : phase;
+  const renderablePreview = previewUrl ? toRenderableMediaUrl(previewUrl) : '';
+  const renderableVideo = videoUrl ? toRenderableMediaUrl(videoUrl) : '';
+  const isVideoNode = /video/i.test(nodeType);
+  const labels: Partial<Record<RefineFrameStatus, string>> = {
+    [refineStatus]: phaseText,
+  };
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-[12px]">
-      {hasPreview ? <div className="absolute inset-0 bg-black/20 backdrop-blur-[8px]" /> : null}
-      {/* 水体：随进度上涨；内层整体浮沉（底部外扩 8px，浮起时不露缝）。 */}
-      <div className="absolute inset-x-0 bottom-0" style={{ height: `${level}%`, transition: 'height 1s linear' }}>
-        <div className="absolute -bottom-2 left-0 right-0 top-0" style={{ animation: 'ccy-water-bob 4.2s ease-in-out infinite' }}>
-          <div className="absolute inset-0" style={{ background: bodyGrad }} />
-          <WaterWave fill={crestA} height={16} duration={5.5} />
-          <WaterWave fill={crestB} height={24} duration={9.5} phaseShift />
-        </div>
-      </div>
-      {/* 阶段徽章 */}
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="canvas-floating-surface pointer-events-auto flex items-center gap-2.5 rounded-full border border-white/12 bg-[#15181d]/85 px-4 py-2 text-sm font-medium text-neutral-100 shadow-[0_14px_40px_rgba(0,0,0,0.35)] backdrop-blur-md">
-          <LoadingSpinner size={16} tone={light ? 'light' : 'dark'} />
-          <span>{phaseText}</span>
-          {phase === 'queued' ? (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                cancelNode(nodeId);
-              }}
-              className="rounded-full px-2 py-0.5 text-xs text-neutral-400 transition hover:bg-white/10 hover:text-rose-300"
-            >
-              {language === 'zh' ? '取消' : 'Cancel'}
-            </button>
-          ) : null}
-        </div>
-      </div>
+      <RefineFrame
+        status={refineStatus}
+        className="generation-refine-frame"
+        width={10_000}
+        radius={12}
+        background={light ? '#eef0f2' : '#181a1f'}
+        color={light ? '#272a30' : '#f5f5f5'}
+        stageDuration={400}
+        sweep
+        showStatus
+        hideAfter={1200}
+        labels={labels}
+        mediaKey={previewUrl}
+      >
+        {renderablePreview ? (
+          isVideoNode && renderableVideo ? (
+            <video src={renderableVideo} autoPlay muted loop playsInline preload="metadata" />
+          ) : (
+            <img src={renderablePreview} alt="" crossOrigin="anonymous" />
+          )
+        ) : (
+          <div className={light ? 'bg-[#e5e7eb]' : 'bg-[#15181d]'} />
+        )}
+      </RefineFrame>
+      {phase === 'queued' ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            cancelNode(nodeId);
+          }}
+          className={clsx(
+            'pointer-events-auto absolute bottom-2.5 right-2.5 z-30 rounded-full px-2.5 py-1.5 text-[11px] font-medium shadow-sm backdrop-blur-md transition',
+            light
+              ? 'bg-white/75 text-neutral-600 hover:bg-white hover:text-rose-600'
+              : 'bg-black/45 text-neutral-300 hover:bg-black/65 hover:text-rose-300',
+          )}
+        >
+          {language === 'zh' ? '取消排队' : 'Cancel'}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -2474,10 +2477,10 @@ const BaseNode = ({
   // anywhere on the card).
   const connectTarget = isConnectionDragging && hovered;
 
-  // Pulse the shell when a long-running generation completes — bridges the
-  // gap between "loader spinning" and "the output is just sitting there",
-  // so the user notices the new content. Fires only on the true→false edge.
+  // RefineFrame stays mounted briefly after a successful true→false edge so
+  // the staged animation can visibly resolve to the final media and "Ready".
   const shellRef = useRef<HTMLDivElement>(null);
+  const [showRefineComplete, setShowRefineComplete] = useState(false);
 
   // Tilted-card effect (React Bits "TiltedCard", dependency-free like our
   // Magnet/Dock ports): while this node is the CONNECT TARGET of a wire drag,
@@ -2511,26 +2514,17 @@ const BaseNode = ({
   }, [connectTarget]);
   const prevLoading = useRef(loading);
   useEffect(() => {
-    if (prevLoading.current && !loading && shellRef.current) {
-      const tl = gsap.timeline();
-      tl.fromTo(
-        shellRef.current,
-        { boxShadow: '0 0 0 0 rgba(34,211,238,0.0)', scale: 1 },
-        {
-          boxShadow: '0 0 24px 4px rgba(34,211,238,0.35)',
-          scale: 1.012,
-          duration: 0.22,
-          ease: 'power2.out',
-        },
-      ).to(shellRef.current, {
-        boxShadow: '0 0 0 0 rgba(34,211,238,0.0)',
-        scale: 1,
-        duration: 0.55,
-        ease: 'power2.inOut',
-      });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (loading || error) setShowRefineComplete(false);
+    else if (prevLoading.current && !loading && loadingNodeId && !loadingOverlay) {
+      setShowRefineComplete(true);
+      timer = setTimeout(() => setShowRefineComplete(false), 1800);
     }
     prevLoading.current = loading;
-  }, [loading]);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [error, loading, loadingNodeId, loadingOverlay]);
 
   return (
     <div
@@ -2583,9 +2577,13 @@ const BaseNode = ({
           >
           <div className="canvas-node-content">{children}</div>
           {error ? <NodeErrorBanner error={error} nodeId={loadingNodeId} /> : null}
-          {/* 统一生成动画：所有媒体节点默认走 GenerationOverlay（水位进度 +
-              阶段徽章）；loadingOverlay 仍可覆盖特殊场景。 */}
-          {loading ? (loadingOverlay ?? (loadingNodeId ? <GenerationOverlay nodeId={loadingNodeId} /> : null)) : null}
+          {/* 统一生成动画：所有生成节点默认走 RefineFrame 的阶段精修；
+              loadingOverlay 仍可覆盖特殊场景。成功后短暂停留在 Ready。 */}
+          {loading
+            ? (loadingOverlay ?? (loadingNodeId ? <GenerationOverlay nodeId={loadingNodeId} /> : null))
+            : showRefineComplete && loadingNodeId
+              ? <GenerationOverlay nodeId={loadingNodeId} statusOverride="complete" />
+              : null}
         </div>
         {/* 等待计时挂在边框外右上方（shell 是 overflow-hidden，画不出去）。 */}
         {loading && loadingNodeId ? <GenerationTimerBadge nodeId={loadingNodeId} /> : null}
@@ -5048,10 +5046,6 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
   const paramAspect = getNodeParams(data).aspectRatio;
   const isPanorama = isLikelyPanoramaData(data);
   const isGenerating = data.status === 'generating' || data.status === 'running';
-  // The task API exposes result_url before the generated asset has finished
-  // being re-hosted. That URL is already renderable, so do not keep the opaque
-  // generation overlay on top of it during the much slower persistence step.
-  const hasCurrentTaskPreview = Boolean(data.url) && (data.assetSyncing === true || data.taskPhase === 'persisting');
 
   // Use the actual loaded image ratio if available, otherwise fall back to param.
   const effectiveAspect = naturalRatio ?? paramAspect;
@@ -5083,7 +5077,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
       tone="image"
       title={language === 'zh' ? '生成图像' : 'Generate Image'}
       selected={selected}
-      loading={isGenerating && !hasCurrentTaskPreview}
+      loading={isGenerating}
       loadingNodeId={id}
       error={data.error}
       width={genBox.width}
@@ -5653,7 +5647,6 @@ export const VideoNode = ({ id, data, selected }: any) => {
   const mediaAspectStyle = getMediaAspectRatioStyle(data);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-video');
   const isGenerating = data.status === 'generating' || data.status === 'running';
-  const hasCurrentTaskPreview = Boolean(data.url) && (data.assetSyncing === true || data.taskPhase === 'persisting');
 
   const handlePosterCaptured = useCallback((dataUrl: string) => {
     const sourceUrl = typeof data.url === 'string' ? data.url : '';
@@ -5740,7 +5733,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       tone="video"
       title={language === 'zh' ? '生成视频' : 'Generate Video'}
       selected={selected}
-      loading={isGenerating && !hasCurrentTaskPreview}
+      loading={isGenerating}
       loadingNodeId={id}
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="video" fallbackModel="runway-gen3" />}
@@ -6969,7 +6962,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             )
             : undefined
       }
-      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
+      loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
@@ -7126,7 +7119,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       tone="video"
       title={<EditableNodeTitle nodeId={id} value={title} field="customTitle" />}
       selected={selected}
-      loading={(data.status === 'generating' || data.status === 'running') && !hasCurrentTaskPreview}
+      loading={data.status === 'generating' || data.status === 'running'}
       loadingNodeId={id}
       error={data.url ? undefined : data.error}
       width={videoBox.width}
