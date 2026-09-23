@@ -6926,9 +6926,10 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     const h = img.naturalHeight;
     if (w > 0 && h > 0) {
       rememberMediaDims(data.url, w, h);
-      // Persist the real dims once so the box aspect is deterministic on every
-      // future render (owner → saved snapshot; anyone → no re-measure, no jump).
-      if (!(Number(data.mediaWidth) > 0 && Number(data.mediaHeight) > 0)) {
+      // A regenerated file can have a different ratio. Correct stale persisted
+      // dimensions too, but never let an old image load overwrite a newer URL.
+      const current = useStore.getState().nodes.find((node) => node.id === id)?.data as Record<string, unknown> | undefined;
+      if (current && current.url === data.url && (Number(current.mediaWidth) !== w || Number(current.mediaHeight) !== h)) {
         updateNodeData(id, { mediaWidth: w, mediaHeight: h });
       }
     }
@@ -6991,7 +6992,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
         >
           <ResilientImage
             src={data.url}
-            className="h-full w-full object-cover select-none"
+            className="h-full w-full object-contain select-none"
             onLoad={handleImageLoad}
             zh={language === 'zh'}
             thumbWidth={720}
