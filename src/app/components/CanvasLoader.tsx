@@ -29,20 +29,19 @@ const MAX_SYNC_WAIT_MS = 8000;
 const MIN_VISIBLE_MS = 550;
 const FADE_MS = 500;
 
-type MediaTarget = { nodeId: string; url: string; hasDims: boolean };
+type MediaTarget = { nodeId: string; url: string };
 
 function collectMediaTargets(nodes: any[]): MediaTarget[] {
   const out: MediaTarget[] = [];
   const seen = new Set<string>();
   for (const n of nodes) {
     const d = n?.data ?? {};
-    const hasDims = Number(d.mediaWidth) > 0 && Number(d.mediaHeight) > 0;
     for (const url of [d.url, d.poster, d.thumbnail]) {
       if (typeof url === "string" && /^(https?:|\/)/.test(url)) {
         const key = `${n.id}:${url}`;
         if (!seen.has(key)) {
           seen.add(key);
-          out.push({ nodeId: n.id, url, hasDims });
+          out.push({ nodeId: n.id, url });
         }
       }
     }
@@ -65,15 +64,12 @@ function preload(target: MediaTarget): Promise<void> {
       const h = img.naturalHeight;
       if (w > 0 && h > 0) {
         rememberMediaDims(target.url, w, h);
-        // Persist dims back onto the node when it had none, so the box is
-        // deterministic on every future load (owner → saved snapshot; anyone
-        // → no re-measure). Guard on hasDims to avoid needless writes.
-        if (!target.hasDims) {
-          const node = useStore.getState().nodes.find((n) => n.id === target.nodeId);
-          const nd = node?.data as Record<string, unknown> | undefined;
-          if (nd && nd.url === target.url && !(Number(nd.mediaWidth) > 0 && Number(nd.mediaHeight) > 0)) {
-            useStore.getState().updateNodeData(target.nodeId, { mediaWidth: w, mediaHeight: h });
-          }
+        // Repair stale dimensions as well as missing ones. Regenerating the
+        // same node may replace a 16:9 file with a square file.
+        const node = useStore.getState().nodes.find((n) => n.id === target.nodeId);
+        const nd = node?.data as Record<string, unknown> | undefined;
+        if (nd && nd.url === target.url && (Number(nd.mediaWidth) !== w || Number(nd.mediaHeight) !== h)) {
+          useStore.getState().updateNodeData(target.nodeId, { mediaWidth: w, mediaHeight: h });
         }
       }
       done();

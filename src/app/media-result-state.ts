@@ -50,7 +50,10 @@ export function taskMediaPatch(data: Record<string, unknown>, url: string, taskI
     versions: uniqueMediaVersions(url, history),
     activeVersionId: sameResult && typeof data.activeVersionId === 'string' ? data.activeVersionId : `v-task-${taskId}`,
     activeVersionTimestamp: sameResult && typeof data.activeVersionTimestamp === 'number' ? data.activeVersionTimestamp : now,
-    ...(sameResult ? {} : { poster: undefined }),
+    // Dimensions belong to the previous file, not to the node. A new result
+    // must fall back to its requested ratio until the new media is measured.
+    // Keep them during staging → object-storage promotion of the same result.
+    ...(sameResult ? {} : { poster: undefined, mediaWidth: undefined, mediaHeight: undefined }),
   };
 }
 

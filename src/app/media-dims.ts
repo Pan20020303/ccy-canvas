@@ -16,12 +16,13 @@ export function rememberMediaDims(url: unknown, w: number, h: number) {
   }
 }
 
-/** Best-known dimensions for a media node: persisted data first, else this
- *  session's measured cache. null when still unknown (first-ever load). */
+/** Best-known dimensions for a media node. The URL-keyed measurement wins over
+ *  persisted node dimensions, which can belong to a previous generation. */
 export function resolveMediaDims(data: Record<string, any>): { w: number; h: number } | null {
+  const cached = typeof data.url === "string" ? mediaDimCache.get(data.url) : undefined;
+  if (cached) return cached;
   const w = Number(data.mediaWidth);
   const h = Number(data.mediaHeight);
   if (w > 0 && h > 0) return { w, h };
-  const cached = typeof data.url === "string" ? mediaDimCache.get(data.url) : undefined;
-  return cached ?? null;
+  return null;
 }

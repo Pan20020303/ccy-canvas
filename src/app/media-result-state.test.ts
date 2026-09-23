@@ -24,11 +24,19 @@ describe('generated media identity', () => {
   });
 
   it('preserves the real previous result when the first preview replaces it', () => {
-    const old = { url: 'https://example.com/old.png', activeVersionId: 'old', poster: 'old-poster' };
+    const old = { url: 'https://example.com/old.png', activeVersionId: 'old', poster: 'old-poster', mediaWidth: 1600, mediaHeight: 900 };
     const data = { ...old, ...taskMediaPatch(old, preview, 'task-2', 10) };
+    expect(data.mediaWidth).toBeUndefined();
+    expect(data.mediaHeight).toBeUndefined();
     const promoted = taskMediaPatch(data, final, 'task-2', 30);
     expect(promoted.versions).toEqual([expect.objectContaining({ id: 'old', url: old.url })]);
     expect(data.poster).toBeUndefined();
+  });
+
+  it('keeps newly measured dimensions when only the storage URL changes', () => {
+    const staged = { ...taskMediaPatch({}, preview, 'task-3', 10), mediaWidth: 1024, mediaHeight: 1024 };
+    const promoted = { ...staged, ...taskMediaPatch(staged, final, 'task-3', 20) };
+    expect([promoted.mediaWidth, promoted.mediaHeight]).toEqual([1024, 1024]);
   });
 
   it('repairs legacy preview duplicates but preserves distinct historical outputs', () => {
