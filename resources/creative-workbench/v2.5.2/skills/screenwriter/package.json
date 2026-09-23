@@ -1,0 +1,15 @@
+{
+  "name": "screenwriter-skill",
+  "private": true,
+  "version": "1.0.0",
+  "description": "劇本、雙語劇本與分場大綱的 DOCX 文件產生工具。",
+  "type": "commonjs",
+  "scripts": {
+    "build:screenplay": "node tools/build_screenplay.js",
+    "build:bilingual": "node tools/build_bilingual.js",
+    "build:treatment": "node tools/build_treatment.js"
+  },
+  "dependencies": {
+    "docx": "^9.5.1"
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "gpt製圖"
+  short_description: "將畫面想法與參考圖轉為電影、攝影、時尚及商品生圖提示詞"
+  default_prompt: "使用 $gpt-image 處理我接下來提供的創作需求。"
