@@ -10,6 +10,30 @@ import {
 } from "./model-templates";
 
 describe("model templates", () => {
+  it("uses HopBase Midjourney V8.2 limits without inheriting the apimart model", () => {
+    const channel = VENDOR_TEMPLATES.image.find(item => item.models.includes("midjourney-v8-2"))!;
+    const template = getModelTemplate("midjourney-v8-2", {
+      vendor: channel.vendor, service_type: "image", parameter_schema: channel.parameterSchema,
+    });
+    expect(template).toMatchObject({
+      modelName: "midjourney-v8-2", serviceType: "image", fixedOutputCount: 4,
+      referenceImageRange: { min: 0, max: 1 },
+      resolutionOptions: ["1K", "2K"],
+      defaults: { resolution: "1K", aspectRatio: "1:1" },
+      supportsQuality: false, supportsAutoAspect: false, supportsOutputFormat: false,
+    });
+    expect(template?.aspectRatioOptions).toContain("21:9");
+    expect(getModelTemplate("midjourney")?.fixedOutputCount).toBeUndefined();
+  });
+
+  it("exposes H3 mixed references and limits H3 Max to first/last frames", () => {
+    const h3 = getModelTemplate("MiniMax-H3");
+    const max = getModelTemplate("MiniMax-H3-Max");
+    expect(h3?.referenceModes).toContain("all-in-one");
+    expect(h3?.durationRange).toMatchObject({ min: 4, max: 15 });
+    expect(max?.referenceModes).toEqual(["text-to-video", "first-last"]);
+    expect(max?.resolutionOptions).toEqual(["480P", "768P"]);
+  });
   it("looks up a concrete model template by model name", () => {
     const template = getModelTemplate("runway-gen3");
     expect(template?.serviceType).toBe("video");

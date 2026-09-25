@@ -234,6 +234,7 @@ type AgentConversationItem struct {
 type listAgentConversationInput struct {
 	ID             string `path:"id"`
 	ConversationID string `query:"conversation_id"`
+	ProjectID      string `query:"project_id"`
 	Limit          int32  `query:"limit" minimum:"1" maximum:"50" default:"12"`
 }
 
@@ -255,7 +256,8 @@ type AgentConversationSummary struct {
 }
 
 type listAgentConversationsInput struct {
-	ID string `path:"id"`
+	ID        string `path:"id"`
+	ProjectID string `query:"project_id"`
 }
 
 type listAgentConversationsOutput struct {
@@ -268,7 +270,8 @@ type listAgentConversationsOutput struct {
 type createAgentConversationInput struct {
 	ID   string `path:"id"`
 	Body struct {
-		Title string `json:"title,omitempty"`
+		Title     string `json:"title,omitempty"`
+		ProjectID string `json:"project_id,omitempty"`
 	}
 }
 
@@ -282,6 +285,12 @@ type createAgentConversationOutput struct {
 type deleteAgentConversationInput struct {
 	ID             string `path:"id"`
 	ConversationID string `path:"conversation_id"`
+	ProjectID      string `query:"project_id"`
+}
+
+type clearAgentConversationInput struct {
+	ID        string `path:"id"`
+	ProjectID string `query:"project_id"`
 }
 
 // ─── Skill handlers ──────────────────────────────────────────────────────────
@@ -630,7 +639,7 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 		return nil, err
 	}
 
-	conversation, err := h.resolveConversation(ctx, uid, agent.ID, input.ConversationID)
+	conversation, err := h.resolveConversation(ctx, uid, agent.ID, input.ProjectID, input.ConversationID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			out := &listAgentConversationOutput{}
@@ -657,16 +666,13 @@ func (h *Handler) listAgentConversationHistory(ctx context.Context, input *listA
 	return out, nil
 }
 
-func (h *Handler) clearAgentConversationHistory(ctx context.Context, input *deleteAgentInput) (*struct{}, error) {
+func (h *Handler) clearAgentConversationHistory(ctx context.Context, input *clearAgentConversationInput) (*struct{}, error) {
 	agent, uid, err := h.loadReadableAgent(ctx, input.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := h.q.DeleteAgentConversationByUserAndAgent(ctx, sqlc.DeleteAgentConversationByUserAndAgentParams{
-		UserID:  uid,
-		AgentID: agent.ID,
-	}); err != nil {
+	if err := h.q.ClearScopedAgentConversations(ctx, uid, agent.ID, input.ProjectID); err != nil {
 		return nil, huma.Error500InternalServerError("Failed to clear conversation history")
 	}
 	return nil, nil
@@ -679,10 +685,7 @@ func (h *Handler) listAgentConversations(ctx context.Context, input *listAgentCo
 	if err != nil {
 		return nil, err
 	}
-	rows, err := h.q.ListUserAgentConversations(ctx, sqlc.ListUserAgentConversationsParams{
-		UserID:  uid,
-		AgentID: agent.ID,
-	})
+	rows, err := h.q.ListScopedAgentConversations(ctx, uid, agent.ID, input.ProjectID)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to list conversations")
 	}
@@ -709,11 +712,7 @@ func (h *Handler) createAgentConversation(ctx context.Context, input *createAgen
 	if err != nil {
 		return nil, err
 	}
-	row, err := h.q.InsertAgentConversation(ctx, sqlc.InsertAgentConversationParams{
-		UserID:  uid,
-		AgentID: agent.ID,
-		Title:   input.Body.Title,
-	})
+	row, err := h.q.InsertScopedAgentConversation(ctx, uid, agent.ID, input.Body.ProjectID, input.Body.Title)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to create conversation")
 	}
@@ -739,11 +738,7 @@ func (h *Handler) deleteAgentConversation(ctx context.Context, input *deleteAgen
 	if err != nil {
 		return nil, err
 	}
-	if err := h.q.DeleteAgentConversationByID(ctx, sqlc.DeleteAgentConversationByIDParams{
-		ID:      cid,
-		UserID:  uid,
-		AgentID: agent.ID,
-	}); err != nil {
+	if err := h.q.DeleteScopedAgentConversation(ctx, cid, uid, agent.ID, input.ProjectID); err != nil {
 		return nil, huma.Error500InternalServerError("Failed to delete conversation")
 	}
 	return nil, nil
@@ -751,23 +746,16 @@ func (h *Handler) deleteAgentConversation(ctx context.Context, input *deleteAgen
 
 // resolveConversation returns the conversation row identified by conversationID,
 // or — when conversationID is empty — the most recently updated conversation
-// for the (user, agent) pair. Returns pgx.ErrNoRows when nothing exists yet.
-func (h *Handler) resolveConversation(ctx context.Context, uid, agentID pgtype.UUID, conversationID string) (sqlc.AgentConversation, error) {
+// for the (user, agent, canvas) scope. Returns pgx.ErrNoRows when absent.
+func (h *Handler) resolveConversation(ctx context.Context, uid, agentID pgtype.UUID, projectID, conversationID string) (sqlc.AgentConversation, error) {
 	if conversationID != "" {
 		cid, err := parseUUID(conversationID)
 		if err != nil {
 			return sqlc.AgentConversation{}, err
 		}
-		return h.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
-			ID:      cid,
-			UserID:  uid,
-			AgentID: agentID,
-		})
+		return h.q.GetScopedAgentConversation(ctx, cid, uid, agentID, projectID)
 	}
-	return h.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
-		UserID:  uid,
-		AgentID: agentID,
-	})
+	return h.q.GetLatestScopedAgentConversation(ctx, uid, agentID, projectID)
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

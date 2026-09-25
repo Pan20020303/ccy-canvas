@@ -269,11 +269,14 @@ func (s *Service) generateVideoHopBaseWan3(ctx context.Context, pc *domain.Provi
 	}
 	request.Header.Set("Authorization", "Bearer "+apiKey)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := doProviderSubmitOnce(ctx, safehttp.Client(30*time.Second), request, encoded)
+	response, err := doWanSubmitWithPreflightRetry(ctx, newWanSubmitClient(), request, encoded)
 	if err != nil {
 		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		return nil, apperror.New(apperror.CodeUpstreamUnavailable, "万相生成接口返回重定向，已阻止自动重发；请检查渠道地址，上游受理状态待确认")
+	}
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if readErr != nil {
 		return nil, apperror.ProviderRequestFailure(readErr)
@@ -315,7 +318,10 @@ func (s *Service) pollHopBaseWan3Task(ctx context.Context, baseURL, apiKey, task
 		}
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 		response.Body.Close()
-		if readErr != nil || response.StatusCode == 429 || response.StatusCode >= 500 {
+		// A quota check can reject GET even after the paid task was accepted.
+		// That is not a terminal generation failure: keep querying the saved
+		// task, bounded by ctx. Never resubmit video generation here.
+		if readErr != nil || response.StatusCode == 402 || response.StatusCode == 429 || response.StatusCode >= 500 {
 			continue
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {

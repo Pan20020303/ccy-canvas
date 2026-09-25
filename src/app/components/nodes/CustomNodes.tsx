@@ -8,6 +8,7 @@ import { getNodeErrorPresentation, nodeFailureReason } from './node-errors';
 import { createPortal } from 'react-dom';
 import { Dropdown, MediaParamsPopover } from './NodeGenerationControls';
 import { ReferenceLimitsBar, resolveReferenceLimits } from './ReferenceLimitsBar';
+import { imageResultsFromData, NodeImageResultGallery, type ImageResultAnchor, type ImageResultGalleryMode } from './ImageResultGallery';
 import { requestMediaPreviewAction, useMediaPreviewAction } from '../media-preview-utils';
 import VideoTrimDialog, { type VideoTrimSelection } from '../VideoTrimDialog';
 import { trimLocalVideo } from '../../api/video-edit';
@@ -37,6 +38,8 @@ import {
   Crop,
   FileText,
   Plus,
+  Upload,
+  FolderOpen,
   X,
   Expand,
   History,
@@ -76,7 +79,8 @@ import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { ApiClientError, resolveApiUrl } from '../../api/client';
 import { createLocalVideoDepth, upscaleLocalSeedVR2 } from '../../api/models';
-import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
+import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl, getReferenceNodeTypeFromMimeType, resolveBackendAssetUrl } from '../../reference-media';
+import { uploadFileWithProgress } from '../../api/projects';
 import { downloadMediaFile } from '../../media-download';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
 import { renderMarkdown } from '../../markdown';
@@ -773,7 +777,10 @@ const PromptPanel = ({
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
   const onEdgesChange = useStore((state) => state.onEdgesChange);
+  const startCanvasReferencePick = useStore((state) => state.startCanvasReferencePick);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [referenceUploading, setReferenceUploading] = useState(false);
+  const referenceFileInputRef = useRef<HTMLInputElement>(null);
   // Keep the full edge so the strip can wire the disconnect button to a
   // specific edge id instead of guessing one from (source,target).
   const upstreamEdges = edges.filter((edge, index, all) => (
@@ -1033,7 +1040,10 @@ const PromptPanel = ({
     && (template?.aspectRatioOptions?.includes('16:9') || template?.defaults?.aspectRatio === '16:9')
     ? '16:9'
     : undefined;
-  const currentAspectRatio = params.aspectRatio
+  const selectedAspectRatio = activeModel === 'midjourney-v8-2'
+    ? template?.aspectRatioOptions?.find((option) => option === params.aspectRatio)
+    : params.aspectRatio;
+  const currentAspectRatio = selectedAspectRatio
     ?? defaultVideoAspectRatio
     ?? template?.defaults?.aspectRatio
     ?? lastAspectRatio
@@ -1045,9 +1055,8 @@ const PromptPanel = ({
   const currentVoiceDescription = params.voiceDescription ?? '';
   const currentVoiceLanguage = params.audioLanguage ?? template?.audioLanguageOptions?.[0] ?? 'Auto';
   const currentSeed = typeof params.seed === 'number' ? params.seed : undefined;
-  // 出图张数(一图多变体):仅图片服务可选 1/2/4,后端按张计费并把多出的结果
-  // 扇出成兄弟节点(buildExtraImageNodes);网关不支持 n 时自动回落单图。
-  const currentOutputCount = template?.localImageKind ? 1 : typeof params.outputCount === 'number' && params.outputCount > 0 ? params.outputCount : 1;
+  // 一次多图按张计费，整组保存在当前节点，用户可以手动全部添加到画布。
+  const currentOutputCount = template?.fixedOutputCount ?? (template?.localImageKind ? 1 : typeof params.outputCount === 'number' && params.outputCount > 0 ? params.outputCount : 1);
 
   useEffect(() => {
     if (!template) {
@@ -1060,7 +1069,8 @@ const PromptPanel = ({
     if (template.supportsMode && !params.mode && currentMode) nextPatch.mode = currentMode;
     if (template.supportsResolution && currentResolution && params.resolution !== currentResolution) nextPatch.resolution = currentResolution;
     if (template.supportsQuality && !params.quality && currentQuality) nextPatch.quality = currentQuality;
-    if ((template.supportsAspectRatio || template.supportsAutoAspect) && !params.aspectRatio && currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
+    if ((template.supportsAspectRatio || template.supportsAutoAspect) && (!params.aspectRatio || activeModel === 'midjourney-v8-2') && currentAspectRatio && params.aspectRatio !== currentAspectRatio) nextPatch.aspectRatio = currentAspectRatio;
+    if (template.fixedOutputCount && params.outputCount !== template.fixedOutputCount) nextPatch.outputCount = template.fixedOutputCount;
     if (template.supportsDuration && !params.durationSeconds && currentDuration) nextPatch.durationSeconds = currentDuration;
     if (template.supportsOutputFormat && !params.outputFormat && currentOutputFormat) nextPatch.outputFormat = currentOutputFormat;
     if (template.audioSpeedRange && params.audioSpeed === undefined) nextPatch.audioSpeed = currentAudioSpeed;
@@ -1087,6 +1097,7 @@ const PromptPanel = ({
     params.quality,
     params.resolution,
     params.outputFormat,
+    params.outputCount,
     params.vendor,
     template,
     updateNodeGenerationParams,
@@ -1813,14 +1824,40 @@ const PromptPanel = ({
     setPickerOpen(false);
   }, [addNode, allNodes, edges, nodeId, onConnect]);
 
-  // Named slots for the active reference mode. When the mode defines
-  // slots (e.g. 首帧 / 尾帧 for first-last), each thumbnail in order gets
-  // its slot label underneath; extra thumbnails beyond the named slots
-  // fall back to a numeric index. Modes with no slots (multi-image,
-  // all-in-one) keep the plain numbered badges.
-  const activeModeSlots = activeReferenceMode
-    ? REFERENCE_MODE_SPECS[activeReferenceMode].slots
-    : [];
+  const uploadReferenceFiles = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (!files.length) return;
+    const projectId = useStore.getState().activeProjectId;
+    setReferenceUploading(true);
+    try {
+      for (const [index, file] of files.entries()) {
+        const type = getReferenceNodeTypeFromMimeType(file.type);
+        if (!type) {
+          toast.error(language === 'zh' ? `不支持的参考文件：${file.name}` : `Unsupported reference file: ${file.name}`);
+          continue;
+        }
+        const uploaded = await uploadFileWithProgress(file, file.name);
+        const state = useStore.getState();
+        if (state.activeProjectId !== projectId) break;
+        const target = state.nodes.find((node) => node.id === nodeId);
+        if (!target) break;
+        const url = resolveBackendAssetUrl(uploaded.url, import.meta.env.VITE_API_BASE_URL ?? '');
+        if (!url) throw new Error('Uploaded reference has no URL');
+        const id = `ref-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`;
+        state.addNode({
+          id, type,
+          position: { x: target.position.x - 340, y: target.position.y + index * 60 },
+          data: { url, status: 'done', sourceName: file.name, sourceKind: 'upload' },
+        } as never);
+        state.onConnect({ source: id, target: nodeId, sourceHandle: null, targetHandle: null } as never);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : (language === 'zh' ? '上传参考内容失败' : 'Reference upload failed'));
+    } finally {
+      setReferenceUploading(false);
+    }
+  }, [language, nodeId]);
 
   // Preview strip above the textarea: each upstream node renders as a
   // square thumbnail with a numbered badge in the corner. Hovering shows
@@ -1841,21 +1878,20 @@ const PromptPanel = ({
     zh={language === 'zh'}
     serviceType={serviceType}
     canSwitchToAudioMode={modelReferenceModes.includes('all-in-one')}
+    hideCapacity
   />;
 
   const previewStrip = (
     <>
-    <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
-      {mediaRefs.map((up, idx) => {
+    <div className="prompt-editor-scroll flex items-start gap-2 overflow-x-auto px-1 pt-2">
+      {mediaRefs.map((up) => {
         const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id && text.includes(m.tag));
         const isUsed = Boolean(matched);
-        const slot = activeModeSlots[idx];
-        const slotLabel = slot ? (language === 'zh' ? slot.zh : slot.en) : '';
         return (
           <div
             key={up.edgeId}
-            className="group/ref relative shrink-0 flex flex-col items-center gap-1"
+            className="group/ref relative shrink-0"
             title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
             onMouseEnter={(event) => showRefHover(up.id, event.currentTarget.getBoundingClientRect())}
             onMouseLeave={scheduleRefHoverClear}
@@ -1912,22 +1948,27 @@ const PromptPanel = ({
                 <X className="h-2.5 w-2.5" strokeWidth={3} />
               </button>
             </div>
-            {slotLabel ? (
-              <span className={clsx('max-w-[52px] truncate text-[9px]', slot?.optional ? 'text-neutral-500' : 'text-neutral-300')}>
-                {slotLabel}
-              </span>
-            ) : null}
           </div>
         );
       })}
-      <button
-        type="button"
-        onClick={() => setPickerOpen(true)}
-        className="shrink-0 flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-white/15 bg-white/[0.02] text-neutral-400 transition hover:border-white/30 hover:bg-white/[0.05] hover:text-neutral-200"
-        title={language === 'zh' ? '从素材库添加引用' : 'Add reference from library'}
-      >
-        <Plus className="h-4 w-4" />
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            disabled={readOnly || referenceUploading}
+            className="shrink-0 flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-white/15 bg-white/[0.02] text-neutral-400 transition hover:border-white/30 hover:bg-white/[0.05] hover:text-neutral-200 disabled:opacity-50"
+            title={language === 'zh' ? '添加参考内容' : 'Add reference'}
+          >
+            {referenceUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" sideOffset={8} collisionPadding={12} className="canvas-menu-surface z-[130] w-60 border-white/10 bg-[#252525] p-1.5 text-neutral-100 shadow-2xl">
+          <DropdownMenuItem onSelect={() => referenceFileInputRef.current?.click()} className="cursor-pointer gap-2.5 text-xs"><Upload className="h-4 w-4" />{language === 'zh' ? '上传参考内容' : 'Upload reference'}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setPickerOpen(true)} className="cursor-pointer gap-2.5 text-xs"><FolderOpen className="h-4 w-4" />{language === 'zh' ? '从资产库添加' : 'Add from library'}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => startCanvasReferencePick(nodeId)} className="cursor-pointer gap-2.5 text-xs"><ScanLine className="h-4 w-4" />{language === 'zh' ? '从画布选择' : 'Pick from canvas'}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <input ref={referenceFileInputRef} type="file" accept="image/*,video/*,audio/*" multiple className="hidden" onChange={(event) => void uploadReferenceFiles(event)} />
     </div>
     {/* 文本引用 chip 行:连进来的文本节点不占参考图位,以「文本·内容预览」
         形式提示,生成时其内容会自动并入提示词(collectUpstreamText)。 */}
@@ -2068,7 +2109,15 @@ const PromptPanel = ({
             onLocalImage={(value) => updateNodeGenerationParams(nodeId, { localImage: value })}
           />
         ) : null}
-        {serviceType === 'image' && !template?.localImageKind ? (
+        {serviceType === 'image' && template?.fixedOutputCount ? (
+          <span
+            data-testid="output-count-fixed"
+            title={language === 'zh' ? `每次任务固定生成 ${template.fixedOutputCount} 张图，全部按张计费` : `Each task returns ${template.fixedOutputCount} images, all billed per image`}
+            className="flex h-7 items-center rounded-lg border border-white/20 bg-white/12 px-2 text-[11px] text-white"
+          >
+            {language === 'zh' ? `固定 ${template.fixedOutputCount} 张` : `${template.fixedOutputCount} images fixed`}
+          </span>
+        ) : serviceType === 'image' && !template?.localImageKind ? (
           <div className="nodrag nopan relative">
             {/* 收起态:一个「×N」按钮显示当前张数;点开才展开 1/2/4。 */}
             <button
@@ -2382,6 +2431,7 @@ const PromptPanel = ({
         : null}
       <AssetPickerModal
         isOpen={pickerOpen}
+        initialTab="library"
         onClose={() => setPickerOpen(false)}
         onConfirm={handlePickerConfirm}
       />
@@ -3915,18 +3965,15 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
       } else if (session.action === 'angles') {
         const angleLabel = draft.anglePreset ?? 'three-view';
         const anglePrompt = `${buildAngleEditorPrompt(draft, language)} ${angleLabel}`;
-        const outputs = Math.max(1, draft.outputCount ?? 1);
-        for (let index = 0; index < outputs; index += 1) {
-          // Stagger each derived node slightly so multi-output sets are readable.
-          // The backend can still collapse to one output if the provider ignores n.
-          await spawnDerivedNode({
-            prompt: anglePrompt,
-            model: draft.model,
-            outputCount: 1,
-            referenceImages: [sourceUrl],
-            anglePreset: draft.anglePreset,
-          });
-        }
+        const outputs = getModelTemplate(draft.model || defaultImageModel)?.fixedOutputCount
+          ?? Math.max(1, draft.outputCount ?? 1);
+        await spawnDerivedNode({
+          prompt: anglePrompt,
+          model: draft.model,
+          outputCount: outputs,
+          referenceImages: [sourceUrl],
+          anglePreset: draft.anglePreset,
+        });
       } else if (session.action === 'lighting') {
         await spawnDerivedNode({
           prompt: buildLightingEditorPrompt(draft, language),
@@ -4270,7 +4317,9 @@ function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         </DialogContent>
       </Dialog>
 
-      {fullscreenOpen ? <PreviewModal kind="image" src={sourceUrl} nodeId={sourceNodeId} onClose={() => setFullscreenOpen(false)} /> : null}
+      {fullscreenOpen ? (imageResultsFromData(sourceData).length > 1
+        ? <NodeImageResultGallery nodeId={sourceNodeId} mode="fullscreen" onClose={() => setFullscreenOpen(false)} />
+        : <PreviewModal kind="image" src={sourceUrl} nodeId={sourceNodeId} onClose={() => setFullscreenOpen(false)} />) : null}
       {hdOpen ? (
         <HdEnhanceModal
           sourceUrl={sourceUrl}
@@ -5041,6 +5090,9 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [preview, setPreview] = useState(false);
+  const [galleryMode, setGalleryMode] = useState<ImageResultGalleryMode | null>(null);
+  const [galleryAnchor, setGalleryAnchor] = useState<ImageResultAnchor>();
+  const imageResults = imageResultsFromData(data);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<string | null>(null);
   const paramAspect = getNodeParams(data).aspectRatio;
@@ -5087,9 +5139,10 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
+          data-image-result-surface
           className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
-          onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
+          onDoubleClick={() => (imageResults.length > 1 ? setGalleryMode('fullscreen') : isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
           <ResilientImage
             src={data.url}
@@ -5099,6 +5152,17 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
             zh={language === 'zh'}
             thumbWidth={720}
           />
+          {imageResults.length > 1 && <button type="button" className="image-result-count nodrag nopan" aria-label={language === 'zh' ? `查看 ${imageResults.length} 张图片` : `View ${imageResults.length} images`}
+            title={language === 'zh' ? `已生成 ${imageResults.length} 张，点击查看全部图片` : `${imageResults.length} images generated. Click to view all.`}
+            aria-haspopup="dialog" aria-expanded={galleryMode !== null}
+            onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+            onClick={event => {
+              event.stopPropagation();
+              setGalleryAnchor(event.currentTarget.closest('[data-image-result-surface]')?.getBoundingClientRect());
+              setGalleryMode('panel');
+            }}>
+            {language === 'zh' ? `${imageResults.length} 张` : `${imageResults.length} images`}<ChevronDown size={12} />
+          </button>}
           {isPanorama ? (
             <PanoramaOpenButton
               onClick={(event) => {
@@ -5118,6 +5182,7 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
           caption={{ zh: '输入提示词生成图片', en: 'Enter a prompt to generate' }}
         />
       )}
+      {galleryMode && imageResults.length > 1 ? <NodeImageResultGallery nodeId={id} mode={galleryMode} anchor={galleryAnchor} onClose={() => setGalleryMode(null)} onExpand={() => setGalleryMode('fullscreen')} /> : null}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
     </BaseNode>
@@ -6780,6 +6845,9 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
   const updateNodeData = useStore((state) => state.updateNodeData);
   const [preview, setPreview] = useState(false);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
+  const [galleryMode, setGalleryMode] = useState<ImageResultGalleryMode | null>(null);
+  const [galleryAnchor, setGalleryAnchor] = useState<ImageResultAnchor>();
+  const imageResults = imageResultsFromData(data);
   const paramAspect = getNodeParams(data).aspectRatio;
   const title = data.customTitle || (language === 'zh' ? '生成图像' : 'Generate Image');
   // Box aspect is DETERMINISTIC: measured dims (persisted or session-cached)
@@ -6969,6 +7037,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
+          data-image-result-surface
           className={clsx(
             'relative w-full overflow-hidden rounded-[12px]',
             annotate ? 'cursor-crosshair' : 'cursor-zoom-in',
@@ -6979,7 +7048,8 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
           style={{ height: genBox.height }}
           onDoubleClick={() => {
             if (annotate) return;
-            if (isPanorama) setPanoramaPreview(true);
+            if (imageResults.length > 1) setGalleryMode('fullscreen');
+            else if (isPanorama) setPanoramaPreview(true);
             else setPreview(true);
           }}
         >
@@ -6990,14 +7060,18 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
             zh={language === 'zh'}
             thumbWidth={720}
           />
-          <NodeVersionsBadge
-            nodeId={id}
-            activeUrl={data.url}
-            activePrompt={data.prompt}
-            activeModel={data.model}
-            versions={(data.versions ?? []) as NodeVersion[]}
-            mediaKind="image"
-          />
+          {imageResults.length > 1 && !annotate && <button type="button" className="image-result-count nodrag nopan"
+            aria-label={language === 'zh' ? `查看 ${imageResults.length} 张图片` : `View ${imageResults.length} images`}
+            title={language === 'zh' ? `已生成 ${imageResults.length} 张，点击查看全部图片` : `${imageResults.length} images generated. Click to view all.`}
+            aria-haspopup="dialog" aria-expanded={galleryMode !== null}
+            onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+            onClick={event => {
+              event.stopPropagation();
+              setGalleryAnchor(event.currentTarget.closest('[data-image-result-surface]')?.getBoundingClientRect());
+              setGalleryMode('panel');
+            }}>
+            {language === 'zh' ? `${imageResults.length} 张` : `${imageResults.length} images`}<ChevronDown size={12} />
+          </button>}
           <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
           {hasCurrentTaskPreview ? <AssetSyncNotice zh={language === 'zh'} /> : null}
           {isPanorama && !annotate ? (
@@ -7034,6 +7108,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       )}
       {preview && data.url ? <PreviewModal kind="image" src={data.url} nodeId={id} onClose={() => setPreview(false)} /> : null}
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
+      {galleryMode && imageResults.length > 1 ? <NodeImageResultGallery nodeId={id} mode={galleryMode} anchor={galleryAnchor} onClose={() => setGalleryMode(null)} onExpand={() => setGalleryMode('fullscreen')} /> : null}
     </BaseNode>
   );
 };
@@ -7239,6 +7314,8 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
   const data = rawData ?? {};
   const language = useStore((state) => state.language);
   const [panoramaPreview, setPanoramaPreview] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const imageResults = imageResultsFromData(data);
   const aspectClass = getAspectRatioClass(getNodeParams(data).aspectRatio, 'aspect-[2/1]');
   const title = data.customTitle || (language === 'zh' ? '生成全景' : '360 Environment');
   const recoverableError = recoverableMediaGenerationError(data);
@@ -7255,7 +7332,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
     >
       <div
         className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
-        onDoubleClick={() => data.url && setPanoramaPreview(true)}
+        onDoubleClick={() => { if (imageResults.length > 1) setGalleryOpen(true); else if (data.url) setPanoramaPreview(true); }}
       >
         {data.url ? (
           <>
@@ -7281,6 +7358,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
         <PreviousGenerationFailureNotice nodeId={id} error={recoverableError} />
       </div>
       {panoramaPreview && data.url ? <PanoramaPreviewModal src={data.url} nodeId={id} onClose={() => setPanoramaPreview(false)} /> : null}
+      {galleryOpen && <NodeImageResultGallery nodeId={id} mode="fullscreen" onClose={() => setGalleryOpen(false)} />}
     </BaseNode>
   );
 };

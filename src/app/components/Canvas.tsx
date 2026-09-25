@@ -1,6 +1,7 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
 import { canvasViewportKey, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, useCanvasViewportMemory } from '../canvas-viewport';
+import { clampCanvasMenu, revealPanDelta, unionScreenBounds, type ScreenBounds } from '../canvas-creation-viewport';
 import { CanvasBackground } from './settings/CanvasPreferencesRuntime';
 import {
   ReactFlow,
@@ -49,6 +50,7 @@ import {
   Undo2,
   Video,
   Wrench,
+  X,
   Group as GroupIcon,
   Lock as LockIcon,
   ChevronDown,
@@ -397,7 +399,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   const videoEditorNodeId = useStore((state) => state.videoEditorNodeId);
   const setAssetLibraryOpen = useStore((state) => state.setAssetLibraryOpen);
   const dict = t[language];
-  const { screenToFlowPosition, fitView, setCenter, zoomTo } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, setViewport, getViewport, zoomTo } = useReactFlow();
   const viewport = useViewport();
   // Live-collaboration presence: broadcast our cursor/selection, watch others.
   usePresenceReporting();
@@ -496,8 +498,59 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   }, [nodes, onNodesChange, setCenter, viewport.zoom, preferences.focusAnimationLimit]);
   const agentPanelOpen = useStore((s) => s.agentPanelOpen);
   const setAgentPanelOpen = useStore((s) => s.setAgentPanelOpen);
+  const agentNodePickActive = useStore((s) => s.agentNodePickActive);
+  const canvasReferencePickTargetId = useStore((s) => s.canvasReferencePickTargetId);
+  const cancelAgentNodePick = useStore((s) => s.cancelAgentNodePick);
+  const cancelCanvasReferencePick = useStore((s) => s.cancelCanvasReferencePick);
+  const pickModeActive = agentNodePickActive || canvasReferencePickTargetId !== null;
+  const referencePickCount = canvasReferencePickTargetId
+    ? edges.filter((edge) => edge.target === canvasReferencePickTargetId).length : 0;
   const [guides, setGuides] = useState<GuideLine[]>([]);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const creationRevealNonce = useRef(0);
+  useEffect(() => () => {
+    creationRevealNonce.current += 1;
+    cancelCanvasReferencePick();
+    cancelAgentNodePick();
+  }, [viewportKey, cancelCanvasReferencePick, cancelAgentNodePick]);
+  useEffect(() => {
+    if (canvasHydrated && canvasReferencePickTargetId
+      && !nodes.some((node) => node.id === canvasReferencePickTargetId)) cancelCanvasReferencePick();
+  }, [canvasHydrated, canvasReferencePickTargetId, nodes, cancelCanvasReferencePick]);
+  useEffect(() => {
+    if (!pickModeActive) return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      cancelCanvasReferencePick();
+      cancelAgentNodePick();
+    };
+    window.addEventListener('keydown', onEscape, true);
+    return () => window.removeEventListener('keydown', onEscape, true);
+  }, [pickModeActive, cancelCanvasReferencePick, cancelAgentNodePick]);
+  useLayoutEffect(() => {
+    if (!contextMenu) return;
+    const place = () => {
+      const wrapper = wrapperRef.current;
+      const menu = contextMenuRef.current;
+      if (!wrapper || !menu) return;
+      const point = clampCanvasMenu(
+        contextMenu,
+        { width: wrapper.clientWidth, height: wrapper.clientHeight },
+        { width: menu.offsetWidth, height: menu.offsetHeight },
+      );
+      menu.style.left = `${point.x}px`;
+      menu.style.top = `${point.y}px`;
+    };
+    place();
+    window.addEventListener('resize', place);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
+    if (observer && contextMenuRef.current) observer.observe(contextMenuRef.current);
+    if (observer && wrapperRef.current) observer.observe(wrapperRef.current);
+    return () => { window.removeEventListener('resize', place); observer?.disconnect(); };
+  }, [contextMenu]);
   const [minimapExpanded, setMinimapExpanded] = useState(false);
   const [minimapHovered, setMinimapHovered] = useState(false);
   const minimapHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -573,19 +626,16 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
     return () => window.removeEventListener('wheel', onWheel);
   }, []);
 
-  /** Sanitize orphan groups: drop members whose nodes no longer exist, then drop empty groups.
-   *  Catches stale data persisted from older sessions or paths that bypassed onNodesChange. */
+  /** Sanitize stale member ids while preserving empty group areas. */
   useEffect(() => {
     const nodeIdSet = new Set(nodes.map((node) => node.id));
     groups.forEach((group) => {
       const validIds = group.nodeIds.filter((id) => nodeIdSet.has(id));
-      if (validIds.length === 0) {
-        ungroupNodes(group.id);
-      } else if (validIds.length !== group.nodeIds.length) {
+      if (validIds.length !== group.nodeIds.length) {
         setGroupMembers(group.id, validIds);
       }
     });
-  }, [groups, nodes, setGroupMembers, ungroupNodes]);
+  }, [groups, nodes, setGroupMembers]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -958,6 +1008,11 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
     const onUp = (event: MouseEvent) => {
       const target = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
       const targetNodeId = target?.closest('.react-flow__node')?.getAttribute('data-id') ?? null;
+      const canvasRect = wrapperRef.current?.getBoundingClientRect();
+      const outsideCanvas = canvasRect && (
+        event.clientX < canvasRect.left || event.clientX > canvasRect.right
+        || event.clientY < canvasRect.top || event.clientY > canvasRect.bottom
+      );
       if (targetNodeId && selectedIds.length >= 2 && !selectedIds.includes(targetNodeId)) {
         const newEdges = buildBulkOutboundEdges({
           groupId: 'selection',
@@ -966,7 +1021,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
           existingEdges: edges,
         });
         newEdges.forEach((edge) => connectEdge(edge as never));
-      } else if (!targetNodeId && target?.closest('.react-flow__pane') && selectedIds.length >= 2 && wrapperRef.current) {
+      } else if (!targetNodeId && selectedIds.length >= 2 && wrapperRef.current && (target?.closest('.react-flow__pane') || outsideCanvas)) {
         // 空白处松手 → 和单根拉线一致：弹「添加节点」菜单，建好后把所有
         // 源节点一次性连上。（openContextMenu 声明在本 effect 之后，内联
         // 等价逻辑以避开 TDZ。）
@@ -1173,10 +1228,11 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
 
   const onPaneContextMenu = useCallback((event: any) => {
     event.preventDefault();
+    if (pickModeActive) return;
     if (preferences.blankAction !== 'context') return;
     connectingFrom.current = null;
     openContextMenu(event, 'root', false);
-  }, [openContextMenu, preferences.blankAction]);
+  }, [openContextMenu, preferences.blankAction, pickModeActive]);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: { id: string; type?: string }) => {
     event.preventDefault();
@@ -1206,13 +1262,18 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   const onConnectEnd = useCallback((event: any) => {
     const targetIsPane = (event.target as HTMLElement)?.classList?.contains('react-flow__pane');
     setConnectionDragging(false);
-    if (!targetIsPane || !connectingFrom.current || !wrapperRef.current) return;
+    if (!connectingFrom.current || !wrapperRef.current) return;
     const clientX = event.clientX ?? event.changedTouches?.[0]?.clientX;
     const clientY = event.clientY ?? event.changedTouches?.[0]?.clientY;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    const outsideCanvas = clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom;
+    if (!targetIsPane && !outsideCanvas) return;
     openContextMenu({ clientX, clientY }, 'add-node', true);
   }, [openContextMenu, setConnectionDragging]);
 
   const onCanvasDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (pickModeActive) return;
     const target = event.target as HTMLElement;
     if (
       target.closest(
@@ -1253,16 +1314,75 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
     connectingFrom.current = null;
     bulkConnectFrom.current = null;
     openContextMenu(event, 'add-node', false);
-  }, [openContextMenu, preferences.blankAction]);
+  }, [openContextMenu, preferences.blankAction, pickModeActive]);
 
+
+  const revealCreatedNode = useCallback(async (id: string, kind: NodeKind, position: { x: number; y: number }) => {
+    const nonce = ++creationRevealNonce.current;
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const size = { width: wrapper.clientWidth, height: wrapper.clientHeight };
+    const current = getViewport();
+    const zoom = current.zoom || 1;
+    const cardWidth = kind === 'videoEditorNode' || kind === 'directorStageNode' ? 320 : 300;
+    const cardHeight = kind === 'audioNode' ? 120 : kind === 'videoNode' ? 180 : kind === 'textNode' ? 220 : 200;
+    const cardLeft = current.x + position.x * zoom;
+    const cardTop = current.y + position.y * zoom;
+    let bounds: ScreenBounds = {
+      left: cardLeft, top: cardTop,
+      right: cardLeft + cardWidth * zoom, bottom: cardTop + cardHeight * zoom,
+    };
+    if (kind === 'textNode' || kind === 'imageNode' || kind === 'videoNode' || kind === 'audioNode') {
+      const scale = preferences.bottomToolbarScale;
+      const center = (bounds.left + bounds.right) / 2;
+      bounds = unionScreenBounds(bounds, {
+        left: center - 320 * scale,
+        right: center + 320 * scale,
+        top: bounds.bottom + 16 * scale,
+        bottom: bounds.bottom + 316 * scale,
+      });
+    }
+    const firstPan = revealPanDelta(bounds, size);
+    const duration = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 0 : nodes.length <= preferences.focusAnimationLimit ? 440 : 0;
+    if (Math.abs(firstPan.x) > 2 || Math.abs(firstPan.y) > 2) {
+      await setViewport({ ...current, x: current.x + firstPan.x, y: current.y + firstPan.y }, { duration });
+    }
+    // React Flow virtualizes off-screen nodes. Once the first pan brings the
+    // node into view, measure the real card and counter-scaled prompt panel.
+    for (let attempt = 0; attempt < 8 && nonce === creationRevealNonce.current; attempt++) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const nodeElement = Array.from(wrapper.querySelectorAll<HTMLElement>('.react-flow__node'))
+        .find((element) => element.dataset.id === id);
+      if (!nodeElement) continue;
+      const wrapperRect = wrapper.getBoundingClientRect();
+      const toLocal = (rect: DOMRect): ScreenBounds => ({
+        left: rect.left - wrapperRect.left, right: rect.right - wrapperRect.left,
+        top: rect.top - wrapperRect.top, bottom: rect.bottom - wrapperRect.top,
+      });
+      let actual = toLocal(nodeElement.getBoundingClientRect());
+      const prompt = nodeElement.querySelector<HTMLElement>('.canvas-node-prompt');
+      if (prompt) actual = unionScreenBounds(actual, toLocal(prompt.getBoundingClientRect()));
+      const correction = revealPanDelta(actual, { width: wrapper.clientWidth, height: wrapper.clientHeight });
+      if (Math.abs(correction.x) > 2 || Math.abs(correction.y) > 2) {
+        const view = getViewport();
+        await setViewport({ ...view, x: view.x + correction.x, y: view.y + correction.y }, { duration: duration ? 200 : 0 });
+      }
+      break;
+    }
+  }, [getViewport, setViewport, nodes.length, preferences.bottomToolbarScale, preferences.focusAnimationLimit]);
 
   const onPickerSelect = useCallback((kind: NodeKind) => {
     if (!contextMenu) return;
     const id = `node-${Date.now()}`;
+    const position = snapToGrid ? snapPosition({ x: contextMenu.flowX, y: contextMenu.flowY }) : { x: contextMenu.flowX, y: contextMenu.flowY };
+    const selected = nodes.filter((node) => node.selected);
+    if (selected.length) onNodesChange(selected.map((node) => ({ id: node.id, type: 'select' as const, selected: false })));
     addNode({
       id,
       type: kind,
-      position: snapToGrid ? snapPosition({ x: contextMenu.flowX, y: contextMenu.flowY }) : { x: contextMenu.flowX, y: contextMenu.flowY },
+      position,
+      selected: true,
       data: {},
     });
 
@@ -1288,7 +1408,8 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
     setContextMenu(null);
     connectingFrom.current = null;
     bulkConnectFrom.current = null;
-  }, [addNode, contextMenu, onConnect, snapToGrid, edges, connectEdge]);
+    void revealCreatedNode(id, kind, position);
+  }, [addNode, contextMenu, onConnect, snapToGrid, edges, connectEdge, nodes, onNodesChange, revealCreatedNode]);
 
   const uploadFilesAtPosition = useCallback(async (files: File[], flowPos: { x: number; y: number }) => {
     let offsetY = 0;
@@ -1587,7 +1708,7 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
   return (
     <div
       ref={wrapperRef}
-      className={`relative h-screen w-full overflow-hidden ${preferences.compactZoom && viewport.zoom < .35 ? 'canvas-compact-mode' : ''} ${cursorMode}`}
+      className={`relative h-screen w-full overflow-hidden ${preferences.compactZoom && viewport.zoom < .35 ? 'canvas-compact-mode' : ''} ${cursorMode} ${pickModeActive ? 'canvas-node-pick-mode' : ''}`}
       style={{ backgroundColor: theme === 'light' && preferences.themeId === 'graphite' ? '#e8eaed' : 'var(--canvas-bg, #111111)' }}
       onContextMenu={(event) => event.preventDefault()}
       onDoubleClick={onCanvasDoubleClick}
@@ -1595,6 +1716,32 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
       onDrop={onDrop}
     >
       <CanvasBackground />
+      {pickModeActive ? (
+        <>
+          <div className="pointer-events-none absolute inset-0 z-[55] border-2 border-cyan-400/70" />
+          <div
+            data-no-canvas-menu="true"
+            className={clsx(
+              'absolute top-3 z-[80] flex items-center gap-2 rounded-full border px-3 py-2 text-xs text-white shadow-xl backdrop-blur-xl',
+              agentNodePickActive
+                ? 'right-3 border-cyan-400/35 bg-[#13232c]/95'
+                : 'left-1/2 -translate-x-1/2 border-sky-400/50 bg-sky-600/95',
+            )}
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
+            <span>{agentNodePickActive
+              ? (language === 'zh' ? '选择模式 · 点击画布节点添加为智能体引用' : 'Pick mode · click nodes to add agent references')
+              : (language === 'zh' ? `选择模式 · 点击节点连接引用（已连接 ${referencePickCount}）` : `Pick mode · click nodes to connect references (${referencePickCount})`)}</span>
+            <button
+              type="button"
+              onClick={() => { cancelCanvasReferencePick(); cancelAgentNodePick(); }}
+              aria-label={language === 'zh' ? '退出选择模式' : 'Exit pick mode'}
+              title={language === 'zh' ? '退出选择模式（Esc）' : 'Exit pick mode (Esc)'}
+              className="ml-1 rounded-full p-1 text-cyan-100/70 transition hover:bg-white/10 hover:text-white"
+            ><X className="h-3.5 w-3.5" /></button>
+          </div>
+        </>
+      ) : null}
       <input
         ref={fileInputRef}
         type="file"
@@ -1617,10 +1764,8 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
             <div
               key={`shell-${group.id}`}
               className={clsx(
-                // Dashed shell à la the reference: the group reads as a spatial
-                // frame, not a solid card.
-                'pointer-events-auto absolute border border-dashed bg-white/[0.025] backdrop-blur-[2px] transition-colors',
-                selected ? 'border-cyan-400/40 bg-cyan-400/[0.04]' : 'border-white/15',
+                'pointer-events-auto absolute border border-dashed transition-colors',
+                selected ? 'border-cyan-400/50' : 'border-white/15',
               )}
               style={{
                 left,
@@ -1634,8 +1779,12 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
                 // the corner the grip is pinned to, and the size caps still
                 // prevent a tiny group from turning into a pill.
                 borderRadius: Math.max(6, Math.min(16, width / 6, height / 6)),
-                // User-picked shell tint (inline bg wins over the tint classes).
-                ...(group.color ? { backgroundColor: group.color } : null),
+                // A solid base hides the canvas grid; saved translucent tints
+                // stay as an overlay instead of making the shell transparent.
+                backgroundColor: theme === 'light' ? '#e9eaed' : '#1c1d22',
+                backgroundImage: group.color
+                  ? `linear-gradient(${group.color}, ${group.color})`
+                  : selected ? 'linear-gradient(rgba(34,211,238,0.04), rgba(34,211,238,0.04))' : undefined,
               }}
               onPointerDown={(event) => {
                 if (event.target !== event.currentTarget) return;
@@ -1736,8 +1885,9 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         }}
         nodes={canvasHydrated ? nodes : []}
         edges={normalizedEdges}
-        nodesDraggable={!readOnly}
-        nodesConnectable={!readOnly}
+        nodesDraggable={!readOnly && !pickModeActive}
+        nodesConnectable={!readOnly && !pickModeActive}
+        elementsSelectable={!pickModeActive}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -1749,16 +1899,27 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         onPaneClick={(event) => {
           spawnRipple(event.clientX, event.clientY);
           setSelectedGroupId(null);
-          if (useStore.getState().agentNodePickActive) useStore.getState().cancelAgentNodePick();
         }}
         onNodeClick={(_event, node) => {
+          const state = useStore.getState();
+          if (state.canvasReferencePickTargetId) {
+            const connection: Connection = {
+              source: node.id, target: state.canvasReferencePickTargetId,
+              sourceHandle: null, targetHandle: null,
+            };
+            if (!readOnly && state.nodes.some((item) => item.id === connection.target)
+              && getCanvasConnectionIssue(state.edges, connection) === null) {
+              state.onConnect(connection);
+            }
+            return;
+          }
+          if (state.agentNodePickActive) {
+            state.resolveAgentNodePick(node.id);
+            return;
+          }
           // Selecting a node clears any group selection, so Delete targets the
           // node (not the whole group) — see the delete handler above.
           setSelectedGroupId(null);
-          // Agent "pick from canvas" mode: capture this node as a reference.
-          if (useStore.getState().agentNodePickActive) {
-            useStore.getState().resolveAgentNodePick(node.id);
-          }
         }}
         onNodeDragStart={(_event, node, draggedNodes) => {
           // Snapshot the pre-drag state ONCE so the whole drag is a single
@@ -2177,12 +2338,13 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         <>
           <div className="absolute inset-0 z-30" onClick={() => setContextMenu(null)} />
           <div
+            ref={contextMenuRef}
             className={clsx(
               'absolute z-40 rounded-[14px] border border-white/10 bg-[#252525]/98 shadow-2xl backdrop-blur-xl',
               // 全部走紧凑版（参考样式）；添加节点选择器因带副标题略宽一点。
               contextMenu.mode === 'add-node' ? 'w-[230px] p-1.5' : 'w-[220px] p-1.5',
             )}
-            style={{ left: contextMenu.x, top: contextMenu.y }}
+            style={{ left: contextMenu.x, top: contextMenu.y, maxWidth: 'calc(100% - 16px)', maxHeight: 'calc(100% - 16px)', overflowY: 'auto' }}
           >
             {contextMenu.mode === 'node-media' || contextMenu.mode === 'node-text' ? (
               <div className="flex flex-col">

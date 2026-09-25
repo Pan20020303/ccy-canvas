@@ -1,5 +1,6 @@
 import { getModelTemplate } from '../../model-templates';
 import type { AppProviderConfig } from '../../api/providerConfigs';
+import { supportsModelVision } from '../../model-vision';
 import { PROP_DEFS } from './director-props';
 
 /**
@@ -94,6 +95,5 @@ export function pickVisionModel(configs: AppProviderConfig[]): string | null {
   }
   const byTemplate = textModels.find((m) => getModelTemplate(m)?.supportsVision);
   if (byTemplate) return byTemplate;
-  const heuristic = /(-vl|vl-|vision|4o|gemini|glm-4v|qwen3\.7-plus)/i;
-  return textModels.find((m) => heuristic.test(m)) ?? null;
+  return textModels.find((m) => supportsModelVision(m)) ?? null;
 }

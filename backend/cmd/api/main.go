@@ -65,7 +65,7 @@ func main() {
 	storageContext, stopStorageSync := context.WithCancel(ctx)
 	defer stopStorageSync()
 	go storageManager.Watch(storageContext)
-	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
+	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure).WithStore(session.NewPostgresStore(pool))
 	passwordService := password.NewService()
 
 	if report, err := skillsapp.EnsureCreatorSuiteSeeds(ctx, queries); err != nil {

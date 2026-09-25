@@ -39,7 +39,7 @@ func authProject(sm session.Manager, access accessChecker, w http.ResponseWriter
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 		return "", "", "", false
 	}
-	claims, err := sm.Parse(cookie.Value)
+	claims, err := sm.ParseContext(r.Context(), cookie.Value)
 	if err != nil || claims.UserID == "" {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 		return "", "", "", false

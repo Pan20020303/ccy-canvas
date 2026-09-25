@@ -56,7 +56,7 @@ func Middleware(api huma.API, sessions session.Manager, userLookups ...UserLooku
 			huma.WriteErr(api, ctx, http.StatusUnauthorized, "Authentication required")
 			return
 		}
-		claims, err := sessions.Parse(cookie.Value)
+		claims, err := sessions.ParseContext(ctx.Context(), cookie.Value)
 		if err != nil {
 			huma.WriteErr(api, ctx, http.StatusUnauthorized, "Authentication required")
 			return
@@ -86,7 +86,7 @@ func Middleware(api huma.API, sessions session.Manager, userLookups ...UserLooku
 			}
 			if claims.Role != user.Role {
 				claims.Role = user.Role
-				if renewed, renewErr := sessions.NewCookie(claims.UserID, claims.Role); renewErr == nil {
+				if renewed, renewErr := sessions.RenewCookie(claims, claims.Role); renewErr == nil {
 					ctx.SetHeader("Set-Cookie", renewed.String())
 				}
 			}

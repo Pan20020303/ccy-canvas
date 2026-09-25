@@ -264,16 +264,17 @@ export type AgentConversationHistoryItem = {
 
 export function listAgentConversationHistory(
   agentId: string,
+  projectId: string,
   limit = 12,
   conversationId?: string,
 ): Promise<AgentConversationHistoryItem[]> {
-  const params = new URLSearchParams({ limit: String(limit) });
+  const params = new URLSearchParams({ limit: String(limit), project_id: projectId });
   if (conversationId) params.set("conversation_id", conversationId);
   return apiClient.get<AgentConversationHistoryItem[]>(`/api/app/agents/${agentId}/conversation?${params.toString()}`);
 }
 
-export function clearAgentConversationHistory(agentId: string): Promise<void> {
-  return apiClient.delete(`/api/app/agents/${agentId}/conversation`);
+export function clearAgentConversationHistory(agentId: string, projectId: string): Promise<void> {
+  return apiClient.delete(`/api/app/agents/${agentId}/conversation?project_id=${encodeURIComponent(projectId)}`);
 }
 
 // ─── Multi-thread conversation management ───────────────────────────────────
@@ -287,14 +288,14 @@ export type AgentConversationSummary = {
   updated_at: string;
 };
 
-export function listAgentConversations(agentId: string): Promise<AgentConversationSummary[]> {
-  return apiClient.get<AgentConversationSummary[]>(`/api/app/agents/${agentId}/conversations`);
+export function listAgentConversations(agentId: string, projectId: string): Promise<AgentConversationSummary[]> {
+  return apiClient.get<AgentConversationSummary[]>(`/api/app/agents/${agentId}/conversations?project_id=${encodeURIComponent(projectId)}`);
 }
 
-export function createAgentConversation(agentId: string, title?: string): Promise<AgentConversationSummary> {
-  return apiClient.post<AgentConversationSummary>(`/api/app/agents/${agentId}/conversations`, { title: title ?? "" });
+export function createAgentConversation(agentId: string, projectId: string, title?: string): Promise<AgentConversationSummary> {
+  return apiClient.post<AgentConversationSummary>(`/api/app/agents/${agentId}/conversations`, { title: title ?? "", project_id: projectId });
 }
 
-export function deleteAgentConversation(agentId: string, conversationId: string): Promise<void> {
-  return apiClient.delete(`/api/app/agents/${agentId}/conversations/${conversationId}`);
+export function deleteAgentConversation(agentId: string, projectId: string, conversationId: string): Promise<void> {
+  return apiClient.delete(`/api/app/agents/${agentId}/conversations/${conversationId}?project_id=${encodeURIComponent(projectId)}`);
 }

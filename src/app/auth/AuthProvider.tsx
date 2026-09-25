@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
-import { apiClient } from "../api/client";
+import { apiClient, ApiClientError } from "../api/client";
 import { listAppProviderConfigs } from "../api/providerConfigs";
 import { subscribeRuntimeInvalidation } from "../runtimeInvalidation";
 import { useStore, bindStorageToUser } from "../store";
@@ -102,8 +102,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await apiClient.get<AuthPayload>("/api/auth/me");
       setUser(data.user);
       setCreditSummary(data.credit_summary ?? null);
-    } catch {
-      // Transient failure — keep the last known balance; the next tick retries.
+    } catch (error) {
+      // A revoked session must leave the app; transient network failures keep
+      // the last known balance and retry on the next tick.
+      if (error instanceof ApiClientError && error.status === 401) {
+        setUser(null);
+        setCreditSummary(null);
+      }
     }
   }, []);
 

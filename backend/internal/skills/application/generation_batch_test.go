@@ -24,6 +24,8 @@ func TestCreateGenerationBatchCreatesFiftySelfContainedNodes(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{
 		"node_type": "imageNode",
 		"model":     "doubao-seedream-5-0-260128",
+		"aspect_ratio": "21:9",
+		"resolution": "2k",
 		"columns":   5,
 		"items":     items,
 	})
@@ -54,6 +56,10 @@ func TestCreateGenerationBatchCreatesFiftySelfContainedNodes(t *testing.T) {
 		if node.Data["model"] != "doubao-seedream-5-0-260128" {
 			t.Fatalf("node %d model=%v", index, node.Data["model"])
 		}
+		params, ok := node.Data["generationParams"].(map[string]any)
+		if !ok || params["aspectRatio"] != "21:9" || params["resolution"] != "2k" {
+			t.Fatalf("node %d generation params=%v", index, node.Data["generationParams"])
+		}
 		if seen[node.ID] {
 			t.Fatalf("duplicate node id %s", node.ID)
 		}
@@ -65,6 +71,9 @@ func TestCreateGenerationBatchCreatesFiftySelfContainedNodes(t *testing.T) {
 		}
 		if runPatch["prompt"] != prompt || runPatch["model"] != "doubao-seedream-5-0-260128" {
 			t.Fatalf("run patch %d is not self-contained: %#v", index, runPatch)
+		}
+		if runPatch["aspect_ratio"] != "21:9" || runPatch["resolution"] != "2k" {
+			t.Fatalf("run patch %d missing parameters: %#v", index, runPatch)
 		}
 	}
 }
@@ -97,11 +106,14 @@ func TestRunNodePatchCarriesPromptAndRejectsIncompleteNode(t *testing.T) {
 		}
 	})
 	run := &runNodeTool{state: state}
-	if _, err := run.Execute(context.Background(), json.RawMessage(`{"node_id":"ready","model":"seedream-5"}`)); err != nil {
+	if _, err := run.Execute(context.Background(), json.RawMessage(`{"node_id":"ready","model":"seedream-5","aspect_ratio":"21:9","resolution":"2k"}`)); err != nil {
 		t.Fatalf("run ready node: %v", err)
 	}
 	if patch["prompt"] != "自包含提示词" || patch["model"] != "seedream-5" {
 		t.Fatalf("run patch missing prompt/model: %#v", patch)
+	}
+	if patch["aspect_ratio"] != "21:9" || patch["resolution"] != "2k" {
+		t.Fatalf("run patch missing image parameters: %#v", patch)
 	}
 	if _, err := run.Execute(context.Background(), json.RawMessage(`{"node_id":"empty"}`)); err == nil {
 		t.Fatal("node without prompt was submitted")

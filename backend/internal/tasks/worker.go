@@ -233,6 +233,13 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 	req.GenerationLogID = p.LogID
 	req.UserID = p.UserID
 	req.NodeID = p.NodeID
+	if guardErr := validateMidjourneyRedelivery(req, row.Status); guardErr != nil {
+		// If the process died before its paid-task checkpoint reached the DB,
+		// there is no safe way to infer whether HopBase accepted the POST.
+		// Fail visibly instead of treating a redelivery as a fresh generation.
+		w.svc.FinalizeFailure(req, guardErr, elapsedSinceEnqueue(p))
+		return fmt.Errorf("%w: %w", guardErr, asynq.SkipRetry)
+	}
 
 	// Text tasks have one absolute wall-clock budget measured from the first
 	// enqueue, not a fresh 15-minute allowance on every Asynq retry. Early
@@ -289,6 +296,19 @@ func (w *Worker) handleGeneration(ctx context.Context, t *asynq.Task) error {
 		return nil
 	}
 	duration := time.Since(startedAt)
+	if shouldResumeMidjourneyAfterFailure(req, runErr) {
+		retried, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
+		if maxRetry > 0 && retried >= maxRetry {
+			w.svc.FinalizeFailure(req, modelapp.ErrMidjourneyResultPersistence, duration)
+			return fmt.Errorf("%w: %w", runErr, asynq.SkipRetry)
+		}
+		// The next delivery reloads the checkpoint before dispatch. Even when
+		// the DB was down for the checkpoint write too, the guard above forbids
+		// a new POST. Ordinary paid media failures remain non-retryable below.
+		log.Printf("[tasks] Midjourney result recovery for log %s (attempt %d/%d)", p.LogID, retried+1, maxRetry)
+		return runErr
+	}
 
 	// The shared absolute text deadline won. Persist one terminal error and
 	// stop Asynq retries; otherwise MaxRetry would give the next delivery a new
@@ -359,6 +379,30 @@ func restoreProviderCheckpoint(req *modelapp.GenerateRequest, payload []byte) {
 		req.UpstreamProviderID = checkpoint.ProviderID
 		req.ProviderConfigID = checkpoint.ProviderID
 	}
+}
+
+func isMidjourneyRequest(req modelapp.GenerateRequest) bool {
+	return req.ServiceType == "image" && strings.EqualFold(strings.TrimSpace(req.Model), "midjourney-v8-2")
+}
+
+func validateMidjourneyRedelivery(req modelapp.GenerateRequest, status string) error {
+	if !isMidjourneyRequest(req) || (status != "running" && status != "retrying") {
+		return nil
+	}
+	if req.UpstreamTaskID == "" || req.UpstreamProviderID == "" {
+		return apperror.New(apperror.CodeInternal, "Midjourney 任务已开始，但原任务编号未能保存；已停止自动重试，请先核对上游任务，避免重复计费")
+	}
+	return nil
+}
+
+func shouldResumeMidjourneyAfterFailure(req modelapp.GenerateRequest, err error) bool {
+	if !isMidjourneyRequest(req) || err == nil {
+		return false
+	}
+	if errors.Is(err, modelapp.ErrMidjourneyResultPersistence) {
+		return true
+	}
+	return req.UpstreamTaskID != "" && req.UpstreamProviderID != "" && !isPermanentError(err) && !isGenerationTimeout(err)
 }
 
 // shouldSkipRedeliveredGeneration protects the at-least-once Redis delivery

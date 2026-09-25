@@ -2,9 +2,9 @@
  * 智能体消息线程 —— assistant-ui 驱动。
  *
  * 用 @assistant-ui/react 的 ExternalStoreRuntime 把面板既有状态
- * (历史轮次 + 当前运行的 思考/工具调用/流式文本)映射成结构化消息 parts:
- *   - thought      → reasoning part(可折叠的「思考」块)
- *   - tool_call    → tool-call part(工具卡片;连续多个自动折叠成工具组)
+ * (历史轮次 + 公开任务进度 + 流式文本)映射成结构化消息：
+ *   - plan/progress → 单一中文进度卡，原始推理与工具参数不进入消息内容
+ *   - 旧工具日志    → 白名单中文活动摘要，不展示原始入参/结果
  *   - 流式回复      → text part(GFM markdown 渲染)
  *   - 附图          → image part(点击放大)
  * 另提供:线程列表(ThreadListPrimitive,历史会话切换)、选中文本引用
@@ -15,7 +15,7 @@
  * 交互型卡片(ask_user / pending_run / canvas / error)不进消息流,经 footer 插槽
  * 渲染在消息之后。
  */
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type FC, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useRef, useState, type FC, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ActionBarPrimitive,
@@ -30,17 +30,22 @@ import {
   useMessage,
   useThreadListItem,
   useThreadListItemRuntime,
+  type ExternalStoreAdapter,
   type ExternalStoreThreadListAdapter,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowDown, Check, ChevronRight, Copy, MessageSquareQuote, Plus, Sparkles, TriangleAlert, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, Check, Copy, Film, MessageSquareQuote, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { DotMatrix } from "./ui/dot-matrix";
-import type { AgentConversationTurn } from "../agent-conversation";
+import type { AgentConversationTurn, AgentVideoReference } from "../agent-conversation";
 import { runStepsToThreadParts, type CanvasOperationPart } from "../../agent-timeline";
 import { CanvasOperationIcon, presentCanvasOperation } from "./canvas-operation-presenter";
+import { toRenderableMediaUrl } from "../../reference-media";
+import { withStableThreadListSnapshot } from "./stable-assistant-runtime";
+import { AgentTaskProgress } from "./AgentTaskProgress";
+import { hasVisibleTaskProgress, legacyToolProgress, type AgentTaskProgressState } from "./task-progress";
 
 // 与 AgentRunPanel 共享的运行步骤形状(仅取本组件需要的字段,避免循环依赖)。
 export type ThreadToolStep = {
@@ -60,6 +65,10 @@ export type ThreadRunStep =
   | ThreadThoughtStep
   | { kind: string; id: string; [key: string]: unknown };
 
+const EMPTY_RUN_STEPS: ThreadRunStep[] = [];
+const convertThreadMessage = (message: ThreadMessageLike) => message;
+const groupPublicParts = groupPartByType({});
+
 /** 把面板状态映射成 assistant-ui 的 ThreadMessageLike 列表。 */
 export function buildAgentThreadMessages(
   history: AgentConversationTurn[],
@@ -67,50 +76,41 @@ export function buildAgentThreadMessages(
   streamingReply: string,
   running: boolean,
   zh = true,
+  progress?: AgentTaskProgressState,
 ): ThreadMessageLike[] {
   const messages: ThreadMessageLike[] = history.map((turn, index) => ({
     id: `h-${index}`,
     role: turn.role,
+    metadata: { custom: { videos: turn.videos ?? [], progress: turn.progress ?? legacyToolProgress(turn.toolCalls ?? [], false) } },
     content: [
       // 附图(引用的画布节点等)在文本之前显示。
       ...(turn.images ?? []).map((url) => ({ type: "image" as const, image: url })),
-      ...(turn.toolCalls ?? []).map((tool, toolIndex) => ({
-        type: "tool-call" as const,
-        toolCallId: `h-${index}-tool-${toolIndex}`,
-        toolName: tool.name,
-        argsText: tool.args || "{}",
-        result: tool.output,
-        isError: tool.status === "error",
-      })),
       { type: "text" as const, text: turn.content },
     ],
   }));
 
-  // 当前运行 → 一条带结构化 parts 的 assistant 消息(思考/工具/流式文本)。
-  // Keep the live execution timeline separate from the streamed reply.
-  // assistant-ui keys leaf parts by their array index. A late tool call used to be
-  // inserted before an already-mounted text part, which made the text renderer
-  // observe a tool-call context and throw `MessagePartText can only be used...`.
-  // 当前运行 → 一条带结构化 parts 的 assistant 消息(思考/工具/画布/流式文本)。
+  // 当前进度与回复保持独立、稳定的消息标识。
   // Keep the live execution timeline separate from the streamed reply.
   // assistant-ui keys leaf parts by their array index. A late tool call used to be
   // inserted before an already-mounted text part, which made the text renderer
   // observe a tool-call context and throw `MessagePartText can only be used...`.
   //
-  // 映射规则集中在 agent-timeline.runStepsToThreadParts（含"相邻思考合并"与
-  // "画布变更插进时间线"），这样呈现逻辑只有一份、可单测。
-  const timelineParts = runStepsToThreadParts(runSteps, presentCanvasOperation, zh) as Exclude<
+  // 仅为旧后端保留画布操作卡；新公开进度把操作集中到一张卡。
+  const alreadySaved = !progress && !streamingReply && history.at(-1)?.role === "assistant" && !!history.at(-1)?.progress;
+  const timelineParts = runStepsToThreadParts(progress || alreadySaved ? [] : runSteps.filter(step => step.kind === "canvas"), presentCanvasOperation, zh) as Exclude<
     ThreadMessageLike["content"],
     string
   >[number][];
-  if (timelineParts.length > 0) {
+  const visibleProgress = alreadySaved ? undefined : progress ?? legacyToolProgress(runSteps.filter((step): step is ThreadToolStep => step.kind === "tool" && "invocation" in step).map(step => step.invocation), running);
+  if (timelineParts.length > 0 || hasVisibleTaskProgress(visibleProgress)) {
     const runMessage: ThreadMessageLike = {
       id: "current-run-steps",
       role: "assistant",
-      content: timelineParts,
+      content: timelineParts.length ? timelineParts : [{ type: "text", text: "" }],
+      metadata: { custom: { progress: visibleProgress } },
     };
     // 时序修正:运行结束后最终回复已作为最后一条 assistant 历史存在,
-    // 工具/思考时间线应插在它「之前」;运行中则排在最后。
+    // 任务进度应插在它「之前」；运行中则排在最后。
     const last = messages[messages.length - 1];
     if (!running && !streamingReply && last?.role === "assistant") {
       messages.splice(messages.length - 1, 0, runMessage);
@@ -187,6 +187,8 @@ const MD_COMPONENTS = {
 /** 消息里的图片 part:圆角缩略图,点击放大(portal 全屏灯箱)。 */
 const ImagePartView: FC<{ image: string; alt?: string }> = ({ image, alt }) => {
   const [open, setOpen] = useState(false);
+  const displayUrl = toRenderableMediaUrl(image, { thumbWidth: 720 });
+  const fullUrl = toRenderableMediaUrl(image);
   return (
     <>
       <button
@@ -195,12 +197,12 @@ const ImagePartView: FC<{ image: string; alt?: string }> = ({ image, alt }) => {
         className="group/img relative mb-1.5 block max-w-[220px] overflow-hidden rounded-xl border border-white/10 transition hover:border-white/25"
         title={alt || ""}
       >
-        <img src={image} alt={alt || ""} loading="lazy" className="block max-h-[180px] w-full object-cover transition group-hover/img:scale-[1.02]" />
+        <img src={displayUrl} alt={alt || ""} loading="lazy" className="block max-h-[180px] w-full object-cover transition group-hover/img:scale-[1.02]" />
       </button>
       {open
         ? createPortal(
             <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/85 p-8 backdrop-blur-sm" onClick={() => setOpen(false)}>
-              <img src={image} alt={alt || ""} className="max-h-full max-w-full rounded-xl shadow-2xl" />
+              <img src={fullUrl} alt={alt || ""} className="max-h-full max-w-full rounded-xl shadow-2xl" />
               <button type="button" className="absolute right-4 top-4 rounded-full border border-white/15 bg-black/50 p-2 text-neutral-300 hover:text-white" onClick={() => setOpen(false)}>
                 <X className="h-4 w-4" />
               </button>
@@ -210,6 +212,22 @@ const ImagePartView: FC<{ image: string; alt?: string }> = ({ image, alt }) => {
         : null}
     </>
   );
+};
+
+const VideoReferenceView: FC<{ video: AgentVideoReference; zh: boolean }> = ({video, zh}) => {
+  const [failed, setFailed] = useState(false);
+  const url = toRenderableMediaUrl(video.url);
+  const name = video.name || (zh ? '参考视频' : 'Reference video');
+  return <div className="mb-2 w-[260px] max-w-full overflow-hidden rounded-xl border border-white/15 bg-black/30" data-video-reference>
+    {failed ? <div role="status" className="px-3 py-5 text-[11px] text-neutral-400">{zh ? '此视频暂时无法预览，可打开原视频查看。' : 'Preview unavailable. Open the original video below.'}</div>
+      : <video src={url} controls playsInline preload="metadata" aria-label={name}
+          poster={video.poster ? toRenderableMediaUrl(video.poster) : undefined}
+          onError={() => setFailed(true)} className="block max-h-[180px] w-full bg-black object-contain" />}
+    <div className="flex items-center gap-1.5 px-2.5 py-2 text-[11px] text-neutral-300">
+      <Film size={13} className="shrink-0" /><span className="min-w-0 flex-1 truncate" title={name}>{name}</span>
+      <a href={url} target="_blank" rel="noreferrer" className="shrink-0 text-cyan-300 hover:underline">{zh ? '打开视频' : 'Open video'}</a>
+    </div>
+  </div>;
 };
 
 /** 健壮复制:clipboard API 需要 secure context(https/localhost),局域网 http
@@ -238,7 +256,7 @@ async function copyTextRobust(text: string): Promise<boolean> {
 /** 悬浮复制条(DeepSeek 式):hover 消息时浮现,点击复制整条消息文本,
  *  1.5s 内图标切成 ✓。运行中隐藏(避免复制半截流式内容)。
  *  不用 ActionBarPrimitive.Copy —— 它依赖 clipboard API,http 环境点了没反应。 */
-const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, zh }) => {
+const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean; onEdit?: () => void }> = ({ align, zh, onEdit }) => {
   const [copied, setCopied] = useState(false);
   const getText = useMessage((m) =>
     m.content
@@ -248,8 +266,8 @@ const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, 
   );
   return (
     <ActionBarPrimitive.Root
-      hideWhenRunning
-      className={`mt-1 flex items-center opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 focus-within:opacity-100 ${align === "end" ? "justify-end" : ""}`}
+      hideWhenRunning={align === "start"}
+      className={`mt-1 flex items-center transition-opacity duration-150 focus-within:opacity-100 ${align === "end" ? "justify-end opacity-100" : "opacity-0 group-hover/msg:opacity-100"}`}
     >
       <button
         type="button"
@@ -267,213 +285,69 @@ const MessageActionBar: FC<{ align: "start" | "end"; zh: boolean }> = ({ align, 
         {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
         {copied ? <span className="text-emerald-400">{zh ? "已复制" : "Copied"}</span> : <span>{zh ? "复制" : "Copy"}</span>}
       </button>
+      {onEdit ? (
+        <button
+          type="button"
+          title={zh ? "编辑并重发" : "Edit and resend"}
+          onClick={onEdit}
+          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-neutral-500 transition hover:bg-white/10 hover:text-neutral-200"
+        >
+          <Pencil className="h-3 w-3" />
+          <span>{zh ? "编辑" : "Edit"}</span>
+        </button>
+      ) : null}
     </ActionBarPrimitive.Root>
   );
 };
 
-function makeUserMessage(zh: boolean): FC {
+function makeUserMessage(zh: boolean, onEditMessage?: (index: number, text: string) => void, getUserEditText?: (index: number) => string): FC {
   return function UserMessage() {
+    const id = useMessage((m) => m.id);
+    // useMessage subscribes through useSyncExternalStore: selectors must return
+    // primitives here. An array (including m.content itself) can be a fresh
+    // snapshot on each read and trigger React #185.
+    const originalText = useMessage((m) => m.content.filter((p): p is { type: "text"; text: string } => p.type === "text").map((p) => p.text).join("\n\n"));
+    const imagesJson = useMessage((m) => JSON.stringify(m.content.filter((p): p is { type: "image"; image: string } => p.type === "image").map((p) => p.image)));
+    const images = JSON.parse(imagesJson) as string[];
+    const videosJson = useMessage(m => JSON.stringify(m.metadata.custom.videos ?? []));
+    const videos = JSON.parse(videosJson) as AgentVideoReference[];
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState(originalText);
+    const historyIndex = /^h-(\d+)$/.exec(id ?? "")?.[1];
     return (
       <MessagePrimitive.Root className="group/msg flex flex-col items-end">
         <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-white/10 px-3.5 py-2 text-[13px] leading-relaxed text-neutral-100">
-          <MessagePrimitive.Parts
-            components={{
-              Image: ({ image }) => <ImagePartView image={image} />,
-            }}
-          />
+          {videos.map((video,index) => <VideoReferenceView key={`${video.url}-${index}`} video={video} zh={zh} />)}
+          {editing ? (
+            <div className="min-w-[220px] space-y-2">
+              {images.length ? <div className="flex flex-wrap gap-1.5">{images.map((image, index) => <ImagePartView key={`${image}-${index}`} image={image} />)}</div> : null}
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                rows={4}
+                autoFocus
+                className="prompt-editor-scroll min-h-20 w-full resize-y rounded-lg border border-white/15 bg-black/25 p-2 text-[12px] text-neutral-100 outline-none focus:border-cyan-400/40"
+              />
+              <p className="text-[10px] text-neutral-500">{zh ? "原对话保留；修改后的内容会放入新对话输入框。" : "The original chat stays intact; the edit opens in a new chat."}</p>
+              <div className="flex justify-end gap-2 text-[11px]">
+                <button type="button" onClick={() => setEditing(false)} className="text-neutral-400 hover:text-white">{zh ? "取消" : "Cancel"}</button>
+                <button
+                  type="button"
+                  disabled={!draft.trim() || historyIndex == null}
+                  onClick={() => { if (historyIndex != null) { onEditMessage?.(Number(historyIndex), draft.trim()); setEditing(false); } }}
+                  className="rounded-md bg-cyan-500/20 px-2 py-1 text-cyan-100 hover:bg-cyan-500/30 disabled:opacity-40"
+                >{zh ? "放入输入框重发" : "Use in composer"}</button>
+              </div>
+            </div>
+          ) : (
+            <MessagePrimitive.Parts components={{ Image: ({ image }) => <ImagePartView image={image} /> }} />
+          )}
         </div>
-        <MessageActionBar align="end" zh={zh} />
+        <MessageActionBar align="end" zh={zh} onEdit={onEditMessage && historyIndex != null ? () => { setDraft(getUserEditText?.(Number(historyIndex)) ?? originalText); setEditing(true); } : undefined} />
       </MessagePrimitive.Root>
     );
   };
 }
-
-/** 可折叠「思考」块(DeepSeek 式):
- *  - 流式:自动展开,头部「思考中 · X.Xs」读秒,内容实时增长并自动滚到底;
- *  - 结束:自动收起,头部「已深度思考 · X.Xs」+ 单行预览,点击可展开全文。 */
-const ReasoningBlock: FC<{ text: string; streaming?: boolean; zh: boolean }> = ({ text, streaming = false, zh }) => {
-  const [open, setOpen] = useState(streaming);
-  const [elapsedMs, setElapsedMs] = useState(0);
-  const startRef = useRef<number | null>(null);
-  const doneMsRef = useRef<number | null>(null);
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (streaming) {
-      setOpen(true);
-      if (startRef.current == null) startRef.current = performance.now();
-      const timer = window.setInterval(() => {
-        if (startRef.current != null) setElapsedMs(performance.now() - startRef.current);
-      }, 100);
-      return () => window.clearInterval(timer);
-    }
-    // 流式 → 结束的那次切换:冻结时长,自动收起。
-    if (startRef.current != null && doneMsRef.current == null) {
-      doneMsRef.current = performance.now() - startRef.current;
-      setElapsedMs(doneMsRef.current);
-      setOpen(false);
-    }
-    return undefined;
-  }, [streaming]);
-
-  // 流式内容自动滚到底,像终端一样跟随最新思考。
-  useEffect(() => {
-    if (streaming && open && bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-    }
-  }, [text, streaming, open]);
-
-  const secs = elapsedMs > 0 ? ` · ${(elapsedMs / 1000).toFixed(1)}s` : "";
-  const label = streaming
-    ? (zh ? "思考中" : "Thinking") + secs
-    : doneMsRef.current != null
-      ? (zh ? "已深度思考" : "Thought") + secs
-      : (zh ? "思考" : "Reasoning");
-  return (
-    <div className="rounded-lg border border-white/[0.07] bg-white/[0.02]">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-[11px] text-neutral-500 transition hover:text-neutral-300"
-      >
-        {streaming
-          ? <DotMatrix state="thinking" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-          : <ChevronRight className={`h-3 w-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />}
-        <span className={`shrink-0 tabular-nums ${streaming ? "text-cyan-300" : ""}`}>{label}</span>
-        <span className="min-w-0 flex-1 truncate text-neutral-600">{open ? "" : text}</span>
-      </button>
-      {open ? (
-        <div
-          ref={bodyRef}
-          className={`prompt-editor-scroll whitespace-pre-wrap break-words px-3 pb-2.5 text-[11px] leading-relaxed text-neutral-400 ${streaming ? "max-h-[240px] overflow-y-auto" : ""}`}
-        >
-          {text}
-        </div>
-      ) : null}
-    </div>
-  );
-};
-
-/** 工具调用卡片:进行中转圈;完成后可展开参数/结果。 */
-const ToolCallCard: FC<{
-  toolName: string;
-  argsText?: string;
-  result?: unknown;
-  isError?: boolean;
-  zh: boolean;
-}> = ({ toolName, argsText, result, isError, zh }) => {
-  const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const running = result === undefined && !isError;
-  const resultText = typeof result === "string" ? result : result == null ? "" : JSON.stringify(result, null, 2);
-  return (
-    <div className={`rounded-lg border ${isError ? "border-rose-400/25 bg-rose-500/[0.06]" : "border-white/[0.08] bg-white/[0.03]"}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px]"
-      >
-        {running ? (
-          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-        ) : isError ? (
-          <TriangleAlert className="h-3 w-3 shrink-0 text-rose-300" />
-        ) : (
-          <Check className="h-3 w-3 shrink-0 text-emerald-300" />
-        )}
-        <Wrench className="h-3 w-3 shrink-0 text-neutral-500" />
-        <span className="font-mono text-neutral-300">{toolName}</span>
-        <span className="ml-auto flex items-center gap-1 text-neutral-600">
-          {running ? (zh ? "运行中" : "running") : null}
-          <ChevronRight className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
-        </span>
-      </button>
-      {open ? (
-        <div className="space-y-1.5 px-2.5 pb-2">
-          {argsText && argsText !== "{}" ? (
-            <pre className="prompt-editor-scroll max-h-[140px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-black/30 p-2 font-mono text-[10px] leading-relaxed text-neutral-400">{argsText}</pre>
-          ) : null}
-          {!running && resultText ? (
-            <div className="relative">
-              <pre className={`prompt-editor-scroll max-h-[180px] overflow-auto whitespace-pre-wrap break-all rounded-md p-2 font-mono text-[10px] leading-relaxed ${isError ? "bg-rose-950/30 text-rose-200" : "bg-black/30 text-neutral-300"}`}>{resultText}</pre>
-              <button
-                type="button"
-                title={zh ? "复制结果" : "Copy result"}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(resultText).then(() => {
-                    setCopied(true);
-                    window.setTimeout(() => setCopied(false), 1200);
-                  });
-                }}
-                className="absolute right-1.5 top-1.5 rounded p-1 text-neutral-500 transition hover:bg-white/10 hover:text-white"
-              >
-                {copied ? <Check className="h-3 w-3 text-emerald-300" /> : <Copy className="h-3 w-3" />}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-};
-
-/** 工具组(assistant-ui ToolGroup 式):连续 ≥2 个工具调用折叠成一组,
- *  运行中自动展开并显示点阵动画,结束后可收起。 */
-const ToolGroupBlock: FC<{ count: number; running: boolean; zh: boolean; children: ReactNode }> = ({ count, running, zh, children }) => {
-  const [open, setOpen] = useState(running);
-  // 流式期间自动展开(官方 ToolGroup 的 auto-expand 行为)。
-  useEffect(() => { if (running) setOpen(true); }, [running]);
-  return (
-    <div className="rounded-lg border border-white/[0.08] bg-white/[0.02]">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-400 transition hover:text-neutral-200"
-      >
-        {running ? (
-          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-        ) : (
-          <Wrench className="h-3 w-3 shrink-0 text-neutral-500" />
-        )}
-        <span>{zh ? `${count} 个工具调用` : `${count} tool calls`}</span>
-        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
-      </button>
-      {open ? <div className="space-y-1.5 px-1.5 pb-1.5">{children}</div> : null}
-    </div>
-  );
-};
-
-/** 思维链外壳(assistant-ui chain-of-thought 分组):连续的 思考+工具调用
- *  合成一条可折叠时间线。运行中自动展开并显示点阵;标题带步数。 */
-const ChainOfThoughtBlock: FC<{ steps: number; running: boolean; zh: boolean; children: ReactNode }> = ({ steps, running, zh, children }) => {
-  const [open, setOpen] = useState(running);
-  useEffect(() => { if (running) setOpen(true); }, [running]);
-  return (
-    <div className="rounded-lg border border-white/[0.07] bg-white/[0.015]">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-neutral-400 transition hover:text-neutral-200"
-      >
-        {running ? (
-          <DotMatrix state="loading" className="h-3.5 w-3.5 shrink-0 text-cyan-300" />
-        ) : (
-          <Sparkles className="h-3 w-3 shrink-0 text-neutral-500" />
-        )}
-        <span>{zh ? `思维链 · ${steps} 步` : `Chain of thought · ${steps} steps`}</span>
-        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`} />
-      </button>
-      {/* 时间线:左侧竖线串起思考块与工具卡。 */}
-      {open ? <div className="ml-3.5 space-y-1.5 border-l border-white/10 pb-2 pl-2.5 pr-2">{children}</div> : null}
-    </div>
-  );
-};
-
-// 思维链分组(assistant-ui 官方 chain-of-thought 模式):连续的 reasoning +
-// tool-call 先并入 "group-thought" 外壳,内部再按类型分 reasoning/tool 子组。
-const groupChainOfThought = groupPartByType({
-  reasoning: ["group-thought", "group-reasoning"],
-  "tool-call": ["group-thought", "group-tool"],
-});
 
 /**
  * 时间线里的画布变更卡。
@@ -506,6 +380,9 @@ export function CanvasOpCard({ data }: { data: CanvasOperationPart["data"] }) {
 
 function makeAssistantMessage(zh: boolean): FC {
   return function AssistantMessage() {
+    const progressJson = useMessage(m => JSON.stringify(m.metadata.custom?.progress ?? null));
+    const progress = useMemo(() => JSON.parse(progressJson) as AgentTaskProgressState | null, [progressJson]);
+    const hasText = useMessage(m => m.content.some(part => part.type === "text" && part.text.trim().length > 0));
     // 注册画布变更卡的命名渲染器（assistant-ui 的官方 data-part 扩展点）。
     // 必须在消息组件内部注册：useAssistantDataUI 依赖 useAui() 上下文。
     useAssistantDataUI({
@@ -517,28 +394,10 @@ function makeAssistantMessage(zh: boolean): FC {
       // 气泡只在用户侧(DeepSeek 式):assistant 回复保持全宽平铺,阅读面积最大。
       <MessagePrimitive.Root className="group/msg flex flex-col items-start">
         <div className="w-full max-w-full space-y-2 text-[13px] leading-relaxed text-neutral-200">
-            <MessagePrimitive.GroupedParts groupBy={groupChainOfThought}>
-              {({ part, children }) => {
+            {progress && hasVisibleTaskProgress(progress) ? <AgentTaskProgress progress={progress} /> : null}
+            <MessagePrimitive.GroupedParts groupBy={groupPublicParts}>
+              {({ part }) => {
                 switch (part.type) {
-                  case "group-thought":
-                    // 思维链外壳:只有 1 个 part 时不套壳(单独的思考块/工具卡自渲染)。
-                    if (part.indices.length < 2) return <>{children}</>;
-                    return (
-                      <ChainOfThoughtBlock steps={part.indices.length} running={part.status.type === "running"} zh={zh}>
-                        {children}
-                      </ChainOfThoughtBlock>
-                    );
-                  case "group-reasoning":
-                    // 思考子组:ReasoningBlock 自带折叠,不再套壳。
-                    return <>{children}</>;
-                  case "group-tool":
-                    // 单个工具直接平铺;≥2 个折叠成工具组。
-                    if (part.indices.length < 2) return <>{children}</>;
-                    return (
-                      <ToolGroupBlock count={part.indices.length} running={part.status.type === "running"} zh={zh}>
-                        {children}
-                      </ToolGroupBlock>
-                    );
                   case "data":
                     // data part（含 canvas-op）由 useAssistantDataUI 注册的命名渲染器
                     // 负责渲染，见 makeAssistantMessage 里的 canvas-op 注册。
@@ -555,24 +414,19 @@ function makeAssistantMessage(zh: boolean): FC {
                         components={MD_COMPONENTS}
                       />
                     );
-                  case "reasoning": {
-                    // aui 给 parts 注入 status:运行中且是最后一个 part → running。
-                    const status = (part as { status?: { type?: string } }).status;
-                    return <ReasoningBlock text={(part as { text: string }).text} streaming={status?.type === "running"} zh={zh} />;
-                  }
                   case "image":
                     return <ImagePartView image={(part as { image: string }).image} />;
-                  case "tool-call": {
-                    const tc = part as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
-                    return <ToolCallCard toolName={tc.toolName} argsText={tc.argsText} result={tc.result} isError={tc.isError} zh={zh} />;
-                  }
+                  // Internal reasoning and raw tool payloads are never user-facing.
+                  case "reasoning":
+                  case "tool-call":
+                    return null;
                   default:
                     return null;
                 }
               }}
             </MessagePrimitive.GroupedParts>
         </div>
-        <MessageActionBar align="start" zh={zh} />
+        {hasText ? <MessageActionBar align="start" zh={zh} /> : null}
       </MessagePrimitive.Root>
     );
   };
@@ -606,30 +460,51 @@ export function useAgentThreadRuntime({
   running,
   onSend,
   threadList,
+  progress,
 }: {
   history: AgentConversationTurn[];
   runSteps: ThreadRunStep[];
   streamingReply: string;
   running: boolean;
   onSend: (text: string) => void;
+  progress?: AgentTaskProgressState;
   /** 会话列表适配器:threads/threadId/onSwitchToThread/onSwitchToNewThread/onDelete。 */
   threadList?: ExternalStoreThreadListAdapter;
 }) {
+  const onSendRef = useRef(onSend);
+  onSendRef.current = onSend;
+  const threadListRef = useRef(threadList);
+  threadListRef.current = threadList;
+  const threadListKey = JSON.stringify(threadList?.threads ?? null);
+  const stableThreads = useMemo(() => threadList?.threads ? [...threadList.threads] : undefined, [threadListKey]);
+  const stableThreadList = useMemo<ExternalStoreThreadListAdapter | undefined>(() => threadList ? ({
+    threadId: threadList.threadId,
+    isLoading: threadList.isLoading,
+    threads: stableThreads,
+    onSwitchToThread: (id) => threadListRef.current?.onSwitchToThread?.(id),
+    onSwitchToNewThread: () => threadListRef.current?.onSwitchToNewThread?.(),
+    onDelete: (id) => threadListRef.current?.onDelete?.(id),
+  }) : undefined, [Boolean(threadList), threadList?.threadId, threadList?.isLoading, stableThreads]);
+  const stableRunSteps = runSteps.length ? runSteps : EMPTY_RUN_STEPS;
   const messages = useMemo(
-    () => buildAgentThreadMessages(history, runSteps, streamingReply, running),
-    [history, runSteps, streamingReply, running],
+    () => buildAgentThreadMessages(history, stableRunSteps, streamingReply, running, true, progress),
+    [history, stableRunSteps, streamingReply, running, progress],
   );
-
-  return useExternalStoreRuntime({
+  // Keep the external-store adapter stable while the composer text changes.
+  // Re-registering it on each keystroke can recursively notify assistant-ui's
+  // thread list subscribers and crash React with error #185.
+  const store = useMemo<ExternalStoreAdapter<ThreadMessageLike>>(() => ({
     messages,
     isRunning: running,
-    convertMessage: (m: ThreadMessageLike) => m,
+    convertMessage: convertThreadMessage,
     onNew: async (message) => {
       const part = message.content[0];
-      if (part?.type === "text") onSend(part.text);
+      if (part?.type === "text") onSendRef.current(part.text);
     },
-    adapters: threadList ? { threadList } : undefined,
-  });
+    adapters: stableThreadList ? { threadList: stableThreadList } : undefined,
+  }), [messages, running, stableThreadList]);
+  const runtime = useExternalStoreRuntime(store);
+  return useMemo(() => withStableThreadListSnapshot(runtime), [runtime]);
 }
 
 /** 历史会话列表(assistant-ui ThreadList):新建/切换/删除,当前会话高亮。
@@ -722,7 +597,10 @@ export function AgentThread({
   running,
   elapsedMs,
   onQuote,
+  onEditUserMessage,
+  getUserEditText,
   footer,
+  progress,
 }: {
   zh: boolean;
   runSteps: ThreadRunStep[];
@@ -732,11 +610,14 @@ export function AgentThread({
   elapsedMs?: number | null;
   /** 选中消息文本 → 引用到 composer。 */
   onQuote?: (text: string) => void;
+  onEditUserMessage?: (index: number, text: string) => void;
+  getUserEditText?: (index: number) => string;
   /** 渲染在消息之后的交互卡片区(ask_user / 待确认生成 / 画布操作 / 错误)。 */
   footer?: ReactNode;
+  progress?: AgentTaskProgressState;
 }) {
   const AssistantMessage = useMemo(() => makeAssistantMessage(zh), [zh]);
-  const UserMessage = useMemo(() => makeUserMessage(zh), [zh]);
+  const UserMessage = useMemo(() => makeUserMessage(zh, onEditUserMessage, getUserEditText), [zh, onEditUserMessage, getUserEditText]);
 
   return (
     <ThreadPrimitive.Root className="relative flex min-h-0 min-w-0 flex-1 flex-col" onWheel={(e) => e.stopPropagation()}>
@@ -751,10 +632,10 @@ export function AgentThread({
             {elapsedMs != null ? (
               <div className="text-[10px] tabular-nums text-neutral-500">{(elapsedMs / 1000).toFixed(1)}s</div>
             ) : null}
-            {runSteps.length === 0 && !streamingReply ? (
+            {!hasVisibleTaskProgress(progress) && runSteps.every(step => step.kind === "thought") && !streamingReply ? (
               <div className="flex items-center gap-2 text-xs text-cyan-300">
                 <DotMatrix state="thinking" className="h-4 w-4" />
-                {zh ? "思考中…" : "Thinking…"}
+                {zh ? "正在理解你的请求…" : "Preparing your response…"}
               </div>
             ) : null}
           </div>

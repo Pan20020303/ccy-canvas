@@ -189,13 +189,23 @@ func TestApplyThinkingControl(t *testing.T) {
 		{"qwen3.7-plus", &off, false},
 		{"deepseek-v4-flash", nil, nil},
 		{"deepseek-v4-flash", &on, nil},
-		{"deepseek-v4-flash", &off, false},
+		{"deepseek-v4-flash", &off, nil},
 		{"gpt-4.1-mini", nil, nil},
 		{"gpt-4.1-mini", &off, nil},
 	}
 	for _, c := range cases {
 		body := map[string]any{}
 		applyThinkingControl(body, c.model, c.thinking)
+		if strings.Contains(c.model, "deepseek") && c.thinking != nil {
+			wantMode := "disabled"
+			if *c.thinking {
+				wantMode = "enabled"
+			}
+			gotMode, ok := body["thinking"].(map[string]string)
+			if !ok || gotMode["type"] != wantMode {
+				t.Fatalf("thinking = %#v, want %s", body["thinking"], wantMode)
+			}
+		}
 		got, ok := body["enable_thinking"]
 		if c.want == nil {
 			if ok {

@@ -109,8 +109,8 @@ type InsertAgentConversationMessageParams struct {
 }
 
 const insertAgentConversationMessage = `-- name: InsertAgentConversationMessage :one
-INSERT INTO agent_conversation_messages (conversation_id, role, content)
-VALUES ($1, $2, $3)
+INSERT INTO agent_conversation_messages (conversation_id, role, content, created_at)
+VALUES ($1, $2, $3, clock_timestamp())
 RETURNING id, conversation_id, role, content, created_at
 `
 
@@ -132,10 +132,14 @@ FROM (
     SELECT id, conversation_id, role, content, created_at
     FROM agent_conversation_messages
     WHERE conversation_id = $1
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC,
+        CASE role WHEN 'user' THEN 0 WHEN 'tool_log' THEN 1 WHEN 'assistant' THEN 2 ELSE 3 END DESC,
+        id DESC
     LIMIT $2
 ) tail
-ORDER BY created_at ASC
+ORDER BY created_at ASC,
+    CASE role WHEN 'user' THEN 0 WHEN 'tool_log' THEN 1 WHEN 'assistant' THEN 2 ELSE 3 END ASC,
+    id ASC
 `
 
 func (q *Queries) ListAgentConversationMessages(ctx context.Context, arg ListAgentConversationMessagesParams) ([]AgentConversationMessage, error) {

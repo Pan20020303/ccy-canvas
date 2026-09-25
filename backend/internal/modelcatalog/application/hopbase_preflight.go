@@ -26,6 +26,16 @@ import (
 // The HTTP handler calls this before credits, task rows, or queue submission.
 // It never downloads, uploads, signs media, or invokes a generation provider.
 func (s *Service) PreflightGeneration(ctx context.Context, req GenerateRequest) error {
+	if req.ServiceType == "image" && req.Model == hopBaseMidjourneyModel {
+		candidates, err := s.buildCandidates(req)
+		if err != nil {
+			return err
+		}
+		if isHopBaseProvider(candidates[0].cfg, candidates[0].baseURL) && !isTSProvider(candidates[0].cfg) {
+			return validateHopBaseMidjourney(req)
+		}
+		return nil
+	}
 	if req.ServiceType == "image" && isSeedreamPro(req.Model) {
 		candidates, err := s.buildCandidates(req)
 		if err != nil {
@@ -38,6 +48,16 @@ func (s *Service) PreflightGeneration(ctx context.Context, req GenerateRequest) 
 		return nil
 	}
 	if req.ServiceType != "video" {
+		return nil
+	}
+	if isHopBaseMiniMaxH3Model(req.Model) {
+		candidates, err := s.buildCandidates(req)
+		if err != nil {
+			return err
+		}
+		if isHopBaseProvider(candidates[0].cfg, candidates[0].baseURL) && !isTSProvider(candidates[0].cfg) {
+			return validateHopBaseMiniMaxH3(req)
+		}
 		return nil
 	}
 	if _, known := hopBaseSeedanceCapabilitiesFor(req.Model); !known {

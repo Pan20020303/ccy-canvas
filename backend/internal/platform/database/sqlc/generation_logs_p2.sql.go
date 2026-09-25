@@ -368,6 +368,7 @@ type StaleActiveGenerationRow struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	NodeID      string             `json:"node_id"`
 	ServiceType string             `json:"service_type"`
+	Model       string             `json:"model"`
 	Status      string             `json:"status"`
 	CreditCost  int32              `json:"credit_cost"`
 	ProjectID   string             `json:"project_id"`
@@ -376,7 +377,7 @@ type StaleActiveGenerationRow struct {
 }
 
 const listStaleActiveGenerations = `
-SELECT id, user_id, node_id, service_type, status,
+SELECT id, user_id, node_id, service_type, model, status,
        COALESCE((request_payload->>'CreditCost')::int, 0) AS credit_cost,
        COALESCE(request_payload->>'project_id', request_payload->>'ProjectID', '') AS project_id,
        COALESCE(request_payload->>'CreditScope', 'personal') AS credit_scope,
@@ -405,7 +406,7 @@ func (q *Queries) ListStaleActiveGenerations(ctx context.Context, olderThan time
 	items := []StaleActiveGenerationRow{}
 	for rows.Next() {
 		var i StaleActiveGenerationRow
-		if err := rows.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Status, &i.CreditCost, &i.ProjectID, &i.CreditScope, &i.CreatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.UserID, &i.NodeID, &i.ServiceType, &i.Model, &i.Status, &i.CreditCost, &i.ProjectID, &i.CreditScope, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

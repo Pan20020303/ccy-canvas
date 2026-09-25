@@ -2,11 +2,14 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -418,7 +421,12 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 		return ChannelTestReport{OK: false, ErrorMsg: "key decrypt failed: " + derr.Error()}, nil
 	}
 
+	hopBaseMidjourney := isHopBaseProvider(cfg, cfg.BaseURL) &&
+		(cfg.DefaultModel == hopBaseMidjourneyModel || slices.Contains(cfg.ModelList, hopBaseMidjourneyModel))
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/models"
+	if hopBaseMidjourney {
+		url = hopBaseWanURL(cfg.BaseURL, "/v1/models")
+	}
 	started := time.Now()
 	report := ChannelTestReport{}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -443,13 +451,37 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	defer resp.Body.Close()
 	report.HTTPStatus = resp.StatusCode
 	report.OK = resp.StatusCode >= 200 && resp.StatusCode < 300
-	if !report.OK {
-		_, message, _, _ := classifyProviderError(resp.StatusCode, "")
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
-			message = "渠道未提供可用的模型列表接口，无法验证凭据；请检查接口地址与协议配置"
+	if report.OK && hopBaseMidjourney {
+		// HopBase keys belong to separate model groups. A successful /models
+		// response with only other models must not approve a Midjourney key.
+		var models struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
 		}
-		// Never expose a raw provider body: it may echo the credential.
-		report.ErrorMsg = message + " (HTTP " + strconv.Itoa(resp.StatusCode) + ")"
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&models); err != nil {
+			report.OK = false
+			report.ErrorMsg = "HopBase 模型列表格式无效，无法确认 Midjourney V8.2 权限"
+		} else {
+			report.OK = slices.ContainsFunc(models.Data, func(model struct {
+				ID string `json:"id"`
+			}) bool {
+				return model.ID == hopBaseMidjourneyModel
+			})
+			if !report.OK {
+				report.ErrorMsg = "此密钥的模型列表未包含 midjourney-v8-2，请填写有 Midjourney 分组权限的 API Key"
+			}
+		}
+	}
+	if !report.OK {
+		if report.ErrorMsg == "" {
+			_, message, _, _ := classifyProviderError(resp.StatusCode, "")
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+				message = "渠道未提供可用的模型列表接口，无法验证凭据；请检查接口地址与协议配置"
+			}
+			// Never expose a raw provider body: it may echo the credential.
+			report.ErrorMsg = message + " (HTTP " + strconv.Itoa(resp.StatusCode) + ")"
+		}
 		s.CreateAdminAlert(ctx, domain.AdminAlert{
 			ProviderConfigID: cfg.ID,
 			ServiceType:      cfg.ServiceType,

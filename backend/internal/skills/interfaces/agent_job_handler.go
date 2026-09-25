@@ -60,7 +60,7 @@ func (rt *AgentRunRouter) createAgentJob(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ConversationID)
+	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ProjectID, req.ConversationID)
 	if err != nil {
 		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "无法加载智能体会话", err))
 		return
@@ -117,7 +117,7 @@ func (rt *AgentRunRouter) authenticatedAgentUser(w http.ResponseWriter, r *http.
 		httpx.WriteError(w, r, apperror.New(apperror.CodeUnauthenticated, "请先登录"))
 		return pgtype.UUID{}, false
 	}
-	claims, err := rt.sessions.Parse(cookie.Value)
+	claims, err := rt.sessions.ParseContext(r.Context(), cookie.Value)
 	if err != nil {
 		httpx.WriteError(w, r, apperror.New(apperror.CodeUnauthenticated, "登录状态已失效，请重新登录"))
 		return pgtype.UUID{}, false
@@ -322,9 +322,7 @@ func (rt *AgentRunRouter) ProcessAgentRun(ctx context.Context, runID string) err
 	if !agent.Enabled || !agentAccessibleBy(agent, job.UserID) {
 		return rt.finishAgentJob(job.ID, skillsapp.RunStats{}, time.Now(), apperror.New(apperror.CodeConflict, "Agent 已停用或权限已变更"))
 	}
-	conversation, err := rt.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
-		ID: job.ConversationID, UserID: job.UserID, AgentID: job.AgentID,
-	})
+	conversation, err := rt.q.GetScopedAgentConversation(ctx, job.ConversationID, job.UserID, job.AgentID, req.ProjectID)
 	if err != nil {
 		if finishErr := rt.finishAgentJob(job.ID, skillsapp.RunStats{}, time.Now(), err,
 			map[string]string{"message": "无法恢复智能体会话"}); finishErr != nil {
@@ -384,21 +382,15 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	}
 
 	canvas := skillsapp.NewCanvasStateAtRevision(req.Nodes, req.Edges, req.CanvasRevision, emit)
+	canvas.AutomaticGeneration = req.ManualConfirmation != nil && !*req.ManualConfirmation
 	canvas.Groups = req.Groups
 	tools := []skillsapp.Tool{}
+	mediaEnabled := false
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
-		if visionModel := strings.TrimSpace(req.VisionModel); visionModel != "" {
-			if visionResolved, visionErr := rt.catalogSvc.ResolveModelEndpoints(ctx, visionModel); visionErr == nil && len(visionResolved) > 0 {
-				visionEndpoints := make([]skillsapp.Endpoint, 0, len(visionResolved))
-				for _, endpoint := range visionResolved {
-					visionEndpoints = append(visionEndpoints, skillsapp.Endpoint{
-						ProviderID: endpoint.ProviderID, BaseURL: endpoint.BaseURL, APIKey: endpoint.APIKey,
-					})
-				}
-				tools = append(tools, skillsapp.BuildAnalyzeImageTool(canvas, rt.llm, visionEndpoints, visionModel))
-			}
-		}
+		mediaTools := skillsapp.BuildAgentMediaTools(canvas, rt.llm, endpoints, catalogModel, req.VisionModel)
+		mediaEnabled = len(mediaTools) > 0
+		tools = append(tools, mediaTools...)
 	}
 
 	memoryPolicy := skillsapp.LoadMemoryPolicy(ctx, rt.q)
@@ -445,24 +437,27 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildSaveMemoryTool(rt.q, job.UserID, agent.ID, req.ProjectID, req.WorkspaceID))
-	tools = append(tools, rt.delegationTools(ctx, agent, job.UserID, emit, req.Model)...)
 	tools = append(tools, skillsapp.BuildAskUserTool(emit))
+	tools = append(tools, skillsapp.BuildTaskProgressTool(emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
 	if selectedSkill != nil {
 		resolvedMessage, invokedSkill = skillsapp.ResolveSelectedSkillMessage(req.Message, *selectedSkill)
 	}
 	if invokedSkill != "" {
-		emit(skillsapp.EventThought, map[string]string{"content": "已加载技能：" + invokedSkill})
+		emit(skillsapp.EventProgress, skillsapp.TaskProgress{ID: "skill", Phase: "skill", Label: "已加载所选技能", Status: "completed"})
 	}
 
 	systemPrompt := agent.SystemPrompt
 	if agent.CanvasTools {
 		systemPrompt = strings.TrimSpace(systemPrompt + fmt.Sprintf("\n\n[Canvas revision: %d]", req.CanvasRevision))
 	}
-	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges, req.Groups); overview != "" {
-		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【本次对话的最新画布状态】\n" + overview)
-	}
+	// Keep the snapshot only in CanvasState. Tools read the relevant nodes
+	// on demand instead of receiving every asset on every greeting.
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+	if mediaEnabled {
+		systemPrompt += "\n\n" + skillsapp.AgentMediaGuide
+	}
+	systemPrompt += "\n\n" + canvas.GenerationPolicyGuide()
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentBatchGenerationGuide)
 	if agent.CanvasTools {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n【真实执行】所有画布变化必须通过工具调用完成。先执行，再汇报；不得在未调用工具时声称已经创建、连线或生成。")
@@ -505,7 +500,11 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		emit(event, data)
 	}
 	runner := skillsapp.Runner{LLM: rt.llm, Endpoints: endpoints, Health: rt.catalogSvc}
-	emitRuntimeSnapshot(agent, route, catalogModel, tools, boundSkills, "canvas-confirmation", emit)
+	policy := "canvas-confirmation"
+	if canvas.AutomaticGeneration {
+		policy = "canvas-automatic"
+	}
+	emitRuntimeSnapshot(agent, route, catalogModel, tools, boundSkills, policy, emit)
 	emit("context_policy", map[string]any{"history_turn_limit": memoryPolicy.ShortTermLimit, "retrieval_limit": memoryPolicy.RetrieveLimit, "memory_scope": "user+agent+project+workspace", "retrieval": "keyword", "vector_search": false})
 	stats, runErr := runner.RunAdaptive(ctx, skillsapp.RunInput{
 		SystemPrompt:    systemPrompt,
@@ -515,6 +514,7 @@ func (rt *AgentRunRouter) executeDurableAgentJob(
 		Tools:           tools,
 		Strategy:        agent.Strategy,
 		Thinking:        req.Thinking,
+		ReasoningEffort: req.ReasoningEffort,
 		Temperature:     &route.Temperature,
 		MaxOutputTokens: route.MaxOutputTokens,
 	}, runEmit)
@@ -559,7 +559,7 @@ func (rt *AgentRunRouter) persistSuccessfulTurn(
 		return nil
 	}
 	messages := []sqlc.InsertAgentConversationMessageParams{{Role: "user", Content: req.Message}}
-	if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
+	if transcript := skillsapp.FormatConversationToolLog(stats); transcript != "" {
 		messages = append(messages, sqlc.InsertAgentConversationMessageParams{Role: "tool_log", Content: transcript})
 	}
 	messages = append(messages, sqlc.InsertAgentConversationMessageParams{Role: "assistant", Content: stats.FinalReply})

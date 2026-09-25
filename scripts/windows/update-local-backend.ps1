@@ -25,6 +25,8 @@ $backupStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 foreach ($port in $Ports) {
   $activeCount = docker exec ccy-canvas-postgres psql -U postgres -d ccy_canvas -Atc "SELECT count(*) FROM generation_logs WHERE status IN ('queued','running','persisting','pending','retrying');"
   if ($LASTEXITCODE -ne 0 -or "$activeCount".Trim() -ne '0') { throw 'Active tasks or database check failure; update paused without forcing shutdown.' }
+  $activeAgents = docker exec ccy-canvas-postgres psql -U postgres -d ccy_canvas -Atc "SELECT count(*) FROM agent_runs WHERE status IN ('queued','running');"
+  if ($LASTEXITCODE -ne 0 -or "$activeAgents".Trim() -ne '0') { throw 'Active assistant conversations; update paused without interrupting them.' }
   $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop | Select-Object -First 1
   $process = Get-Process -Id $listener.OwningProcess -ErrorAction Stop
   if ($process.Path -ieq $newExecutable) { continue }

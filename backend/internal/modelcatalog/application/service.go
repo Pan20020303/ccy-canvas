@@ -34,6 +34,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccy-canvas/backend/internal/modelcatalog/domain"
@@ -299,6 +300,9 @@ func ClampModelVideoDuration(model string, d int) int {
 // upstream actually bills and removes the output_count amplification.
 func billableUnits(req GenerateRequest) int32 {
 	if req.ServiceType == "image" {
+		if req.Model == hopBaseMidjourneyModel {
+			return 4
+		}
 		return int32(ClampOutputCount(req.OutputCount))
 	}
 	return 1
@@ -1338,6 +1342,9 @@ func (s *Service) dispatchToVendor(ctx context.Context, c candidateChannel, req 
 		if c.cfg == nil || c.cfg.ID != req.UpstreamProviderID || isTSProvider(c.cfg) || !isHopBaseProvider(c.cfg, c.baseURL) {
 			return nil, apperror.New(apperror.CodeInvalidInput, "原视频任务渠道已变更，请恢复原渠道后查询任务，避免重复生成")
 		}
+		if req.ServiceType == "image" && req.Model == hopBaseMidjourneyModel {
+			return s.pollHopBaseMidjourneyTask(ctx, c.baseURL, c.apiKey, req.UpstreamTaskID)
+		}
 		return s.pollHopBaseVideoTask(ctx, c.baseURL, c.apiKey, req.UpstreamTaskID)
 	}
 	// NewAPI gateway fast path. When configured at boot, text generation
@@ -1480,6 +1487,9 @@ func maxRuntimeForType(serviceType string) time.Duration {
 }
 
 func maxRuntimeForRequest(req GenerateRequest) time.Duration {
+	if isMidjourneyFixedBatchRequest(req) {
+		return MidjourneyTaskRuntimeBudget
+	}
 	if isComfyMiniMaxH3LongRunningModel(req.Model) {
 		return 3 * time.Hour
 	}
@@ -1507,23 +1517,30 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 	if result == nil || result.Type != "url" || strings.TrimSpace(result.Content) == "" {
 		return out, nil
 	}
+	strictBatch := isMidjourneyFixedBatchRequest(req)
+	if strictBatch && len(result.ContentList) != 4 {
+		return out, fmt.Errorf("asset persistence failed: Midjourney requires all 4 generated images, got %d", len(result.ContentList))
+	}
 
 	// Multi-asset results (wan2.7 组图 / n>1): re-host EVERY asset, not just the
 	// first — provider URLs expire in ~24h, so any entry left un-rehosted rots.
-	// Each entry is best-effort (a failed entry keeps its upstream URL and is
-	// logged); the mark-persisting/queue machinery below stays single-asset and
-	// applies to the primary entry via the shared single-asset path.
+	// Ordinary batches may drop an invalid secondary entry. Midjourney's paid
+	// group requires all four entries to be saved before reporting success.
+	// Object-store failures still retain readable local copies for every entry.
 	if len(result.ContentList) > 1 {
 		persisted := make([]string, 0, len(result.ContentList))
 		for i, raw := range result.ContentList {
 			u := strings.TrimSpace(raw)
 			if u == "" {
+				if strictBatch {
+					return out, fmt.Errorf("asset persistence failed: Midjourney image %d/4 is missing", i+1)
+				}
 				continue
 			}
 			staged, err := StageRemoteAssetWithProviderAuth(ctx, u, c.baseURL, c.apiKey)
 			if err != nil {
 				out.cacheHit = false
-				if i == 0 {
+				if i == 0 || strictBatch {
 					return out, fmt.Errorf("asset persistence failed: generated media could not be fetched: %w", err)
 				}
 				log.Printf("[modelcatalog] WARNING asset staging failed for log %s entry %d/%d; dropping invalid secondary result: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
@@ -1531,7 +1548,7 @@ func (s *Service) persistGeneratedAssetForResult(ctx context.Context, req Genera
 			}
 			if err := validateGeneratedAsset(staged, req.ServiceType); err != nil {
 				out.cacheHit = false
-				if i == 0 {
+				if i == 0 || strictBatch {
 					return out, fmt.Errorf("asset persistence failed: provider result is not valid %s media: %w", req.ServiceType, err)
 				}
 				log.Printf("[modelcatalog] WARNING invalid secondary media for log %s entry %d/%d; dropping result: %v", req.GenerationLogID, i+1, len(result.ContentList), err)
@@ -1740,6 +1757,10 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 			}
 		} else if perr := s.persistGenerationOutcome(req.GenerationLogID, result, nil, duration, cacheHit); perr == nil {
 			s.publishTaskEvent(req, result, nil, duration)
+		} else if isMidjourneyFixedBatchRequest(req) {
+			// The legacy caller must not see success if the four-result record
+			// could not be saved. Keep the upstream checkpoint and staged files.
+			runErr = ErrMidjourneyResultPersistence
 		}
 
 		doneCh <- genResult{result: result, err: runErr}
@@ -1754,6 +1775,11 @@ func (s *Service) Generate(callerCtx context.Context, req GenerateRequest) (*Gen
 		return nil, callerCtx.Err()
 	}
 }
+
+// ErrMidjourneyResultPersistence asks the worker to recover the existing paid
+// task, never to create another generation. Detailed storage errors are logged
+// at their source; this safe message can be surfaced if recovery is exhausted.
+var ErrMidjourneyResultPersistence = errors.New("Midjourney 图片已生成，但结果保存暂时失败；请恢复原任务，避免重复生成")
 
 // GenerateInline runs the same pipeline as Generate's inner goroutine
 // but synchronously, using the passed-in ctx for cancellation. Intended
@@ -1794,6 +1820,9 @@ func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*Gen
 	cacheHit = assetOutcome.cacheHit
 	if cacheErr != nil {
 		log.Printf("[modelcatalog] ERROR asset staging failed for log %s: %v", req.GenerationLogID, cacheErr)
+		if isMidjourneyFixedBatchRequest(req) {
+			return nil, ErrMidjourneyResultPersistence
+		}
 		return nil, cacheErr
 	}
 	if assetOutcome.pending {
@@ -1817,6 +1846,8 @@ func (s *Service) GenerateInline(ctx context.Context, req GenerateRequest) (*Gen
 	// an event that contradicts the source of truth.
 	if perr := s.persistGenerationOutcome(req.GenerationLogID, result, nil, duration, cacheHit); perr == nil {
 		s.publishTaskEvent(req, result, nil, duration)
+	} else if isMidjourneyFixedBatchRequest(req) {
+		return result, ErrMidjourneyResultPersistence
 	}
 	return result, nil
 }
@@ -1939,6 +1970,15 @@ func staleGenerationBudgetForStatus(serviceType, status string) time.Duration {
 	return staleGenerationBudget(serviceType)
 }
 
+func staleGenerationBudgetForModel(serviceType, status, model string) time.Duration {
+	if status == "running" && isMidjourneyFixedBatchRequest(GenerateRequest{ServiceType: serviceType, Model: model}) {
+		// The execution-start timestamp excludes time waiting for an image slot.
+		// Leave the worker and its final persistence writes time to settle first.
+		return MidjourneyTaskRuntimeBudget + 10*time.Minute
+	}
+	return staleGenerationBudgetForStatus(serviceType, status)
+}
+
 // ReapStaleGenerations is the final backstop (F3) for tasks whose executor
 // vanished without writing an outcome — an OOM-killed Asynq worker, a
 // crashed legacy inline goroutine, or a persist write that failed twice.
@@ -1957,7 +1997,7 @@ func (s *Service) ReapStaleGenerations(ctx context.Context) (int, error) {
 	}
 	reaped := 0
 	for _, row := range rows {
-		budget := staleGenerationBudgetForStatus(row.ServiceType, row.Status)
+		budget := staleGenerationBudgetForModel(row.ServiceType, row.Status, row.Model)
 		age := time.Since(row.CreatedAt)
 		if age < budget {
 			continue
@@ -2014,19 +2054,23 @@ func (s *Service) runCandidateLoop(ctx context.Context, candidates []candidateCh
 		log.Printf("[comfy-pool] log_id=%s pool=%s worker_id=%s worker=%q base_url=%s",
 			req.GenerationLogID, comfyWorkerPoolID(c.cfg), c.cfg.ID, comfyWorkerName(c.cfg), c.baseURL)
 	}
+	var connectionAttempt atomic.Int32
+	connectionAttempt.Store(1)
 	ctx = withProviderRetryObserver(ctx, func(event providerRetryEvent) {
 		if !event.WillRetry || event.Err == nil {
 			return
 		}
-		errMsg := fmt.Sprintf("[relay_reconnect] 中转站连接失败，准备第 %d 次重连: %v", event.Attempt+1, event.Err)
-		log.Printf("[modelcatalog] log %s relay connection attempt %d/%d failed; reconnecting: %v", req.GenerationLogID, event.Attempt, providerRequestMaxAttempts, event.Err)
+		connectionAttempt.Store(int32(event.Attempt + 1))
+		safeMessage := publicTaskErrorMessage(event.Err)
+		errMsg := fmt.Sprintf("[relay_reconnect] 中转站连接失败，准备第 %d 次连接: %s", event.Attempt+1, safeMessage)
+		log.Printf("[modelcatalog] log %s relay connection attempt %d/%d failed; reconnecting: %s", req.GenerationLogID, event.Attempt, providerRequestMaxAttempts, safeMessage)
 		s.RecordGenerationAttempt(ctx, req.GenerationLogID, c.cfg.ID, c.cfg.Vendor,
 			event.Attempt, 0, event.DurationMs, errMsg)
 	})
 	started := time.Now()
 	result, err := s.dispatchToVendor(ctx, c, req)
 	duration := int(time.Since(started).Milliseconds())
-	s.recordChannelOutcome(ctx, req, c, 1, err, duration)
+	s.recordChannelOutcome(ctx, req, c, int(connectionAttempt.Load()), err, duration)
 	return result, err
 }
 
@@ -2059,16 +2103,19 @@ func (s *Service) persistGenerationOutcome(logID string, result *GenerateResult,
 	var writeErr error
 	for attempt := 1; attempt <= 2; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		writeErr = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()), cacheHit)
-		if writeErr == nil && result != nil && len(result.ContentList) > 1 {
-			// Multi-asset result (wan2.7 组图 / n>1): persist the FULL ordered
-			// list so recovery paths don't silently truncate to one image.
-			// Best-effort on top of the durable single-value write.
-			if encoded, jerr := json.Marshal(result.ContentList); jerr == nil {
-				if uerr := s.repo.SetGenerationLogResultURLs(ctx, logID, string(encoded)); uerr != nil {
-					log.Printf("[modelcatalog] WARNING result_urls write failed for log %s (result_url still saved): %v", logID, uerr)
-				}
+		writeErr = nil
+		if err == nil && result != nil && len(result.ContentList) > 1 {
+			// Save every URL before making the task successful. Otherwise a
+			// failed list write makes recovery permanently lose paid images.
+			encoded, jerr := json.Marshal(result.ContentList)
+			if jerr != nil {
+				writeErr = jerr
+			} else {
+				writeErr = s.repo.SetGenerationLogResultURLs(ctx, logID, string(encoded))
 			}
+		}
+		if writeErr == nil {
+			writeErr = s.repo.UpdateGenerationLogResult(ctx, logID, status, resultURL, errMsg, int32(duration.Milliseconds()), cacheHit)
 		}
 		if s.cache != nil {
 			s.cache.Delete(ctx, generationTaskCacheKey(logID))

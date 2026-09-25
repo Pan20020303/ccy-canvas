@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -88,10 +89,12 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 	// drops connections (EOF), and a single-shot download turned each blip into
 	// a permanently un-rehosted (expiring) asset. 4xx is NOT retried: an
 	// auth/404 failure won't heal.
-	var resp *http.Response
 	var lastErr error
 	attachedBearer := false
 	for attempt := 1; attempt <= 3; attempt++ {
+		if ctx.Err() != nil {
+			return StagedAsset{StagingURL: remoteURL}, ctx.Err()
+		}
 		if attempt > 1 {
 			select {
 			case <-ctx.Done():
@@ -99,7 +102,7 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 			case <-time.After(time.Duration(attempt-1) * time.Second):
 			}
 		}
-		dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		dlCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		req, rerr := http.NewRequestWithContext(dlCtx, http.MethodGet, trimmed, nil)
 		if rerr != nil {
 			cancel()
@@ -117,7 +120,7 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 			lastErr = derr
 			continue // network-level failure (EOF/reset/timeout) — retry
 		}
-		if r.StatusCode >= 500 {
+		if r.StatusCode >= 500 || r.StatusCode == http.StatusTooManyRequests {
 			r.Body.Close()
 			cancel()
 			lastErr = fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), r.StatusCode, attachedBearer)
@@ -128,22 +131,37 @@ func stageRemoteAsset(ctx context.Context, remoteURL string, auth remoteAssetAut
 			cancel()
 			return StagedAsset{StagingURL: remoteURL}, fmt.Errorf("upstream host %s returned HTTP %d while staging asset (auth=%t)", safeURLHost(trimmed), r.StatusCode, attachedBearer)
 		}
-		resp = r
-		// cancel deliberately deferred until the body is consumed below.
-		defer cancel()
-		break
+		// Reading the body is part of the GET attempt too. Previously an EOF
+		// after HTTP 200 escaped the retry loop and lost a completed video.
+		ext := extensionFor(trimmed, r.Header.Get("Content-Type"))
+		contentType := r.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = mime.TypeByExtension(ext)
+		}
+		staged, readErr := writeStagedAsset(r.Body, ext, contentType)
+		r.Body.Close()
+		cancel()
+		if readErr == nil {
+			return staged, nil
+		}
+		if !retryableAssetReadError(readErr) {
+			return StagedAsset{StagingURL: remoteURL}, readErr
+		}
+		lastErr = readErr
 	}
-	if resp == nil {
-		return StagedAsset{StagingURL: remoteURL}, lastErr
-	}
-	defer resp.Body.Close()
+	return StagedAsset{StagingURL: remoteURL}, lastErr
+}
 
-	ext := extensionFor(trimmed, resp.Header.Get("Content-Type"))
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = mime.TypeByExtension(ext)
+func retryableAssetReadError(err error) bool {
+	// Local disk/permission failures must not trigger another large download.
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return false
 	}
-	return writeStagedAsset(resp.Body, ext, contentType)
+	var timeout interface{ Timeout() bool }
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) ||
+		strings.Contains(strings.ToLower(err.Error()), "connection reset") || strings.Contains(strings.ToLower(err.Error()), "forcibly closed")
 }
 
 func safeURLHost(rawURL string) string {
@@ -452,4 +470,8 @@ func extensionFor(urlStr, contentType string) string {
 // (a relay returning result_url=http://169.254.169.254/... would otherwise be
 // fetched and staged under /uploads for readback). safehttp.Client already
 // disables keep-alives, matching the prior EOF-avoidance intent.
-var assetCacheHTTPClient = safehttp.Client(70 * time.Second)
+var assetCacheHTTPClient = func() *http.Client {
+	client := safehttp.Client(130 * time.Second)
+	client.Transport.(*http.Transport).TLSHandshakeTimeout = 30 * time.Second
+	return client
+}()

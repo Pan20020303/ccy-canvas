@@ -280,6 +280,31 @@ func (s Service) Login(ctx context.Context, email string, rawPassword string) (U
 	return user.UserDTO, nil
 }
 
+// PasswordStatus verifies a password against the account owning this session.
+// OAuth-only accounts have no local password and cannot use password-gated
+// device revocation until a password-setting flow is available.
+func (s Service) PasswordStatus(ctx context.Context, userID, rawPassword string) (available, valid bool, err error) {
+	user, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return false, false, err
+	}
+	stored, err := s.repo.GetUserByEmail(ctx, user.Email)
+	if err != nil {
+		return false, false, err
+	}
+	if stored.ID != userID || stored.Status != string(domain.UserStatusActive) {
+		return false, false, nil
+	}
+	if strings.HasPrefix(stored.PasswordHash, "oauth:") {
+		return false, false, nil
+	}
+	available = true
+	if rawPassword != "" {
+		valid = s.password.Compare(stored.PasswordHash, rawPassword)
+	}
+	return available, valid, nil
+}
+
 func (s Service) CurrentUser(ctx context.Context, userID string) (UserDTO, error) {
 	return s.repo.GetUserByID(ctx, userID)
 }

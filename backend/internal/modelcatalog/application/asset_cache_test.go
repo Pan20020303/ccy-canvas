@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,71 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestStageRemoteAssetRetriesTruncatedBody(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	root := t.TempDir()
+	t.Setenv("UPLOAD_DIR", root)
+	const complete = "complete paid video bytes"
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet {
+			t.Error("must only download existing result")
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", fmt.Sprint(len(complete)))
+		if calls == 1 {
+			fmt.Fprint(w, "partial")
+			return
+		}
+		fmt.Fprint(w, complete)
+	}))
+	defer server.Close()
+	staged, err := StageRemoteAsset(context.Background(), server.URL+"/video.mp4")
+	if err != nil || calls != 2 {
+		t.Fatalf("attempts=%d err=%v", calls, err)
+	}
+	body, err := os.ReadFile(staged.LocalPath)
+	if err != nil || string(body) != complete {
+		t.Fatalf("incomplete staged file: %q %v", body, err)
+	}
+	files := 0
+	filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files++
+		}
+		return err
+	})
+	if files != 1 {
+		t.Fatalf("partial downloads were not removed: %d files", files)
+	}
+}
+
+func TestStageRemoteAssetReadRetryBound(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	t.Setenv("UPLOAD_DIR", t.TempDir())
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Length", "100")
+		fmt.Fprint(w, "partial")
+	}))
+	defer server.Close()
+	staged, err := StageRemoteAsset(context.Background(), server.URL+"/video.mp4")
+	if err == nil || calls != 3 || staged.LocalPath != "" {
+		t.Fatalf("attempts=%d staged=%+v err=%v", calls, staged, err)
+	}
+}
+
+func TestAssetReadRetryDoesNotRetryDiskFailures(t *testing.T) {
+	if retryableAssetReadError(&os.PathError{Op: "write", Path: "local", Err: io.ErrUnexpectedEOF}) {
+		t.Fatal("local disk failures are not retryable")
+	}
+	if !retryableAssetReadError(context.DeadlineExceeded) {
+		t.Fatal("download timeout must retry")
+	}
+}
 
 func TestExtensionFor(t *testing.T) {
 	cases := []struct {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -69,6 +70,8 @@ func (h Handler) Routes(r chi.Router) {
 	r.With(signupLimit).Post("/api/auth/register", h.Register)
 	r.With(signupLimit).Post("/api/auth/register-by-invite", h.RegisterByInvite)
 	r.With(loginLimit).Post("/api/auth/login", h.Login)
+	r.Get("/api/auth/devices", h.ListDevices)
+	r.With(httpx.RateLimitMiddleware(5, 5, trustProxy)).Post("/api/auth/devices/{id}/revoke", h.RevokeDevice)
 	r.Get("/api/auth/google/start", h.GoogleStart)
 	r.Get("/api/auth/google/callback", h.GoogleCallback)
 	r.Post("/api/auth/logout", h.Logout)
@@ -88,6 +91,10 @@ type registerRequest struct {
 
 type loginRequest struct {
 	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type revokeDeviceRequest struct {
 	Password string `json:"password"`
 }
 
@@ -209,7 +216,7 @@ func (h Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		h.redirectAuthError(w, r, "google_login_failed")
 		return
 	}
-	cookie, err := h.sessions.NewCookie(user.ID, string(user.Role))
+	cookie, err := h.sessions.NewCookieForRequest(r.Context(), user.ID, string(user.Role), r.UserAgent(), requestIP(r))
 	if err != nil {
 		h.redirectAuthError(w, r, "google_session_failed")
 		return
@@ -223,6 +230,21 @@ func (h Handler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(session.CookieName); err == nil {
+		if claims, parseErr := h.sessions.ParseContext(r.Context(), cookie.Value); parseErr == nil {
+			if claims.SessionID == "" {
+				_, claims, parseErr = h.sessions.UpgradeLegacy(r.Context(), cookie.Value, claims, r.UserAgent(), requestIP(r))
+				if parseErr != nil {
+					httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not sign out", parseErr))
+					return
+				}
+			}
+			if revokeErr := h.sessions.RevokeCurrent(r.Context(), claims); revokeErr != nil {
+				httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not sign out", revokeErr))
+				return
+			}
+		}
+	}
 	http.SetCookie(w, h.sessions.ClearCookie())
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -239,8 +261,13 @@ func (h Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, err)
 		return
 	}
+	claims, err = h.ensureTrackedSession(w, r, claims)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
 	if claims.Role != string(user.Role) {
-		cookie, cookieErr := h.sessions.NewCookie(user.ID, string(user.Role))
+		cookie, cookieErr := h.sessions.RenewCookie(claims, string(user.Role))
 		if cookieErr != nil {
 			httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Failed to refresh session permissions", cookieErr))
 			return
@@ -258,6 +285,114 @@ func (h Handler) Me(w http.ResponseWriter, r *http.Request) {
 		"user":           user,
 		"credit_summary": summary,
 	})
+}
+
+func (h Handler) ensureTrackedSession(w http.ResponseWriter, r *http.Request, claims session.Claims) (session.Claims, error) {
+	if claims.SessionID != "" {
+		return claims, nil
+	}
+	oldCookie, err := r.Cookie(session.CookieName)
+	if err != nil {
+		return session.Claims{}, apperror.New(apperror.CodeUnauthenticated, "Authentication required")
+	}
+	cookie, tracked, err := h.sessions.UpgradeLegacy(r.Context(), oldCookie.Value, claims, r.UserAgent(), requestIP(r))
+	if err != nil {
+		return session.Claims{}, apperror.Wrap(apperror.CodeInternal, "Could not upgrade session", err)
+	}
+	if cookie != nil {
+		http.SetCookie(w, cookie)
+	}
+	return tracked, nil
+}
+
+func (h Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
+	claims, err := h.sessionClaims(r)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	claims, err = h.ensureTrackedSession(w, r, claims)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	entries, err := h.sessions.List(r.Context(), claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not list devices", err))
+		return
+	}
+	available, _, err := h.service.PasswordStatus(r.Context(), claims.UserID, "")
+	if err != nil {
+		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not check password status", err))
+		return
+	}
+	devices := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		devices = append(devices, map[string]any{
+			"id": entry.ID, "user_agent": entry.UserAgent, "ip_address": entry.IPAddress,
+			"created_at": entry.CreatedAt, "last_seen_at": entry.LastSeenAt,
+			"expires_at": entry.ExpiresAt, "current": entry.ID == claims.SessionID,
+		})
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]any{"devices": devices, "password_available": available})
+}
+
+func (h Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
+	claims, err := h.sessionClaims(r)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	claims, err = h.ensureTrackedSession(w, r, claims)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if id == "" || len(id) > 64 || id == claims.SessionID {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeInvalidInput, "Use sign out for this device"))
+		return
+	}
+	var req revokeDeviceRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	if req.Password == "" || len(req.Password) > 1024 {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeInvalidInput, "Password is required"))
+		return
+	}
+	available, valid, err := h.service.PasswordStatus(r.Context(), claims.UserID, req.Password)
+	if err != nil {
+		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not verify password", err))
+		return
+	}
+	if !available {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeForbidden, "This account has no local password"))
+		return
+	}
+	if !valid {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeForbidden, "Password is incorrect"))
+		return
+	}
+	revoked, err := h.sessions.Revoke(r.Context(), claims.UserID, id)
+	if err != nil {
+		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not revoke device", err))
+		return
+	}
+	if !revoked {
+		httpx.WriteError(w, r, apperror.New(apperror.CodeNotFound, "Device session not found"))
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (h Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
@@ -338,7 +473,7 @@ func (h Handler) sessionClaims(r *http.Request) (session.Claims, error) {
 	if err != nil {
 		return session.Claims{}, apperror.New(apperror.CodeUnauthenticated, "Authentication required")
 	}
-	claims, err := h.sessions.Parse(cookie.Value)
+	claims, err := h.sessions.ParseContext(r.Context(), cookie.Value)
 	if err != nil {
 		return session.Claims{}, apperror.New(apperror.CodeUnauthenticated, "Authentication required")
 	}
@@ -346,7 +481,7 @@ func (h Handler) sessionClaims(r *http.Request) (session.Claims, error) {
 }
 
 func (h Handler) writeSessionAndUser(w http.ResponseWriter, r *http.Request, user identityapp.UserDTO) {
-	cookie, err := h.sessions.NewCookie(user.ID, string(user.Role))
+	cookie, err := h.sessions.NewCookieForRequest(r.Context(), user.ID, string(user.Role), r.UserAgent(), requestIP(r))
 	if err != nil {
 		httpx.WriteError(w, r, apperror.Wrap(apperror.CodeInternal, "Could not create session", err))
 		return

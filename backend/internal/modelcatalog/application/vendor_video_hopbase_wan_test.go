@@ -235,3 +235,48 @@ func TestHopBaseWan3PollCancellation(t *testing.T) {
 		t.Fatal("expected cancellation")
 	}
 }
+
+func TestHopBaseWan3QuotaOnQueryDoesNotLoseAcceptedTask(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	fastHopBaseWanPoll(t)
+	submits, polls := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			submits++
+			fmt.Fprint(w, `{"output":{"task_id":"accepted-task"}}`)
+			return
+		}
+		polls++
+		if polls == 1 {
+			w.WriteHeader(402)
+			fmt.Fprint(w, `{"error":{"code":"insufficient_quota"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"output":{"task_status":"SUCCEEDED","video_url":"https://cdn.example.com/done.mp4"}}`)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := (&Service{}).generateVideo(ctx, &domain.ProviderConfig{Vendor: "HopBase"}, server.URL, "key", GenerateRequest{Model: "wan3.0-video", Prompt: "test"})
+	if err != nil || result.Content != "https://cdn.example.com/done.mp4" || submits != 1 || polls != 2 {
+		t.Fatalf("result=%+v error=%v submits=%d polls=%d", result, err, submits, polls)
+	}
+}
+
+func TestHopBaseWan3PersistentQuotaQueryRespectsDeadline(t *testing.T) {
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	fastHopBaseWanPoll(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Error("must not submit again")
+		}
+		w.WriteHeader(402)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := (&Service{}).pollHopBaseWan3Task(ctx, server.URL, "key", "accepted-task")
+	if err == nil || !strings.Contains(err.Error(), "任务编号已保留") {
+		t.Fatalf("wrong recovery guidance: %v", err)
+	}
+}

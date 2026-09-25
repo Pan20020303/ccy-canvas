@@ -18,6 +18,9 @@ import (
 // /images/generations endpoint. Keeping that request JSON also avoids the
 // multipart/mask semantics that Seedream explicitly does not support.
 func (s *Service) generateImageHopBase(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	if req.Model == hopBaseMidjourneyModel {
+		return s.generateImageHopBaseMidjourney(ctx, pc, baseURL, apiKey, req)
+	}
 	model := strings.ToLower(strings.TrimSpace(req.Model))
 	if len(req.ReferenceImages) > 0 && !strings.HasPrefix(model, "seedream-") {
 		return s.generateImageEdit(ctx, pc, baseURL, apiKey, req)

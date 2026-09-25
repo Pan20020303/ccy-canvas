@@ -1,0 +1,24 @@
+.agent-task-progress { width:100%; min-width:0; overflow:hidden; border:1px solid rgba(179,157,255,.14); border-radius:14px; background:rgba(179,157,255,.035); color:#c9c6d3; font-size:12px; }
+.agent-task-progress__header { display:flex; align-items:center; gap:8px; width:100%; min-width:0; padding:11px 12px; color:#c4b5ee; cursor:pointer; text-align:left; background:none; border:0; }
+.agent-task-progress__header > svg { flex-shrink:0; }
+.agent-task-progress__header:focus-visible { outline:2px solid #b39dff; outline-offset:-3px; border-radius:12px; }
+.agent-task-progress__heading { min-width:0; flex:1; font-weight:500; }
+.agent-task-progress__count { color:#85808f; white-space:nowrap; font-size:10px; }
+.agent-task-progress__chevron { transition:transform .18s ease; }
+.agent-task-progress__chevron:not(.is-open) { transform:rotate(-90deg); }
+.agent-task-progress__body { padding:0 12px 11px; }
+.agent-task-progress__summary { margin:0 0 10px; color:#9b96a6; line-height:1.55; overflow-wrap:anywhere; }
+.agent-task-progress__steps { display:flex; flex-direction:column; gap:9px; padding:0; margin:0 0 11px; list-style:none; }
+.agent-task-progress__steps li { display:flex; align-items:flex-start; gap:8px; min-width:0; color:#77727f; line-height:1.5; }
+.agent-task-progress__steps li > svg { margin-top:3px; flex-shrink:0; }
+.agent-task-progress__steps li > span { min-width:0; flex:1; overflow-wrap:anywhere; }
+.agent-task-progress__steps li > small { margin-top:2px; color:#77727f; white-space:nowrap; font-size:10px; }
+.agent-task-progress__steps li[data-step-status="completed"] > svg { color:#6db995; }
+.agent-task-progress__steps li[aria-current="step"] { color:#e1d8f8; }
+.agent-task-progress__steps li[data-step-status="blocked"], .agent-task-progress[data-status="failed"] .agent-task-progress__header { color:#efb6a1; }
+.agent-task-progress__current { display:flex; align-items:flex-start; gap:7px; min-width:0; border-top:1px solid rgba(255,255,255,.055); padding-top:9px; color:#aaa1bd; font-size:11px; line-height:1.5; }
+.agent-task-progress__current > svg { margin-top:3px; flex-shrink:0; }
+.agent-task-progress__current > span { min-width:0; overflow-wrap:anywhere; }
+.agent-task-progress__spinner { animation:agent-task-progress-spin 1.6s linear infinite; }
+@keyframes agent-task-progress-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .agent-task-progress__spinner { animation:none; } .agent-task-progress__chevron { transition:none; } }

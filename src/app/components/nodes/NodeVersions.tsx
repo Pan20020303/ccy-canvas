@@ -6,6 +6,7 @@ import clsx from 'clsx';
 import { toRenderableMediaUrl } from '../../reference-media';
 import { useStore, type NodeVersion } from '../../store';
 import { uniqueMediaVersions } from '../../media-result-state';
+import { ImageResultGalleryBadge, NodeImageResultGallery } from './ImageResultGallery';
 
 /**
  * 节点版本历史 —— 两个组件:
@@ -27,6 +28,7 @@ export function NodeVersionsBadge({
   activeModel,
   versions,
   mediaKind,
+  placement = 'right',
 }: {
   nodeId: string;
   activeUrl: string;
@@ -34,8 +36,10 @@ export function NodeVersionsBadge({
   activeModel?: string;
   versions: NodeVersion[];
   mediaKind: NodeMediaKind;
+  placement?: 'left' | 'right';
 }) {
   const [open, setOpen] = useState(false);
+  if (mediaKind === 'image') return <ImageResultGalleryBadge nodeId={nodeId} />;
   versions = uniqueMediaVersions(activeUrl, versions);
   // 主图 + history 一共多少个
   const total = (activeUrl ? 1 : 0) + versions.length;
@@ -46,7 +50,7 @@ export function NodeVersionsBadge({
       <button
         type="button"
         onClick={(e) => { e.stopPropagation(); setOpen(true); }}
-        className="pointer-events-auto absolute right-2 top-2 z-20 flex items-center gap-1 rounded-md border border-white/14 bg-black/72 px-2 py-1 text-[10.5px] font-medium text-white/90 shadow-md backdrop-blur-md transition hover:border-white/30 hover:bg-black/88"
+        className={clsx('pointer-events-auto absolute top-2 z-20 flex items-center gap-1 rounded-md border border-white/14 bg-black/72 px-2 py-1 text-[10.5px] font-medium text-white/90 shadow-md backdrop-blur-md transition hover:border-white/30 hover:bg-black/88', placement === 'left' ? 'left-2' : 'right-2')}
         title="切换历史版本"
       >
         <span>{total}个</span>
@@ -79,6 +83,7 @@ export function NodeVersionsModal({
   onClose: () => void;
 }) {
   const setActiveVersion = useStore((s) => s.setActiveVersion);
+  if (mediaKind === 'image') return <NodeImageResultGallery nodeId={nodeId} mode="fullscreen" onClose={onClose} />;
   versions = uniqueMediaVersions(activeUrl, versions);
 
   // 排版顺序:主图 在最前,后面跟 versions 时间倒序(versions[] 已经倒序).

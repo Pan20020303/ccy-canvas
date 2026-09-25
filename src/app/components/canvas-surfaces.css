@@ -6,6 +6,7 @@
 .canvas-node-placeholder { color: var(--canvas-ui-dim, #888); }
 .canvas-node-placeholder :is(svg, span, div) { color: inherit; }
 .canvas-floating-surface { background: var(--canvas-ui-surface, #202024e8) !important; border-color: var(--canvas-ui-border, #ffffff10) !important; color: var(--canvas-ui-text, #eee); backdrop-filter: blur(16px); }
+.canvas-node-pick-mode .react-flow__node { cursor: crosshair; }
 .canvas-menu-surface { background: var(--canvas-menu-surface, #18181cf7) !important; border-color: var(--canvas-ui-border, #ffffff10) !important; color: var(--canvas-ui-text, #eee); }
 .canvas-node-prompt { background: var(--canvas-menu-surface, #19191bf7) !important; border-color: var(--canvas-ui-border) !important; }
 .canvas-workspace .agent-workbench {

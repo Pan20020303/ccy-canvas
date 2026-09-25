@@ -57,6 +57,8 @@ export type ModelTemplate = {
   referenceRequirements?: Partial<Record<ReferenceModeKey, ReferenceRequirementOverride>>;
   /** Per-model image-reference bounds, narrowing the generic mode registry. */
   referenceImageRange?: { min: number; max: number };
+  /** One provider task always returns this many images; never split into runs. */
+  fixedOutputCount?: number;
   defaults?: {
     mode?: string;
     resolution?: string;
@@ -334,6 +336,16 @@ const APIMART_VIDEO_BASE = {
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
 export const modelTemplates: Record<string, ModelTemplate> = {
+  // These DeepSeek aliases accept image_url input; do not infer Pro capabilities.
+  "deepseek-flash": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-flash", supportsVision: true,
+  },
+  "deepseek-v4-flash": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-v4-flash", supportsVision: true,
+  },
+  "deepseek-v4-flash-vision-exp": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-v4-flash-vision-exp", supportsVision: true,
+  },
   "gpt-4.1-mini": {
     vendor: "OpenAI",
     serviceType: "text",
@@ -593,6 +605,28 @@ export const modelTemplates: Record<string, ModelTemplate> = {
       "all-in-one": { images: { min: 0, max: 10 }, videos: { min: 0, max: 5 }, audios: { min: 0, max: 5 } },
     },
     defaults: { resolution: "1080P", aspectRatio: "16:9" },
+  },
+  "MiniMax-H3": {
+    vendor: "HopBase", modelName: "MiniMax-H3", serviceType: "video",
+    supportsResolution: true, supportsAspectRatio: true, supportsDuration: true,
+    resolutionOptions: ["768P", "2K"],
+    aspectRatioOptions: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    durationRange: { min: 4, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-last", "multi-image", "all-in-one"],
+    referenceImageRange: { min: 1, max: 9 },
+    referenceRequirements: {
+      "all-in-one": { images: { min: 0, max: 9 }, videos: { min: 0, max: 3 }, audios: { min: 0, max: 3 } },
+    },
+    defaults: { resolution: "768P", aspectRatio: "16:9" },
+  },
+  "MiniMax-H3-Max": {
+    vendor: "HopBase", modelName: "MiniMax-H3-Max", serviceType: "video",
+    supportsResolution: true, supportsAspectRatio: true, supportsDuration: true,
+    resolutionOptions: ["480P", "768P"],
+    aspectRatioOptions: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    durationRange: { min: 5, max: 15, step: 1, defaultValue: 5 },
+    referenceModes: ["text-to-video", "first-last"],
+    defaults: { resolution: "768P", aspectRatio: "16:9" },
   },
   "wan2.7": {
     vendor: "Alibaba",
@@ -1226,6 +1260,23 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "apimart",
     modelName: "z-image-turbo",
     ...APIMART_IMAGE_TEMPLATE,
+  },
+  // HopBase v8.2 returns four separately billed images in one asynchronous task.
+  // The backend maps ratio / resolution to --ar / --hd in the prompt.
+  "midjourney-v8-2": {
+    vendor: "Midjourney",
+    modelName: "midjourney-v8-2",
+    serviceType: "image",
+    supportsAspectRatio: true,
+    supportsAutoAspect: false,
+    supportsResolution: true,
+    supportsQuality: false,
+    supportsOutputFormat: false,
+    resolutionOptions: ["1K", "2K"],
+    aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+    referenceImageRange: { min: 0, max: 1 },
+    fixedOutputCount: 4,
+    defaults: { resolution: "1K", aspectRatio: "1:1" },
   },
   // apimart Midjourney:走 /midjourney/generations，MJ 参数用 --ar(由比例映射)。
   // 无 apimart 分辨率档位；需显式比例(不给自适应)，默认 1:1。

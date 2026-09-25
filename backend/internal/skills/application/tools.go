@@ -35,6 +35,8 @@ type CanvasState struct {
 	Nodes  []CanvasNode  `json:"nodes"`
 	Edges  []CanvasEdge  `json:"edges"`
 	Groups []CanvasGroup `json:"groups,omitempty"`
+	// Immutable per-run user policy; omitted by legacy clients means manual.
+	AutomaticGeneration bool `json:"-"`
 	// emit lets tools push events back to the SSE stream.
 	emit func(string, any)
 	// idCounter for deterministic node IDs when the agent doesn't supply one.
@@ -405,42 +407,13 @@ type listNodesTool struct{ state *CanvasState }
 
 func (t *listNodesTool) Name() string { return "list_nodes" }
 func (t *listNodesTool) Description() string {
-	return "List all nodes currently on the canvas with id, type, and brief data summary."
+	return "按需分页列出本轮画布快照中的节点摘要。可按类型、分组或名称/文本筛选；默认20个，最多50个。结果不是实时同步，也不表示已看过图片或视频。"
 }
 func (t *listNodesTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+	return canvasNodeListSchema
 }
-func (t *listNodesTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
-	t.state.mu.RLock()
-	defer t.state.mu.RUnlock()
-	type brief struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Name    string `json:"name,omitempty"`
-		HasURL  bool   `json:"has_url,omitempty"`
-		Content string `json:"content,omitempty"`
-	}
-	out := make([]brief, 0, len(t.state.Nodes))
-	for _, n := range t.state.Nodes {
-		b := brief{ID: n.ID, Type: n.Type}
-		if v, ok := n.Data["sourceName"].(string); ok {
-			b.Name = v
-		} else if v, ok := n.Data["customTitle"].(string); ok {
-			b.Name = v
-		}
-		if v, ok := n.Data["url"].(string); ok && v != "" {
-			b.HasURL = true
-		}
-		if v, ok := n.Data["content"].(string); ok {
-			if len(v) > 80 {
-				v = v[:80] + "..."
-			}
-			b.Content = v
-		}
-		out = append(out, b)
-	}
-	raw, _ := json.Marshal(out)
-	return string(raw), nil
+func (t *listNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
+	return listCanvasNodes(t.state, args)
 }
 
 // BuildCanvasOverview provides a bounded semantic snapshot. Detailed content
@@ -583,11 +556,18 @@ const AgentInteractionGuide = `【交互准则】
 1. 普通问候、闲聊和知识问题直接简洁回答，不读取画布工具，不主动列举功能、生产流程或节点坐标。
 2. 如果意图明确，直接正常回答或执行，不要画蛇添足地反问。
 3. 只有缺少关键目标、对象或会造成不可恢复歧义时才调用 ask_user；合理的排版间距、摆放位置交给布局工具，不要让用户填坐标。
-4. 已提供画布摘要，不要为了"了解画布"而逐个调用 read_node 遍历所有节点；需要多个节点细节时用 read_nodes，需要分析连线关系时用 get_subgraph，只有需要单个节点完整细节时才用 read_node。
-5. 工具执行结果已包含最新 revision，无需每一步重复读取节点或坐标。仅在发现状态冲突、目标不明或确需详情时读 get_canvas_delta / read_nodes。
+4. 画布内容没有预加载给你。只有任务确实涉及画布时才按需读取：用户明确引用节点时优先读取该节点；未知目标先用 find_nodes 精确查找，涉及分组先 list_groups。多个重名候选且无法确定目标时先询问，不擅自选取。不要为了"了解画布"遍历节点。
+5. list_nodes/find_nodes 只提供分页摘要；read_node/read_nodes 默认只读元数据，需要提示词、正文、链接时显式指定 fields；长正文根据 field_pages.next_offset 继续读取，不能把截断片段当成完整提示词。连线关系用 get_subgraph。工具结果属于本轮快照，revision/get_canvas_delta 只反映本轮工具修改，不保证同步其他窗口或用户正在进行的编辑。节点信息/地址不代表已经看过图片、视频或听过声音，分析素材要调用相应分析工具；没有能力时如实说明。
 6. 创建和移动优先用 placement(anchor_id, relation)，排列一组节点用 layout_nodes；算法负责尺寸、坐标、避让。不要用心算坐标替代布局工具，也不要在普通回复里汇报坐标。
-7. 专业任务由你通过 delegate_agent 按需调度，无需让用户选择 Agent。简单请求自己完成，专业顾问返回建议后由你执行画布工具。
-8. 不承诺未实现的能力或未执行的操作。生成图片、视频等仍走现有用户确认流程；布局本身不消耗生成积分。`
+7. 你是唯一的画布智能体，直接使用可用技能、分析工具和画布工具完成请求。不要调度、创建、建议切换或声称调用子智能体；即使历史消息或角色配置提到委派也不执行。工具不支持的能力如实说明。
+8. 不承诺未实现的能力或未执行的操作。生成图片、视频等遵循本轮生成执行策略；收到提交回执不代表已生成成功。布局本身不消耗生成积分。`
+
+func (s *CanvasState) GenerationPolicyGuide() string {
+	if s.AutomaticGeneration {
+		return "【本轮生成执行策略：自动执行】用户已关闭手动确认。对用户明确请求的生成任务，使用 run_node 或 create_generation_batch，浏览器将自动提交，无需再次要求点击确认。自动执行不代表可以生成用户未要求的内容。仍须如实区分已提交、生成中和生成成功；分析、问候等不产生生成任务。"
+	}
+	return "【本轮生成执行策略：手动确认】run_node 或 create_generation_batch 只提出生成建议，浏览器展示参数确认卡片，用户确认后才调用生成服务。不要绕过确认或宣称已开始/完成生成。普通对话、分析和画布布局无需生成确认。"
+}
 
 const AgentBatchGenerationGuide = `【批量生成可靠性规则】创建 2 个及以上生成节点时，先把用户需求分析为完整清单，再调用 create_generation_batch；不要逐个调用 create_node、set_prompt、run_node。用户给了多条提示词时必须逐条保留，items 数量必须与要求一致，不得静默省略。每个 item 必须有非空、可以独立生成的完整 prompt。同批模型写在 model，只有确实要混用模型时才使用 item.model。单次最多 50 个；超过 50 个才按每批最多 50 个拆分。工具返回后核对 created 是否等于计划数量再汇报。`
 
@@ -674,16 +654,20 @@ func (t *createNodeTool) Execute(_ context.Context, args json.RawMessage) (strin
 type createGenerationBatchTool struct{ state *CanvasState }
 
 type generationBatchItem struct {
-	Prompt   string `json:"prompt"`
-	Title    string `json:"title"`
-	Model    string `json:"model"`
-	Position *XY    `json:"position"`
+	Prompt      string `json:"prompt"`
+	Title       string `json:"title"`
+	Model       string `json:"model"`
+	AspectRatio string `json:"aspect_ratio"`
+	Resolution  string `json:"resolution"`
+	Position    *XY    `json:"position"`
 }
 
 type generationBatchMutation struct {
 	Node         CanvasNode
 	Prompt       string
 	Model        string
+	AspectRatio  string
+	Resolution   string
 	BaseRevision uint64
 	Revision     uint64
 }
@@ -698,9 +682,11 @@ func (t *createGenerationBatchTool) Parameters() json.RawMessage {
         "properties":{
           "node_type":{"type":"string","enum":["imageNode","videoNode","audioNode","textNode"]},
           "model":{"type":"string","description":"Exact generation model name shared by the batch"},
+          "aspect_ratio":{"type":"string","description":"Output ratio shared by the batch, e.g. 21:9"},
+          "resolution":{"type":"string","description":"Output resolution shared by the batch, e.g. 2k"},
           "start_position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]},
           "columns":{"type":"integer","minimum":1,"maximum":10,"default":5},
-          "items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"prompt":{"type":"string","minLength":1},"title":{"type":"string"},"model":{"type":"string","description":"Optional per-item model override"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["prompt"],"additionalProperties":false}},
+          "items":{"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"prompt":{"type":"string","minLength":1},"title":{"type":"string"},"model":{"type":"string","description":"Optional per-item model override"},"aspect_ratio":{"type":"string"},"resolution":{"type":"string"},"position":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"]}},"required":["prompt"],"additionalProperties":false}},
           "expected_revision":{"type":"integer","minimum":0}
         },
         "required":["node_type","items"],
@@ -722,6 +708,8 @@ func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMess
 	var p struct {
 		NodeType         string                `json:"node_type"`
 		Model            string                `json:"model"`
+		AspectRatio      string                `json:"aspect_ratio"`
+		Resolution       string                `json:"resolution"`
 		StartPosition    *XY                   `json:"start_position"`
 		Columns          int                   `json:"columns"`
 		Items            []generationBatchItem `json:"items"`
@@ -740,11 +728,15 @@ func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMess
 		p.Items[index].Prompt = strings.TrimSpace(p.Items[index].Prompt)
 		p.Items[index].Title = strings.TrimSpace(p.Items[index].Title)
 		p.Items[index].Model = strings.TrimSpace(p.Items[index].Model)
+		p.Items[index].AspectRatio = strings.TrimSpace(p.Items[index].AspectRatio)
+		p.Items[index].Resolution = strings.TrimSpace(p.Items[index].Resolution)
 		if p.Items[index].Prompt == "" {
 			return "", fmt.Errorf("item %d has an empty prompt; no nodes were created", index+1)
 		}
 	}
 	p.Model = strings.TrimSpace(p.Model)
+	p.AspectRatio = strings.TrimSpace(p.AspectRatio)
+	p.Resolution = strings.TrimSpace(p.Resolution)
 	if p.Columns == 0 {
 		p.Columns = 5
 	}
@@ -780,6 +772,24 @@ func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMess
 			title = generationNodeTitle(p.NodeType, index)
 		}
 		data := map[string]any{"customTitle": title, "promptDraft": item.Prompt}
+		aspectRatio := item.AspectRatio
+		if aspectRatio == "" {
+			aspectRatio = p.AspectRatio
+		}
+		resolution := item.Resolution
+		if resolution == "" {
+			resolution = p.Resolution
+		}
+		generationParams := map[string]any{}
+		if aspectRatio != "" {
+			generationParams["aspectRatio"] = aspectRatio
+		}
+		if resolution != "" {
+			generationParams["resolution"] = resolution
+		}
+		if len(generationParams) > 0 {
+			data["generationParams"] = generationParams
+		}
 		if model != "" {
 			data["model"] = model
 		}
@@ -787,7 +797,7 @@ func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMess
 		t.state.addNodeLocked(node)
 		baseRevision, revision := t.state.recordChangeLocked("add_node", []string{node.ID}, nil)
 		mutations = append(mutations, generationBatchMutation{
-			Node: node, Prompt: item.Prompt, Model: model,
+			Node: node, Prompt: item.Prompt, Model: model, AspectRatio: aspectRatio, Resolution: resolution,
 			BaseRevision: baseRevision, Revision: revision,
 		})
 	}
@@ -802,14 +812,22 @@ func (t *createGenerationBatchTool) Execute(_ context.Context, args json.RawMess
 		}, mutation.BaseRevision, mutation.Revision))
 		runPatch := map[string]any{
 			"op": "run_node", "node_id": mutation.Node.ID, "prompt": mutation.Prompt,
+			"requires_confirmation": !t.state.AutomaticGeneration,
 		}
 		if mutation.Model != "" {
 			runPatch["model"] = mutation.Model
+		}
+		if mutation.AspectRatio != "" {
+			runPatch["aspect_ratio"] = mutation.AspectRatio
+		}
+		if mutation.Resolution != "" {
+			runPatch["resolution"] = mutation.Resolution
 		}
 		t.state.emit(EventCanvasPatch, runPatch)
 	}
 	raw, _ := json.Marshal(map[string]any{
 		"created": len(mutations), "node_ids": nodeIDs, "revision": finalRevision,
+		"requires_confirmation": !t.state.AutomaticGeneration, "note": "节点与生成请求已交给浏览器处理，不代表已生成成功。",
 	})
 	return string(raw), nil
 }
@@ -908,15 +926,17 @@ type runNodeTool struct{ state *CanvasState }
 
 func (t *runNodeTool) Name() string { return "run_node" }
 func (t *runNodeTool) Description() string {
-	return "Trigger generation on the target node (image/video/text/audio). Optionally pass `model` to pick a specific generation model (see 可用生成模型 in the system prompt). The browser performs the actual API call; this just signals it to start."
+	return "Request generation on a node (image/video/text/audio). Follow this run's generation policy: manual mode shows a parameter approval card; automatic mode submits directly in the browser. Pass model and, for images, aspect_ratio and resolution when requested. Submission is not generation completion."
 }
 func (t *runNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"model":{"type":"string","description":"生成模型名(可选;省略则用节点已选/默认模型)"}},"required":["node_id"]}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"},"model":{"type":"string","description":"生成模型名(可选;省略则用节点已选/默认模型)"},"aspect_ratio":{"type":"string","description":"图片画幅比例，如 21:9"},"resolution":{"type":"string","description":"图片分辨率，如 2k"}},"required":["node_id"]}`)
 }
 func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		NodeID string `json:"node_id"`
-		Model  string `json:"model"`
+		NodeID      string `json:"node_id"`
+		Model       string `json:"model"`
+		AspectRatio string `json:"aspect_ratio"`
+		Resolution  string `json:"resolution"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -937,11 +957,20 @@ func (t *runNodeTool) Execute(_ context.Context, args json.RawMessage) (string, 
 	if strings.TrimSpace(prompt) == "" {
 		return "", fmt.Errorf("node %s has no prompt; call set_prompt before run_node", p.NodeID)
 	}
-	patch := map[string]any{"op": "run_node", "node_id": p.NodeID, "prompt": prompt, "requires_confirmation": true}
+	patch := map[string]any{"op": "run_node", "node_id": p.NodeID, "prompt": prompt, "requires_confirmation": !t.state.AutomaticGeneration}
 	if strings.TrimSpace(p.Model) != "" {
 		patch["model"] = strings.TrimSpace(p.Model)
 	}
+	if strings.TrimSpace(p.AspectRatio) != "" {
+		patch["aspect_ratio"] = strings.TrimSpace(p.AspectRatio)
+	}
+	if strings.TrimSpace(p.Resolution) != "" {
+		patch["resolution"] = strings.TrimSpace(p.Resolution)
+	}
 	t.state.emit(EventCanvasPatch, patch)
+	if t.state.AutomaticGeneration {
+		return `{"ok":true,"status":"submitted_to_browser","note":"生成请求已交给浏览器自动提交，尚未完成生成。不要宣称图片或视频已生成成功。"}`, nil
+	}
 	return `{"ok":true,"status":"awaiting_browser_confirmation","note":"仅已提交生成建议，未开始也未完成生成。等待用户在画布确认；不要宣称图片或视频已生成。"}`, nil
 }
 
@@ -1043,23 +1072,28 @@ type readNodeTool struct{ state *CanvasState }
 
 func (t *readNodeTool) Name() string { return "read_node" }
 func (t *readNodeTool) Description() string {
-	return "Read the full data of a node: type, position, url, content, prompt, etc."
+	return "按需读取单个节点的指定字段；默认仅元数据。提示词用 fields:[promptDraft]，正文用 fields:[content]，链接用 fields:[url]。长文本按 Unicode 字符 text_offset/text_limit 分页；根据 field_pages.next_offset 续读。不会返回编辑器原始数据或内联图片，也不等同于分析媒体内容。"
 }
 func (t *readNodeTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string"}},"required":["node_id"]}`)
+	return canvasNodeReadSchema(false)
 }
 func (t *readNodeTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		NodeID string `json:"node_id"`
-	}
+	var p canvasReadRequest
 	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if err := p.validate(); err != nil {
 		return "", err
 	}
 	t.state.mu.RLock()
 	defer t.state.mu.RUnlock()
 	node, ok := t.state.nodeLocked(p.NodeID)
 	if ok {
-		out, _ := json.Marshal(node)
+		budget := canvasReadTextBudget
+		item := canvasNodeDetails(*node, p, &budget)
+		item["revision"] = t.state.revision
+		item["snapshot_scope"] = "run_snapshot"
+		out, _ := json.Marshal(item)
 		return string(out), nil
 	}
 	return "", fmt.Errorf("node not found: %s", p.NodeID)
@@ -1069,79 +1103,34 @@ type findNodesTool struct{ state *CanvasState }
 
 func (t *findNodesTool) Name() string { return "find_nodes" }
 func (t *findNodesTool) Description() string {
-	return "Find nodes matching a type and/or a substring in their name/content."
+	return "按类型、分组和关键词查找节点，同时搜索自定义名称、原文件名、正文和提示词；返回分页摘要，不自动读取全文。重名候选都保留，无法确定目标时先询问用户。"
 }
 func (t *findNodesTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"type":{"type":"string"},"name_contains":{"type":"string"}},"additionalProperties":false}`)
+	return canvasNodeListSchema
 }
 func (t *findNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		Type         string `json:"type"`
-		NameContains string `json:"name_contains"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", err
-	}
-	needle := strings.ToLower(p.NameContains)
-	t.state.mu.RLock()
-	defer t.state.mu.RUnlock()
-	type brief struct {
-		ID, Type, Name string
-	}
-	out := []brief{}
-	candidateIDs := make([]string, 0, len(t.state.Nodes))
-	if p.Type != "" {
-		for id := range t.state.nodesByType[p.Type] {
-			candidateIDs = append(candidateIDs, id)
-		}
-	} else {
-		for id := range t.state.nodeIndex {
-			candidateIDs = append(candidateIDs, id)
-		}
-	}
-	sort.Strings(candidateIDs)
-	for _, id := range candidateIDs {
-		node, ok := t.state.nodeLocked(id)
-		if !ok {
-			continue
-		}
-		n := *node
-		name := ""
-		if v, ok := n.Data["sourceName"].(string); ok {
-			name = v
-		} else if v, ok := n.Data["customTitle"].(string); ok {
-			name = v
-		}
-		if needle != "" && !strings.Contains(strings.ToLower(name), needle) {
-			if v, _ := n.Data["content"].(string); !strings.Contains(strings.ToLower(v), needle) {
-				continue
-			}
-		}
-		out = append(out, brief{n.ID, n.Type, name})
-	}
-	raw, _ := json.Marshal(out)
-	return string(raw), nil
+	return listCanvasNodes(t.state, args)
 }
 
 type readNodesTool struct{ state *CanvasState }
 
 func (t *readNodesTool) Name() string { return "read_nodes" }
 func (t *readNodesTool) Description() string {
-	return "Read up to 50 canvas nodes in one call. Optionally request only specific fields to reduce context size."
+	return "批量读取1–50个节点的指定字段；默认仅元数据。每个文本字段默认1000字符，单次总文本预算16000字符。field_pages 标明截断和下一偏移，长提示词请逐节点分页补全；不会返回原始编辑器数据或base64图片。"
 }
 func (t *readNodesTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50},"fields":{"type":"array","items":{"type":"string"},"description":"Optional fields: type, position, data, or keys inside node.data such as content, promptDraft, url"}},"required":["node_ids"],"additionalProperties":false}`)
+	return canvasNodeReadSchema(true)
 }
 func (t *readNodesTool) Execute(_ context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		NodeIDs []string `json:"node_ids"`
-		Fields  []string `json:"fields"`
-	}
+	var p canvasReadRequest
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	if len(p.NodeIDs) == 0 || len(p.NodeIDs) > 50 {
 		return "", fmt.Errorf("read_nodes requires 1-50 node_ids")
+	}
+	if err := p.validate(); err != nil {
+		return "", err
 	}
 
 	t.state.mu.RLock()
@@ -1149,6 +1138,7 @@ func (t *readNodesTool) Execute(_ context.Context, args json.RawMessage) (string
 	nodes := make([]any, 0, len(p.NodeIDs))
 	missing := make([]string, 0)
 	seen := make(map[string]struct{}, len(p.NodeIDs))
+	budget := canvasReadTextBudget
 	for _, id := range p.NodeIDs {
 		if _, duplicate := seen[id]; duplicate {
 			continue
@@ -1159,33 +1149,9 @@ func (t *readNodesTool) Execute(_ context.Context, args json.RawMessage) (string
 			missing = append(missing, id)
 			continue
 		}
-		if len(p.Fields) == 0 {
-			nodes = append(nodes, map[string]any{"id": node.ID, "type": node.Type, "data": node.Data})
-			continue
-		}
-		item := map[string]any{"id": node.ID}
-		data := make(map[string]any)
-		for _, field := range p.Fields {
-			switch field {
-			case "id":
-			case "type":
-				item["type"] = node.Type
-			case "position":
-				item["position"] = node.Position
-			case "data":
-				item["data"] = node.Data
-			default:
-				if value, exists := node.Data[field]; exists {
-					data[field] = value
-				}
-			}
-		}
-		if len(data) > 0 {
-			item["data"] = data
-		}
-		nodes = append(nodes, item)
+		nodes = append(nodes, canvasNodeDetails(*node, p, &budget))
 	}
-	raw, _ := json.Marshal(map[string]any{"revision": t.state.revision, "nodes": nodes, "missing": missing})
+	raw, _ := json.Marshal(map[string]any{"revision": t.state.revision, "snapshot_scope": "run_snapshot", "nodes": nodes, "missing": missing, "text_budget": canvasReadTextBudget, "text_used": canvasReadTextBudget - budget})
 	return string(raw), nil
 }
 
@@ -1193,7 +1159,7 @@ type getSubgraphTool struct{ state *CanvasState }
 
 func (t *getSubgraphTool) Name() string { return "get_subgraph" }
 func (t *getSubgraphTool) Description() string {
-	return "Read the compact upstream/downstream neighborhood around selected nodes. Prefer this over repeatedly calling read_node when reasoning about connected canvas content."
+	return "读取指定节点的上下游关系摘要（最多100个节点、200条连线，truncated表示未读全）。只在分析连线时使用；属于本轮快照，不是实时同步。"
 }
 func (t *getSubgraphTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"node_ids":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50},"direction":{"type":"string","enum":["upstream","downstream","both"],"default":"both"},"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}},"required":["node_ids"],"additionalProperties":false}`)
@@ -1210,11 +1176,12 @@ type subgraphNode struct {
 
 func compactSubgraphNode(node CanvasNode) subgraphNode {
 	out := subgraphNode{ID: node.ID, Type: node.Type, Position: node.Position}
-	if value, ok := node.Data["sourceName"].(string); ok && value != "" {
+	if value, ok := node.Data["customTitle"].(string); ok && value != "" {
 		out.Name = value
-	} else if value, ok := node.Data["customTitle"].(string); ok {
+	} else if value, ok := node.Data["sourceName"].(string); ok {
 		out.Name = value
 	}
+	out.Name = canvasBriefText(out.Name, 120)
 	if value, ok := node.Data["content"].(string); ok {
 		runes := []rune(value)
 		if len(runes) > 160 {
@@ -1265,6 +1232,7 @@ func (t *getSubgraphTool) Execute(_ context.Context, args json.RawMessage) (stri
 	}
 
 	const maxSubgraphNodes = 100
+	const maxSubgraphEdges = 200
 	t.state.mu.RLock()
 	defer t.state.mu.RUnlock()
 	visited := make(map[string]struct{})
@@ -1317,7 +1285,11 @@ func (t *getSubgraphTool) Execute(_ context.Context, args json.RawMessage) (stri
 					visited[neighbor] = struct{}{}
 					nextSet[neighbor] = struct{}{}
 				}
-				edgeIDs[edgeID] = struct{}{}
+				if len(edgeIDs) < maxSubgraphEdges {
+					edgeIDs[edgeID] = struct{}{}
+				} else if _, alreadyIncluded := edgeIDs[edgeID]; !alreadyIncluded {
+					truncated = true
+				}
 			}
 		}
 		frontier = sortedSetKeys(nextSet)
@@ -1337,8 +1309,8 @@ func (t *getSubgraphTool) Execute(_ context.Context, args json.RawMessage) (stri
 		}
 	}
 	raw, _ := json.Marshal(map[string]any{
-		"revision": t.state.revision,
-		"nodes":    nodes, "edges": edges, "missing": missing, "truncated": truncated,
+		"revision": t.state.revision, "snapshot_scope": "run_snapshot",
+		"nodes": nodes, "edges": edges, "missing": missing, "truncated": truncated,
 	})
 	return string(raw), nil
 }
@@ -1347,7 +1319,7 @@ type getCanvasDeltaTool struct{ state *CanvasState }
 
 func (t *getCanvasDeltaTool) Name() string { return "get_canvas_delta" }
 func (t *getCanvasDeltaTool) Description() string {
-	return "Return compact canvas changes after a revision. Use this during multi-step work instead of listing or re-reading the whole canvas."
+	return "返回本轮工具修改导致的版本增量，减少重复读取。只覆盖本轮画布快照，不会同步其他窗口或用户的实时编辑。"
 }
 func (t *getCanvasDeltaTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"since_revision":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"maximum":256,"default":100}},"additionalProperties":false}`)
@@ -1402,6 +1374,7 @@ func (t *getCanvasDeltaTool) Execute(_ context.Context, args json.RawMessage) (s
 		nextRevision = t.state.revision
 	}
 	raw, _ := json.Marshal(map[string]any{
+		"snapshot_scope":              "run_snapshot",
 		"current_revision":            t.state.revision,
 		"earliest_available_revision": earliestAvailable,
 		"next_revision":               nextRevision,
@@ -1472,6 +1445,8 @@ func BuildCanvasTools(state *CanvasState) []Tool {
 		&findNodesTool{state},
 		&readNodeTool{state},
 		&readNodesTool{state},
+		&listGroupsTool{state},
+		&readGroupTool{state},
 		&getSubgraphTool{state},
 		&getCanvasDeltaTool{state},
 		&createNodeTool{state},

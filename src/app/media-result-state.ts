@@ -28,6 +28,19 @@ export function uniqueMediaVersions(activeUrl: string, versions: NodeVersion[]):
   });
 }
 
+export function mediaVersionSnapshot(data: Record<string, unknown>, id: string, now: number): NodeVersion {
+  return {
+    id: typeof data.activeVersionId === 'string' ? data.activeVersionId : id,
+    url: typeof data.url === 'string' ? data.url : '',
+    prompt: typeof data.prompt === 'string' ? data.prompt : undefined,
+    model: typeof data.model === 'string' ? data.model : undefined,
+    timestamp: typeof data.activeVersionTimestamp === 'number' ? data.activeVersionTimestamp : now,
+    ...(Array.isArray(data.imageResults) ? { imageResults: [...data.imageResults] as string[] } : {}),
+    ...(typeof data.imageResultTaskId === 'string' ? { imageResultTaskId: data.imageResultTaskId } : {}),
+    ...(typeof data.mediaTaskId === 'string' ? { mediaTaskId: data.mediaTaskId } : {}),
+  };
+}
+
 /** One generation is one version, even if its storage URL changes. Snapshot
  * the previous generation when the FIRST preview arrives, not on promotion. */
 export function taskMediaPatch(data: Record<string, unknown>, url: string, taskId: string, now = Date.now()): Record<string, unknown> {
@@ -35,13 +48,7 @@ export function taskMediaPatch(data: Record<string, unknown>, url: string, taskI
   const sameResult = data.mediaTaskId === taskId || sameGeneratedMedia(previousUrl, url);
   const existing = Array.isArray(data.versions) ? data.versions as NodeVersion[] : [];
   const history = previousUrl && !sameResult
-    ? [{
-        id: typeof data.activeVersionId === 'string' ? data.activeVersionId : `v-before-${taskId}`,
-        url: previousUrl,
-        prompt: typeof data.prompt === 'string' ? data.prompt : undefined,
-        model: typeof data.model === 'string' ? data.model : undefined,
-        timestamp: typeof data.activeVersionTimestamp === 'number' ? data.activeVersionTimestamp : now - 1,
-      }, ...existing]
+    ? [mediaVersionSnapshot(data, `v-before-${taskId}`, now - 1), ...existing]
     : existing;
   return {
     url,

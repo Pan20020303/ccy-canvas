@@ -16,6 +16,19 @@ afterEach(() => {
 });
 
 describe("durable agent jobs", () => {
+  it("sends execution controls and preserves the opt-in for resumed jobs", async () => {
+    const fetchMock=vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({data:{job_id:'controls-job'}}),{status:202}))
+      .mockImplementationOnce((_url, init) => new Promise((_resolve,reject) => {
+        init.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')));
+      }));
+    vi.stubGlobal('fetch',fetchMock);
+    const stop=await runAgent('controls-agent',{message:'test',nodes:[],edges:[],thinking:true,reasoning_effort:'max',manual_confirmation:false},()=>{});
+    await vi.waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({thinking:true,reasoning_effort:'max',manual_confirmation:false});
+    expect(getActiveAgentJob('controls-agent')?.manualConfirmation).toBe(false);
+    stop();
+  });
   it("preserves real SSE failures with their job ID", async () => {
     vi.stubGlobal("fetch",vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({data:{job_id:"job-failure"}}),{status:202}))
@@ -102,7 +115,18 @@ describe("durable agent jobs", () => {
       conversationId: "conversation-1",
       after: 17,
       message: "继续整理分镜",
+      manualConfirmation: true,
     });
+  });
+
+  it("does not resume another canvas's active agent job", () => {
+    localStorage.setItem("ccy:agent-job:agent-1:canvas-a", JSON.stringify({
+      agentId: "agent-1", projectId: "canvas-a", jobId: "job-a",
+      conversationId: "conversation-a", after: 3,
+    }));
+    expect(getActiveAgentJob("agent-1", "canvas-a")?.jobId).toBe("job-a");
+    expect(getActiveAgentJob("agent-1", "canvas-b")).toBeNull();
+    expect(getActiveAgentJob("agent-1")).toBeNull();
   });
 
   it("unwraps the API envelope and observes the persisted SSE stream", async () => {
@@ -138,6 +162,19 @@ describe("durable agent jobs", () => {
       { type: "thought_delta", data: { delta: "正在处理" } },
     ]);
     expect(getActiveAgentJob("agent-2")).toBeNull();
+    stop();
+  });
+
+  it("passes public plan and progress events through the durable stream in order", async () => {
+    const plan = { steps: [{ id: "assets", title: "确认参考素材", status: "in_progress" }] };
+    const progress = { id: "read-1", phase: "tool", label: "读取角色参考图", tool_name: "read_node", node_ids: ["n1"], status: "completed" };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { job_id: "job-public", conversation_id: "chat-public" } }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(`id: 1\nevent: plan\ndata: ${JSON.stringify(plan)}\n\nid: 2\nevent: progress\ndata: ${JSON.stringify(progress)}\n\nid: 3\nevent: done\ndata: {"steps":1}\n\n`, { status: 200, headers: { "Content-Type": "text/event-stream" } })));
+    const events: AgentSSEEvent[] = [];
+    const stop = await runAgent("public", { message: "整理画布", nodes: [], edges: [] }, event => events.push(event));
+    await vi.waitFor(() => expect(events.some(event => event.type === "done")).toBe(true));
+    expect(events.filter(event => event.type === "plan" || event.type === "progress")).toEqual([{ type: "plan", data: plan }, { type: "progress", data: progress }]);
     stop();
   });
 

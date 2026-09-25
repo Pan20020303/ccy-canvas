@@ -4,7 +4,15 @@ export type BatchGeneration = {
   serviceType: string;
   prompt: string;
   model: string;
+  aspectRatio?: string;
+  resolution?: string;
+  referenceImages?: string[];
 };
+
+/** Both the user's per-run opt-in and the server policy must allow submission. */
+export function shouldAutomaticallyGenerate(manualConfirmation: boolean, requiresConfirmation?: boolean): boolean {
+  return manualConfirmation === false && requiresConfirmation === false;
+}
 
 /** One instance per user turn. Approval never escapes into the next turn.
  * Submission slots end at the durable queue acknowledgement, NOT generation
@@ -39,7 +47,7 @@ export class GenerationBatch {
     return 'pending';
   }
 
-  approve(id: string, chosenModel: string): BatchGeneration[] {
+  approve(id: string, chosenModel: string, settings?: Pick<BatchGeneration, 'aspectRatio' | 'resolution'>): BatchGeneration[] {
     const first = this.requests.get(id);
     if (!first || !chosenModel || this.stopped) return [];
     const key = this.key(first);
@@ -48,7 +56,7 @@ export class GenerationBatch {
     for (const [requestID, request] of this.requests) {
       if (this.key(request) !== key) continue;
       this.requests.delete(requestID);
-      const selected = {...request, model: chosenModel};
+      const selected = {...request, model: chosenModel, ...(requestID === id ? settings : {})};
       accepted.push(selected);
       this.enqueue(selected);
     }

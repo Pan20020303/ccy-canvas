@@ -6,6 +6,10 @@ import {
   completeAgentConversationTurn,
   conversationTurnsFromHistoryItems,
   getAgentConversationHistory,
+  imageReferencePreamble,
+  videoReferencePreamble,
+  isVideoReferenceUrl,
+  parseAgentUserInput,
   parsePersistedToolLog,
   presentAgentUserInput,
   recordAgentConversationTurn,
@@ -13,10 +17,51 @@ import {
 } from "./agent-conversation";
 
 describe("presentAgentUserInput", () => {
+  it('restores only public progress and does not expose its row as raw tool output', () => {
+    const tool_log = '✓ read_node({"node_id":"n1"}) → raw result\n✓ public_progress({}) → ' + JSON.stringify({
+      plan: { steps: [{id:'read',title:'确认参考素材',status:'completed'},{id:'generate',title:'准备生成参数',status:'in_progress'}], summary:'先核对素材，再确认参数', secret:'private-plan' },
+      progress: {id:'generate',label:'等待你确认生成参数',status:'waiting', raw:'private-tool-payload'},
+    });
+    const turns=conversationTurnsFromHistoryItems([{user_input:'生成视频', final_reply:'请确认参数', tool_log}]);
+    expect(turns[1].toolCalls).toHaveLength(1);
+    expect(turns[1].progress?.status).toBe('waiting');
+    expect(turns[1].progress?.steps).toHaveLength(2);
+    expect(JSON.stringify(turns[1].progress)).not.toContain('private');
+    expect(conversationTurnsFromHistoryItems([{user_input:'你好',final_reply:'你好',tool_log:'✓ public_progress({}) → broken'}])[1].progress).toBeUndefined();
+  });
+  it('recovers old video-as-image references without rewriting history', () => {
+    const stored='（参考画布节点：15.mp4#node-video）\n（参考图片：https://example.com/hash.mp4）\n分析一下这个视频，反推提示词';
+    const turns=conversationTurnsFromHistoryItems([{user_input:stored,final_reply:'收到'}]);
+    expect(turns[0]).toEqual({role:'user',content:'分析一下这个视频，反推提示词',editText:'分析一下这个视频，反推提示词',
+      videos:[{url:'https://example.com/hash.mp4',name:'15.mp4',nodeId:'node-video'}]});
+    expect(turns[0].images).toBeUndefined();
+  });
+  it('round-trips typed videos, including extensionless URLs, with mixed image references', () => {
+    const videos=[{url:'/uploads/opaque-asset',name:'参考（动作）.mov',nodeId:'n1'},{url:'https://example.com/two.webm',name:'second'}];
+    const stored=imageReferencePreamble(['/uploads/a.png'])+videoReferencePreamble(videos)+'分析动作';
+    expect(parseAgentUserInput(stored)).toEqual({content:'分析动作',images:['/uploads/a.png'],videos,canvasReferences:0});
+    expect(conversationTurnsFromHistoryItems([{user_input:stored,final_reply:''}])[0].videos).toEqual(videos);
+    expect(appendConversationTurn([], 'user', '分析动作',12,['/uploads/a.png'],videos)[0].videos).toEqual(videos);
+  });
+  it('recognizes signed and proxied video URLs but never mistakes a JPG for a video', () => {
+    const video='https://example.com/15.MP4?signature=abc';
+    expect(isVideoReferenceUrl(video)).toBe(true);
+    expect(isVideoReferenceUrl('/api/app/proxy-media?url='+encodeURIComponent(video))).toBe(true);
+    expect(isVideoReferenceUrl('/uploads/a.jpg?name=video.mp4')).toBe(false);
+  });
   it("replaces raw canvas filenames and node ids with a compact reference count", () => {
     expect(presentAgentUserInput(
       "（参考画布节点：2e09f8d05154dd0ebe91aae2eee18f79.jpg#node-1）\n这张图片的人名提取游戏",
     )).toBe("📎 已引用 1 个画布节点\n这张图片的人名提取游戏");
+  });
+  it("restores uploaded image URLs without exposing routing preambles in the user bubble", () => {
+    const stored = `（参考画布节点：角色#node-1）\n${imageReferencePreamble(["/uploads/a.png", "/uploads/b.jpg"])}请保持角色一致`;
+    expect(parseAgentUserInput(stored)).toEqual({ content: "请保持角色一致", images: ["/uploads/a.png", "/uploads/b.jpg"], videos: [], canvasReferences: 1 });
+    expect(presentAgentUserInput(stored)).toBe("请保持角色一致");
+    expect(conversationTurnsFromHistoryItems([{ user_input: stored, final_reply: "收到" }])[0]).toEqual({
+      role: "user", content: "请保持角色一致",
+      editText: "请保持角色一致", images: ["/uploads/a.png", "/uploads/b.jpg"],
+    });
   });
 });
 

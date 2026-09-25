@@ -22,6 +22,7 @@ import type { ServiceType } from './model-config';
 import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { taskMediaPatch } from './media-result-state';
+import { buildImageResultNodes, imageGalleryEntries, imageGallerySelectionPatch, imageResultGroupPatch, imageResultUrls, imageResultUrlUpgrade } from './image-result-group';
 import { batchTasksByNodeIds, getTask, listActiveTasks, cancelTask, type TaskItem } from './api/tasks';
 import { publishTaskUpdate, subscribeTaskUpdates, taskAccountSession, invalidateTaskAccountSession } from './task-events';
 import { saveHistoryToServer, deleteHistoryFromServer, listHistoryFromServer } from './api/history';
@@ -69,6 +70,9 @@ export type NodeVersion = {
   timestamp: number;
   /** 视频独有:海报封面,用于缩略图(没有的话用 url 自身的第一帧或占位). */
   thumbnail?: string;
+  imageResults?: string[];
+  imageResultTaskId?: string;
+  mediaTaskId?: string;
 };
 export type HistoryAspectRatio = 'portrait' | 'square' | 'landscape' | 'text';
 
@@ -279,10 +283,13 @@ type AppState = {
   setAgentPanelResizing: (resizing: boolean) => void;
   agentNodePickActive: boolean;
   agentPickedNode: { id: string; label: string; thumb: string } | null;
+  canvasReferencePickTargetId: string | null;
   startAgentNodePick: () => void;
   cancelAgentNodePick: () => void;
   resolveAgentNodePick: (nodeId: string) => void;
   clearAgentPickedNode: () => void;
+  startCanvasReferencePick: (targetId: string) => void;
+  cancelCanvasReferencePick: () => void;
   nodes: Node[];
   edges: Edge[];
   onNodesChange: OnNodesChange;
@@ -430,6 +437,8 @@ type AppState = {
   copySelectedNodes: () => void;
   pasteCopiedNodes: () => void;
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
+  setNodePrimaryImage: (nodeId: string, url: string) => void;
+  addNodeImagesToCanvas: (nodeId: string) => void;
   /** 应用协作者广播过来的画布增量(实时同步)。合并式 upsert/remove，不压撤销、
    *  保留本地选中/拖拽/尺寸等交互态。结构化入参以避免与 collab/canvas-sync 循环依赖。 */
   applyRemoteCanvasDelta: (delta: {
@@ -1018,58 +1027,18 @@ function upgradeExpiringNodeMedia(nodeId: string, appliedUrl: string, setStore: 
     if (!canApply() || !stable || stable === appliedUrl) return;
     setStore((state) => {
       const nodes = state.nodes.map((node) => {
-        if (node.id !== nodeId) return node;
         const data = (node.data ?? {}) as Record<string, unknown>;
-        if (data.url !== appliedUrl) return node; // superseded — leave it
-        return { ...node, data: { ...data, url: stable, output: stable } };
+        const belongsToGroup = data.imageResultSourceNodeId === nodeId;
+        if (node.id !== nodeId && !belongsToGroup) return node;
+        const patch = imageResultUrlUpgrade(data, appliedUrl, stable);
+        if (Object.keys(patch).length === 0) return node;
+        if (data.url === appliedUrl) clearReferencePayloadValue(node.id);
+        return { ...node, data: { ...data, ...patch } };
       });
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
       return { nodes, projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
     });
   }).catch(() => {});
-}
-
-/** Fan the extra assets of a multi-image generation (wan2.7 组图 / n>1) out as
- *  sibling image nodes in a grid beside the source node. Ids are deterministic
- *  per (taskId, index) so a double delivery (SSE + poller race) can't create
- *  duplicates. Returns only the nodes that don't already exist. */
-function buildExtraImageNodes(sourceNode: Node | undefined, existing: Node[], urls: string[], taskId: string): Node[] {
-  if (!urls || urls.length <= 1) return [];
-  // 显式只要 1 张的请求(多角度/打光/高清等派生编辑都设 outputCount=1)：即使
-  // 上游网关无视 n 回了组图，也只保留第一张，不把多余的扇出成兄弟节点 ——
-  // 否则「打光」这类单图动作会莫名一下冒出三张。组图模型的正常用法
-  // (outputCount 未设或 >1)不受影响。
-  const requested = (sourceNode?.data as Record<string, unknown> | undefined)?.generationParams as { outputCount?: number } | undefined;
-  if (requested?.outputCount === 1) return [];
-  const baseX = (sourceNode?.position.x ?? 200) + 380;
-  const baseY = sourceNode?.position.y ?? 200;
-  const cols = Math.max(1, Math.ceil(Math.sqrt(urls.length - 1)));
-  const existingIds = new Set(existing.map((n) => n.id));
-  const extras: Node[] = [];
-  for (let i = 1; i < urls.length; i += 1) {
-    const url = (urls[i] ?? '').trim();
-    if (!url) continue;
-    const id = `node-multi-${taskId}-${i}`;
-    if (existingIds.has(id)) continue;
-    const slot = i - 1;
-    extras.push({
-      id,
-      type: 'imageNode',
-      position: {
-        x: baseX + (slot % cols) * 340,
-        y: baseY + Math.floor(slot / cols) * 320,
-      },
-      data: {
-        url,
-        output: url,
-        originalUrl: url,
-        status: 'done',
-        sourceKind: 'generated',
-        sourceName: `组图 ${i + 1}/${urls.length}`,
-      },
-    } as Node);
-  }
-  return extras;
 }
 
 /**
@@ -1183,7 +1152,9 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
                         // rendering happens at the render boundary, so the
                         // persisted value stays env-agnostic and download /
                         // capture paths don't double-wrap it.
-                        ...taskMediaPatch((node.data ?? {}) as Record<string, unknown>, task.result_url, task.id),
+                        ...(task.service_type === 'image'
+                          ? imageResultGroupPatch((node.data ?? {}) as Record<string, unknown>, task.result_url, task.result_urls, task.id)
+                          : taskMediaPatch((node.data ?? {}) as Record<string, unknown>, task.result_url, task.id)),
                         assetStatus: task.status,
                         assetSyncing: true,
                       }
@@ -1240,13 +1211,16 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   const hasUrl = typeof targetData?.url === 'string' && (targetData.url as string).length > 0;
   const hasContent = typeof targetData?.content === 'string' && (targetData.content as string).length > 0;
   const isOrphanedRecovery = Boolean(nodeTaskId) && nodeTaskId === task.id && !hasUrl && !hasContent;
-  if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask && !isOrphanedRecovery) {
+  const isCompletedImageRefresh = normalizedStatus === 'success' && task.service_type === 'image'
+    && currentStatus === 'done' && nodeTaskId === task.id;
+  if (currentStatus !== 'running' && currentStatus !== 'generating' && !isSameQueuedTask && !isOrphanedRecovery && !isCompletedImageRefresh) {
     // The node has already moved on (user ran a new generation, or the
     // success path already handled it). Drop tracking and skip.
     trackedTaskNodes.delete(task.node_id);
     return;
   }
 
+  if (normalizedStatus === 'success' && task.service_type === 'image') clearReferencePayloadValue(task.node_id);
   setStore((state) => {
     const nodes = state.nodes.map((node) => {
       if (node.id !== task.node_id) return node;
@@ -1280,8 +1254,9 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
             assetSyncing: false,
             ...(isUrl
               ? {
-                  ...taskMediaPatch(prevData, resultUrl, task.id, nextTs),
-                  originalUrl: task.result_url,
+                  ...(task.service_type === 'image'
+                    ? imageResultGroupPatch(prevData, resultUrl, task.result_urls, task.id, nextTs)
+                    : { ...taskMediaPatch(prevData, resultUrl, task.id, nextTs), originalUrl: task.result_url }),
                 }
               : { content: resultUrl, output: resultUrl }),
           },
@@ -1296,16 +1271,10 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
         ),
       };
     });
-    // Multi-image generations (wan2.7 组图 / n>1): the node keeps the first
-    // asset; the rest fan out as sibling image nodes in a grid. Deterministic
-    // ids make a double delivery (SSE + poller) idempotent.
-    const withExtras = normalizedStatus === 'success' && task.service_type === 'image' && (task.result_urls?.length ?? 0) > 1
-      ? [...nodes, ...buildExtraImageNodes(nodes.find((n) => n.id === task.node_id), nodes, task.result_urls as string[], task.id)]
-      : nodes;
-    const projectStateById = syncActiveProjectState(state, { nodes: withExtras }).projectStateById;
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
     return {
       activeRun: state.activeRun?.nodeId === task.node_id ? null : state.activeRun,
-      nodes: withExtras,
+      nodes,
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
@@ -1317,8 +1286,13 @@ function applyTaskResultToNode(task: TaskItem, getStore: () => AppState, setStor
   if (normalizedStatus === 'success' && task.result_url
     && (task.service_type === 'image' || task.service_type === 'video' || task.service_type === 'audio')) {
     const isCurrentContext = captureTaskContext(getStore);
-    upgradeExpiringNodeMedia(task.node_id, task.result_url, setStore, task.asset_temporary === true,
-      () => isCurrentContext() && getStore().nodes.find(node => node.id === task.node_id)?.data.taskId === task.id);
+    const resultUrls = task.service_type === 'image' ? imageResultUrls(task.result_urls, task.result_url) : [task.result_url];
+    const currentData = getStore().nodes.find(node => node.id === task.node_id)?.data;
+    for (const url of resultUrls) {
+      if (currentData?.url !== url && !imageGalleryEntries(currentData ?? {}).some(entry => entry.url === url)) continue;
+      upgradeExpiringNodeMedia(task.node_id, url, setStore, task.asset_temporary === true,
+        () => isCurrentContext() && getStore().nodes.find(node => node.id === task.node_id)?.data.taskId === task.id);
+    }
   }
   // 历史资产: the QUEUED delivery path never recorded history — addHistory only
   // ran in runNode's synchronous success block, so with the task queue enabled
@@ -1684,6 +1658,7 @@ function stripHeavyFromVersion(version: NodeVersion): NodeVersion {
     ...version,
     url: isHeavyMediaString(version.url) ? '' : version.url,
     thumbnail: isHeavyMediaString(version.thumbnail) ? '' : version.thumbnail,
+    ...(version.imageResults ? { imageResults: imageResultUrls(version.imageResults).filter(url => !isHeavyMediaString(url)) } : {}),
   };
 }
 
@@ -1739,6 +1714,9 @@ export function stripHeavyFromNodeData(data: unknown): unknown {
       .map(stripHeavyFromVersion)
       .filter((version) => version.url)
       .slice(0, MAX_PERSISTED_NODE_VERSIONS);
+  }
+  if (Array.isArray(out.imageResults)) {
+    out.imageResults = imageResultUrls(out.imageResults).filter(url => !isHeavyMediaString(url));
   }
   if (out.generationParams) {
     out.generationParams = stripHeavyFromGenerationParams(out.generationParams);
@@ -2396,19 +2374,22 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setAgentPanelResizing: (resizing) => set({ agentPanelResizing: resizing }),
   agentNodePickActive: false,
   agentPickedNode: null,
-  startAgentNodePick: () => set({ agentNodePickActive: true, agentPickedNode: null }),
+  canvasReferencePickTargetId: null,
+  startAgentNodePick: () => set({ agentNodePickActive: true, agentPickedNode: null, canvasReferencePickTargetId: null }),
   cancelAgentNodePick: () => set({ agentNodePickActive: false }),
   resolveAgentNodePick: (nodeId) => set((state) => {
     const node = state.nodes.find((n) => n.id === nodeId);
-    if (!node) return { agentNodePickActive: false };
+    if (!node || !state.agentNodePickActive) return {};
     const d = (node.data ?? {}) as Record<string, unknown>;
     const label = useCanvasPreferences.getState().values.mentionNaming === 'number'
       ? `节点${state.nodes.findIndex(n => n.id === nodeId) + 1}`
       : String(d.customTitle || d.sourceName || node.type || node.id);
-    const thumb = String(d.url || d.poster || ''); // raw URL; UI wraps for proxy
-    return { agentNodePickActive: false, agentPickedNode: { id: nodeId, label, thumb } };
+    const thumb = String(d.output || d.url || d.imageUrl || d.image || d.poster || ''); // raw URL; UI wraps for proxy
+    return { agentPickedNode: { id: nodeId, label, thumb } };
   }),
   clearAgentPickedNode: () => set({ agentPickedNode: null }),
+  startCanvasReferencePick: (targetId) => set({ canvasReferencePickTargetId: targetId, agentNodePickActive: false }),
+  cancelCanvasReferencePick: () => set({ canvasReferencePickTargetId: null }),
 
   spaces: seedSpaces,
   activeSpaceId: 'space-personal',
@@ -2439,12 +2420,12 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         || (change.type === 'position' && !change.position))) {
         retainCanvasArrayToken(state.nodes, nodes);
       }
-      // Sync groups: drop removed members; delete groups that become empty.
+      // Sync group membership without deleting the spatial container when its
+      // final member leaves. An empty group remains a reusable canvas area.
       const groups = removedIds.size === 0
         ? state.groups
         : state.groups
-            .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !removedIds.has(id)) }))
-            .filter((group) => group.nodeIds.length > 0);
+            .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !removedIds.has(id)) }));
       const captured = shouldCaptureNodeChangesForUndo(changes);
       const undoStack = captured ? pushUndoState(state) : state.undoStack;
       // Drag-smoothness P0: position/dimension/select-only change batches skip
@@ -3162,8 +3143,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const edges = state.edges.filter((edge) => !doomed.has(edge.source) && !doomed.has(edge.target));
       const nodes = reconcileReferenceConnectionEdits(remainingNodes, state.edges, edges, state.nodes);
       const groups = state.groups
-        .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }))
-        .filter((group) => group.nodeIds.length > 0);
+        .map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => !doomed.has(id)) }));
       const undoStack = pushUndoState(state);
       const projectStateById = syncActiveProjectState(state, { nodes, edges, groups }).projectStateById;
       return {
@@ -3625,8 +3605,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   setGroupMembers: (groupId, nodeIds) => set((state) => {
     const undoStack = pushUndoState(state);
     const groups = state.groups
-      .map((group) => (group.id === groupId ? { ...group, nodeIds } : group))
-      .filter((group) => group.nodeIds.length > 0);
+      .map((group) => (group.id === groupId ? { ...group, nodeIds } : group));
     const projectStateById = syncActiveProjectState(state, { groups }).projectStateById;
     return {
       groups,
@@ -3905,6 +3884,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     };
   }),
   setActiveVersion: (nodeId, versionId) => set((state) => {
+    if (computeActiveProjectReadOnly(state)) return {};
     const undoStack = pushUndoState(state);
     const nodes = state.nodes.map((node) => {
       if (node.id !== nodeId) return node;
@@ -3912,6 +3892,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       const versions = Array.isArray(data.versions) ? (data.versions as NodeVersion[]) : [];
       const target = versions.find((v) => v.id === versionId);
       if (!target) return node;
+      if (node.type === 'imageNode' || node.type === 'panoramaNode') {
+        clearReferencePayloadValue(nodeId);
+        return { ...node, data: { ...data, ...imageGallerySelectionPatch(data, target.url) } };
+      }
       // 当前 url 退到 versions 顶,target 提为当前.
       const currentUrl = typeof data.url === 'string' ? data.url : '';
       const currentSnapshot: NodeVersion | null = currentUrl ? {
@@ -3944,7 +3928,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       };
     });
     const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
-    return { nodes, undoStack, projectStateById };
+    return { nodes, undoStack, redoStack: [], projectStateById, ...syncActiveSpaceSnapshot(state, { projectStateById }) };
   }),
   updateNodeData: (nodeId, patch) => set((state) => {
     const undoStack = pushUndoState(state);
@@ -3963,6 +3947,45 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     return {
       nodes,
       undoStack,
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  setNodePrimaryImage: (nodeId, url) => set((state) => {
+    if (computeActiveProjectReadOnly(state)) return {};
+    const source = state.nodes.find(node => node.id === nodeId);
+    if (!source || source.data.url === url) return {};
+    const patch = imageGallerySelectionPatch(source.data, url);
+    if (!patch) return {};
+    clearReferencePayloadValue(nodeId);
+    const nodes = state.nodes.map(node => node.id === nodeId ? {
+      ...node,
+      data: {
+        ...node.data,
+        ...patch,
+      },
+    } : node);
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack: pushUndoState(state),
+      redoStack: [],
+      projectStateById,
+      ...syncActiveSpaceSnapshot(state, { projectStateById }),
+    };
+  }),
+  addNodeImagesToCanvas: (nodeId) => set((state) => {
+    if (computeActiveProjectReadOnly(state)) return {};
+    const source = state.nodes.find(node => node.id === nodeId);
+    if (!source) return {};
+    const copies = buildImageResultNodes(source, state.nodes);
+    if (copies.length === 0) return {};
+    const nodes = [...state.nodes, ...copies];
+    const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
+    return {
+      nodes,
+      undoStack: pushUndoState(state),
+      redoStack: [],
       projectStateById,
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
@@ -4192,8 +4215,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
     // Get aspectRatio (used as size ratio) and resolution from generation params.
     // aspectRatio → ratio for size param (e.g. "16:9"), resolution → "1k"/"2k"/"4k"
     const requestTemplate = getModelTemplate(payload.model ?? '', referenceProvider);
-    const aspectRatio = requestTemplate?.supportsZImageParams || requestTemplate?.localImageKind
-      ? (requestTemplate.aspectRatioOptions?.find(option => option === genParams?.aspectRatio?.trim()) ?? requestTemplate.defaults?.aspectRatio ?? '1:1')
+    const isMidjourneyV82 = payload.model === 'midjourney-v8-2';
+    const aspectRatio = requestTemplate?.supportsZImageParams || requestTemplate?.localImageKind || isMidjourneyV82
+      ? (requestTemplate?.aspectRatioOptions?.find(option => option === genParams?.aspectRatio?.trim()) ?? requestTemplate?.defaults?.aspectRatio ?? '1:1')
       : genParams?.aspectRatio ?? 'auto';
     // Resolution field might be "自适应·1K" or "1k" — normalize.
     // Preserve the ORIGINAL case of the 'p' / 'P' suffix: some providers
@@ -4302,6 +4326,21 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       }
     }
 
+    if (serviceType === 'image' && isMidjourneyV82) {
+      if (referenceMedia.imageUrls.length > 1 || referenceMedia.videoUrls.length || referenceMedia.audioUrls.length) {
+        reportInputIssue(get().language === 'zh'
+          ? 'Midjourney V8.2 最多接入 1 张参考图片，不支持视频或音频参考。'
+          : 'Midjourney V8.2 accepts at most one reference image and no video/audio.');
+        return;
+      }
+      if (!(strippedForMedia ?? effectivePrompt).split(/\s*--/)[0].trim()) {
+        reportInputIssue(get().language === 'zh'
+          ? 'Midjourney V8.2 需要画面描述，不能只提交参考图或参数。'
+          : 'Midjourney V8.2 needs a description, not only references or parameters.');
+        return;
+      }
+    }
+
     // Resolve and validate the same inputs before preview/confirmation. A
     // changed input must be reviewed again instead of submitting an old summary.
     const preview = {
@@ -4310,6 +4349,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       images: referenceMedia.imageUrls, videos: referenceMedia.videoUrls, audios: referenceMedia.audioUrls,
       parameters: { model: payload.model, provider_config_id: referenceProvider?.id, service_type: serviceType,
         aspectRatio, resolution, quality: requestTemplate?.supportsQuality ? quality : undefined,
+        outputCount: requestTemplate?.fixedOutputCount ?? genParams?.outputCount,
         duration: genParams?.durationSeconds, referenceMode: resolvedReferenceMode,
         // Include every submitted setting in the approval guard; the UI shows
         // the compact effective values above and the remaining settings below.
@@ -4516,14 +4556,14 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         quality: activeTemplate?.supportsQuality ? quality : undefined,
         edit_operation: genParams?.editOperation,
         mask_image: genParams?.maskImage,
-        output_count: activeTemplate?.localImageKind ? 1 : genParams?.outputCount,
+        output_count: activeTemplate?.fixedOutputCount ?? (activeTemplate?.localImageKind ? 1 : genParams?.outputCount),
         expand_direction: genParams?.expandDirection,
         derive_from_node_id: genParams?.deriveFromNodeId,
         trim_range: genParams?.trimRange,
         crop_rect: genParams?.cropRect,
         target_tracks: genParams?.targetTracks,
-        output_format: genParams?.outputFormat,
-        parameters: (serviceType === 'image' && (activeTemplate?.supportsZImageParams || activeTemplate?.localImageKind)) || genParams?.outputFormat || (serviceType === 'audio' && (activeTemplate?.audioSpeedRange || activeTemplate?.supportsVoiceDescription))
+        output_format: isMidjourneyV82 ? undefined : genParams?.outputFormat,
+        parameters: !isMidjourneyV82 && ((serviceType === 'image' && (activeTemplate?.supportsZImageParams || activeTemplate?.localImageKind)) || genParams?.outputFormat || (serviceType === 'audio' && (activeTemplate?.audioSpeedRange || activeTemplate?.supportsVoiceDescription)))
           ? {
               ...(serviceType === 'image' && activeTemplate?.supportsZImageParams
                 ? buildZImageParams(genParams?.zImage) : {}),
@@ -4570,7 +4610,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         seed: (serviceType === 'video' || serviceType === 'image' || serviceType === 'audio') && activeTemplate?.supportsSeed && typeof genParams?.seed === 'number' ? genParams.seed : undefined,
         // wan2.7 组图 (grid) mode → the backend sets enable_sequential so one
         // request yields up to 12 images. Gated to the image 组图 tab.
-        enable_sequential: serviceType === 'image' && genParams?.referenceVariant === 'wan-group' ? true : undefined,
+        enable_sequential: serviceType === 'image' && activeTemplate?.referenceModes?.includes('wan-group') && genParams?.referenceVariant === 'wan-group' ? true : undefined,
       }, aborter.signal);
 
       if (!isCurrentRun()) return;
@@ -4613,7 +4653,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         return;
       }
 
-      const persistedContent = await persistGeneratedMediaUrl(result);
+      const persistedImageResults = serviceType === 'image' && result.type === 'url'
+        ? await Promise.all(imageResultUrls(result.content_list, result.content).map(url => rehostToStableUrl(url)))
+        : undefined;
+      const persistedContent = persistedImageResults?.[0] ?? await persistGeneratedMediaUrl(result);
       if (!isCurrentRun()) return;
 
       // Hard guard: don't pretend success when the backend returned an
@@ -4651,6 +4694,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
         return;
       }
 
+      if (serviceType === 'image') clearReferencePayloadValue(nodeId);
       set((snapshot) => {
         const nodes = snapshot.nodes.map((node) => {
           if (node.id !== nodeId) return node;
@@ -4675,8 +4719,9 @@ export const useStore = create<AppState>()(persist((set, get) => ({
               lastGenerationFailedAt: undefined,
               ...(isUrlResult
                 ? {
-                    ...taskMediaPatch(prevData, persistedContent, result.task_id || `sync-${nodeId}-${startedAt}`, nextTs),
-                    originalUrl: result.content,
+                    ...(serviceType === 'image'
+                      ? imageResultGroupPatch(prevData, persistedContent, persistedImageResults, result.task_id || `sync-${nodeId}-${startedAt}`, nextTs)
+                      : { ...taskMediaPatch(prevData, persistedContent, result.task_id || `sync-${nodeId}-${startedAt}`, nextTs), originalUrl: result.content }),
                     prompt: payload.prompt,
                     model: payload.model,
                   }
@@ -4684,15 +4729,10 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             },
           };
         });
-        // Multi-image sync result (wan2.7 组图 / n>1): fan the extra assets out
-        // as sibling image nodes (same behavior as the SSE/poller path).
-        const withExtras = serviceType === 'image' && (result.content_list?.length ?? 0) > 1
-          ? [...nodes, ...buildExtraImageNodes(nodes.find((n) => n.id === nodeId), nodes, result.content_list as string[], result.task_id ?? nodeId)]
-          : nodes;
-        const projectStateById = syncActiveProjectState(snapshot, { nodes: withExtras }).projectStateById;
+        const projectStateById = syncActiveProjectState(snapshot, { nodes }).projectStateById;
         return {
           activeRun: null,
-          nodes: withExtras,
+          nodes,
           projectStateById,
           ...syncActiveSpaceSnapshot(snapshot, { projectStateById }),
         };

@@ -3,7 +3,20 @@ package tasks
 import (
 	"testing"
 	"time"
+
+	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
 )
+
+func TestMidjourneyQueueBudgetMatchesPollingAndPersistence(t *testing.T) {
+	t.Setenv("IMAGE_TASK_MAX_RUNTIME_SECONDS", "900")
+	got := timeoutForGenerationPayload(GenerationPayload{ServiceType: "image", Model: "midjourney-v8-2"})
+	if got != modelapp.MidjourneyTaskRuntimeBudget || got <= modelapp.MidjourneyTaskPollBudget {
+		t.Fatalf("MJ worker timeout %s does not include polling and persistence", got)
+	}
+	if got := timeoutForGenerationPayload(GenerationPayload{ServiceType: "image", Model: "gpt-image-2"}); got != 15*time.Minute {
+		t.Fatalf("ordinary image timeout changed to %s", got)
+	}
+}
 
 func TestTextTaskTimeoutMatchesDurableBudget(t *testing.T) {
 	t.Setenv("TEXT_TASK_MAX_RUNTIME_SECONDS", "")

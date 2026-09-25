@@ -38,6 +38,7 @@ const Workspace = () => {
   const setBackendModels = useStore((state) => state.setBackendModels);
   const agentPanelOpen = useStore((state) => state.agentPanelOpen);
   const setAgentPanelOpen = useStore((state) => state.setAgentPanelOpen);
+  const projectScope = useStore((state) => state.activeBackendProjectId || state.activeProjectId);
   // 面板宽度可拖拽调节(AgentRunPanel 左缘手柄),主区 padding 跟随让位。
   // 拖拽期间禁用 padding 过渡 —— 画布实时跟手,不然有 200ms 滞后感。
   const agentPanelWidth = useStore((state) => state.agentPanelWidth);
@@ -75,7 +76,7 @@ const Workspace = () => {
       <CanvasGenerationNotifications />
       <Modals />
       <SettingsModal />
-      <AgentRunPanel open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
+      <AgentRunPanel key={projectScope} projectId={projectScope} open={agentPanelOpen} onClose={() => setAgentPanelOpen(false)} />
     </div>
   );
 };

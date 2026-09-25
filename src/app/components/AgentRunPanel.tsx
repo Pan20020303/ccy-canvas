@@ -3,12 +3,12 @@ import { useCanvasThemeStyle } from "../use-canvas-theme";
 import { AgentFailureNotice } from "./agent/AgentFailureNotice";
 import { selectMainAgent } from "./agent/main-agent";
 import { layoutPositionChanges } from "./agent/canvas-layout-patch";
-import { createPortal } from "react-dom";
-import { ArrowUp, Bot, BrainCircuit, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, GitBranch, Hand, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Mic, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Wrench, X, Zap } from "lucide-react";
+import { ArrowUp, Bot, Check, ChevronDown, ChevronLeft, ChevronRight, Cpu, Film, GitBranch, ImageIcon, Loader2, MessageSquarePlus, MessagesSquare, Music2, PanelLeft, Play, Plus, Sparkles, Square, Trash2, Upload, Wrench, X, Zap } from "lucide-react";
 import gsap from "gsap";
 
 import { useMountFadeIn } from "./motion/use-motion";
 import "./agent/agent-workbench.css";
+import "./agent/agent-prompt-bar.css";
 
 import type { Edge, Node } from "@xyflow/react";
 
@@ -38,6 +38,10 @@ import {
   appendConversationTurn,
   conversationTurnsFromHistoryItems,
   getAgentConversationHistory,
+  imageReferencePreamble,
+  isVideoReferenceUrl,
+  videoReferencePreamble,
+  parseAgentUserInput,
   presentAgentUserInput,
   type AgentConversationStore,
 } from "./agent-conversation";
@@ -50,26 +54,30 @@ import {
 } from "./agent-questionnaire";
 import { getSkillCommandName } from "./settings/skill-agent-presenters";
 import { displayNameOf, getCurrentUser } from "../api/me";
+import { uploadFile } from "../api/projects";
 import { toRenderableMediaUrl } from "../reference-media";
 import { ModelBrandIcon } from "./ModelBrandIcon";
 import { SkillLibraryDialog, SkillQuickPicker } from "./SkillLibrary";
 import { SkillMentionChip } from "./skills/SkillMentionChip";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { getRotatingSkillBatch, getSkillDisplayName } from "../skill-display";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { AgentThread, AgentThreadList, useAgentThreadRuntime } from "./agent/AgentAssistantThread";
-import { getModelTemplate, isThinkingCapableModel, isThinkingDefaultOn } from "../model-templates";
-import { pickVisionModel } from "./nodes/director-blocking";
+import { finishAgentTaskProgress, updateAgentTaskProgress, type AgentTaskProgressState } from "./agent/task-progress";
+import { getModelTemplate } from "../model-templates";
+import { AgentSettingsPopover } from "./agent/AgentSettingsPopover";
+import { useAgentPreferences } from "./agent/use-agent-preferences";
+import { useAuth } from "../auth/AuthProvider";
+import { effectiveThinkingEffort, thinkingRequest } from "./agent/thinking-effort";
+import { selectAgentVisionModel } from "../model-vision";
 import { getProviderModelDisplayName, getProviderModelPresentation } from "../api/providerConfigs";
 import { presentCanvasOperation, CanvasOperationIcon, type CanvasOperationEntity } from "./agent/canvas-operation-presenter";
-import { GenerationBatch } from "./agent/generation-batch";
+import { GenerationBatch, shouldAutomaticallyGenerate } from "./agent/generation-batch";
 import {
   beginAgentCanvasThinking,
   cancelAgentCanvasActivity,
   finishAgentCanvasActivity,
   markAgentCanvasAction,
-  markAgentCanvasThinking,
 } from "./agent/agent-canvas-activity";
 
 // 从服务器拉取的历史轮数(后端上限 50)。
@@ -124,7 +132,12 @@ type RunStep =
       nodeType: string;
       serviceType: string;
       prompt: string;
+      nodeTitle: string;
       availableModels: string[];
+      aspectRatio?: string;
+      resolution?: string;
+      referenceImages?: string[];
+      automatic?: boolean;
       // Lifecycle: user picks a model → confirmed (we kick off runNode);
       // or skipped (do nothing). Lives in state so the card can show its
       // resolution after the fact.
@@ -169,7 +182,9 @@ function groupCanvasOperations(steps: NonQuestionInteractiveStep[]): Interactive
  * - Run-level seconds counter at the top.
  * - Thin dark scrollbar matching the rest of the app.
  */
-export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function AgentRunPanel({ open, onClose, projectId }: { open: boolean; onClose: () => void; projectId: string }) {
+  const { user } = useAuth();
+  const { preferences, setManualConfirmation, setModelEffort } = useAgentPreferences(user?.id, projectId);
   const language = useStore((s) => s.language);
   const zh = language === "zh";
   const nodes = useStore((s) => s.nodes);
@@ -207,11 +222,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [setPanelWidth, setPanelResizing]);
   const startAgentNodePick = useStore((s) => s.startAgentNodePick);
   const cancelAgentNodePick = useStore((s) => s.cancelAgentNodePick);
-  const agentNodePickActive = useStore((s) => s.agentNodePickActive);
   const agentPickedNode = useStore((s) => s.agentPickedNode);
   const clearAgentPickedNode = useStore((s) => s.clearAgentPickedNode);
   // Canvas nodes the user attached as references via "从画布添加".
-  const [referencedNodes, setReferencedNodes] = useState<{ id: string; label: string; thumb: string }[]>([]);
+  const [referencedNodes, setReferencedNodes] = useState<{ id: string; label: string; thumb: string; mediaType?: 'image' | 'video' }[]>([]);
+  const [attachedImages, setAttachedImages] = useState<{ url: string; name: string }[]>([]);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [imageUploadError, setImageUploadError] = useState("");
   // Voice input (browser SpeechRecognition; best-effort, no backend).
   const [listening, setListening] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,7 +265,9 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [conversationsByAgent, setConversationsByAgent] = useState<Record<string, AgentConversationSummary[]>>({});
   const [activeConversationId, setActiveConversationId] = useState<Record<string, string>>({});
 
-  // Media generation always requires an explicit confirmation in the canvas.
+  // Automatic execution is an explicit opt-in, captured separately for each run.
+  const manualConfirmation = preferences.manualConfirmation;
+  const runManualConfirmationRef = useRef(true);
   // Left history sidebar collapse (persisted).
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -269,7 +288,34 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Per-run streaming state.
   const [streamingReply, setStreamingReply] = useState("");
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
+  const [taskProgress, setTaskProgress] = useState<AgentTaskProgressState>();
+  const taskProgressRef = useRef<AgentTaskProgressState | undefined>(undefined);
+  const progressHistoryTargetRef = useRef<{ key: string; content: string } | null>(null);
+  const resetTaskProgress = useCallback(() => {
+    taskProgressRef.current = undefined;
+    progressHistoryTargetRef.current = null;
+    setTaskProgress(undefined);
+  }, []);
+  const publishTaskProgress = useCallback((progress: AgentTaskProgressState | undefined) => {
+    taskProgressRef.current = progress;
+    const target = progressHistoryTargetRef.current;
+    if (!target) { setTaskProgress(progress); return; }
+    setTaskProgress(undefined);
+    setConversationStore(previous => {
+      const turns = previous[target.key];
+      const last = turns?.at(-1);
+      if (!last || last.role !== "assistant" || last.content !== target.content) return previous;
+      return { ...previous, [target.key]: [...turns.slice(0, -1), { ...last, progress }] };
+    });
+  }, []);
+  const finishTaskProgress = useCallback((status: "completed" | "failed" | "cancelled") => {
+    const current = taskProgressRef.current;
+    // A trailing done event must not turn a failed/cancelled task green.
+    if (status === "completed" && (current?.status === "failed" || current?.status === "cancelled")) return;
+    publishTaskProgress(finishAgentTaskProgress(current, status));
+  }, [publishTaskProgress]);
   const generationBatchRef = useRef<GenerationBatch | null>(null);
+  const runReferenceImagesRef = useRef<string[]>([]);
   const pendingSequenceRef = useRef(0);
   const resetGenerationBatch = useCallback(() => {
     const project = useStore.getState().activeProjectId;
@@ -279,7 +325,21 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       if (state.activeProjectId !== project || state.activeBackendProjectId !== backendProject) {
         throw new Error('画布项目已切换，未提交的生成已停止，请回原项目重新发起。');
       }
-      if (!state.nodes.some(node => node.id === request.nodeId)) throw new Error('节点已删除，已跳过生成。');
+      const node = state.nodes.find(candidate => candidate.id === request.nodeId);
+      if (!node) throw new Error('节点已删除，已跳过生成。');
+      const currentParams = ((node.data as Record<string, unknown>)?.generationParams ?? {}) as Record<string, unknown>;
+      state.updateNodeData(request.nodeId, {
+        model: request.model,
+        promptDraft: request.prompt,
+        generationParams: {
+          ...currentParams,
+          model: request.model,
+          ...(request.aspectRatio ? { aspectRatio: request.aspectRatio } : {}),
+          ...(request.resolution ? { resolution: request.resolution } : {}),
+          ...(request.referenceImages?.length && !Array.isArray(currentParams.referenceImages)
+            ? { referenceImages: request.referenceImages } : {}),
+        },
+      });
       // This turn has already been approved (or explicitly uses automatic
       // execution). Do not open the canvas's second per-node confirmation.
       await state.runNode(request.nodeId, {prompt: request.prompt, model: request.model, skipConfirm: true});
@@ -298,8 +358,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // 当前 run 所属的会话 key:运行状态(思考中/步骤/流式文本)只渲染在这个会话
   // 下面 —— 新建/切换会话时不再"串台"到别的会话。
   const [runConvKey, setRunConvKey] = useState<string | null>(null);
-  // 深度思考开关(composer)。null=未手动设置,按当前模型默认;模型切换时重置。
-  const [deepThinking, setDeepThinking] = useState<boolean | null>(null);
   // 上下文窗口用量(最近一轮 LLM 调用的 usage;prompt 已含全部历史)。
   // 驱动 composer 右下角的「602.7k / 1.0M (60%)」计量表。切换会话时清零。
   const [ctxUsage, setCtxUsage] = useState<{ prompt: number; completion: number; total: number } | null>(null);
@@ -308,10 +366,10 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Claude / Cursor behavior where typing `/` reveals bound skill templates.
   const [slashIndex, setSlashIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const skillButtonRef = useRef<HTMLButtonElement>(null);
 
-  // composer 自适应高度(DeepSeek 式):随内容自动长高,到 40vh 封顶后
-  // 才在框内出滚动条;清空(发送后)自动缩回两行。
+  // PromptBar 式输入区:随内容增长，最多 5 行，然后在输入框内滚动。
   // 依赖带上 open:面板 display:none 时 scrollHeight 为 0,若在隐藏时把
   // 高度写死成 0px,重新打开后输入框就"消失"了 —— 不可见时不写高度,
   // 打开时再重算一遍。
@@ -321,10 +379,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     ta.style.height = "auto";
     const sh = ta.scrollHeight;
     if (sh <= 0) {
-      ta.style.height = ""; // 不可见:清掉内联高度,交还 rows=2 默认
+      ta.style.height = ""; // 不可见:清掉内联高度,重新打开时再测量
       return;
     }
-    const max = Math.round(window.innerHeight * 0.4);
+    const lineHeight = Number.parseFloat(window.getComputedStyle(ta).lineHeight) || 22;
+    const max = Math.round(lineHeight * 5 + 4);
     ta.style.height = `${Math.min(sh, max)}px`;
     ta.style.overflowY = sh > max ? "auto" : "hidden";
   }, [message, open]);
@@ -340,10 +399,21 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   }, [running, runSteps]);
 
   const abortRef = useRef<(() => void) | null>(null);
+  const mountedRef = useRef(true);
   const activityRunIdRef = useRef<string | null>(null);
   const canvasPatchRevisionRef = useRef<number | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const sendButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.();
+      abortRef.current = null;
+      generationBatchRef.current?.stop();
+    };
+  }, []);
 
   // Panel enter animation: slide up + fade in on open. Runs every time the
   // panel mounts (which `open` controls — when closed the whole tree is
@@ -404,10 +474,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     void getCurrentUser().then((u) => setUserName(displayNameOf(u))).catch(() => {});
   }, [open, userName]);
 
+  useEffect(() => {
+    if (!open) cancelAgentNodePick();
+  }, [open, cancelAgentNodePick]);
+
   // When the user picks a canvas node (pick mode), append it as a reference chip.
   useEffect(() => {
     if (!agentPickedNode) return;
-    setReferencedNodes((prev) => (prev.some((n) => n.id === agentPickedNode.id) ? prev : [...prev, agentPickedNode]));
+    const node = useStore.getState().nodes.find(candidate => candidate.id === agentPickedNode.id);
+    const video = node?.type === 'videoNode' || node?.type === 'referenceVideoNode' || isVideoReferenceUrl(agentPickedNode.thumb);
+    const reference = {...agentPickedNode, mediaType: video ? 'video' as const : 'image' as const};
+    setReferencedNodes((prev) => (prev.some((n) => n.id === reference.id) ? prev : [...prev, reference]));
     clearAgentPickedNode();
   }, [agentPickedNode, clearAgentPickedNode]);
 
@@ -419,7 +496,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (!selectedId) return;
     if (conversationsByAgent[selectedId]) return;
-    void listAgentConversations(selectedId)
+    void listAgentConversations(selectedId, projectId)
       .then((rows) => {
         const list = rows ?? [];
         setConversationsByAgent((prev) => ({ ...prev, [selectedId]: list }));
@@ -428,7 +505,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         }
       })
       .catch(() => {});
-  }, [activeConversationId, conversationsByAgent, selectedId]);
+  }, [activeConversationId, conversationsByAgent, selectedId, projectId]);
 
   const activeConvId = selectedId ? activeConversationId[selectedId] ?? null : null;
   const conversationKey = selectedId && activeConvId ? CONVERSATIONS_KEY(selectedId, activeConvId) : null;
@@ -437,7 +514,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   useEffect(() => {
     if (!selectedId || !activeConvId || !conversationKey) return;
     if (loadedHistoryIds[conversationKey]) return;
-    void listAgentConversationHistory(selectedId, HISTORY_FETCH_LIMIT, activeConvId)
+    void listAgentConversationHistory(selectedId, projectId, HISTORY_FETCH_LIMIT, activeConvId)
       .then((items) => {
         setConversationStore((prev) => ({
           ...prev,
@@ -446,7 +523,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         setLoadedHistoryIds((prev) => ({ ...prev, [conversationKey]: true }));
       })
       .catch(() => {});
-  }, [activeConvId, conversationKey, loadedHistoryIds, selectedId]);
+  }, [activeConvId, conversationKey, loadedHistoryIds, selectedId, projectId]);
 
   const selectedAgent = agents.find((agent) => agent.id === selectedId) ?? null;
   const conversationHistory = useMemo(
@@ -464,6 +541,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const threadRuntime = useAgentThreadRuntime({
     history: conversationHistory,
     runSteps: runHere ? runSteps : [],
+    progress: runHere ? taskProgress : undefined,
     streamingReply: runHere ? streamingReply : "",
     running: running && runHere,
     onSend: (text) => void start(text),
@@ -627,8 +705,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           updateNodeData(patch.node_id, { model: patch.model.trim() });
         }
         const node = useStore.getState().nodes.find((candidate) => candidate.id === patch.node_id);
-        const data = (node?.data ?? {}) as Record<string, string>;
-        const prompt = typeof patch.prompt === "string" ? patch.prompt : (data.promptDraft ?? data.content ?? "");
+        const data = (node?.data ?? {}) as Record<string, unknown>;
+        const prompt = typeof patch.prompt === "string" ? patch.prompt : String(data.promptDraft ?? data.content ?? "");
         if (!prompt.trim()) break;
 
         const serviceTypeMap: Record<string, string> = {
@@ -675,10 +753,27 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           break;
         }
 
-        const model = patch.model || data.model || fallbackModel;
+        const model = patch.model || (typeof data.model === "string" ? data.model : "") || fallbackModel;
+        const currentParams = (data.generationParams ?? {}) as Record<string, unknown>;
+        const provider = backendModels.find((cfg) => (cfg.model_list ?? []).includes(model));
+        const template = getModelTemplate(model, provider);
+        const proposedAspectRatio = patch.op === "run_node" && "aspect_ratio" in patch && typeof patch.aspect_ratio === "string"
+          ? patch.aspect_ratio
+          : typeof currentParams.aspectRatio === "string" ? currentParams.aspectRatio : template?.defaults?.aspectRatio;
+        const proposedResolution = patch.op === "run_node" && "resolution" in patch && typeof patch.resolution === "string"
+          ? patch.resolution
+          : typeof currentParams.resolution === "string" ? currentParams.resolution : template?.defaults?.resolution;
+        const aspectRatio = template?.aspectRatioOptions?.length && !template.aspectRatioOptions.includes(proposedAspectRatio ?? "")
+          ? template.defaults?.aspectRatio ?? template.aspectRatioOptions[0] : proposedAspectRatio;
+        const resolution = template?.resolutionOptions?.length
+          ? template.resolutionOptions.find((option) => option.toLowerCase() === proposedResolution?.toLowerCase())
+            ?? template.defaults?.resolution ?? template.resolutionOptions[0]
+          : proposedResolution;
         const batch = generationBatchRef.current ?? resetGenerationBatch();
-        const request = {id: `pending-${++pendingSequenceRef.current}`, nodeId: patch.node_id, serviceType, prompt, model};
-        const disposition = batch.register(request, false);
+        const referenceImages = serviceType === "image" ? runReferenceImagesRef.current : [];
+        const request = {id: `pending-${++pendingSequenceRef.current}`, nodeId: patch.node_id, serviceType, prompt, model, aspectRatio, resolution, referenceImages};
+        const automatic = shouldAutomaticallyGenerate(runManualConfirmationRef.current, patch.requires_confirmation);
+        const disposition = batch.register(request, automatic);
         if (disposition === "duplicate") break;
         setRunSteps((prev) => [...prev, {
             kind: "pending_run",
@@ -687,8 +782,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             nodeType: node?.type ?? "",
             serviceType,
             prompt,
+            nodeTitle: typeof data.customTitle === "string" ? data.customTitle : "",
             availableModels: allConfiguredModels,
+            aspectRatio,
+            resolution,
+            referenceImages,
             status: disposition,
+            automatic,
             // agent 经 run_node(model=...) 指定的模型优先(编排生图/生视频)。
             chosenModel: batch.approvedModel(request),
           }]);
@@ -715,11 +815,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   const start = async (overrideMessage?: string) => {
     const source = overrideMessage ?? message;
-    if (!selectedId || !source.trim() || running || !selectedAgent) return;
+    if (!selectedId || (!source.trim() && !attachedImages.length && !referencedNodes.length) || running || !selectedAgent || uploadingImages) return;
 
-    const rawMessage = source.trim();
+    const rawMessage = source.trim() || (zh ? "请查看我附的参考素材。" : "Please inspect the attached references.");
+    runManualConfirmationRef.current = manualConfirmation;
     resetGenerationBatch();
-    const outbound = buildAgentRunMessage(selectedAgent, skills, source, selectedSkillId);
+    const outbound = buildAgentRunMessage(selectedAgent, skills, rawMessage, selectedSkillId);
     const invokedSkill = selectedSkillId
       ? skills.find((skill) => skill.id === selectedSkillId)
       : undefined;
@@ -727,13 +828,23 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       ? getSkillDisplayName(invokedSkill)
       : outbound.invokedSkillName;
     // Prepend any canvas-node references the user attached via "从画布添加".
-    const refPreamble = referencedNodes.length
-      ? `（参考画布节点：${referencedNodes.map((n) => `${n.label}#${n.id.slice(0, 6)}`).join("，")}）\n`
+    const canvasReferences = referencedNodes.filter(reference => nodes.some(node => node.id === reference.id));
+    const refPreamble = canvasReferences.length
+      ? `（参考画布节点：${canvasReferences.map((n) => `${n.label}#${n.id}`).join("，")}）\n`
       : "";
-    // 引用的画布节点缩略图 → 随用户消息显示为 image parts(点击可放大)。
-    const turnImages = referencedNodes
-      .map((n) => (n.thumb ? toRenderableMediaUrl(n.thumb, { thumbWidth: 720 }) : ""))
-      .filter(Boolean);
+    // Preserve media types: a video URL must never become an image thumbnail
+    // or be forwarded into image-generation referenceImages.
+    const turnVideos = referencedNodes.filter(n => n.mediaType === 'video' && n.thumb).map(n => ({
+      url: n.thumb, name: n.label, ...(nodes.some(node => node.id === n.id) ? {nodeId: n.id} : {}),
+    }));
+    const referenceImageUrls = [
+      ...referencedNodes.filter(n => n.mediaType !== 'video').map((n) => n.thumb).filter(Boolean),
+      ...attachedImages.map((image) => image.url),
+    ];
+    const imagePreamble = imageReferencePreamble(referenceImageUrls);
+    const videoPreamble = videoReferencePreamble(turnVideos);
+    const turnImages = referenceImageUrls;
+    runReferenceImagesRef.current = referenceImageUrls;
     const targetAgentId = selectedId;
     const activityRunId = `agent-${targetAgentId}-${Date.now()}`;
     activityRunIdRef.current = activityRunId;
@@ -750,15 +861,17 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (initialKey) {
       setConversationStore((prev) => ({
         ...prev,
-        [initialKey]: appendConversationTurn(prev[initialKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages),
+        [initialKey]: appendConversationTurn(prev[initialKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages, turnVideos),
       }));
     }
     setMessage("");
     setSelectedSkillId(null);
     setReferencedNodes([]);
+    setAttachedImages([]);
     setActiveSkillName(invokedSkillDisplayName);
     setStreamingReply("");
     setRunSteps([]);
+    resetTaskProgress();
     setRuntimeLabel("");
     setRunConvKey(initialKey);
     const startedAt = performance.now();
@@ -775,12 +888,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     // hands us a brand-new conversation id mid-flight.
     let currentKey = initialKey;
 
-    abortRef.current = await runAgent(
+    const stopObserving = await runAgent(
       targetAgentId,
       {
-        message: refPreamble + rawMessage,
+        message: refPreamble + imagePreamble + videoPreamble + outbound.message,
         skill_id: invokedSkill?.id ?? skills.find((skill) => getSkillCommandName(skill) === outbound.invokedSkillName)?.id,
-        displayMessage: rawMessage,
+        displayMessage: refPreamble + imagePreamble + videoPreamble + rawMessage,
         nodes: nodes as unknown[],
         edges: edges as unknown[],
         groups: useStore.getState().groups as unknown[],
@@ -789,20 +902,31 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         model: overrideModel ?? undefined,
         // 记忆隔离域:每个项目的智能体记忆互相独立(save_memory / deep_retrieve /
         // 自动轮次记忆都按 user+agent+project 隔离)。
-        project_id: useStore.getState().activeBackendProjectId ?? undefined,
+        project_id: projectId,
         canvas_revision: useStore.getState().canvasRevision,
         // 可用生成模型清单 → system prompt,让 agent 编排图片/视频生成
         // (create_node + set_prompt + run_node(model=...))。
         generation_models: buildGenerationModelCatalog(backendModels),
-        // 深度思考开关:仅思考类模型下发;未手动设置时按模型默认档位。
-        thinking: thinkingSupported ? thinkingOn : undefined,
-        // 视觉模型:后端据此注册 analyze_image 看图工具(没配就不注册)。
-        vision_model: pickVisionModel(backendModels) ?? undefined,
+        // 仅下发当前模型真正支持的思考开关/深度参数。
+        ...thinkingRequest(currentModel, thinkingEffort),
+        manual_confirmation: runManualConfirmationRef.current,
+        // 图片/视频分析使用用户当前选择的模型，不静默换成另一个模型。
+        vision_model: selectAgentVisionModel(backendModels, currentModel) ?? undefined,
       },
       (event) => {
+        if (!mountedRef.current || activityRunIdRef.current !== activityRunId ||
+            (useStore.getState().activeBackendProjectId || useStore.getState().activeProjectId) !== projectId) return;
         switch (event.type) {
           case "runtime": setRuntimeLabel(`${event.data.agent_name} · ${event.data.model}`); break;
-          case "delegation": setRunSteps(prev => [...prev, {kind: "thought", id: `delegate-${event.data.id}-${event.data.status}`, content: `${event.data.status === "running" ? "正在调度" : event.data.status === "success" ? "子任务完成" : "子任务失败"}：${event.data.agent_name} · ${event.data.model}`}]); break;
+          case "plan":
+          case "progress":
+            publishTaskProgress(updateAgentTaskProgress(taskProgressRef.current, event));
+            break;
+          case "delegation":
+          case "thought":
+          case "thought_delta":
+            // Old servers/jobs may still emit private reasoning. Never render it.
+            break;
           case "conversation": {
             const newId = event.data.id;
             const newKey = CONVERSATIONS_KEY(targetAgentId, newId);
@@ -814,7 +938,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               if (!currentKey) {
                 setConversationStore((prev) => ({
                   ...prev,
-                  [newKey]: appendConversationTurn(prev[newKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages),
+                  [newKey]: appendConversationTurn(prev[newKey] ?? [], "user", rawMessage, HISTORY_LIMIT, turnImages, turnVideos),
                 }));
               }
               // 标记该会话历史已就绪:否则 conversationKey 变化会触发历史
@@ -826,49 +950,31 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             }
             break;
           }
-          case "thought_delta":
-            markAgentCanvasThinking(activityRunId);
-            // reasoning 流:追加到最后一个开放的思考步骤;没有就开一个新块。
-            setRunSteps((prev) => {
-              for (let i = prev.length - 1; i >= 0; i--) {
-                const s = prev[i];
-                if (s.kind === "thought" && s.streaming) {
-                  const next = prev.slice();
-                  next[i] = { ...s, content: s.content + event.data.delta };
-                  return next;
-                }
-              }
-              return [...prev, { kind: "thought", id: `thought-${prev.length}`, content: event.data.delta, streaming: true }];
-            });
-            break;
           case "message_delta":
             setRunSteps(sealStreamingThought);
             setStreamingReply((prev) => prev + event.data.delta);
             break;
           case "message": {
             const finalText = event.data.content;
+            const progress = finishAgentTaskProgress(taskProgressRef.current, "completed");
             setRunSteps(sealStreamingThought);
             setStreamingReply("");
             if (currentKey) {
-              setConversationStore((prev) => ({
-                ...prev,
-                [currentKey!]: appendConversationTurn(prev[currentKey!] ?? [], "assistant", finalText, HISTORY_LIMIT),
-              }));
+              progressHistoryTargetRef.current = { key: currentKey, content: finalText.trim() };
+              setConversationStore((prev) => {
+                const turns = appendConversationTurn(prev[currentKey!] ?? [], "assistant", finalText, HISTORY_LIMIT);
+                const last = turns.at(-1);
+                return { ...prev, [currentKey!]: last?.role === "assistant" && last.content === finalText.trim()
+                  ? [...turns.slice(0, -1), { ...last, progress }] : turns };
+              });
+              publishTaskProgress(progress);
             }
             // Refresh the conversation list so the title/count auto-update.
-            void listAgentConversations(targetAgentId)
+            void listAgentConversations(targetAgentId, projectId)
               .then((rows) => setConversationsByAgent((prev) => ({ ...prev, [targetAgentId]: rows ?? [] })))
               .catch(() => {});
             break;
           }
-          case "thought":
-            markAgentCanvasThinking(activityRunId);
-            setRunSteps((prev) => [...sealStreamingThought(prev), {
-              kind: "thought",
-              id: `thought-${prev.length}`,
-              content: event.data.content,
-            }]);
-            break;
           case "ask_user":
             finishAgentCanvasActivity(activityRunId);
             setRunSteps((prev) => [...prev, {
@@ -884,7 +990,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               kind: "tool",
               id: `tool-${prev.length}`,
               invocation: {
-                id: `tool-${prev.length}`,
+                id: event.data.id || `tool-${prev.length}`,
                 name: event.data.name,
                 args: event.data.arguments,
                 startedAt: performance.now(),
@@ -894,10 +1000,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             break;
           case "tool_result":
             setRunSteps((prev) => {
-              // Finalize the latest running tool invocation.
+              // Match by call id so parallel calls cannot finish the wrong step.
               for (let i = prev.length - 1; i >= 0; i--) {
                 const step = prev[i];
-                if (step.kind === "tool" && step.invocation.status === "running") {
+                if (step.kind === "tool" && step.invocation.status === "running" &&
+                    (event.data.id ? step.invocation.id === event.data.id : step.invocation.name === event.data.name)) {
                   const inv = step.invocation;
                   const updated: RunStep = {
                     ...step,
@@ -938,6 +1045,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
             break;
           case "error":
+            finishTaskProgress("failed");
             finishAgentCanvasActivity(activityRunId);
             setRunSteps((prev) => [...sealStreamingThought(prev), {
               kind: "error",
@@ -952,6 +1060,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
             break;
           case "done":
+            finishTaskProgress("completed");
             finishAgentCanvasActivity(activityRunId);
             setRunSteps(sealStreamingThought);
             setRunning(false);
@@ -963,6 +1072,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         }
       },
     );
+    if (mountedRef.current && activityRunIdRef.current === activityRunId) abortRef.current = stopObserving;
+    else stopObserving();
   };
 
   // Re-attach to a durable run after a reload, route change, or panel close.
@@ -970,8 +1081,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // cursor lets the next mount continue without replaying applied patches.
   useEffect(() => {
     if (!open || !selectedId || abortRef.current) return;
-    const job = getActiveAgentJob(selectedId);
+    const job = getActiveAgentJob(selectedId, projectId);
     if (!job) return;
+    runManualConfirmationRef.current = job.manualConfirmation !== false;
+    setManualConfirmation(runManualConfirmationRef.current);
+    runReferenceImagesRef.current = parseAgentUserInput(job.message ?? "").images;
 
     const targetAgentId = selectedId;
     const activityRunId = `job-${job.jobId}`;
@@ -990,19 +1104,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       setRunConvKey(currentKey);
       if (job.message) {
         const displayJobMessage = presentAgentUserInput(job.message);
+        const jobImages = parseAgentUserInput(job.message).images;
+        const jobVideos = parseAgentUserInput(job.message).videos;
         setConversationStore((prev) => {
           const turns = prev[currentKey!] ?? [];
           const alreadyPresent = turns.some((turn) => turn.role === "user" && turn.content === displayJobMessage);
           if (alreadyPresent) return prev;
           return {
             ...prev,
-            [currentKey!]: appendConversationTurn(turns, "user", displayJobMessage, HISTORY_LIMIT),
+            [currentKey!]: appendConversationTurn(turns, "user", displayJobMessage, HISTORY_LIMIT, jobImages, jobVideos),
           };
         });
       }
     }
     setStreamingReply("");
     setRunSteps([]);
+    resetTaskProgress();
     setRunStartedAt(startedAt);
     setRunFinishedMs(null);
     setConnectionState(null);
@@ -1010,9 +1127,18 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     beginAgentCanvasThinking(activityRunId);
 
     void resumeAgentJob(job, (event, meta?: AgentEventMeta) => {
+      if (disposed || activityRunIdRef.current !== activityRunId ||
+          (useStore.getState().activeBackendProjectId || useStore.getState().activeProjectId) !== projectId) return;
       switch (event.type) {
         case "runtime": setRuntimeLabel(`${event.data.agent_name} · ${event.data.model}`); break;
-        case "delegation": setRunSteps(prev => [...prev, {kind: "thought", id: `delegate-${event.data.id}-${event.data.status}`, content: `${event.data.status === "running" ? "正在调度" : event.data.status === "success" ? "子任务完成" : "子任务失败"}：${event.data.agent_name} · ${event.data.model}`}]); break;
+        case "plan":
+        case "progress":
+          publishTaskProgress(updateAgentTaskProgress(taskProgressRef.current, event));
+          break;
+        case "delegation":
+        case "thought":
+        case "thought_delta":
+          break;
         case "conversation": {
           const newID = event.data.id;
           currentKey = CONVERSATIONS_KEY(targetAgentId, newID);
@@ -1021,50 +1147,35 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           setRunConvKey(currentKey);
           break;
         }
-        case "thought_delta":
-          markAgentCanvasThinking(activityRunId);
-          setRunSteps((prev) => {
-            for (let index = prev.length - 1; index >= 0; index--) {
-              const step = prev[index];
-              if (step.kind === "thought" && step.streaming) {
-                const next = prev.slice();
-                next[index] = { ...step, content: step.content + event.data.delta };
-                return next;
-              }
-            }
-            return [...prev, { kind: "thought", id: `thought-${prev.length}`, content: event.data.delta, streaming: true }];
-          });
-          break;
         case "message_delta":
           setRunSteps(sealStreamingThought);
           setStreamingReply((prev) => prev + event.data.delta);
           break;
-        case "message":
+        case "message": {
+          const progress = finishAgentTaskProgress(taskProgressRef.current, "completed");
           setRunSteps(sealStreamingThought);
           setStreamingReply("");
           if (currentKey) {
+            progressHistoryTargetRef.current = { key: currentKey, content: event.data.content.trim() };
             setConversationStore((prev) => {
               const turns = prev[currentKey!] ?? [];
               const duplicate = turns.some((turn) => turn.role === "assistant" && turn.content === event.data.content.trim());
               if (duplicate) return prev;
+              const updated = appendConversationTurn(turns, "assistant", event.data.content, HISTORY_LIMIT);
+              const last = updated.at(-1);
               return {
                 ...prev,
-                [currentKey!]: appendConversationTurn(turns, "assistant", event.data.content, HISTORY_LIMIT),
+                [currentKey!]: last?.role === "assistant" && last.content === event.data.content.trim()
+                  ? [...updated.slice(0, -1), { ...last, progress }] : updated,
               };
             });
+            publishTaskProgress(progress);
           }
-          void listAgentConversations(targetAgentId)
+          void listAgentConversations(targetAgentId, projectId)
             .then((rows) => setConversationsByAgent((prev) => ({ ...prev, [targetAgentId]: rows ?? [] })))
             .catch(() => {});
           break;
-        case "thought":
-          markAgentCanvasThinking(activityRunId);
-          setRunSteps((prev) => [...sealStreamingThought(prev), {
-            kind: "thought",
-            id: `thought-${prev.length}`,
-            content: event.data.content,
-          }]);
-          break;
+        }
         case "ask_user":
           finishAgentCanvasActivity(activityRunId);
           setRunSteps((prev) => [...prev, {
@@ -1092,7 +1203,8 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           setRunSteps((prev) => {
             for (let index = prev.length - 1; index >= 0; index--) {
               const step = prev[index];
-              if (step.kind === "tool" && step.invocation.status === "running") {
+              if (step.kind === "tool" && step.invocation.status === "running" &&
+                  (event.data.id ? step.invocation.id === event.data.id : step.invocation.name === event.data.name)) {
                 const next = prev.slice();
                 next[index] = {
                   ...step,
@@ -1133,6 +1245,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           setConnectionState(event.data.state === "reconnecting" ? "reconnecting" : null);
           break;
         case "error":
+          finishTaskProgress("failed");
           finishAgentCanvasActivity(activityRunId);
           setRunSteps((prev) => [...sealStreamingThought(prev), {
             kind: "error",
@@ -1147,6 +1260,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           if (activityRunIdRef.current === activityRunId) activityRunIdRef.current = null;
           break;
         case "done":
+          finishTaskProgress("completed");
           finishAgentCanvasActivity(activityRunId);
           setRunSteps(sealStreamingThought);
           setRunning(false);
@@ -1157,7 +1271,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
           break;
       }
     }).then((stopObserving) => {
-      if (disposed) stopObserving();
+      if (disposed || activityRunIdRef.current !== activityRunId) stopObserving();
       else abortRef.current = stopObserving;
     });
 
@@ -1166,7 +1280,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       abortRef.current?.();
       abortRef.current = null;
     };
-  }, [applyPatch, open, selectedId, zh]);
+  }, [applyPatch, open, selectedId, zh, projectId]);
 
   const submitWithMotion = () => {
     if (sendButtonRef.current && !shouldReduceMotion()) {
@@ -1188,10 +1302,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
   const stop = async () => {
     generationBatchRef.current?.stop();
-    const job = selectedId ? getActiveAgentJob(selectedId) : null;
+    const job = selectedId ? getActiveAgentJob(selectedId, projectId) : null;
     if (job) {
       try { await cancelAgentJob(job); }
-      catch { setRunSteps(prev => [...prev, {kind: "error", id: `cancel-${Date.now()}`, message: "取消失败，后台任务可能仍在运行，请重试。"}]); }
+      catch {
+        setRunSteps(prev => [...prev, {kind: "error", id: `cancel-${Date.now()}`, message: "取消失败，后台任务可能仍在运行，请重试。"}]);
+        return;
+      }
     }
     abortRef.current?.();
     abortRef.current = null;
@@ -1200,6 +1317,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       activityRunIdRef.current = null;
     }
     setRunSteps(sealStreamingThought);
+    finishTaskProgress("cancelled");
     setRunning(false);
     if (runStartedAt != null) {
       setRunFinishedMs(performance.now() - runStartedAt);
@@ -1214,42 +1332,78 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (!step || step.kind !== "pending_run" || step.status !== "pending") return;
     const model = step.chosenModel ?? step.availableModels[0] ?? "";
     if (!model) return;
-    const accepted = generationBatchRef.current?.approve(stepId, model) ?? [];
+    const accepted = generationBatchRef.current?.approve(stepId, model, {
+      aspectRatio: step.aspectRatio,
+      resolution: step.resolution,
+    }) ?? [];
     const ids = new Set(accepted.map(request => request.id));
     // No generation side effects inside a React updater (StrictMode can replay it).
     setRunSteps(prev => prev.map(s => s.kind === "pending_run" && ids.has(s.id)
       ? {...s, status: "confirmed", chosenModel: model} : s));
+    if (accepted.length && taskProgressRef.current) {
+      const stillPending = runSteps.some(s => s.kind === "pending_run" && s.status === "pending" && !ids.has(s.id));
+      const label = stillPending ? "已确认部分生成参数，其他项目仍待确认" : "已确认生成参数，生成结果请在画布节点查看";
+      const progress = updateAgentTaskProgress(taskProgressRef.current, {type:"progress",data:{
+        id:"generation-confirmation",phase:"generation",label,status:"waiting",
+      }});
+      publishTaskProgress({...progress,summary:label});
+    }
   };
 
   const skipPendingRun = (stepId: string) => {
+    const skipped = runSteps.find(s => s.id === stepId && s.kind === "pending_run" && s.status === "pending");
+    if (!skipped) return;
     generationBatchRef.current?.skip(stepId);
     setRunSteps((prev) => prev.map((s) => {
       if (s.id !== stepId || s.kind !== "pending_run" || s.status !== "pending") return s;
       return { ...s, status: "skipped" };
     }));
+    if (taskProgressRef.current) {
+      const remaining = runSteps.filter(s => s.kind === "pending_run" && s.id !== stepId);
+      const pending = remaining.some(s => s.kind === "pending_run" && s.status === "pending");
+      const confirmed = remaining.some(s => s.kind === "pending_run" && s.status === "confirmed");
+      const label = pending ? "已跳过此项，其他生成参数仍待确认"
+        : confirmed ? "已跳过未确认项，已确认的生成结果请在画布查看" : "已跳过本次生成，已完成的画布操作保留";
+      const progress = updateAgentTaskProgress(taskProgressRef.current, {type:"progress",data:{
+        id:"generation-confirmation",phase:"generation",label,status:pending || confirmed ? "waiting" : "completed",
+      }});
+      publishTaskProgress({...progress,summary:label,status:pending || confirmed ? "waiting" : "cancelled"});
+    }
   };
 
   const updatePendingModel = (stepId: string, model: string) => {
+    const provider = backendModels.find((cfg) => (cfg.model_list ?? []).includes(model));
+    const template = getModelTemplate(model, provider);
     setRunSteps((prev) => prev.map((s) => {
       if (s.id !== stepId || s.kind !== "pending_run") return s;
-      return { ...s, chosenModel: model };
+      return {
+        ...s,
+        chosenModel: model,
+        aspectRatio: template?.aspectRatioOptions?.includes(s.aspectRatio ?? "") ? s.aspectRatio : template?.defaults?.aspectRatio ?? template?.aspectRatioOptions?.[0],
+        resolution: template?.resolutionOptions?.includes(s.resolution ?? "") ? s.resolution : template?.defaults?.resolution ?? template?.resolutionOptions?.[0],
+      };
     }));
+  };
+  const updatePendingParameter = (stepId: string, key: "aspectRatio" | "resolution", value: string) => {
+    setRunSteps((prev) => prev.map((step) => step.kind === "pending_run" && step.id === stepId && step.status === "pending"
+      ? { ...step, [key]: value } : step));
   };
 
   // Start a brand-new chat thread, leaving the prior one intact in the list.
   // 同 switchToConversation:进行中的 run 状态不清空(渲染层按会话隔离)。
   const newChat = async () => {
-    if (!selectedId) return;
+    if (!selectedId) return false;
     if (!running) {
       setStreamingReply("");
       setRunSteps([]);
+      resetTaskProgress();
       setRunStartedAt(null);
       setRunFinishedMs(null);
       setCtxUsage(null);
       setRunConvKey(null);
     }
     try {
-      const created = await createAgentConversation(selectedId, "");
+      const created = await createAgentConversation(selectedId, projectId, "");
       setConversationsByAgent((prev) => ({
         ...prev,
         [selectedId]: [created, ...(prev[selectedId] ?? [])],
@@ -1258,10 +1412,39 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       const key = CONVERSATIONS_KEY(selectedId, created.id);
       setConversationStore((prev) => ({ ...prev, [key]: [] }));
       setLoadedHistoryIds((prev) => ({ ...prev, [key]: true }));
+      return true;
     } catch {
-      // surface a silent failure; user can retry from the same button
+      return false;
     }
   };
+
+  // Editing a sent turn branches into a new conversation. Prior replies and
+  // generated assets remain untouched; the user can review before resending.
+  const editUserMessageRef = useRef<(index: number, text: string) => void>(() => {});
+  editUserMessageRef.current = (index, text) => {
+    if (running) return;
+    const turn = conversationHistory[index];
+    if (turn?.role !== "user") return;
+    void newChat().then((created) => {
+      if (!mountedRef.current) return;
+      if (!created) {
+        setImageUploadError(zh ? "无法创建新对话，原消息未更改，请重试。" : "Could not create a new chat. The original message is unchanged.");
+        return;
+      }
+      setImageUploadError("");
+      setMessage(text);
+      setAttachedImages((turn.images ?? []).map((url, imageIndex) => ({ url, name: `${zh ? "参考图片" : "Reference"} ${imageIndex + 1}` })));
+      setReferencedNodes((turn.videos ?? []).map((video,index) => ({
+        id:video.nodeId || `chat-video-${index}`, label:video.name || (zh ? '参考视频' : 'Reference video'),
+        thumb:video.url, mediaType:'video',
+      })));
+      requestAnimationFrame(() => inputRef.current?.focus());
+    });
+  };
+  const handleEditUserMessage = useCallback((index: number, text: string) => editUserMessageRef.current(index, text), []);
+  const historyForEditRef = useRef(conversationHistory);
+  historyForEditRef.current = conversationHistory;
+  const getUserEditText = useCallback((index: number) => historyForEditRef.current[index]?.editText ?? historyForEditRef.current[index]?.content ?? "", []);
 
   // Switch to an existing thread. 有 run 在跑时保留其状态 —— 运行中的
   // 思考/步骤只在 runConvKey 对应的会话里渲染(见 runHere gating),切走
@@ -1272,6 +1455,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
     if (!running) {
       setStreamingReply("");
       setRunSteps([]);
+      resetTaskProgress();
       setRunStartedAt(null);
       setRunFinishedMs(null);
       setCtxUsage(null);
@@ -1282,7 +1466,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   const removeConversation = async (cid: string) => {
     if (!selectedId) return;
     try {
-      await deleteAgentConversation(selectedId, cid);
+      await deleteAgentConversation(selectedId, projectId, cid);
     } catch {
       return;
     }
@@ -1321,11 +1505,11 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
   // Keep the panel MOUNTED across open/close (display toggle, not unmount) so an
   // in-flight agent run / streaming SSE and the history sidebar state survive a
   // close. The enter animation still fires via the `open`-keyed effect above.
-  const hasAnyContent = conversationHistory.length > 0 || streamingReply || runSteps.length > 0;
+  const hasAnyContent = conversationHistory.length > 0 || streamingReply || runSteps.length > 0 || taskProgress != null;
   // 思考/工具步骤进 assistant-ui 消息流;交互与信息型卡片(提问/待确认生成/
   // 画布操作/错误)保留原有卡片组件,渲染在消息之后。仅在 run 所属会话显示。
   const interactiveSteps = (runHere ? runSteps : []).filter(
-    (s): s is InteractiveRunStep => s.kind === "ask_user" || s.kind === "pending_run" || s.kind === "canvas" || s.kind === "error",
+    (s): s is InteractiveRunStep => s.kind === "ask_user" || s.kind === "pending_run" || (s.kind === "canvas" && !taskProgressRef.current) || s.kind === "error",
   );
   const questionSteps = interactiveSteps.filter(
     (step): step is Extract<RunStep, { kind: "ask_user" }> => step.kind === "ask_user",
@@ -1393,13 +1577,37 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       setOverrideModel(allModels[0]);
     }
   }, [overrideModel, selectedAgent?.model, allModels]);
-  // 深度思考:换模型后回到该模型的默认档位(qwen3.7 默认关,deepseek 等默认开)。
-  useEffect(() => { setDeepThinking(null); }, [currentModel]);
-  const thinkingSupported = isThinkingCapableModel(currentModel);
-  const thinkingOn = deepThinking ?? isThinkingDefaultOn(currentModel);
+  // 每个账号/画布/模型分别记住档位，未设置时使用模型默认值。
+  const thinkingEffort = preferences.efforts[currentModel] ?? null;
+  const currentThinkingEffort = effectiveThinkingEffort(currentModel, thinkingEffort);
   // Provider config that owns a model name — powers the brand icon.
   const modelConfig = (m: string) => backendModels.find((c) => (c.model_list ?? []).includes(m));
   const removeReferencedNode = (id: string) => setReferencedNodes((prev) => prev.filter((n) => n.id !== id));
+  const uploadAgentImages = async (files: FileList | null) => {
+    if (!files?.length || uploadingImages) return;
+    const selected = Array.from(files);
+    if (selected.some((file) => !file.type.startsWith("image/") || file.size > 10 * 1024 * 1024)) {
+      setImageUploadError(zh ? "仅支持不超过 10 MB 的图片。" : "Images must be 10 MB or smaller.");
+      return;
+    }
+    setUploadingImages(true);
+    setImageUploadError("");
+    try {
+      const results = await Promise.allSettled(selected.map(async (file) => {
+        const result = await uploadFile(file, file.name);
+        return { url: result.url, name: file.name };
+      }));
+      if (mountedRef.current) {
+        const uploaded = results.filter((result): result is PromiseFulfilledResult<{ url: string; name: string }> => result.status === "fulfilled").map((result) => result.value);
+        if (uploaded.length) setAttachedImages((previous) => [...previous, ...uploaded]);
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length) setImageUploadError(zh ? `${failures.length} 张图片上传失败，请重试。` : `${failures.length} image uploads failed. Please retry.`);
+      }
+    } finally {
+      if (mountedRef.current) setUploadingImages(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const speechSupported = typeof window !== "undefined" && Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   const toggleMic = () => {
@@ -1442,26 +1650,22 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
         title={zh ? "拖动调节宽度" : "Drag to resize"}
         className={`absolute inset-y-0 left-0 z-50 w-1.5 cursor-ew-resize transition-colors ${resizing ? "bg-cyan-400/50" : "bg-transparent hover:bg-cyan-400/30"}`}
       />
-      {agentNodePickActive ? createPortal(
-        <div className="fixed left-1/2 top-4 z-[1000] flex -translate-x-1/2 items-center gap-2 rounded-full border border-cyan-400/30 bg-[#15181d]/95 px-4 py-2 text-xs text-cyan-100 shadow-2xl backdrop-blur">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-300" />
-          {zh ? "选择模式 · 点击画布节点添加为引用" : "Pick mode · click a canvas node to add as reference"}
-          <button type="button" onClick={() => cancelAgentNodePick()} className="ml-1 text-neutral-400 transition hover:text-white">
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>,
-        document.body,
-      ) : null}
       {/* Header */}
       <div className="agent-workbench-header flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <span className="max-w-[170px] truncate text-sm font-medium text-neutral-100">{activeConvId ? conversations.find(c => c.id === activeConvId)?.title || (zh ? "对话" : "Chat") : (zh ? "新对话" : "New chat")}</span>
           {/* 读秒移到消息流「思考中…」上方(AgentThread elapsedMs);运行中
               header 只留一个轻量转圈,提示后台有 run(含切到其他会话时)。 */}
           {running ? <Loader2 className="ml-1 h-3 w-3 animate-spin text-neutral-400" /> : null}
         </div>
-        <div className="flex items-center gap-1 text-neutral-500">
-          <span className="px-2 text-[11px] text-neutral-500" title={zh ? "主 Agent 按需调用已启用的专业 Agent" : "The main agent delegates to specialists as needed"}>{zh ? "主 Agent · 按需调度" : "Main agent · auto dispatch"}</span>
+        <div className="flex shrink-0 items-center gap-1 text-neutral-500">
+          {open && <AgentSettingsPopover key={projectId} zh={zh} model={currentModel} effort={currentThinkingEffort}
+            onEffortChange={value => setModelEffort(currentModel, value)} manualConfirmation={manualConfirmation}
+            onManualChange={setManualConfirmation} running={running} listening={listening}
+            speechSupported={speechSupported} onToggleMic={toggleMic} runtimeLabel={runtimeLabel}
+            visionModel={selectAgentVisionModel(backendModels, currentModel)}
+            usage={ctxUsage ? <ContextWindowMeter usage={ctxUsage} limit={getModelTemplate(currentModel)?.contextWindow} zh={zh} /> : null} />}
+          <span className="px-2 text-[11px] text-neutral-500" title={zh ? "由一个智能体直接处理，按需使用技能和画布工具" : "One assistant using skills and canvas tools"}>{zh ? "画布智能体" : "Canvas assistant"}</span>
           <button type="button" onClick={() => void newChat()} disabled={running || !selectedId} className="rounded-md p-1.5 transition hover:bg-white/5 hover:text-white disabled:opacity-40" title={zh ? "新建会话" : "New chat"}>
             <Plus className="h-4 w-4" />
           </button>
@@ -1502,10 +1706,13 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
       <AgentThread
         zh={zh}
         runSteps={runHere ? runSteps : []}
+        progress={runHere ? taskProgress : undefined}
         streamingReply={runHere ? streamingReply : ""}
         running={running && runHere}
         elapsedMs={running && runHere ? liveElapsedMs : null}
         onQuote={quoteIntoComposer}
+        onEditUserMessage={handleEditUserMessage}
+        getUserEditText={getUserEditText}
         footer={
           interactiveSteps.length > 0 ? (
             <div className="space-y-2">
@@ -1536,6 +1743,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                     onConfirmRun={confirmPendingRun}
                     onSkipRun={skipPendingRun}
                     onPickModel={updatePendingModel}
+                    onPickParameter={updatePendingParameter}
                     modelDisplayName={modelDisplayName}
                   />
                 )
@@ -1547,7 +1755,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
 
       {/* Composer —— shrink-0:无论消息区多长,对话框永远完整固定在底部。 */}
       <div className="agent-workbench-compose relative shrink-0 p-3">
-        {runtimeLabel && <p className="agent-runtime-indicator" title={runtimeLabel}>{running ? "正在执行" : "本次运行"} · {runtimeLabel}</p>}
         {/* Slash command popup — appears when the message starts with `/`. */}
         {slashSuggestions.length > 0 ? (
           <SlashMenu
@@ -1557,11 +1764,20 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
             zh={zh}
           />
         ) : null}
-        {referencedNodes.length > 0 ? (
-          <div className="mb-1.5 flex flex-wrap gap-1.5">
+        <input ref={imageInputRef} type="file" accept="image/*" multiple className="hidden" aria-label={zh ? "上传参考图片" : "Upload reference images"} onChange={(event) => void uploadAgentImages(event.target.files)} />
+        {/* Empty state stays beside the composer, matching the canvas dock. */}
+        {!hasAnyContent ? <div className="agent-welcome">
+          <div className="agent-welcome-name"><span className="agent-welcome-avatar">{userName?.slice(0,1) || (zh ? "用" : "U")}</span>Hi {userName || (zh ? "创作者" : "creator")}!</div>
+          <h2>{zh ? "今天一起创作点什么？" : "What shall we create today?"}</h2>
+          <div className="agent-welcome-skills">{quickChips.map(skill => <button key={skill.id} onClick={() => applyQuickChip(skill)} title={skill.description || skill.name}><Sparkles size={13}/><span>{getSkillDisplayName(skill)}</span></button>)}{!quickChips.length && <button onClick={() => setShowSkillLibrary(true)}><Sparkles size={13}/><span>{zh ? "选择创作技能" : "Choose a skill"}</span></button>}</div>
+        </div> : null}
+
+        <div className="agent-prompt-bar rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5" data-thinking={currentThinkingEffort !== 'off' ? "true" : undefined} data-effort={currentThinkingEffort} data-active={message.trim() || attachedImages.length > 0 || referencedNodes.length > 0 ? "true" : undefined}>
+        {referencedNodes.length > 0 || attachedImages.length > 0 ? (
+          <div className="agent-prompt-attachments mb-1.5 flex flex-wrap gap-1.5">
             {referencedNodes.map((n) => (
               <span key={n.id} className="inline-flex items-center gap-1 rounded-md border border-[var(--agent-border)] bg-white/[0.05] py-0.5 pl-0.5 pr-1.5 text-[10px] text-neutral-200">
-                {n.thumb ? (
+                {n.mediaType === 'video' ? <Film className="h-3.5 w-3.5 text-neutral-300" /> : n.thumb ? (
                   <img src={toRenderableMediaUrl(n.thumb, { thumbWidth: 720 })} alt="" className="h-4 w-4 rounded object-cover" />
                 ) : (
                   <ImageIcon className="h-3.5 w-3.5 text-neutral-500" />
@@ -1572,19 +1788,19 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 </button>
               </span>
             ))}
+            {attachedImages.map((image, index) => (
+              <span key={`${image.url}-${index}`} className="inline-flex items-center gap-1 rounded-md border border-[var(--agent-border)] bg-white/[0.05] py-0.5 pl-0.5 pr-1.5 text-[10px] text-neutral-200">
+                <img src={toRenderableMediaUrl(image.url, { thumbWidth: 240 })} alt="" className="h-5 w-5 rounded object-cover" />
+                <span className="max-w-[110px] truncate">{image.name}</span>
+                <button type="button" onClick={() => setAttachedImages((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} className="text-neutral-500 transition hover:text-rose-300" title={zh ? "移除图片" : "Remove image"}><X className="h-3 w-3" /></button>
+              </span>
+            ))}
           </div>
         ) : null}
-        {/* Empty state stays beside the composer, matching the canvas dock. */}
-        {!hasAnyContent ? <div className="agent-welcome">
-          <div className="agent-welcome-name"><span className="agent-welcome-avatar">{userName?.slice(0,1) || (zh ? "用" : "U")}</span>Hi {userName || (zh ? "创作者" : "creator")}!</div>
-          <h2>{zh ? "今天一起创作点什么？" : "What shall we create today?"}</h2>
-          <div className="agent-welcome-skills">{quickChips.map(skill => <button key={skill.id} onClick={() => applyQuickChip(skill)} title={skill.description || skill.name}><Sparkles size={13}/><span>{getSkillDisplayName(skill)}</span></button>)}{!quickChips.length && <button onClick={() => setShowSkillLibrary(true)}><Sparkles size={13}/><span>{zh ? "选择创作技能" : "Choose a skill"}</span></button>}</div>
-        </div> : null}
-
-        {/* Single rounded composer container. */}
-        <div className="rounded-2xl border border-[var(--agent-border)] bg-white/[0.03] px-3 pb-2 pt-2.5 transition focus-within:border-white/25">
+        {uploadingImages ? <p className="mb-1 text-[10px] text-neutral-400">{zh ? "正在上传图片…" : "Uploading images…"}</p> : null}
+        {imageUploadError ? <p role="alert" className="mb-1 text-[10px] text-rose-300">{imageUploadError}</p> : null}
           {selectedComposerSkill ? (
-            <div className="mb-1.5 min-w-0"><SkillMentionChip skill={selectedComposerSkill} onRemove={() => setSelectedSkillId(null)} disabled={running} zh={zh} /></div>
+            <div className="agent-prompt-skill mb-1.5 min-w-0"><SkillMentionChip skill={selectedComposerSkill} onRemove={() => setSelectedSkillId(null)} disabled={running} zh={zh} /></div>
           ) : null}
           <textarea
             ref={inputRef}
@@ -1624,12 +1840,12 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               }
             }}
             placeholder={zh ? "描述操作或用 @ 引用…" : "Describe an action, or @ to reference…"}
-            rows={2}
+            rows={1}
             onWheel={(event) => event.stopPropagation()}
-            className="prompt-editor-scroll w-full resize-none bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
+            className="agent-prompt-input prompt-editor-scroll w-full resize-none bg-transparent text-sm text-neutral-100 outline-none placeholder:text-neutral-600"
             disabled={running}
           />
-          <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+          <div className="agent-prompt-toolbar mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
             <Popover
               open={showAttachMenu}
               onOpenChange={(nextOpen) => {
@@ -1643,7 +1859,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   disabled={running}
                   title={zh ? "添加画布素材" : "Add from canvas"}
                   aria-label={zh ? "添加画布素材" : "Add from canvas"}
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                  className={`agent-prompt-tool flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40 ${
                     showAttachMenu
                       ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
                       : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
@@ -1654,6 +1870,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
               </PopoverTrigger>
               <AttachMenu
                 zh={zh}
+                onUploadImage={() => { setShowAttachMenu(false); imageInputRef.current?.click(); }}
                 onPickFromCanvas={() => {
                   startAgentNodePick();
                   setShowAttachMenu(false);
@@ -1688,7 +1905,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 title={zh ? "选择 Skill" : "Choose a Skill"}
                 aria-label={zh ? "选择 Skill" : "Choose a Skill"}
                 aria-expanded={showSkillMenu}
-                className={`flex h-8 w-8 items-center justify-center rounded-full border transition disabled:opacity-40 ${
+                className={`agent-prompt-tool flex h-8 w-8 items-center justify-center rounded-full border transition disabled:opacity-40 ${
                   showSkillMenu
                     ? "border-cyan-300/30 bg-cyan-500/10 text-cyan-200"
                     : "border-[var(--agent-border)] text-neutral-400 hover:bg-white/5 hover:text-white"
@@ -1698,43 +1915,6 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                 {selectedComposerSkill && <span className="skill-selected-count" aria-label={zh ? '已选 1 个技能' : '1 skill selected'}>1</span>}
               </button>
             </div>
-            <span className="agent-manual-policy" title={zh ? "媒体生成需确认后执行，子 Agent 仅负责分析建议" : "Media generation requires confirmation"}><Hand size={13}/>{zh ? "手动确认" : "Confirm"}</span>
-            {/* 深度思考开关:仅思考类模型(deepseek / qwen3.7 / *-thinking…)显示。
-                开=模型输出 reasoning 流(思考块实时可见);关=直接回答,更快。 */}
-            {thinkingSupported ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => setDeepThinking(!thinkingOn)}
-                    disabled={running}
-                    title={thinkingOn
-                      ? (zh ? "深度思考已开启：点击关闭" : "Deep thinking is on; click to disable")
-                      : (zh ? "深度思考已关闭：点击开启" : "Deep thinking is off; click to enable")}
-                    aria-label={thinkingOn
-                      ? (zh ? "深度思考已开启，点击关闭" : "Deep thinking on, click to disable")
-                      : (zh ? "深度思考已关闭，点击开启" : "Deep thinking off, click to enable")}
-                    aria-pressed={thinkingOn}
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition disabled:opacity-40 ${
-                      thinkingOn
-                        ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                        : "border-[var(--agent-border)] text-neutral-500 hover:bg-white/5 hover:text-neutral-300"
-                    }`}
-                  >
-                    <BrainCircuit className="h-4 w-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="top"
-                  sideOffset={8}
-                  className="canvas-menu-surface border border-white/10 bg-[#17191e] px-2.5 py-1.5 text-[10px] text-neutral-200 shadow-xl"
-                >
-                  {thinkingOn
-                    ? (zh ? "深度思考 · 已开启" : "Deep thinking · On")
-                    : (zh ? "深度思考 · 已关闭" : "Deep thinking · Off")}
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
             <div className="ml-auto flex min-w-[140px] basis-[140px] flex-1 items-center justify-end gap-1.5">
               {/* Standalone model selector, pinned right. Always visible. */}
               {(
@@ -1743,7 +1923,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                     <>
                       <div className="fixed inset-0 z-30" onClick={() => setShowModelMenu(false)} />
                       <div
-                        className="prompt-editor-scroll absolute bottom-full right-0 z-40 mb-2 max-h-[280px] w-[220px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 shadow-2xl backdrop-blur-xl"
+                        className="agent-prompt-model-menu prompt-editor-scroll absolute bottom-full right-0 z-40 mb-2 max-h-[280px] w-[220px] overflow-y-auto rounded-xl border border-[var(--agent-border)] bg-[var(--agent-surface)] p-1.5 shadow-2xl backdrop-blur-xl"
                         onWheel={(e) => e.stopPropagation()}
                       >
                         <div className="px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{zh ? "模型" : "Model"}</div>
@@ -1787,7 +1967,7 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   <button
                     type="button"
                     onClick={() => setShowModelMenu((v) => !v)}
-                    className="flex w-full min-w-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
+                    className="agent-prompt-model flex w-full min-w-0 items-center gap-1 rounded-full border border-[var(--agent-border)] px-2 py-1 text-[10px] text-neutral-400 transition hover:bg-white/5 hover:text-neutral-200"
                     title={currentModel
                       ? `${zh ? "本次模型" : "Model"}: ${modelDisplayName(currentModel)}`
                       : (zh ? "选择本次模型" : "Model for this message")}
@@ -1803,38 +1983,21 @@ export function AgentRunPanel({ open, onClose }: { open: boolean; onClose: () =>
                   </button>
                 </div>
               )}
-              {speechSupported ? (
-                <button
-                  type="button"
-                  onClick={toggleMic}
-                  title={zh ? "语音输入" : "Voice input"}
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${listening ? "bg-rose-500/20 text-rose-300" : "text-neutral-400 hover:bg-white/5 hover:text-white"}`}
-                >
-                  <Mic className="h-4 w-4" />
-                </button>
-              ) : null}
-              {running ? (
-                <button onClick={stop} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-500/20 text-rose-300 transition hover:bg-rose-500/30" title={zh ? "停止" : "Stop"}>
-                  <Square className="h-3.5 w-3.5" />
-                </button>
-              ) : (
-                <button
-                  ref={sendButtonRef}
-                  onClick={submitWithMotion}
-                  disabled={!message.trim() || !selectedId}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:bg-white/15 disabled:text-neutral-500"
-                  title={zh ? "发送" : "Send"}
-                >
-                  <ArrowUp className="h-4 w-4" />
-                </button>
-              )}
+              <button
+                ref={sendButtonRef}
+                type="button"
+                onClick={running ? () => void stop() : submitWithMotion}
+                disabled={!running && ((!message.trim() && !attachedImages.length && !referencedNodes.length) || !selectedId || uploadingImages)}
+                className="agent-prompt-send flex h-8 w-8 shrink-0 items-center justify-center bg-white text-black transition disabled:bg-white/15 disabled:text-neutral-500"
+                data-busy={running ? "true" : undefined}
+                title={running ? (zh ? "停止" : "Stop") : (zh ? "发送" : "Send")}
+                aria-label={running ? (zh ? "停止" : "Stop") : (zh ? "发送" : "Send")}
+              >
+                <ArrowUp className="agent-prompt-send-arrow h-4 w-4" />
+                <Square className="agent-prompt-send-stop h-3 w-3" fill="currentColor" />
+              </button>
             </div>
           </div>
-          {/* 上下文窗口计量表(右下角):最近一轮 usage / 模型上下文上限。
-              网关不回 usage 时不显示;模型没声明上限时只显示已用量。 */}
-          {ctxUsage ? (
-            <ContextWindowMeter usage={ctxUsage} limit={getModelTemplate(currentModel)?.contextWindow} zh={zh} />
-          ) : null}
         </div>
       </div>
         </div>
@@ -1931,10 +2094,11 @@ function ContextWindowMeter({
 
 /** Composer "+" attach menu, anchored directly to its trigger button. */
 function AttachMenu({
-  zh, onPickFromCanvas,
+  zh, onPickFromCanvas, onUploadImage,
 }: {
   zh: boolean;
   onPickFromCanvas: () => void;
+  onUploadImage: () => void;
 }) {
   const themeStyle = useCanvasThemeStyle();
   return (
@@ -1945,13 +2109,17 @@ function AttachMenu({
       sideOffset={8}
       collisionPadding={12}
       role="menu"
-      aria-label={zh ? "画布素材" : "Canvas assets"}
-      className="canvas-menu-surface prompt-editor-scroll z-[130] max-h-[320px] w-[300px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
+      aria-label={zh ? "添加参考素材" : "Add references"}
+      className="agent-prompt-attach-menu canvas-menu-surface prompt-editor-scroll z-[130] max-h-[320px] w-[300px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-xl p-1.5 text-neutral-200 shadow-2xl backdrop-blur-xl"
       onWheel={(event) => event.stopPropagation()}
     >
       <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-neutral-500">
-        {zh ? "画布" : "Canvas"}
+        {zh ? "参考素材" : "References"}
       </div>
+      <button type="button" role="menuitem" onClick={onUploadImage} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-neutral-300 transition hover:bg-white/5">
+        <Upload className="h-3.5 w-3.5 shrink-0 text-neutral-500" />
+        <span>{zh ? "上传参考图片" : "Upload reference images"}</span>
+      </button>
       <button
         type="button"
         role="menuitem"
@@ -2295,6 +2463,7 @@ function RunStepRow({
   onConfirmRun,
   onSkipRun,
   onPickModel,
+  onPickParameter,
   modelDisplayName,
 }: {
   step: Exclude<NonQuestionRunStep, { kind: "canvas" }>;
@@ -2303,6 +2472,7 @@ function RunStepRow({
   onConfirmRun: (stepId: string) => void;
   onSkipRun: (stepId: string) => void;
   onPickModel: (stepId: string, model: string) => void;
+  onPickParameter: (stepId: string, key: "aspectRatio" | "resolution", value: string) => void;
   modelDisplayName: (modelID: string) => string;
 }) {
   void tick;
@@ -2325,6 +2495,8 @@ function RunStepRow({
         onConfirm={() => onConfirmRun(step.id)}
         onSkip={() => onSkipRun(step.id)}
         onPickModel={(model) => onPickModel(step.id, model)}
+        onPickAspectRatio={(value) => onPickParameter(step.id, "aspectRatio", value)}
+        onPickResolution={(value) => onPickParameter(step.id, "resolution", value)}
         modelDisplayName={modelDisplayName}
       />
     );
@@ -2338,6 +2510,8 @@ export function PendingRunCard({
   onConfirm,
   onSkip,
   onPickModel,
+  onPickAspectRatio,
+  onPickResolution,
   modelDisplayName,
 }: {
   step: Extract<RunStep, { kind: "pending_run" }>;
@@ -2345,6 +2519,8 @@ export function PendingRunCard({
   onConfirm: () => void;
   onSkip: () => void;
   onPickModel: (model: string) => void;
+  onPickAspectRatio: (value: string) => void;
+  onPickResolution: (value: string) => void;
   modelDisplayName: (modelID: string) => string;
 }) {
   // 完整服务类型映射(旧版只认 video/audio,图像会被误标成「音频生成」)。
@@ -2357,6 +2533,12 @@ export function PendingRunCard({
     : step.serviceType === "image" ? (zh ? "图像生成" : "Image generation")
     : (zh ? "文本生成" : "Text generation");
   const cardRef = useMountFadeIn<HTMLDivElement>({ opacity: 0, y: 8, scale: 0.97 }, { duration: 0.3 });
+  const backendModels = useStore((state) => state.backendModels);
+  const currentModel = step.chosenModel ?? step.availableModels[0] ?? "";
+  const provider = backendModels.find((config) => (config.model_list ?? []).includes(currentModel));
+  const template = getModelTemplate(currentModel, provider);
+  const ratioOptions = [...new Set([...(template?.aspectRatioOptions ?? []), ...(step.aspectRatio ? [step.aspectRatio] : [])])];
+  const resolutionOptions = [...new Set([...(template?.resolutionOptions ?? []), ...(step.resolution ? [step.resolution] : [])])];
 
   if (step.status === "skipped") {
     return (
@@ -2366,16 +2548,54 @@ export function PendingRunCard({
       </div>
     );
   }
+  if (step.serviceType === "image") {
+    return (
+      <div ref={cardRef} className="rounded-xl border border-[var(--agent-border)] bg-white/[0.045] p-3 text-left shadow-lg">
+        <div className="flex items-center gap-2 text-[11px] font-medium text-neutral-200"><ImageIcon className="h-3.5 w-3.5 text-neutral-400" />{zh ? "图片生成确认" : "Image generation approval"}</div>
+        {step.nodeTitle ? <div className="mt-1.5 text-[12px] font-semibold text-neutral-100">{step.nodeTitle}</div> : null}
+        {step.referenceImages?.length ? <div className="mt-2 flex items-center gap-1.5 overflow-x-auto" aria-label={zh ? "参考图片" : "Reference images"}>
+          {step.referenceImages.map((url, index) => <img key={`${url}-${index}`} src={toRenderableMediaUrl(url, { thumbWidth: 240 })} alt={`${zh ? "参考图片" : "Reference image"} ${index + 1}`} className="h-10 w-10 shrink-0 rounded-md border border-white/10 object-cover" />)}
+          <span className="shrink-0 text-[10px] text-neutral-500">{zh ? `参考图 ${step.referenceImages.length} 张` : `${step.referenceImages.length} references`}</span>
+        </div> : null}
+        <div className="prompt-editor-scroll mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-[1.65] text-neutral-300">{step.prompt}</div>
+        {step.status === "pending" ? (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <label className="col-span-2 text-[10px] text-neutral-500">{zh ? "生成模型" : "Model"}
+              <select value={currentModel} onChange={(event) => onPickModel(event.target.value)} className="mt-1 w-full rounded-md border border-white/10 bg-[#25272b] px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-cyan-400/40">
+                {step.availableModels.map((model, index) => <option key={`${model}-${index}`} value={model}>{modelDisplayName(model)}</option>)}
+              </select>
+            </label>
+            {ratioOptions.length ? <label className="text-[10px] text-neutral-500">{zh ? "画幅比例" : "Aspect ratio"}
+              <select value={step.aspectRatio ?? ratioOptions[0]} onChange={(event) => onPickAspectRatio(event.target.value)} className="mt-1 w-full rounded-md border border-white/10 bg-[#25272b] px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-cyan-400/40">{ratioOptions.map((ratio) => <option key={ratio} value={ratio}>{ratio}</option>)}</select>
+            </label> : null}
+            {resolutionOptions.length ? <label className="text-[10px] text-neutral-500">{zh ? "分辨率" : "Resolution"}
+              <select value={step.resolution ?? resolutionOptions[0]} onChange={(event) => onPickResolution(event.target.value)} className="mt-1 w-full rounded-md border border-white/10 bg-[#25272b] px-2 py-1.5 text-[11px] text-neutral-100 outline-none focus:border-cyan-400/40">{resolutionOptions.map((resolution) => <option key={resolution} value={resolution}>{resolution.toUpperCase()}</option>)}</select>
+            </label> : null}
+          </div>
+        ) : (
+          <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] text-neutral-400">
+            <span className="rounded-md bg-white/[0.06] px-2 py-1">{modelDisplayName(currentModel)}</span>
+            {step.aspectRatio ? <span className="rounded-md bg-white/[0.06] px-2 py-1">{zh ? "比例" : "Ratio"} {step.aspectRatio}</span> : null}
+            {step.resolution ? <span className="rounded-md bg-white/[0.06] px-2 py-1">{zh ? "尺寸" : "Size"} {step.resolution.toUpperCase()}</span> : null}
+          </div>
+        )}
+        <div className="mt-3 flex items-center justify-end gap-2 text-[10px]">
+          {step.status === "confirmed" ? <span className="flex items-center gap-1 text-emerald-300"><Check className="h-3 w-3" />{step.automatic ? (zh ? "自动执行，已加入生成队列" : "Automatically queued") : (zh ? "已确认，继续生成" : "Approved for generation")}</span> : (
+            <><button type="button" onClick={onSkip} className="rounded px-2 py-1 text-neutral-400 hover:bg-white/5 hover:text-white">{zh ? "跳过" : "Skip"}</button><button type="button" onClick={onConfirm} disabled={!currentModel} className="rounded-md bg-cyan-500/20 px-2.5 py-1.5 text-cyan-100 hover:bg-cyan-500/30 disabled:opacity-40">{zh ? "确认并生成" : "Approve and generate"}</button></>
+          )}
+        </div>
+      </div>
+    );
+  }
   if (step.status === "confirmed") {
     return (
       <div className="flex items-center gap-2 rounded-md border border-emerald-400/20 bg-emerald-500/[0.06] px-3 py-2 text-[11px] text-emerald-200">
         <Icon className="h-3.5 w-3.5" />
-        {zh ? `已确认，按队列生成 · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}` : `Approved for queued generation · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}`}
+        {zh ? `${step.automatic ? "自动执行" : "已确认"}，按队列生成 · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}` : `${step.automatic ? "Automatically queued" : "Approved for queued generation"} · ${typeLabel} · ${modelDisplayName(step.chosenModel ?? "")}`}
       </div>
     );
   }
 
-  const currentModel = step.chosenModel ?? step.availableModels[0] ?? "";
   return (
     <div ref={cardRef} className="rounded-lg border border-amber-400/30 bg-amber-500/[0.06] p-3">
       <div className="flex items-center gap-2 text-xs font-medium text-amber-200">

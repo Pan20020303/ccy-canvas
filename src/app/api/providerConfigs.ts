@@ -325,6 +325,9 @@ export function getEndpointPreview(
   const isRelayBases = baseURL.toLowerCase().includes("relaybases");
 
   if (serviceType === "image") {
+    if (profile === "custom" && customQuery) {
+      return `提交 ${customSubmit || "/images/generations"} · 查询 ${customQuery}`;
+    }
     const gen =
       profile === "custom" && customSubmit
         ? customSubmit
@@ -804,6 +807,22 @@ const HOPBASE_WAN3_VIDEO_SCHEMA: ModelParameterSchema = {
   defaults: { resolution: "1080P", duration: 5, aspect_ratio: "16:9", audio: true },
 };
 
+const HOPBASE_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "content", "resolution", "duration", "ratio", "aigc_watermark"],
+  resolution_options: ["768P", "2K"],
+  aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+  supports_resolution: true,
+  supports_aspect_ratio: true,
+  supports_auto_aspect: false,
+  supports_duration: true,
+  defaults: { resolution: "768P", duration: 5, aspect_ratio: "16:9" },
+};
+
+const HOPBASE_MINIMAX_H3_MAX_VIDEO_SCHEMA: ModelParameterSchema = {
+  ...HOPBASE_MINIMAX_H3_VIDEO_SCHEMA,
+  resolution_options: ["480P", "768P"],
+};
+
 const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
     "model", "content", "duration", "resolution", "ratio", "generate_audio",
@@ -1006,6 +1025,29 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   image: [
+    {
+      vendor: "HopBase",
+      label: "HopBase · Midjourney V8.2（每次固定 4 张）",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["midjourney-v8-2"],
+      submitEndpoint: "/v1/images/generations",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      iconKey: "midjourney",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "images", "n"],
+        resolution_options: ["1K", "2K"],
+        aspect_ratio_options: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+        supports_resolution: true,
+        supports_aspect_ratio: true,
+        supports_auto_aspect: false,
+        supports_quality: false,
+        supports_output_format: false,
+        defaults: { n: 4, resolution: "1K", aspect_ratio: "1:1" },
+        vendor_models: [{ modelName: "midjourney-v8-2", name: "Midjourney V8.2", type: "image" }],
+      },
+    },
     {
       vendor: "ManjuAPI",
       label: "ManjuAPI / Chat 图片生成",
@@ -1270,6 +1312,30 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       queryEndpoint: "/v1/video/tasks/{taskId}",
       parameterSchema: HOPBASE_GROK_15_VIDEO_SCHEMA,
       iconKey: "grok",
+    },
+    {
+      vendor: "HopBase",
+      label: "HopBase · MiniMax H3",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["MiniMax-H3"],
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      parameterSchema: HOPBASE_MINIMAX_H3_VIDEO_SCHEMA,
+      iconKey: "minimax",
+    },
+    {
+      vendor: "HopBase",
+      label: "HopBase · MiniMax H3 Max",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["MiniMax-H3-Max"],
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      parameterSchema: HOPBASE_MINIMAX_H3_MAX_VIDEO_SCHEMA,
+      iconKey: "minimax",
     },
     {
       vendor: "HopBase",

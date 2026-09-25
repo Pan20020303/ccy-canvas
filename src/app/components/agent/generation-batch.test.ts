@@ -5,6 +5,13 @@ const request=(n:number,model='doubao-seedream-5-0-260128'):BatchGeneration=>({
 });
 const flush=async()=>{for(let n=0;n<80;n++)await Promise.resolve();};
 describe('agent generation batch',()=>{
+ it('automatically queues an opted-in request once without approving a later manual request',async()=>{
+  const submit=vi.fn(async(_request:BatchGeneration)=>{}),batch=new GenerationBatch(submit,vi.fn());
+  expect(batch.register(request(0),true)).toBe('confirmed');
+  expect(batch.register(request(0),true)).toBe('duplicate');
+  expect(batch.register(request(1),false)).toBe('pending');
+  await flush();expect(submit).toHaveBeenCalledTimes(1);
+ });
  it('one approval covers 50 distinct images and later streamed nodes; submits at most 3 at a time',async()=>{
   let active=0,peak=0;
   const sent:BatchGeneration[]=[];
@@ -36,6 +43,16 @@ describe('agent generation batch',()=>{
   batch.register(request(2),false);
   await flush();
   expect(submit.mock.calls.map(c=>(c[0] as BatchGeneration).model)).toEqual(['chosen-model','chosen-model','chosen-model']);
+ });
+ it('applies edited image parameters only to the confirmed card, preserving other nodes',async()=>{
+  const sent:BatchGeneration[]=[];
+  const batch=new GenerationBatch(async item=>{sent.push(item);},vi.fn());
+  batch.register({...request(0),aspectRatio:'1:1',resolution:'1k',referenceImages:['/uploads/a.png']},false);
+  batch.register({...request(1),aspectRatio:'16:9',resolution:'4k'},false);
+  batch.approve('0',request(0).model,{aspectRatio:'21:9',resolution:'2k'});
+  await flush();
+  expect(sent.map(item=>[item.aspectRatio,item.resolution])).toEqual([['21:9','2k'],['16:9','4k']]);
+  expect(sent[0].referenceImages).toEqual(['/uploads/a.png']);
  });
  it('skips excluded requests and never automatically retries a failed submission',async()=>{
   const onError=vi.fn(),submit=vi.fn(async r=>{if(r.nodeId==='node-0')throw new Error('failed');});

@@ -144,6 +144,21 @@ describe("official Jimeng Seedance provider template", () => {
   });
 });
 
+describe("HopBase Midjourney V8.2 provider template", () => {
+  it("keeps its key group separate and shows asynchronous image endpoints", () => {
+    const template = VENDOR_TEMPLATES.image.find(item => item.models.includes("midjourney-v8-2"));
+    expect(template).toMatchObject({
+      vendor: "HopBase", baseURL: "https://api.hop-base.com", apiSpec: "custom", protocol: "native",
+      models: ["midjourney-v8-2"],
+      submitEndpoint: "/v1/images/generations", queryEndpoint: "/v1/video/tasks/{taskId}",
+    });
+    expect(template?.parameterSchema?.allowed_parameters).toEqual(["model", "prompt", "images", "n"]);
+    expect(template?.parameterSchema?.defaults?.n).toBe(4);
+    expect(getEndpointPreview("image", template!.apiSpec, template!.submitEndpoint, template!.queryEndpoint, template!.baseURL))
+      .toBe("提交 /v1/images/generations · 查询 /v1/video/tasks/{taskId}");
+  });
+});
+
 describe("HopBase Seedance provider template", () => {
   it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("dreamina-seedance-2-5-260628"));
@@ -187,6 +202,24 @@ describe("HopBase Grok Imagine Video 1.5 provider template", () => {
     expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.allowed_parameters).toContain("generate_audio");
     expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.allowed_parameters).not.toContain("watermark");
     expect(template?.parameterSchema?.models?.["grok-imagine-video-1.5"]?.defaults).toMatchObject({ generate_audio: true });
+  });
+});
+
+describe("HopBase MiniMax H3 provider templates", () => {
+  it("keeps H3 and H3 Max in separate key groups with their own limits", () => {
+    const h3 = VENDOR_TEMPLATES.video.find((item) => item.models.includes("MiniMax-H3"));
+    const max = VENDOR_TEMPLATES.video.find((item) => item.models.includes("MiniMax-H3-Max"));
+    expect(h3).toMatchObject({
+      vendor: "HopBase", baseURL: "https://api.hop-base.com",
+      submitEndpoint: "/v1/video/generate", queryEndpoint: "/v1/video/tasks/{taskId}",
+      models: ["MiniMax-H3"],
+    });
+    expect(max?.models).toEqual(["MiniMax-H3-Max"]);
+    expect(h3?.parameterSchema?.resolution_options).toEqual(["768P", "2K"]);
+    expect(max?.parameterSchema?.resolution_options).toEqual(["480P", "768P"]);
+    expect(h3?.parameterSchema?.allowed_parameters).toEqual([
+      "model", "content", "resolution", "duration", "ratio", "aigc_watermark",
+    ]);
   });
 });
 

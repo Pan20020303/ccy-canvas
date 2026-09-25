@@ -158,7 +158,7 @@ func historyUserID(w http.ResponseWriter, r *http.Request, sm session.Manager) (
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 		return uid, false
 	}
-	claims, err := sm.Parse(cookie.Value)
+	claims, err := sm.ParseContext(r.Context(), cookie.Value)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 		return uid, false

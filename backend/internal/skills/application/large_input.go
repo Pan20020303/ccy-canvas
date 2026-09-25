@@ -297,17 +297,23 @@ func (r *Runner) RunAdaptive(ctx context.Context, in RunInput, emit func(string,
 		return r.Run(ctx, in, emit)
 	}
 
-	emit(EventThought, map[string]string{"content": fmt.Sprintf(
+	emit(EventProgress, TaskProgress{ID: "segments", Phase: "segments", Status: "running", Label: fmt.Sprintf(
 		"检测到超大文本，已按分卷、条目标题和段落自动拆为 %d 段；各段互不重叠，将逐段执行。", len(segments),
 	)})
 
 	combined := RunStats{}
 	replies := make([]string, 0, len(segments))
 	for index, segment := range segments {
-		emit(EventThought, map[string]string{"content": fmt.Sprintf(
-			"正在处理第 %d/%d 段：%s", index+1, len(segments), segment.Label,
+		emit(EventProgress, TaskProgress{ID: "segments", Phase: "segments", Status: "running", Label: fmt.Sprintf(
+			"正在处理第 %d/%d 段", index+1, len(segments),
 		)})
 		segmentInput := in
+		segmentInput.Tools = append([]Tool(nil), in.Tools...)
+		for toolIndex, tool := range segmentInput.Tools {
+			if _, ok := tool.(*taskProgressTool); ok {
+				segmentInput.Tools[toolIndex] = BuildTaskProgressTool(emit)
+			}
+		}
 		segmentInput.History = nil
 		segmentInput.UserMessage = fmt.Sprintf(
 			"【系统分段 %d/%d】以下是原始请求的一个独立语义段。只处理本段明确包含的条目，不要补齐、猜测或重复其它段。若任务要求批量创建生成节点，使用 create_generation_batch，并把本段每个条目的完整提示词和用户指定模型写入节点。\n\n%s",
@@ -327,6 +333,7 @@ func (r *Runner) RunAdaptive(ctx context.Context, in RunInput, emit func(string,
 		combined.ToolCalls += segmentStats.ToolCalls
 		combined.Usage = segmentStats.Usage
 		combined.ToolTranscript = append(combined.ToolTranscript, segmentStats.ToolTranscript...)
+		combined.PublicProgress = segmentStats.PublicProgress
 		if strings.TrimSpace(segmentStats.FinalReply) != "" {
 			replies = append(replies, fmt.Sprintf("第 %d/%d 段：%s", index+1, len(segments), strings.TrimSpace(segmentStats.FinalReply)))
 		}
@@ -342,7 +349,7 @@ func (r *Runner) RunAdaptive(ctx context.Context, in RunInput, emit func(string,
 			)
 			return combined, apperror.Wrap(apperror.CodeUpstreamUnavailable, message, err)
 		}
-		emit(EventThought, map[string]string{"content": fmt.Sprintf("第 %d/%d 段处理完成。", index+1, len(segments))})
+		emit(EventProgress, TaskProgress{ID: "segments", Phase: "segments", Status: "completed", Label: fmt.Sprintf("第 %d/%d 段处理完成；生成状态以任务回执为准", index+1, len(segments))})
 	}
 
 	combined.FinalReply = combineSegmentReplies(replies, len(segments), len(segments))

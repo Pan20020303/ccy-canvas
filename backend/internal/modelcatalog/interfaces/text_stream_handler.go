@@ -63,7 +63,7 @@ func (rt *TextStreamRouter) handleStream(w http.ResponseWriter, r *http.Request)
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 		return
 	}
-	claims, err := rt.sessions.Parse(cookie.Value)
+	claims, err := rt.sessions.ParseContext(r.Context(), cookie.Value)
 	if err != nil || claims.UserID == "" {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 		return
