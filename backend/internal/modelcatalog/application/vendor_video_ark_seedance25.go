@@ -8,7 +8,29 @@ import (
 
 func isSeedance25Model(model string) bool {
 	model = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), ".", "-")
-	return strings.Contains(model, "seedance-2-5")
+	return strings.Contains(model, "seedance-2-5") || strings.Contains(model, "cdance2-5")
+}
+
+func isCTYunEdgeGateway(pcVendor, pcName, baseURL string) bool {
+	identity := strings.ToLower(strings.Join([]string{pcVendor, pcName, baseURL}, " "))
+	return strings.Contains(identity, "ai.ctaigw.cn") ||
+		strings.Contains(identity, "ctyun") || strings.Contains(identity, "天翼")
+}
+
+func applyCTYunCdanceOptions(body map[string]interface{}, req GenerateRequest) {
+	// 天翼云 Cdance 与 Ark 共用 content 任务协议，但 2.0/fast/mini 也接受
+	// generate_audio。空值沿用工作台默认开启，显式 off 或参数覆盖可关闭。
+	generateAudio := !strings.EqualFold(strings.TrimSpace(req.AudioSetting), "off")
+	if value, ok := req.Parameters["generate_audio"].(bool); ok {
+		generateAudio = value
+	}
+	body["generate_audio"] = generateAudio
+	if value, ok := req.Parameters["return_last_frame"].(bool); ok {
+		body["return_last_frame"] = value
+	}
+	if req.Seed != nil {
+		body["seed"] = *req.Seed
+	}
 }
 
 func collectArkReferenceAudios(req GenerateRequest) []string {

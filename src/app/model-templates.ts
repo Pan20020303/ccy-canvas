@@ -1046,6 +1046,31 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     modelName: "doubao-seedance-2-0-fast-260128",
     ...SEEDANCE_2_FAST_TEMPLATE,
   },
+  "cdance2.0-0807": {
+    vendor: "CTYun",
+    modelName: "cdance2.0-0807",
+    ...ARK_SEEDANCE_20_TEMPLATE,
+  },
+  "cdance2.0-fast-0807": {
+    vendor: "CTYun",
+    modelName: "cdance2.0-fast-0807",
+    ...SEEDANCE_2_FAST_TEMPLATE,
+  },
+  "cdance2.0-mini-0807": {
+    vendor: "CTYun",
+    modelName: "cdance2.0-mini-0807",
+    ...SEEDANCE_2_FAST_TEMPLATE,
+  },
+  "cdance2.5-0807": {
+    vendor: "CTYun",
+    modelName: "cdance2.5-0807",
+    ...ARK_SEEDANCE_25_TEMPLATE,
+  },
+  "cdance2.0-0813": {
+    vendor: "CTYun",
+    modelName: "cdance2.0-0813",
+    ...SEEDANCE_2_TEMPLATE,
+  },
   // NoToken(notoken.pro)中转站的 Seedance 2.0 —— 模型 id 用点号 `seedance-2.0`,
   // 走 Ark 任务式接口(/api/v3/contents/generations/tasks),能力与官方 2.0 一致。
   "seedance-2.0": {
@@ -1220,6 +1245,11 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "Volcengine",
     modelName: "doubao-seedream-5-0-lite",
     ...APIMART_IMAGE_TEMPLATE,
+  },
+  "Doubao-Seedream-5.0-lite": {
+    vendor: "CTYun",
+    modelName: "Doubao-Seedream-5.0-lite",
+    ...SEEDREAM_TEMPLATE,
   },
   // wan2.7-image-pro 已在上文单独声明(带 wan 参考模式/seed/1K·2K·4K),此处不重复。
   "z-image-turbo": {

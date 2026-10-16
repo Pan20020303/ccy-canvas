@@ -203,6 +203,27 @@ describe("model templates", () => {
       .not.toContain("4k");
   });
 
+  it("matches the exact CTYun Cdance capability matrix", () => {
+    expect(getModelTemplate("cdance2.0-0807")).toMatchObject({
+      vendor: "CTYun", serviceType: "video",
+      resolutionOptions: ["480p", "720p", "1080p", "4k"],
+    });
+    for (const model of ["cdance2.0-fast-0807", "cdance2.0-mini-0807"]) {
+      expect(getModelTemplate(model)?.resolutionOptions).toEqual(["480p", "720p"]);
+    }
+    expect(getModelTemplate("cdance2.5-0807")).toMatchObject({
+      vendor: "CTYun",
+      resolutionOptions: ["480p", "720p", "1080p"],
+      durationRange: { min: 4, max: 30 },
+      audioSettingOptions: ["on", "off"],
+    });
+    expect(getModelTemplate("cdance2.0-0813")?.resolutionOptions)
+      .toEqual(["480p", "720p", "1080p"]);
+    expect(getModelTemplate("Doubao-Seedream-5.0-lite")).toMatchObject({
+      vendor: "CTYun", serviceType: "image", resolutionOptions: ["1k", "2k", "4k"],
+    });
+  });
+
   it("matches HopBase Seedance 2.5 capabilities", () => {
     const template = getModelTemplate("dreamina-seedance-2-5-260628", {
       vendor: "HopBase",

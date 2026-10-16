@@ -250,3 +250,102 @@ func TestGenerateVideoArkLegacyDoesNotGainSeedance25Options(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateVideoCTYunCdanceContract(t *testing.T) {
+	fastVideoPoll(t)
+	t.Setenv("CCY_ALLOW_INTERNAL_FETCH", "1")
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/contents/generations/tasks":
+			if r.Header.Get("Authorization") != "Bearer ctyun-key" {
+				t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"id":"ctyun-task"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/contents/generations/tasks/ctyun-task":
+			_, _ = w.Write([]byte(`{"status":"succeeded","content":{"video_url":"https://example.com/ctyun.mp4"}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	seed := 12345
+	result, err := (&Service{}).generateVideoArk(context.Background(), &domain.ProviderConfig{
+		Vendor: "CTYun", Name: "天翼云边缘 AI 网关", APISpec: "ark",
+	}, server.URL+"/v1", "ctyun-key", GenerateRequest{
+		Model: "cdance2.0-0807", Prompt: "跟随参考节奏运动", Duration: 8,
+		Resolution: "4k", AspectRatio: "16:9", AudioSetting: "off",
+		ReferenceImages: []string{"asset://one", "asset://two", "asset://three"},
+		ReferenceAudio:  "https://example.com/reference.mp3",
+		ReferenceMode:   "image_reference",
+		Parameters:      map[string]any{"return_last_frame": true},
+		Seed:            &seed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "https://example.com/ctyun.mp4" {
+		t.Fatalf("result=%+v", result)
+	}
+	for key, want := range map[string]any{
+		"model": "cdance2.0-0807", "duration": float64(8), "ratio": "16:9",
+		"resolution": "4k", "generate_audio": false, "return_last_frame": true, "watermark": false, "seed": float64(seed),
+	} {
+		if body[key] != want {
+			t.Errorf("%s=%v, want %v", key, body[key], want)
+		}
+	}
+	content := body["content"].([]any)
+	if len(content) != 5 { // text + three images + one audio
+		t.Fatalf("content=%#v", content)
+	}
+	if audio := content[4].(map[string]any); audio["type"] != "audio_url" || audio["role"] != "reference_audio" {
+		t.Fatalf("audio=%#v", audio)
+	}
+}
+
+func TestGenerateImageCTYunSeedreamContract(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/images/generations" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer ctyun-key" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/seedream.png"}]}`))
+	}))
+	defer server.Close()
+
+	result, err := (&Service{}).generateImageVolcengine(context.Background(), &domain.ProviderConfig{
+		Vendor: "CTYun", Name: "天翼云边缘 AI 网关 Seedream", APISpec: "ark",
+	}, server.URL+"/v1", "ctyun-key", GenerateRequest{
+		Model: "Doubao-Seedream-5.0-lite", Prompt: "星际列车", Size: "1:1", Resolution: "2k",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "https://example.com/seedream.png" {
+		t.Fatalf("result=%+v", result)
+	}
+	for key, want := range map[string]any{
+		"model": "Doubao-Seedream-5.0-lite", "prompt": "星际列车", "size": "2k",
+		"watermark": false, "sequential_image_generation": "disabled", "response_format": "url", "stream": false,
+	} {
+		if body[key] != want {
+			t.Errorf("%s=%v, want %v", key, body[key], want)
+		}
+	}
+}

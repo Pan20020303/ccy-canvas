@@ -2192,10 +2192,10 @@ func isVolcengine(pc *domain.ProviderConfig) bool {
 }
 
 func isSeedance20Model(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
+	m := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), ".", "-")
 	// 官方 id 用连字符(doubao-seedance-2-0-260128),NoToken 中转站用点号
-	// (seedance-2.0)—— 两种都算 Seedance 2.0(放开 1~9 张多图参考)。
-	return strings.Contains(m, "seedance-2-0") || strings.Contains(m, "seedance-2.0")
+	// (seedance-2.0)，天翼云边缘网关使用 cdance2.0-*。这些别名都支持多图参考。
+	return strings.Contains(m, "seedance-2-0") || strings.Contains(m, "cdance2-0")
 }
 
 func isArkVideoContract(pc *domain.ProviderConfig) bool {
@@ -2318,6 +2318,12 @@ func (s *Service) generateImageVolcengine(ctx context.Context, pc *domain.Provid
 		body["size"] = proSize
 		body["output_format"] = format
 		body["optimize_prompt_options"] = map[string]any{"mode": mode}
+	}
+	if isCTYunEdgeGateway(pc.Vendor, pc.Name, baseURL) {
+		// 天翼云 Seedream 示例明确使用 URL 响应与非流式单图模式。
+		body["sequential_image_generation"] = "disabled"
+		body["response_format"] = "url"
+		body["stream"] = false
 	}
 
 	// Resolve reference images to URLs (preferred by ark) or base64 data URIs.

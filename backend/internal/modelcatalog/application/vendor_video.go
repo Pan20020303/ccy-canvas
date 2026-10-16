@@ -230,6 +230,7 @@ func collectArkReferenceVideos(req GenerateRequest) []string {
 // status=="succeeded" with the URL at content.video_url.
 func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
 	baseURL = resolveProfileBaseURL(pc, baseURL)
+	isCTYunCdance := isCTYunEdgeGateway(pc.Vendor, pc.Name, baseURL)
 	submitPath := resolveVideoSubmitPath(pc)
 	queryPath := resolveVideoQueryPath(pc)
 	if !strings.HasPrefix(submitPath, "/") {
@@ -324,7 +325,7 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 		}
 		content = append(content, item)
 	}
-	if isSeedance25Model(req.Model) {
+	if isSeedance25Model(req.Model) || isCTYunCdance {
 		for _, rawAudio := range collectArkReferenceAudios(req) {
 			refURL, err := arkReferenceMediaURL(ctx, rawAudio)
 			if err != nil {
@@ -366,6 +367,9 @@ func (s *Service) generateVideoArk(ctx context.Context, pc *domain.ProviderConfi
 	}
 	if isSeedance25Model(req.Model) {
 		applyArkSeedance25Options(body, req)
+	}
+	if isCTYunCdance {
+		applyCTYunCdanceOptions(body, req)
 	}
 	bodyJSON, _ := json.Marshal(body)
 

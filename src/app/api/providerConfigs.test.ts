@@ -144,6 +144,38 @@ describe("official Jimeng Seedance provider template", () => {
   });
 });
 
+describe("CTYun edge AI gateway templates", () => {
+  it("exposes the documented Cdance task channel and exact model ids", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("cdance2.5-0807"));
+    expect(template).toMatchObject({
+      vendor: "CTYun",
+      baseURL: "https://ai.ctaigw.cn/v1",
+      apiSpec: "ark",
+      protocol: "native",
+    });
+    expect(template?.models).toEqual([
+      "cdance2.0-0807",
+      "cdance2.0-fast-0807",
+      "cdance2.0-mini-0807",
+      "cdance2.5-0807",
+      "cdance2.0-0813",
+    ]);
+    expect(template?.parameterSchema?.models?.["cdance2.0-0807"]?.resolution_options)
+      .toEqual(["480p", "720p", "1080p", "4k"]);
+    expect(template?.parameterSchema?.models?.["cdance2.0-fast-0807"]?.resolution_options)
+      .toEqual(["480p", "720p"]);
+  });
+
+  it("exposes the gateway's case-sensitive Seedream model", () => {
+    const template = VENDOR_TEMPLATES.image.find((item) => item.models.includes("Doubao-Seedream-5.0-lite"));
+    expect(template).toMatchObject({
+      vendor: "CTYun",
+      baseURL: "https://ai.ctaigw.cn/v1",
+      apiSpec: "ark",
+    });
+  });
+});
+
 describe("HopBase Seedance provider template", () => {
   it("uses the documented task endpoints and exposes 2.5 plus 2.0 variants", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("dreamina-seedance-2-5-260628"));

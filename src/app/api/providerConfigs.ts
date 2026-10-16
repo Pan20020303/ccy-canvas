@@ -848,6 +848,27 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const CTYUN_CDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: [
+    "model", "content", "duration", "resolution", "ratio", "generate_audio",
+    "watermark", "return_last_frame", "seed",
+  ],
+  aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+  resolution_options: ["480p", "720p", "1080p", "4k"],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 5, aspect_ratio: "16:9", resolution: "720p", generate_audio: true, watermark: false },
+  models: {
+    "cdance2.0-0807": { resolution_options: ["480p", "720p", "1080p", "4k"] },
+    "cdance2.0-fast-0807": { resolution_options: ["480p", "720p"] },
+    "cdance2.0-mini-0807": { resolution_options: ["480p", "720p"] },
+    "cdance2.5-0807": { resolution_options: ["480p", "720p", "1080p"] },
+    "cdance2.0-0813": { resolution_options: ["480p", "720p", "1080p"] },
+  },
+};
+
 // HopBase exposes Grok Imagine Video 1.5 through its unified asynchronous
 // video gateway. Keep the Grok capability limits and its model-specific
 // content/aspect_ratio request contract separate from the Seedance models.
@@ -1154,6 +1175,24 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       ],
     },
     {
+      vendor: "CTYun",
+      label: "天翼云 · 边缘 AI 网关 Seedream",
+      baseURL: "https://ai.ctaigw.cn/v1",
+      apiSpec: "ark",
+      protocol: "native",
+      models: ["Doubao-Seedream-5.0-lite"],
+      iconKey: "doubao",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "size", "resolution", "watermark"],
+        resolution_options: ["1k", "2k", "4k"],
+        aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        supports_resolution: true,
+        supports_aspect_ratio: true,
+        supports_auto_aspect: true,
+        defaults: { resolution: "2k", aspect_ratio: "1:1", watermark: false },
+      },
+    },
+    {
       vendor: "Alibaba",
       label: "阿里云 · 通义万相 Wanx",
       baseURL: "https://dashscope.aliyuncs.com/api/v1",
@@ -1439,6 +1478,22 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
         "doubao-seedance-1-0-lite-t2v-250428",
         "doubao-seedance-1-0-lite-i2v-250428",
       ],
+    },
+    {
+      vendor: "CTYun",
+      label: "天翼云 · 边缘 AI 网关 Cdance",
+      baseURL: "https://ai.ctaigw.cn/v1",
+      apiSpec: "ark",
+      protocol: "native",
+      models: [
+        "cdance2.0-0807",
+        "cdance2.0-fast-0807",
+        "cdance2.0-mini-0807",
+        "cdance2.5-0807",
+        "cdance2.0-0813",
+      ],
+      iconKey: "doubao",
+      parameterSchema: CTYUN_CDANCE_VIDEO_SCHEMA,
     },
     {
       // NoToken(notoken.pro)—— Ark 兼容的 Seedance 2.0 中转站。任务式接口
