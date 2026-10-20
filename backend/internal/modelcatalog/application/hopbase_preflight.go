@@ -40,6 +40,17 @@ func (s *Service) PreflightGeneration(ctx context.Context, req GenerateRequest) 
 	if req.ServiceType != "video" {
 		return nil
 	}
+	if _, known := hopBaseMiniMaxCapabilitiesFor(req.Model); known {
+		candidates, err := s.buildCandidates(req)
+		if err != nil {
+			return err
+		}
+		selected := candidates[0]
+		if !isHopBaseProvider(selected.cfg, selected.baseURL) || isTSProvider(selected.cfg) {
+			return nil
+		}
+		return validateHopBaseMiniMaxRequest(req)
+	}
 	if _, known := hopBaseSeedanceCapabilitiesFor(req.Model); !known {
 		return nil
 	}

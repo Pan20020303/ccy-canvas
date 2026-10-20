@@ -848,6 +848,40 @@ const HOPBASE_SEEDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   },
 };
 
+const HOPBASE_MINIMAX_H3_VIDEO_SCHEMA: ModelParameterSchema = {
+  allowed_parameters: ["model", "content", "resolution", "duration", "ratio", "aigc_watermark"],
+  aspect_ratio_options: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+  resolution_options: ["768P", "2K"],
+  duration_options: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  supports_aspect_ratio: true,
+  supports_auto_aspect: true,
+  supports_resolution: true,
+  supports_duration: true,
+  defaults: { duration: 4, aspect_ratio: "16:9", resolution: "768P", aigc_watermark: false },
+  models: {
+    "MiniMax-H3": {
+      resolution_options: ["768P", "2K"],
+      duration_options: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      defaults: { duration: 4, aspect_ratio: "16:9", resolution: "768P", input_reference_min: 0, input_reference_max: 9 },
+    },
+    "MiniMax-H3-Max": {
+      resolution_options: ["480P", "768P"],
+      duration_options: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      defaults: { duration: 5, aspect_ratio: "16:9", resolution: "768P", input_reference_min: 0, input_reference_max: 2 },
+    },
+    "MiniMax-H3-SelfHosted": {
+      resolution_options: ["480P", "768P", "1080P", "2K", "4K"],
+      duration_options: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      defaults: { duration: 4, aspect_ratio: "16:9", resolution: "768P", input_reference_min: 0, input_reference_max: 9 },
+    },
+  },
+  vendor_models: [
+    { modelName: "MiniMax-H3", name: "MiniMax H3 官方直连", type: "video" },
+    { modelName: "MiniMax-H3-Max", name: "MiniMax H3 Max 快速版", type: "video" },
+    { modelName: "MiniMax-H3-SelfHosted", name: "MiniMax H3 自部署版", type: "video" },
+  ],
+};
+
 const CTYUN_CDANCE_VIDEO_SCHEMA: ModelParameterSchema = {
   allowed_parameters: [
     "model", "content", "duration", "resolution", "ratio", "generate_audio",
@@ -1297,6 +1331,18 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
       queryEndpoint: "/v1/video/tasks/{taskId}",
       parameterSchema: HOPBASE_SEEDANCE_VIDEO_SCHEMA,
       iconKey: "doubao",
+    },
+    {
+      vendor: "HopBase",
+      label: "HopBase · MiniMax 海螺 H3",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-H3-SelfHosted"],
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      parameterSchema: HOPBASE_MINIMAX_H3_VIDEO_SCHEMA,
+      iconKey: "minimax",
     },
     {
       vendor: "HopBase",

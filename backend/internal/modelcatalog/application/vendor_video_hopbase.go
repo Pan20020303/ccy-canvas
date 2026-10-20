@@ -445,6 +445,11 @@ func hopBaseRatioAllowed(ratio string) bool {
 }
 
 func hopBaseTaskID(payload map[string]any) string {
+	// The unified gateway's MiniMax contract returns the task id at the root,
+	// while Seedance/Grok historically used task.id or task_id.
+	if id, ok := payload["id"].(string); ok && strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
 	if task, ok := payload["task"].(map[string]any); ok {
 		if id, ok := task["id"].(string); ok {
 			return strings.TrimSpace(id)

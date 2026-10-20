@@ -195,6 +195,26 @@ describe("HopBase Seedance provider template", () => {
   });
 });
 
+describe("HopBase MiniMax H3 provider template", () => {
+  it("exposes the three exact MiniMax v2 model IDs and their distinct limits", () => {
+    const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("MiniMax-H3"));
+    expect(template).toMatchObject({
+      vendor: "HopBase",
+      baseURL: "https://api.hop-base.com",
+      protocol: "native",
+      submitEndpoint: "/v1/video/generate",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+    });
+    expect(template?.models).toEqual(["MiniMax-H3", "MiniMax-H3-Max", "MiniMax-H3-SelfHosted"]);
+    expect(template?.parameterSchema?.models?.["MiniMax-H3"]?.resolution_options).toEqual(["768P", "2K"]);
+    expect(template?.parameterSchema?.models?.["MiniMax-H3-Max"]?.duration_options?.[0]).toBe(5);
+    expect(template?.parameterSchema?.models?.["MiniMax-H3-SelfHosted"]?.resolution_options)
+      .toEqual(["480P", "768P", "1080P", "2K", "4K"]);
+    expect(template?.parameterSchema?.allowed_parameters).toContain("aigc_watermark");
+    expect(template?.parameterSchema?.allowed_parameters).not.toContain("prompt");
+  });
+});
+
 describe("HopBase Grok Imagine Video 1.5 provider template", () => {
   it("uses the HopBase unified async video gateway", () => {
     const template = VENDOR_TEMPLATES.video.find((item) => item.models.includes("grok-imagine-video-1.5"));

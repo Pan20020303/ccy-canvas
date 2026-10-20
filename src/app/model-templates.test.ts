@@ -66,6 +66,25 @@ describe("model templates", () => {
     expect(template?.defaults).toEqual({ resolution: "2k", aspectRatio: "16:9" });
   });
 
+  it("matches HopBase MiniMax H3, Max and SelfHosted capabilities", () => {
+    const provider = VENDOR_TEMPLATES.video.find((item) => item.models.includes("MiniMax-H3"));
+    const h3 = getModelTemplate("MiniMax-H3", { service_type: "video", vendor: "HopBase", parameter_schema: provider?.parameterSchema });
+    const max = getModelTemplate("MiniMax-H3-Max", { service_type: "video", vendor: "HopBase", parameter_schema: provider?.parameterSchema });
+    const selfHosted = getModelTemplate("MiniMax-H3-SelfHosted", { service_type: "video", vendor: "HopBase", parameter_schema: provider?.parameterSchema });
+
+    expect(h3).toMatchObject({
+      resolutionOptions: ["768P", "2K"],
+      durationOptions: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      referenceModes: ["text-to-video", "first-frame", "first-last", "multi-image", "all-in-one"],
+      referenceImageRange: { min: 1, max: 9 },
+    });
+    expect(max).toMatchObject({
+      resolutionOptions: ["480P", "768P"],
+      referenceModes: ["text-to-video", "first-frame", "first-last"],
+    });
+    expect(selfHosted?.resolutionOptions).toEqual(["480P", "768P", "1080P", "2K", "4K"]);
+  });
+
   it("keeps extended H3 reference modes on the local ComfyUI model", () => {
     const local = getModelTemplate("minimax-h3-t2v-ref2v-turbo-local");
     expect(local?.vendor).toBe("ComfyUI");
