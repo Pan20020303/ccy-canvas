@@ -103,7 +103,7 @@ export const PromptMentionInput = forwardRef<PromptInputHandle, Props>(function 
     event.clipboardData.setData('application/x-ccy-prompt', JSON.stringify({ text, tags: props.mentions.filter(m => text.includes(m.tag)).map(m => m.tag) }));
   };
   return <div ref={root} contentEditable suppressContentEditableWarning role="textbox" aria-label="生成提示词" aria-multiline="true"
-    className={`canvas-prompt-input prompt-editor-scroll ${props.expanded ? 'is-expanded' : ''}`} data-placeholder={props.placeholder}
+    className={`canvas-prompt-input prompt-editor-scroll nodrag nopan ${props.expanded ? 'is-expanded' : ''}`} data-placeholder={props.placeholder}
     style={props.expanded ? undefined : { height: props.height }} onInput={input} onBlur={capture} onKeyUp={capture} onMouseUp={capture}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; input(); }}
     onKeyDown={event => { if (event.nativeEvent.isComposing) return; props.onKeyDown(event); if (event.key === 'Enter' && !event.defaultPrevented) { event.preventDefault(); insertText('\n'); } }}

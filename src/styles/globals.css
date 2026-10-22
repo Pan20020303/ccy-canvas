@@ -324,7 +324,7 @@ html.theme-light .prompt-editor-scroll {
 
 /* ─── Cursors — use native OS cursors, no custom skins.
    Buttons/links keep the finger pointer via their own `cursor-pointer` classes.
-   Text inputs get the I-beam from the UA stylesheet.
+   Prompt editors explicitly use an I-beam; their surrounding panels use arrows.
    On the canvas:
      - default          → arrow (also used during marquee/box-select)
      - space held       → grab  (ready to pan)
@@ -347,9 +347,9 @@ html.theme-light .prompt-editor-scroll {
   cursor: crosshair;
 }
 
-/* Canvas grab/grabbing mode — overrides all ReactFlow internals */
+/* Canvas pan cursors must not override the prompt panel's editing controls. */
 .canvas-mode-grab,
-.canvas-mode-grab *,
+.canvas-mode-grab *:not(.canvas-node-prompt, .canvas-node-prompt *),
 .canvas-mode-grab .react-flow__pane,
 .canvas-mode-grab .react-flow__node,
 .canvas-mode-grab .react-flow__renderer {
@@ -357,7 +357,7 @@ html.theme-light .prompt-editor-scroll {
 }
 
 .canvas-mode-grabbing,
-.canvas-mode-grabbing *,
+.canvas-mode-grabbing *:not(.canvas-node-prompt, .canvas-node-prompt *),
 .canvas-mode-grabbing .react-flow__pane,
 .canvas-mode-grabbing .react-flow__node,
 .canvas-mode-grabbing .react-flow__renderer {

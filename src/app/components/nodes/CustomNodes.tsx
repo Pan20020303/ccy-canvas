@@ -2181,7 +2181,7 @@ const PromptPanel = ({
           node's bottom-center as it scales. */}
       <div className="relative" style={{ height: 0, marginTop: `${16 * inverseZoom}px` }}>
         <div
-          className="canvas-node-prompt absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#26272b]/97 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag"
+          className="canvas-node-prompt absolute left-1/2 top-0 z-20 w-[640px] rounded-[20px] border border-white/8 bg-[#26272b]/97 px-5 py-4 shadow-[0_24px_70px_-28px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.02)] backdrop-blur-2xl nodrag nopan"
           style={{
             transform: `translateX(-50%) scale(${inverseZoom})`,
             transformOrigin: 'top center',
@@ -2208,7 +2208,7 @@ const PromptPanel = ({
           onClick={() => setExpanded(false)}
         >
           <div
-            className="canvas-menu-surface relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 px-6 py-5 shadow-2xl"
+            className="canvas-menu-surface canvas-prompt-dialog nodrag nopan relative flex h-[80vh] w-[52vw] min-w-[720px] max-w-[92vw] flex-col rounded-[16px] border border-white/10 px-6 py-5 shadow-2xl"
             style={themeStyle}
             onClick={(event) => event.stopPropagation()}
           >

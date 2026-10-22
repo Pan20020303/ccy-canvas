@@ -589,17 +589,20 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.code === 'Space' && !event.repeat) setSpaceHeld(true);
+      if (event.code === 'Space' && !event.repeat && !isEditableTarget(event.target)) setSpaceHeld(true);
     };
     const onKeyUp = (event: KeyboardEvent) => {
       if (event.code === 'Space') setSpaceHeld(false);
     };
+    const onBlur = () => setSpaceHeld(false);
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
     };
   }, []);
 
