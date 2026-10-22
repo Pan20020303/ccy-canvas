@@ -16,6 +16,7 @@ const names = ['C19_许熙_2026_29岁_主角身份锚点.png', '角色B.png'];
 const mentions = names.map((name, i) => ({ tag: wrapMentionTag(`${name}·${i + 1}`), id: `ref${i + 1}`, thumb: `/image${i + 1}.png`, kind: 'image' }));
 const input = () => document.querySelector<HTMLElement>('[aria-label="生成提示词"]')!;
 const chips = () => [...document.querySelectorAll<HTMLElement>('.canvas-mention-chip')];
+const thumbnails = () => [...document.querySelectorAll<HTMLButtonElement>('button[aria-label^="插入引用："]')];
 const ids = () => chips().map(c => c.dataset.mentionId);
 const key = async (key: string, options = {}) => act(async () => { input().dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options })); });
 const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
@@ -45,6 +46,68 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); useStore.setState(original); useCanvasPreferences.setState(preferences); vi.unstubAllGlobals(); });
 describe('real canvas prompt editor interactions', () => {
+  it('displays the remembered model, portrait ratio and duration after the new node editor initializes', async () => {
+    await render();
+    const model = 'doubao-seedance-2-5-260628';
+    await act(async () => {
+      useCanvasPreferences.getState().setPreference('reuseLastGenerationParams', true);
+      useStore.setState(state => ({ backendModels: state.backendModels.map(provider => ({ ...provider, model_list: [...provider.model_list, model] })) }));
+      useStore.getState().updateNodeGenerationParams('video', { model, resolution: '1080p', aspectRatio: '9:16', durationSeconds: 12 });
+      useStore.getState().addNode({ id: 'remembered-video', type: 'videoNode', position: { x: 400, y: 0 }, data: {} });
+    });
+    await act(async () => root.render(<ReactFlowProvider><VideoNode key="remembered" id="remembered-video" data={{}} selected /></ReactFlowProvider>));
+    const params = document.querySelector<HTMLButtonElement>('button[aria-label="生成参数"]')!;
+    expect(params.textContent).toContain('9:16'); expect(params.textContent).toContain('12s'); expect(params.textContent).toContain('1080p');
+    expect(document.querySelector('.node-control-pill')?.textContent).toContain(model);
+    expect(useStore.getState().nodes.find(node => node.id === 'remembered-video')!.data.generationParams).toMatchObject({ model, aspectRatio: '9:16', durationSeconds: 12 });
+  });
+  it('inserts reference thumbnails at the saved caret, supports repeated clicks and undo/redo', async () => {
+    await render('前文后文');
+    input().focus();
+    const range = document.createRange(); range.setStart(input().firstChild!, 2); range.collapse(true);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    await act(async () => input().dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
+    await act(async () => thumbnails()[0].click()); await settle();
+    await act(async () => thumbnails()[1].click()); await settle();
+    expect(ids()).toEqual(['ref1', 'ref2']);
+    expect(readPromptInput(input())).toBe(`前文${mentions[0].tag} ${mentions[1].tag} 后文`);
+    await key('z', { ctrlKey: true }); await settle(); expect(ids()).toEqual(['ref1']);
+    await key('y', { ctrlKey: true }); await settle(); expect(ids()).toEqual(['ref1', 'ref2']);
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it('appends a reference to an unfocused draft and replaces a typed @ trigger from the strip', async () => {
+    await render('已有提示词');
+    await act(async () => thumbnails()[0].click()); await settle();
+    expect(readPromptInput(input())).toBe(`已有提示词${mentions[0].tag} `);
+    await type('@');
+    await act(async () => thumbnails()[1].click()); await settle();
+    expect(ids()).toEqual(['ref1', 'ref2']);
+    expect(readPromptInput(input())).not.toContain('@');
+    expect(document.querySelector('[aria-label="选择引用素材"]')).toBeNull();
+  });
+  it('replaces a selection with the clicked reference and does not insert a chip when disconnecting', async () => {
+    await render('替换这段'); input().focus();
+    const range = document.createRange(); range.selectNodeContents(input());
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    await act(async () => input().dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
+    await act(async () => thumbnails()[0].click()); await settle();
+    expect(readPromptInput(input())).toBe(`${mentions[0].tag} `);
+    await act(async () => document.querySelector<HTMLButtonElement>('[title="移除引用"]')!.click()); await settle();
+    expect(ids()).toEqual([]);
+    expect(useStore.getState().edges).toHaveLength(1);
+    expect(generate).not.toHaveBeenCalled();
+  });
+  it('supports clicking audio and video references as well as images', async () => {
+    await render();
+    await act(async () => useStore.setState(state => ({ nodes: state.nodes.map(node => node.id === 'ref1'
+      ? { ...node, type: 'referenceAudioNode', data: { url: '/sound.mp3', sourceName: '声音' } }
+      : node.id === 'ref2' ? { ...node, type: 'referenceVideoNode', data: { url: '/clip.mp4', thumbnail: '/poster.png', sourceName: '动作' } } : node) })));
+    await act(async () => thumbnails()[0].click()); await settle();
+    await act(async () => thumbnails()[1].click()); await settle();
+    expect(ids()).toEqual(['ref1', 'ref2']);
+    const data = readPromptInput(input());
+    expect(data).toContain('声音'); expect(data).toContain('动作');
+  });
   it('renders two adjacent references as separate atomic chips with complete names in tooltips', async () => {
     await render(mentions[0].tag + mentions[1].tag);
     expect(ids()).toEqual(['ref1', 'ref2']); expect(chips()[0].title).toContain(names[0]);
@@ -114,8 +177,10 @@ describe('real canvas prompt editor interactions', () => {
     await render(mentions[0].tag + mentions[1].tag);
     await act(async () => document.querySelector<HTMLButtonElement>('[title="放大"]')!.click());
     expect(document.querySelectorAll('[aria-label="生成提示词"]')).toHaveLength(1); expect(ids()).toEqual(['ref1', 'ref2']);
+    await act(async () => thumbnails()[0].click()); await settle();
+    expect(ids()).toEqual(['ref1', 'ref2', 'ref1']);
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-    expect(document.querySelectorAll('[aria-label="生成提示词"]')).toHaveLength(1); expect(ids()).toEqual(['ref1', 'ref2']);
+    expect(document.querySelectorAll('[aria-label="生成提示词"]')).toHaveLength(1); expect(ids()).toEqual(['ref1', 'ref2', 'ref1']);
   });
   it('preserves a newline after references without submitting on Shift+Enter or IME Enter', async () => {
     await render(mentions[0].tag + mentions[1].tag); await type('说明');

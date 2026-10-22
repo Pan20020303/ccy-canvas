@@ -767,8 +767,6 @@ const PromptPanel = ({
   const runNode = useStore((state) => state.runNode);
   const backendModels = useStore((state) => state.backendModels);
   const updateNodeGenerationParams = useStore((state) => state.updateNodeGenerationParams);
-  const lastVideoParams = useStore((state) => state.lastVideoParams);
-  const setLastVideoParams = useStore((state) => state.setLastVideoParams);
   const updateNodeData = useStore((state) => state.updateNodeData);
   const addNode = useStore((state) => state.addNode);
   const onConnect = useStore((state) => state.onConnect);
@@ -984,7 +982,7 @@ const PromptPanel = ({
     updateNodeGenerationParams(nodeId, {
       model: activeModel,
       vendor: owningConfig?.vendor ?? activeVendor,
-    });
+    }, { remember: false });
   }, [activeModel, activeVendor, enabledConfigs, modelIsDisabled, nodeId, params.model, updateNodeGenerationParams]);
 
   const activeConfig = useMemo(
@@ -1004,31 +1002,14 @@ const PromptPanel = ({
     if (typeof schema?.credit_cost === 'number') return Math.max(0, Math.round(schema.credit_cost));
     return 1;
   }, [activeConfig, activeModel]);
-  // 上次视频生成参数预填(仅视频节点),并校验对当前模型仍合法 —— 免得把
-  // 1080p / 21:9 塞给只支持 480p / 少数比例的模型。本节点已选过(params.*)时
-  // 优先其值,不被覆盖;校验不过则退回模板默认。
-  const lastVP = serviceType === 'video' ? lastVideoParams : null;
-  const lastRes = lastVP?.resolution;
-  const lastAsp = lastVP?.aspectRatio;
-  const lastDur = lastVP && typeof lastVP.durationSeconds === 'number' ? lastVP.durationSeconds : undefined;
-  const lastResolution = lastRes && template?.resolutionOptions?.includes(lastRes) ? lastRes : undefined;
-  const lastAspectRatio = lastAsp
-    && (lastAsp === 'auto' ? template?.supportsAutoAspect : template?.aspectRatioOptions?.includes(lastAsp))
-    ? lastAsp : undefined;
-  const lastDuration = lastDur !== undefined
-    && ((template?.supportsAutoDuration && lastDur === -1) || template?.durationOptions?.includes(lastDur)
-      || (template?.durationRange ? lastDur >= template.durationRange.min && lastDur <= template.durationRange.max : false))
-    ? lastDur : undefined;
-
   const currentMode = params.mode ?? template?.defaults?.mode ?? template?.modeOptions?.[0] ?? '';
   const parameterResolution = params.resolution && template?.resolutionOptions
     ? template.resolutionOptions.find((option) => option.toLowerCase() === params.resolution?.toLowerCase())
     : params.resolution;
-  const currentResolution = parameterResolution ?? lastResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
+  const currentResolution = parameterResolution ?? template?.defaults?.resolution ?? template?.resolutionOptions?.[0] ?? '';
   const currentQuality = params.quality ?? template?.defaults?.quality ?? template?.qualityOptions?.[0] ?? '';
-  // 新建视频生成节点统一优先使用 16:9。之前 `auto` 和上一次使用的比例
-  // 排在模型默认值之前，导致刚创建的节点直接显示“自适应”。只有模型不支持
-  // 16:9 时，才回退到模型默认、上次合法参数或自适应。
+  // Remembered settings are applied once at node creation. Existing node
+  // parameters always win; otherwise use the normal 16:9 video default.
   const defaultVideoAspectRatio = serviceType === 'video'
     && (template?.aspectRatioOptions?.includes('16:9') || template?.defaults?.aspectRatio === '16:9')
     ? '16:9'
@@ -1036,9 +1017,8 @@ const PromptPanel = ({
   const currentAspectRatio = params.aspectRatio
     ?? defaultVideoAspectRatio
     ?? template?.defaults?.aspectRatio
-    ?? lastAspectRatio
     ?? (template?.supportsAutoAspect ? 'auto' : template?.aspectRatioOptions?.[0] ?? '');
-  const currentDuration = params.durationSeconds ?? lastDuration ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
+  const currentDuration = params.durationSeconds ?? template?.durationRange?.defaultValue ?? template?.durationRange?.min ?? 5;
   const currentOutputFormat = params.outputFormat ?? template?.defaults?.outputFormat ?? template?.outputFormatOptions?.[0] ?? '';
   const currentAudioSetting = params.audioSetting ?? template?.audioSettingOptions?.[0] ?? 'auto';
   const currentAudioSpeed = params.audioSpeed ?? template?.audioSpeedRange?.defaultValue ?? 1;
@@ -1066,7 +1046,7 @@ const PromptPanel = ({
     if (template.audioSpeedRange && params.audioSpeed === undefined) nextPatch.audioSpeed = currentAudioSpeed;
 
     if (Object.keys(nextPatch).length > 0) {
-      updateNodeGenerationParams(nodeId, nextPatch);
+      updateNodeGenerationParams(nodeId, nextPatch, { remember: false });
     }
   }, [
     activeModel,
@@ -1219,12 +1199,17 @@ const PromptPanel = ({
     }
   };
 
-  const insertMention = (upstream: typeof upstreamNodes[0]) => {
+  const insertMention = (upstream: typeof upstreamNodes[0], fromThumbnail = false) => {
     const ta = taRef.current;
     // Restore the real caret and scroll position after inserting an atomic chip.
     const prevScrollTop = ta?.scrollTop ?? 0;
-    const range = mentionRangeRef.current;
-    if (!range || text[range.start] !== '@') return;
+    const trigger = mentionRangeRef.current;
+    const validTrigger = trigger && text[trigger.start] === '@' && (!fromThumbnail || mentionOpen);
+    if (!fromThumbnail && !validTrigger) return;
+    const range = validTrigger ? trigger : {
+      start: Math.min(ta?.selectionStart ?? text.length, text.length),
+      end: Math.min(ta?.selectionEnd ?? text.length, text.length),
+    };
     const before = text.slice(0, range.start);
     const after = text.slice(range.end);
     const tag = wrapMentionTag(upstream.label);
@@ -1234,6 +1219,9 @@ const PromptPanel = ({
     setMentions((prev) => [...prev.filter((m) => m.tag !== tag), { tag, id: upstream.id, thumb: upstream.thumb, kind: upstream.kind }]);
     mentionRangeRef.current = null;
     setMentionOpen(false);
+    setMentionPicker(null);
+    setSlashOpen(false);
+    cancelRefHoverClear(); setRefHover(null);
     setTimeout(() => {
       const el = taRef.current;
       if (!el) return;
@@ -1345,14 +1333,11 @@ const PromptPanel = ({
     }
     // runNode owns the real running state, after confirmation and any grace
     // period. An optimistic state here would misreport a task before submission.
-    // 记住这次视频生成的参数,下次新建视频节点自动预填(免去重选时长/分辨率/宽高比)。
-    if (serviceType === 'video') {
-      setLastVideoParams({
-        resolution: currentResolution || undefined,
-        aspectRatio: currentAspectRatio || undefined,
-        durationSeconds: typeof currentDuration === 'number' ? currentDuration : undefined,
-      });
-    }
+    useCanvasPreferences.getState().rememberGenerationParams(serviceType, {
+      ...params, model: activeModel, vendor: activeVendor,
+      resolution: currentResolution || undefined, aspectRatio: currentAspectRatio || undefined,
+      durationSeconds: template?.supportsDuration ? currentDuration : undefined,
+    });
     void Promise.resolve(runNode(nodeId, { prompt: resolveTagsToMentions(text), model: activeModel })).catch((err: unknown) => {
       updateNodeData(nodeId, {
         status: 'error',
@@ -1521,7 +1506,7 @@ const PromptPanel = ({
     if (serviceType !== 'video' && serviceType !== 'image') return;
     if (!activeReferenceMode) return;
     if (persistedReferenceMode !== activeReferenceMode) {
-      updateNodeGenerationParams(nodeId, { referenceVariant: activeReferenceMode });
+      updateNodeGenerationParams(nodeId, { referenceVariant: activeReferenceMode }, { remember: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeReferenceMode, persistedReferenceMode, serviceType, nodeId]);
@@ -1847,7 +1832,6 @@ const PromptPanel = ({
     <>
     <div className="prompt-editor-scroll mb-1 flex items-start gap-2 overflow-x-auto px-1 py-2">
       {mediaRefs.map((up, idx) => {
-        const tag = `@${up.id.slice(-4)}`;
         const matched = mentions.find((m) => m.id === up.id && text.includes(m.tag));
         const isUsed = Boolean(matched);
         const slot = activeModeSlots[idx];
@@ -1856,11 +1840,19 @@ const PromptPanel = ({
           <div
             key={up.edgeId}
             className="group/ref relative shrink-0 flex flex-col items-center gap-1"
-            title={isUsed ? `已引用 · ${matched?.tag ?? tag}` : `未引用 · 输入 ${tag} 即可引用`}
+            title={language === 'zh' ? `点击插入 @${up.label}${isUsed ? ' · 已引用' : ''}` : `Click to insert @${up.label}`}
             onMouseEnter={(event) => showRefHover(up.id, event.currentTarget.getBoundingClientRect())}
             onMouseLeave={scheduleRefHoverClear}
           >
             <div className="relative">
+              <button
+                type="button"
+                className="block rounded-lg cursor-pointer focus-visible:outline-2 focus-visible:outline-cyan-400"
+                aria-label={language === 'zh' ? `插入引用：${up.label}` : `Insert reference: ${up.label}`}
+                onPointerDown={event => event.stopPropagation()}
+                onMouseDown={event => { event.preventDefault(); event.stopPropagation(); }}
+                onClick={event => { event.stopPropagation(); insertMention(up, true); }}
+              >
               {up.thumb ? (
                 /* 720 缩略图 + 代理缓存：与画布节点同一 URL，浏览器缓存直接命中，
                    不再裸拉全分辨率原图(此前是 chips 慢的根因)。生成引用走
@@ -1900,12 +1892,14 @@ const PromptPanel = ({
               <div className="pointer-events-none absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-black/85 px-1 text-[10px] font-medium text-white shadow group-hover/ref:opacity-0">
                 {up.index}
               </div>
+              </button>
               <button
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
                   onEdgesChange([{ id: up.edgeId, type: 'remove' }] as never);
                 }}
+                onMouseDown={event => event.preventDefault()}
                 className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white opacity-0 shadow transition group-hover/ref:opacity-100 hover:bg-rose-400"
                 title={language === 'zh' ? '移除引用' : 'Disconnect reference'}
               >
@@ -1939,6 +1933,14 @@ const PromptPanel = ({
             className="group/ref flex items-center gap-1.5 rounded-lg bg-white/[0.05] px-2 py-1"
             title={up.textContent || (language === 'zh' ? '空文本节点' : 'Empty text node')}
           >
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              aria-label={language === 'zh' ? `插入引用：${up.label}` : `Insert reference: ${up.label}`}
+              onPointerDown={event => event.stopPropagation()}
+              onMouseDown={event => { event.preventDefault(); event.stopPropagation(); }}
+              onClick={event => { event.stopPropagation(); insertMention(up, true); }}
+            >
             <span className="shrink-0 rounded bg-white/10 px-1.5 py-px text-[9px] leading-relaxed text-neutral-400">
               {language === 'zh' ? '文本' : 'TEXT'}
             </span>
@@ -1948,6 +1950,7 @@ const PromptPanel = ({
             <span className="shrink-0 text-[9px] text-neutral-500">
               {language === 'zh' ? '将并入提示词' : 'joins the prompt'}
             </span>
+            </button>
             <button
               type="button"
               onClick={(event) => {

@@ -59,11 +59,11 @@ describe('validated, account-scoped settings', () => {
     set('showGrid', false); bindCanvasPreferences('alice'); expect(useCanvasPreferences.getState().values).toMatchObject({ edgeWidth: 4, showGrid: true, themeId: 'wine' });
     bindCanvasPreferences('bob'); expect(useCanvasPreferences.getState().values.showGrid).toBe(false);
   });
-  it('migrates existing grid/minimap flags through real user binding', () => {
+  it('migrates existing grid/minimap flags through real user binding', async () => {
     localStorage.setItem('cineflow-store-migrate', JSON.stringify({ state: { snapToGrid: true, showMiniMap: true }, version: 1 }));
-    bindStorageToUser('migrate');
+    await bindStorageToUser('migrate');
     expect(useCanvasPreferences.getState().values).toMatchObject({ snapToGrid: true, showMiniMap: true });
-    bindStorageToUser('new-account'); expect(useCanvasPreferences.getState().values).toMatchObject({ snapToGrid: false, showMiniMap: false });
+    await bindStorageToUser('new-account'); expect(useCanvasPreferences.getState().values).toMatchObject({ snapToGrid: false, showMiniMap: false });
   });
   it('keeps current settings live and exposes storage failures for retry', () => {
     const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
@@ -104,6 +104,7 @@ describe('reference panel controls', () => {
     await click('显示导航小地图'); expect(useStore.getState().showMiniMap).toBe(true);
     await change('网格线间距', '40'); expect(useCanvasPreferences.getState().values.gridGap).toBe(40);
     await click('缩放'); expect(useCanvasPreferences.getState().values.wheelAction).toBe('zoom');
+    await click('新节点沿用上次模型和参数'); expect(useCanvasPreferences.getState().values.reuseLastGenerationParams).toBe(true);
     expect(useStore.getState().nodes).toBe(nodes);
     await click('恢复默认'); expect(useCanvasPreferences.getState().values).toEqual(DEFAULT_CANVAS_PREFERENCES);
   });

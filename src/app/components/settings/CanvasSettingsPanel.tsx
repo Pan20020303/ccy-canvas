@@ -76,6 +76,7 @@ export function CanvasSettingsPanel({ onAdvanced }: { onAdvanced: () => void }) 
             {toggle('alignmentGuides','对齐辅助线')}{toggle('dragFocus','拖动节点获取焦点')}
             {toggle('blurAfterSubmit','节点提交后取消焦点')}{toggle('compactZoom','极简模式缩放','缩放小于 35% 时以色块概览节点，选择节点可恢复详情。')}
             {toggle('linkedPreview','联动预览画布素材')}{toggle('hoverVideo','视频悬停自动播放')}
+            {toggle('reuseLastGenerationParams','新节点沿用上次模型和参数','按文本、图片、视频、音频分别记忆上次选择，刷新后仍保留。关闭后使用默认配置。')}
           </div>)}
           {card('notifications','生成通知', <><div className="canvas-settings-grid">
             {toggle('notifyCompleted','生成完成后通知')}{segment('notifyWhen','通知时机',[['away','仅切走时'],['always','始终']])}

@@ -49,7 +49,7 @@ type Props = {
   onMentionHover: (id: string, rect: DOMRect) => void; onMouseLeave: () => void; onTextClick: () => void;
 };
 export const PromptMentionInput = forwardRef<PromptInputHandle, Props>(function PromptMentionInput(props, ref) {
-  const root = useRef<HTMLDivElement>(null), composing = useRef(false), savedSelection = useRef({ start: 0, end: 0 });
+  const root = useRef<HTMLDivElement>(null), composing = useRef(false), savedSelection = useRef({ start: props.value.length, end: props.value.length });
   const capture = () => { if (root.current) savedSelection.current = selectionOffsets(root.current) || savedSelection.current; return savedSelection.current; };
   useImperativeHandle(ref, () => ({
     get element() { return root.current!; },

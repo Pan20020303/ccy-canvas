@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { toast } from 'sonner';
 import { bindCanvasPreferences, useCanvasPreferences } from './canvas-preferences';
+import { generationServiceForNode } from './node-generation-defaults';
 import { cancelCanvasSubmissions, waitForCanvasSubmit } from './canvas-submit-delay';
 import {
   Connection,
@@ -19,7 +20,7 @@ import {
 
 import type { AppProviderConfig, GenerateResult } from './api/providerConfigs';
 import type { ServiceType } from './model-config';
-import { generate as apiGenerate, generateStream, providerServesType } from './api/providerConfigs';
+import { generate as apiGenerate, generateStream, modelServiceType, providerServesType } from './api/providerConfigs';
 import { ApiClientError } from './api/client';
 import { taskMediaPatch } from './media-result-state';
 import { batchTasksByNodeIds, getTask, listActiveTasks, cancelTask, type TaskItem } from './api/tasks';
@@ -444,7 +445,7 @@ type AppState = {
    *  选中的 version.url 提升为当前 url. 节点其他 metadata (prompt 等)
    *  也一起切换,让面板里看到的提示词跟图对上. */
   setActiveVersion: (nodeId: string, versionId: string) => void;
-  updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>) => void;
+  updateNodeGenerationParams: (nodeId: string, patch: Partial<NodeGenerationParams>, options?: { remember?: boolean }) => void;
   runNode: (nodeId: string, payload: { prompt: string; model?: string; skipConfirm?: boolean; checkOnly?: boolean; expectedInputs?: string }) => Promise<void>;
   cancelNode: (nodeId: string) => Promise<void>;
   activeRun: { nodeId: string; startedAt: number; timedOut?: boolean } | null;
@@ -2529,6 +2530,18 @@ export const useStore = create<AppState>()(persist((set, get) => ({
   addNode: (node: Node) => {
     set((state) => {
       if (computeActiveProjectReadOnly(state)) return {};
+      const preferences = useCanvasPreferences.getState();
+      const serviceType = generationServiceForNode(node.type);
+      const remembered = serviceType ? preferences.lastGenerationParams[serviceType] : undefined;
+      const data = node.data ?? {};
+      // Explicit generation settings and existing outputs (duplicates, imports,
+      // derived operations) retain their own configuration.
+      if (preferences.values.reuseLastGenerationParams && remembered?.model
+        && !data.generationParams && !data.url && !data.output && !data.model && !data.derivationAction) {
+        const provider = state.backendModels.find(config => providerServesType(config, serviceType!)
+          && config.model_list.includes(remembered.model!) && modelServiceType(config, remembered.model!) === serviceType);
+        if (provider) node = { ...node, data: { ...data, generationParams: { ...structuredClone(remembered), vendor: provider.vendor } } };
+      }
       const nodes = [...state.nodes, node];
       const undoStack = pushUndoState(state);
       const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
@@ -4015,7 +4028,7 @@ export const useStore = create<AppState>()(persist((set, get) => ({
       ...syncActiveSpaceSnapshot(state, { projectStateById }),
     };
   }),
-  updateNodeGenerationParams: (nodeId, patch) => set((state) => {
+  updateNodeGenerationParams: (nodeId, patch, options) => set((state) => {
     const undoStack = pushUndoState(state);
     const nodes = state.nodes.map((node) => (
       node.id !== nodeId
@@ -4031,6 +4044,11 @@ export const useStore = create<AppState>()(persist((set, get) => ({
             },
           }
     ));
+    const target = nodes.find(node => node.id === nodeId);
+    const serviceType = generationServiceForNode(target?.type);
+    if (serviceType && options?.remember !== false) {
+      useCanvasPreferences.getState().rememberGenerationParams(serviceType, target!.data.generationParams as NodeGenerationParams);
+    }
     const projectStateById = syncActiveProjectState(state, { nodes }).projectStateById;
     return {
       nodes,

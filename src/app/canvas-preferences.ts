@@ -1,4 +1,7 @@
 import { create } from 'zustand';
+import { normalizeLastGenerationParams, reusableGenerationParams, type LastGenerationParams } from './node-generation-defaults';
+import type { ServiceType } from './model-config';
+import type { NodeGenerationParams } from './store';
 
 export const CANVAS_THEMES = [
   ['midnight','深夜黑','#050505'],['obsidian','黑曜石','#0b0b0b'],['graphite','炭灰','#111111'],['black','玄黑','#161616'],['stone','石墨灰','#1b1b1b'],['steel','钢铁灰','#222222'],['silver','银灰','#292929'],['smoke','烟灰','#303030'],['cement','水泥灰','#383838'],
@@ -51,6 +54,7 @@ export const DEFAULT_CANVAS_PREFERENCES = {
   panSensitivity: 1.5, focusAnimationLimit: 100, submitDelay: 0, connectionRadius: 150,
   blankAction: 'double' as 'context' | 'double', wheelAction: 'pan' as 'pan' | 'zoom', mentionNaming: 'name' as 'name' | 'number',
   snapToGrid: false, alignmentGuides: true, dragFocus: true, blurAfterSubmit: false, compactZoom: false, linkedPreview: true, hoverVideo: true,
+  reuseLastGenerationParams: false,
   notifyCompleted: true, notifyFailed: true, notifyWhen: 'away' as 'away' | 'always', systemNotifications: false, sound: false, onlyOwn: true, soundStyle: 'clear',
   edgeWidth: 2, edgeHitWidth: 12, edgeHover: true, edgeAnimation: true, onlyFocusedEdges: false,
   gridGap: 24, gridDotSize: 2, showGrid: true, ambientGlow: false, showMiniMap: false,
@@ -89,24 +93,40 @@ type PreferenceState = {
   values: CanvasPreferences;
   userId: string;
   persistenceError: boolean;
+  lastGenerationParams: LastGenerationParams;
+  rememberGenerationParams: (serviceType: ServiceType, params: NodeGenerationParams) => void;
   setPreference: <K extends keyof CanvasPreferences>(key: K, value: CanvasPreferences[K]) => void;
   restoreDefaults: () => void;
   retrySave: () => void;
 };
 const keyFor = (id: string) => `ccy-canvas-preferences@${id || 'anon'}`;
-function save(values: CanvasPreferences, userId: string): boolean {
-  try { localStorage.setItem(keyFor(userId), JSON.stringify({ version: 1, values })); return true; } catch { return false; }
+function save(values: CanvasPreferences, userId: string, lastGenerationParams: LastGenerationParams): boolean {
+  try { localStorage.setItem(keyFor(userId), JSON.stringify({ version: 1, values, lastGenerationParams })); return true; } catch { return false; }
 }
 export const useCanvasPreferences = create<PreferenceState>((set, get) => ({
-  values: { ...DEFAULT_CANVAS_PREFERENCES }, userId: '', persistenceError: false,
-  setPreference: (key, value) => { const values = normalizeCanvasPreferences({ ...get().values, [key]: value }); set({ values, persistenceError: !save(values, get().userId) }); },
-  restoreDefaults: () => { const values = { ...DEFAULT_CANVAS_PREFERENCES }; set({ values, persistenceError: !save(values, get().userId) }); },
-  retrySave: () => set({ persistenceError: !save(get().values, get().userId) }),
+  values: { ...DEFAULT_CANVAS_PREFERENCES }, userId: '', persistenceError: false, lastGenerationParams: {},
+  rememberGenerationParams: (serviceType, raw) => {
+    const params = reusableGenerationParams(raw);
+    if (!params.model || JSON.stringify(get().lastGenerationParams[serviceType]) === JSON.stringify(params)) return;
+    const lastGenerationParams = { ...get().lastGenerationParams, [serviceType]: params };
+    set({ lastGenerationParams, persistenceError: !save(get().values, get().userId, lastGenerationParams) });
+  },
+  setPreference: (key, value) => { const values = normalizeCanvasPreferences({ ...get().values, [key]: value }); set({ values, persistenceError: !save(values, get().userId, get().lastGenerationParams) }); },
+  restoreDefaults: () => { const values = { ...DEFAULT_CANVAS_PREFERENCES }; set({ values, lastGenerationParams: {}, persistenceError: !save(values, get().userId, {}) }); },
+  retrySave: () => set({ persistenceError: !save(get().values, get().userId, get().lastGenerationParams) }),
 }));
 export function bindCanvasPreferences(userId: string, legacy?: { snapToGrid?: boolean; showMiniMap?: boolean }) {
   let values = normalizeCanvasPreferences(legacy);
-  try { const raw = localStorage.getItem(keyFor(userId)); if (raw) values = normalizeCanvasPreferences(JSON.parse(raw)?.values); } catch { /* Invalid or inaccessible storage must not leak the previous account's settings. */ }
-  useCanvasPreferences.setState({ values, userId, persistenceError: false });
+  let lastGenerationParams: LastGenerationParams = {};
+  try {
+    const raw = localStorage.getItem(keyFor(userId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      values = normalizeCanvasPreferences(parsed?.values);
+      lastGenerationParams = normalizeLastGenerationParams(parsed?.lastGenerationParams);
+    }
+  } catch { /* Invalid or inaccessible storage must not leak the previous account's settings. */ }
+  useCanvasPreferences.setState({ values, lastGenerationParams, userId, persistenceError: false });
 }
 export function mixColor(base: string, overlay: string, amount: number): string {
   const channels = [1,3,5].map(offset => Math.round(parseInt(base.slice(offset, offset + 2),16) * (1 - amount) + parseInt(overlay.slice(offset, offset + 2),16) * amount).toString(16).padStart(2,'0'));
