@@ -1,0 +1,4 @@
+interface:
+  display_name: "鹹魚分鏡"
+  short_description: "Seedance 2.0 分鏡提示詞，含表演、運鏡、連續性與完整參考庫"
+  default_prompt: "使用 $seedance-agent 處理我接下來提供的創作需求。"

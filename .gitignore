@@ -1,0 +1,58 @@
+.worktrees/
+node_modules/
+.env
+.env.*
+!.env.example
+!.env.*.example
+.gocache/
+
+# build artifacts
+dist/
+bin/
+*.exe
+
+# dev / live logs
+/*.log
+/*.err.log
+/*.out.log
+*-dev.log
+*-dev.err.log
+*-dev.out.log
+*-live.log
+*-live.err.log
+*.pid
+backend/*.log
+backend/*.pid
+backend/uploads/
+uploads/
+
+# local raw/source assets
+assets/mannequins/raw/
+
+# generated / exported artifacts (not product source)
+outputs/
+/output/
+/tmp/
+/.codex/
+/.claude/
+/.qwen/
+/.understand-anything/
+/design-qa.md
+
+# root scratch images (debug frames, masks)
+/tmp_*.png
+/*_mask.png
+
+# runtime
+run/*
+!run/.gitignore
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 代理媒体磁盘缓存(运行时生成，勿提交)
+backend/media-cache/
+.agent-bridge/

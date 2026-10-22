@@ -1,0 +1,33 @@
+.node-control-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; max-width: 100%; padding: 5px 11px; border: 1px solid var(--canvas-ui-border, #ffffff0c); border-radius: 100px; background: var(--canvas-ui-soft, #ffffff0c); color: var(--canvas-ui-text, #ddd); font: inherit; font-size: 12px; line-height: 1.4; cursor: pointer; }
+.node-control-pill > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-control-pill svg { flex-shrink: 0; }
+.node-control-pill:hover, .node-control-pill[data-state="open"] { background: var(--canvas-ui-hover, #ffffff16); }
+.node-control-pill:focus-visible, .node-params-menu button:focus-visible, .node-params-menu input:focus-visible { outline: 2px solid var(--canvas-ui-muted, #ccc); outline-offset: 3px; }
+.node-model-menu, .node-params-menu { z-index: 220; background: var(--canvas-menu-surface, #171719f7); color: var(--canvas-ui-text, #eee); border: 1px solid var(--canvas-ui-border, #ffffff0c); border-radius: 12px; box-shadow: 0 14px 48px #0005; backdrop-filter: blur(24px); font: inherit; font-size: 12px; outline: none; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--canvas-ui-dim, #555) transparent; }
+.node-model-menu { padding: 5px; max-width: calc(100vw - 24px); max-height: min(420px, var(--radix-dropdown-menu-content-available-height)); overflow-y: auto; }
+.node-model-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 36px; padding: 8px 10px; border-radius: 7px; cursor: pointer; outline: none; color: var(--canvas-ui-muted, #aaa); }
+.node-model-option > span { flex: 1; min-width: 0; }
+.node-model-option > svg { flex-shrink: 0; }
+.node-model-option[data-selected="true"], .node-model-option[data-highlighted] { color: var(--canvas-ui-text, #fff); background: var(--canvas-ui-soft, #ffffff0d); }
+.node-params-menu { width: 360px; max-width: calc(100vw - 24px); max-height: min(76dvh, var(--radix-popover-content-available-height)); padding: 16px; overflow-y: auto; }
+.node-params-menu > div { margin: 0 0 22px; }
+.node-params-menu > div:last-child { margin-bottom: 0; }
+.node-params-menu .text-neutral-400, .node-params-menu .text-neutral-200, .node-params-menu .text-white { color: var(--canvas-ui-text, #ddd); }
+.node-params-menu .text-neutral-500 { color: var(--canvas-ui-dim, #777); }
+.node-params-menu .text-neutral-400 { font-size: 12px; font-weight: 600; margin-bottom: 10px; }
+.node-param-heading { display: flex; justify-content: space-between; margin-bottom: 12px; font-weight: 600; }
+.node-params-menu input[type="range"] { width: 100%; height: 4px; accent-color: #eee; cursor: pointer; display: block; margin: 16px 0 0; }
+.node-duration-ticks { position: relative; height: 28px; margin: 0 6px; color: var(--canvas-ui-dim, #888); font-size: 10px; }
+.node-duration-ticks > span { position: absolute; top: 11px; transform: translateX(-50%); white-space: nowrap; }
+.node-duration-ticks > span::before { content: ''; position: absolute; width: 3px; height: 3px; background: currentColor; border-radius: 50%; left: calc(50% - 1px); top: -13px; pointer-events: none; }
+.node-param-options { display: flex; gap: 4px; }
+.node-param-options > button { flex: 1; }
+.node-param-option { display: flex; align-items: center; justify-content: center; padding: 7px 12px; min-height: 32px; border: 0; border-radius: 9px; background: var(--canvas-ui-soft, #242426); color: var(--canvas-ui-muted, #999); cursor: pointer; font: inherit; font-weight: 600; transition: background .15s; }
+.node-param-option:hover { background: var(--canvas-ui-hover, #303033); }
+.node-param-option[aria-pressed="true"] { background: var(--canvas-ui-selected, #39393c); color: var(--canvas-ui-text, #fff); }
+.node-aspect-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(43px, 1fr)); gap: 4px; }
+.node-aspect-option { flex-direction: column; gap: 7px; min-height: 54px; padding: 9px 2px; font-size: 11px; }
+.node-aspect-icon { display: block; border: 1px solid currentColor; opacity: .8; }
+.node-audio-switch { background: var(--canvas-ui-soft, #444); }
+.node-audio-switch.is-on { background: var(--canvas-ui-selected, #777); }
+@media (prefers-reduced-motion: reduce) { .node-param-option { transition: none; } }

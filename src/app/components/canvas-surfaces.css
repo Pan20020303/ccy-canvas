@@ -1,0 +1,21 @@
+/* Canvas-only surfaces. Media, user-assigned note colours and error states are
+   deliberately not recoloured. Portals receive the same tokens explicitly. */
+.canvas-workspace { background: var(--canvas-bg); color: var(--canvas-ui-text); }
+.canvas-node-surface { background: var(--canvas-node-surface, #23242a99); border-color: var(--canvas-ui-border, #ffffff10); }
+.canvas-node-content .canvas-node-surface { box-shadow: none; }
+.canvas-node-placeholder { color: var(--canvas-ui-dim, #888); }
+.canvas-node-placeholder :is(svg, span, div) { color: inherit; }
+.canvas-floating-surface { background: var(--canvas-ui-surface, #202024e8) !important; border-color: var(--canvas-ui-border, #ffffff10) !important; color: var(--canvas-ui-text, #eee); backdrop-filter: blur(16px); }
+.canvas-menu-surface { background: var(--canvas-menu-surface, #18181cf7) !important; border-color: var(--canvas-ui-border, #ffffff10) !important; color: var(--canvas-ui-text, #eee); }
+.canvas-node-prompt { background: var(--canvas-menu-surface, #19191bf7) !important; border-color: var(--canvas-ui-border) !important; }
+.canvas-workspace .agent-workbench {
+  --agent-bg: var(--canvas-ui-surface); --agent-surface: var(--canvas-menu-surface); --agent-border: var(--canvas-ui-border);
+  background: var(--agent-bg); border-color: var(--agent-border); color: var(--canvas-ui-text); backdrop-filter: blur(18px);
+}
+.canvas-workspace .agent-workbench-compose > div.rounded-2xl { background: var(--canvas-ui-soft); border-color: var(--canvas-ui-border); }
+.canvas-workspace .agent-welcome-avatar, .canvas-workspace .agent-welcome-skills button { background: var(--canvas-ui-soft); }
+.canvas-workspace .agent-welcome-skills button:hover { background: var(--canvas-ui-hover); }
+.canvas-workspace .agent-welcome h2, .canvas-workspace .agent-welcome-name { color: var(--canvas-ui-text); }
+.canvas-workspace .agent-welcome-skills button, .canvas-workspace .agent-manual-policy { color: var(--canvas-ui-muted); }
+.canvas-workspace .agent-runtime-indicator, .canvas-workspace .agent-welcome-skills svg { color: var(--canvas-ui-dim); }
+.canvas-workspace .react-flow__minimap { background: var(--canvas-menu-surface) !important; }

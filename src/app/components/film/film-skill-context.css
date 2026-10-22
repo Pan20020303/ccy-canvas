@@ -1,0 +1,19 @@
+.film-creative-context { margin: 20px 0; padding: 18px; border: 1px solid #3b4441; border-radius: 12px; background: #202725; }
+.film-creative-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.film-creative-heading h3 { margin: 0; font-size: 15px; }
+.film-creative-heading h3 small { color: #a0ada5; font-weight: 400; }
+.film-creative-heading label { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.film-creative-context input[type=checkbox] { accent-color: #8ee834; flex-shrink: 0; width: 15px; height: 15px; }
+.film-creative-skills { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
+.film-creative-skill { display: flex; gap: 8px; align-items: flex-start; padding: 10px; border-radius: 8px; background: #29312e; cursor: pointer; }
+.film-creative-skill span { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.film-creative-skill strong { font-size: 13px; }
+.film-creative-skill small { font-size: 11px; line-height: 1.6; }
+.film-creative-context summary { cursor: pointer; font-size: 13px; padding: 10px 0; }
+.film-creative-preview-controls { display: flex; gap: 8px; }
+.film-creative-documents { display: flex; flex-wrap: wrap; gap: 7px; }
+.film-creative-documents .film-button { font-size: 12px; }
+.film-creative-document { margin-top: 14px; }
+.film-creative-document small { display: block; color: #9aa8a1; overflow-wrap: anywhere; }
+.film-creative-document pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.8; max-height: 300px; overflow: auto; padding: 12px; background: #191e1c; border-radius: 6px; }
+@media (max-width: 600px) { .film-creative-skills { grid-template-columns: 1fr; } }

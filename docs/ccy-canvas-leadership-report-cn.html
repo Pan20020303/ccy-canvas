@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CCY Canvas 项目汇报</title>
+  <style>
+    :root {
+      --bg: #f5f3ef;
+      --paper: #ffffff;
+      --ink: #171717;
+      --muted: #5f5f5f;
+      --line: #ded8cf;
+      --accent: #f5661f;
+      --dark: #121212;
+      --soft: #fff4ed;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.7;
+    }
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 0 auto 12mm;
+      background: var(--paper);
+      padding: 18mm 16mm 16mm;
+      position: relative;
+      page-break-after: always;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+    .cover-image {
+      width: 100%;
+      height: 88mm;
+      object-fit: cover;
+      border-radius: 8px;
+      display: block;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 10mm;
+    }
+    .brand img {
+      width: 18mm;
+      height: 18mm;
+      object-fit: contain;
+    }
+    .cover-title {
+      font-size: 26px;
+      font-weight: 700;
+      margin: 0;
+    }
+    .cover-subtitle {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .hero-box {
+      margin-top: 10mm;
+      background: var(--dark);
+      color: #fff;
+      padding: 14px 16px;
+      border-radius: 10px;
+      font-size: 15px;
+    }
+    h2 {
+      font-size: 24px;
+      margin: 0 0 6px;
+    }
+    .intro {
+      color: var(--muted);
+      margin: 0 0 8mm;
+      font-size: 14px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 8mm;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .metric .label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .metric .value {
+      font-size: 24px;
+      font-weight: 700;
+      margin: 4px 0;
+    }
+    .metric .desc {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    ul {
+      padding-left: 20px;
+      margin: 0;
+    }
+    li { margin: 6px 0; }
+    .divider {
+      height: 1px;
+      background: var(--line);
+      margin: 8mm 0 6mm;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 9px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: var(--dark);
+      color: #fff;
+      font-weight: 700;
+    }
+    .orange-head th {
+      background: var(--accent);
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .card .head {
+      background: var(--soft);
+      padding: 10px 12px;
+      font-weight: 700;
+    }
+    .card .body {
+      padding: 10px 12px;
+    }
+    .summary-box {
+      margin-top: 8mm;
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .summary-box .head {
+      background: var(--accent);
+      color: #fff;
+      padding: 10px 12px;
+      font-weight: 700;
+    }
+    .summary-box .body {
+      background: #fff7f2;
+      padding: 12px;
+    }
+    .footer-page {
+      position: absolute;
+      right: 16mm;
+      bottom: 10mm;
+      color: #8b8b8b;
+      font-size: 11px;
+    }
+    @media print {
+      body { background: #fff; }
+      .page {
+        margin: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section class="page">
+    <img class="cover-image" src="../src/imports/login-visual-left.png" alt="封面图" />
+    <div class="brand">
+      <img src="../src/imports/logo-login.png" alt="CCY Canvas" />
+      <div>
+        <h1 class="cover-title">CCY Canvas 项目汇报</h1>
+        <p class="cover-subtitle">基于现有页面截图的管理层简报</p>
+      </div>
+    </div>
+    <div class="hero-box">
+      一句话概括：这是一个把 AI 创作工作台和后台管理能力放到同一套系统里的产品雏形。前台负责生产内容，后台负责管人、管权限、管模型。
+    </div>
+    <p style="margin-top: 10mm; font-size: 15px;">适用场景：内容团队、设计团队、品牌工作室、短视频或图文生产团队。</p>
+    <div class="footer-page">1</div>
+  </section>
+
+  <section class="page">
+    <h2>一、领导先看结论</h2>
+    <p class="intro">从现有页面可以判断，这个项目已经不是单纯的“AI 小工具”，而是在往“可管理、可协同、可持续运营”的产品方向走。</p>
+    <div class="metrics">
+      <div class="metric">
+        <div class="label">定位</div>
+        <div class="value">AI 创作工作台</div>
+        <div class="desc">前台面向使用者，支持文本、图片等内容生成与串联。</div>
+      </div>
+      <div class="metric">
+        <div class="label">管理方式</div>
+        <div class="value">统一后台</div>
+        <div class="desc">管理员可以集中管理成员、邀请码、模型与默认配置。</div>
+      </div>
+      <div class="metric">
+        <div class="label">当前阶段</div>
+        <div class="value">产品雏形可演示</div>
+        <div class="desc">核心界面已经成型，业务闭环正在从演示版走向正式版。</div>
+      </div>
+    </div>
+    <ul>
+      <li>对业务的直接价值，是把“内容生产”与“团队管理”放在同一套系统里，避免工具分散、账号分散、模型分散。</li>
+      <li>对管理层的意义，是未来可以统一控制谁能用、能用什么模型、如何进入系统，以及是否能沉淀标准化流程。</li>
+      <li>从页面成熟度看，登录入口、创作工作区、成员管理、邀请码管理已经形成较完整的展示链路。</li>
+    </ul>
+    <div class="divider"></div>
+    <p>建议口径：可以把它理解为“公司内部 AI 创作操作系统”的第一阶段版本。</p>
+    <div class="footer-page">2</div>
+  </section>
+
+  <section class="page">
+    <h2>二、从截图能看出的产品结构</h2>
+    <p class="intro">四张页面截图已经足够说明这套产品的基本架构：一端做创作，一端做管理，中间用统一账号体系连接。</p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:16%;">页面</th>
+          <th style="width:42%;">从截图看到的内容</th>
+          <th>说明什么</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>登录页</td>
+          <td>品牌化入口、账号密码登录、注册入口</td>
+          <td>这不是临时工具页，而是准备给团队长期使用的正式产品入口。</td>
+        </tr>
+        <tr>
+          <td>工作区</td>
+          <td>文本节点连接图片节点、任务队列、模型选择</td>
+          <td>产品核心是“基于节点的 AI 创作流程”，可支持一步步生成内容。</td>
+        </tr>
+        <tr>
+          <td>成员管理</td>
+          <td>成员、邮箱、全局角色、所属空间、空间权限</td>
+          <td>系统已经考虑多人协同，不是单人自用。</td>
+        </tr>
+        <tr>
+          <td>邀请码管理</td>
+          <td>邀请码状态、默认团队空间、使用次数</td>
+          <td>系统支持低成本地拉新入组，并预设归属和权限。</td>
+        </tr>
+        <tr>
+          <td>模型配置</td>
+          <td>模型接入、启停、参数、连接测试</td>
+          <td>管理端已经具备统一接入模型平台的能力，方便后续控成本、控权限。</td>
+        </tr>
+      </tbody>
+    </table>
+    <ul style="margin-top: 8mm;">
+      <li>简单说，前台是“生产台”，后台是“驾驶舱”。</li>
+      <li>这类结构比单一 AI 工具更有长期价值，因为它更容易接团队、更容易接制度，也更容易接业务数据。</li>
+    </ul>
+    <div class="footer-page">3</div>
+  </section>
+
+  <section class="page">
+    <h2>三、核心工作区：它不是聊天框，而是可编排的生产台</h2>
+    <p class="intro">工作区截图显示，系统采用“节点式”方式组织创作流程。用户可以先生成文本，再把结果衔接到图像节点，逐步完成内容生产。</p>
+    <table class="orange-head">
+      <thead>
+        <tr>
+          <th style="width:28%;">管理层能看懂的点</th>
+          <th>业务价值</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>文本节点到图片节点</td>
+          <td>说明内容生产可以分步骤进行，未来更容易沉淀标准流程，而不是每个人各自摸索。</td>
+        </tr>
+        <tr>
+          <td>任务队列</td>
+          <td>说明系统考虑了多任务并发与执行管理，适合团队协同场景。</td>
+        </tr>
+        <tr>
+          <td>模型选择入口</td>
+          <td>说明产品未来可以按场景切换模型能力，不被单一模型绑死。</td>
+        </tr>
+        <tr>
+          <td>暗色大画布与连接关系</td>
+          <td>说明产品定位更偏专业生产工具，而非一次性演示页面。</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top: 8mm;">通俗讲，这个页面传递出的信息是：未来内容团队不是“人盯着一个个 AI 对话框干活”，而是“按流程拼装内容生产链路”。这对标准化、复用和培训新同事都更友好。</p>
+    <div class="footer-page">4</div>
+  </section>
+
+  <section class="page">
+    <h2>四、后台管理：已经具备“管团队、管入口、管模型”的雏形</h2>
+    <p class="intro">后台截图重点体现了三件事：谁能进系统、进来后归到哪个团队，以及底层用什么模型。</p>
+    <div class="card">
+      <div class="head">成员管理</div>
+      <div class="body">页面里已经能看到成员姓名、邮箱、全局角色、所属空间和空间权限。说明系统在设计时已经把组织结构和权限分层考虑进来了。</div>
+    </div>
+    <div class="card">
+      <div class="head">邀请码管理</div>
+      <div class="body">邀请码带有状态、默认团队空间和使用次数。说明拉新入组不是手工散管，而是可以被记录、被约束、被追踪。</div>
+    </div>
+    <div class="card">
+      <div class="head">模型配置</div>
+      <div class="body">模型配置页负责接入外部模型平台、测试连接、启停模型、管理参数。说明未来成本控制和能力控制都有落点。</div>
+    </div>
+    <p style="margin-top: 8mm;">对于领导层，这一部分最重要的意义不是页面漂不漂亮，而是它代表这套系统未来具备运营能力：能管人、能控入口、能控资源、能逐步接上审计和成本。</p>
+    <div class="footer-page">5</div>
+  </section>
+
+  <section class="page">
+    <h2>五、当前项目处于什么阶段</h2>
+    <p class="intro">结合现有页面与系统结构，当前更适合定义为“可演示、可试用的产品雏形”，而不是“全部正式上线版”。</p>
+    <ul>
+      <li>已经有的：品牌化登录入口、AI 工作区、成员管理、邀请码管理、模型配置页。</li>
+      <li>说明已经跑通的：产品定位、基本信息架构、前后台分层思路、管理能力方向。</li>
+      <li>还在继续完善的：更多真实业务数据接入、后台治理能力、审计日志、成本闭环、更加稳定的生产流程。</li>
+    </ul>
+    <table style="margin-top: 8mm;">
+      <thead>
+        <tr>
+          <th style="width:20%;">维度</th>
+          <th>当前判断</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>产品完成度</td>
+          <td>界面层与交互层已成型，适合演示、汇报、收集反馈。</td>
+        </tr>
+        <tr>
+          <td>业务完成度</td>
+          <td>已覆盖登录、创作、管理主链路，但仍在从样板能力走向完整能力。</td>
+        </tr>
+        <tr>
+          <td>管理价值</td>
+          <td>方向明确，具备沉淀组织流程和统一 AI 资源入口的潜力。</td>
+        </tr>
+        <tr>
+          <td>投入建议</td>
+          <td>建议继续投入，但应聚焦把可演示推进到可运营、可度量、可复制。</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="footer-page">6</div>
+  </section>
+
+  <section class="page">
+    <h2>六、给领导的建议与下一步</h2>
+    <p class="intro">如果这套产品要继续往前推，建议重点盯三件事：业务闭环、管理闭环、成本闭环。</p>
+    <ul>
+      <li>第一，先把最常用的一到两条内容生产流程打磨成真正可用的标准流程，证明业务价值。</li>
+      <li>第二，把后台里的成员、邀请码、模型配置与真实数据完全接通，证明管理价值。</li>
+      <li>第三，把模型调用、任务执行、成本消耗逐步做成可记录、可追踪、可分析，证明投入价值。</li>
+    </ul>
+    <div class="summary-box">
+      <div class="head">汇报建议收口</div>
+      <div class="body">
+        从现阶段来看，CCY Canvas 值得继续推进。它最有潜力的地方，不只是能调用 AI，而是有机会成为团队统一使用的 AI 创作工作台和管理底座。只要后续把真实业务数据、权限治理和成本控制补齐，就有机会从演示型产品升级为可落地的内部生产系统。
+      </div>
+    </div>
+    <div class="footer-page">7</div>
+  </section>
+</body>
+</html>

@@ -1,0 +1,51 @@
+---
+description: Seedance Agent skill 架构同步铁律——每次修改必先对比知识库防冲突
+globs: **/seedance-agent/**/*.md,**/storyboard-reviewer/**/*.md
+alwaysApply: true
+---
+
+# Seedance Agent 架构同步铁律
+
+## 🔴 修改 seedance-agent 或 storyboard-reviewer skill 时**必先执行**的检查清单
+
+每次修改 `seedance-agent/SKILL.md` / `storyboard-reviewer/SKILL.md` / `seedance-agent/references/` 任何文件**之前**，必须完成以下 4 步：
+
+### Step 1: 架构边界检查
+- ✅ 新增信条/规则只能写在 `seedance-agent/SKILL.md`（唯一信息源）
+- ✅ reviewer 验收维度同步到 `storyboard-reviewer/SKILL.md`
+- ✅ references/ 仅作基础知识库 · 不重复定义信条规则
+- ❌ 严禁多源信息冲突（同一规则只能在主 SKILL.md 定义一次）
+
+### Step 2: Seedance 2.0 硬约束兼容性确认
+新增/修改内容必须**不破坏**以下 2 大物理硬约束：
+- 🔴 **单 segment ≤ 9,500 字符**（Seedance 2.0 10K 上限留 500 缓冲）
+- 🔴 **单 segment 时长 4-30 秒**（Seedance 2.0 物理限制 · v3.2.6+ 用户指定由 4-15 秒上调）
+- 🔴 **每个 segment 独立可执行**（不能依赖上一 segment 上下文 · 不能跨 segment 引用机制）
+
+### Step 3: references/ 知识库冲突扫描
+修改后必须扫描 30 个 references 文件是否与新规则冲突：
+- 优先级：主 SKILL.md 信条 > references/ 基础知识
+- 发现不一致 → 在对应 reference 顶部加 v3.1.X.X 兼容性 banner（不删 reference · 加协同声明）
+- 已加 banner 的 reference：超详细运镜规格参考库.md / 机位技术规格详细参数库.md / 切镜时机学.md / 表演意义化与武戏状态影响.md / 大师层视觉语言.md / 视觉创意词典.md / 反平庸案例库.md / 类型片镜头语法库.md
+
+### Step 4: 全局协同性确认
+- ✅ 主 SKILL.md 信条数 = reviewer 验收维度数 = 启动语描述数
+- ✅ Phase 9 自检清单包含所有新信条验收项
+- ✅ 变更日志记录修改原因+解决问题+设计哲学
+- ✅ 启动语版本号同步（3 模式：自动/协同/咨询）
+
+## 🎯 当前架构状态（v3.1.7.6）
+
+- **主 SKILL.md**：信条 1-37
+- **reviewer SKILL.md**：验收维度 #1-#37
+- **references/**：30 个基础知识库 + 8 个含 v3.1.X.X 兼容性 banner
+- **Seedance 2.0 硬约束**：4-30s / ≤9,500 字符 / 每 segment 独立可执行（含每 segment 重新计时 00:00 起 + 镜头序号从【镜头1】重编）
+
+## ⚠️ 修改后必须验证
+
+- [ ] 主 SKILL.md 信条规则 vs reviewer 验收维度对齐
+- [ ] 新规则不破坏 Seedance 2.0 硬约束
+- [ ] references/ 无冲突或已加协同 banner
+- [ ] 变更日志已更新（含背景/修复/设计哲学）
+- [ ] 启动语版本号已同步
+- [ ] 用户最近反馈中提到的约束（如"信息素守恒不减镜头数"/"摆拍≠AI 味"/"对白不嵌入括号"等）100% 协同
