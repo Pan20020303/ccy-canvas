@@ -2578,7 +2578,8 @@ const BaseNode = ({
             willChange: connectTarget ? 'transform' : undefined,
           }}
           >
-          <div className="canvas-node-content">{children}</div>
+          <div className="canvas-node-content rounded-[inherit]">{children}</div>
+          {selected && <div aria-hidden="true" className={clsx('pointer-events-none absolute inset-0 z-30 rounded-[inherit]', toneStyles.selected)} />}
           {error ? <NodeErrorBanner error={error} nodeId={loadingNodeId} /> : null}
           {/* 统一生成动画：所有生成节点默认走 RefineFrame 的阶段精修；
               loadingOverlay 仍可覆盖特殊场景。成功后短暂停留在 Ready。 */}
@@ -5090,14 +5091,14 @@ export const ImageNode = ({ id, data: rawData, selected }: any) => {
     >
       {data.url ? (
         <div
-          className={clsx('relative w-full overflow-hidden rounded-[12px] cursor-zoom-in transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
+          className={clsx('relative w-full overflow-hidden rounded-[inherit] cursor-zoom-in transition-[height] duration-300 ease-out motion-reduce:transition-none', NODE_TONE_STYLES.image.surface)}
           style={{ height: genBox.height }}
           onDoubleClick={() => (isPanorama ? setPanoramaPreview(true) : setPreview(true))}
         >
           <ResilientImage
             src={data.url}
             alt=""
-            className="h-full w-full object-cover select-none"
+            className="absolute inset-0 block h-full w-full object-cover select-none"
             onLoad={handleImageLoad}
             zh={language === 'zh'}
             thumbWidth={720}
@@ -5827,7 +5828,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
           // similar footprint; the box matches the aspect exactly so the image
           // fills it with no crop, no letterbox padding, no border.
           "relative w-full overflow-hidden cursor-zoom-in",
-          isSlice ? "rounded-none" : "rounded-[12px]",
+          isSlice ? "rounded-none" : "rounded-[inherit]",
           NODE_TONE_STYLES.neutral.surface,
           mediaBox ? undefined : "aspect-video",
         )}
@@ -5838,7 +5839,7 @@ export const ReferenceImageNode = ({ id, data: rawData, selected }: any) => {
           <ResilientImage
             src={data.url}
             alt={displayName}
-            className="h-full w-full object-cover select-none"
+            className="absolute inset-0 block h-full w-full object-cover select-none"
             thumbWidth={720}
             onLoad={(event) => {
               const { naturalWidth, naturalHeight } = event.currentTarget;
@@ -6973,7 +6974,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
       {data.url ? (
         <div
           className={clsx(
-            'relative w-full overflow-hidden rounded-[12px]',
+            'relative w-full overflow-hidden rounded-[inherit]',
             annotate ? 'cursor-crosshair' : 'cursor-zoom-in',
             // 标注中不做高度过渡 — 画笔层按最终尺寸测量位图，动画中间值会量错。
             !annotate && 'transition-[height] duration-300 ease-out motion-reduce:transition-none',
@@ -6988,7 +6989,7 @@ const RenamableImageNode = ({ id, data: rawData, selected }: any) => {
         >
           <ResilientImage
             src={data.url}
-            className="h-full w-full object-contain select-none"
+            className="absolute inset-0 block h-full w-full object-cover select-none"
             onLoad={handleImageLoad}
             zh={language === 'zh'}
             thumbWidth={720}
