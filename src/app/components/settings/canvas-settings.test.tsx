@@ -46,6 +46,17 @@ afterEach(async () => {
 });
 
 describe('validated, account-scoped settings', () => {
+  it('migrates snap strength defaults, clamps it and persists it per account', () => {
+    expect(normalizeCanvasPreferences({ snapToGrid: true }).snapStrength).toBe(3);
+    expect(normalizeCanvasPreferences({ snapStrength: -1 }).snapStrength).toBe(1);
+    expect(normalizeCanvasPreferences({ snapStrength: 999 }).snapStrength).toBe(12);
+    expect(normalizeCanvasPreferences({ snapStrength: NaN }).snapStrength).toBe(3);
+    bindCanvasPreferences('snap-alice'); set('snapStrength', 7);
+    bindCanvasPreferences('snap-bob'); expect(useCanvasPreferences.getState().values.snapStrength).toBe(3);
+    bindCanvasPreferences('snap-alice'); expect(useCanvasPreferences.getState().values.snapStrength).toBe(7);
+    useCanvasPreferences.getState().restoreDefaults();
+    expect(useCanvasPreferences.getState().values.snapStrength).toBe(3);
+  });
   it('clamps numeric values and rejects invalid booleans, palettes and color injection', () => {
     const values = normalizeCanvasPreferences({ edgeWidth: 999, panSensitivity: -20, gridGap: Infinity, themeId: 'unknown', customEdgeColor: 'red;url(x)', showGrid: 'false', backgroundNodeId: 'x'.repeat(201) });
     expect(values.edgeWidth).toBe(6); expect(values.panSensitivity).toBe(.25);
@@ -97,6 +108,20 @@ describe('validated, account-scoped settings', () => {
 });
 
 describe('reference panel controls', () => {
+  it('synchronizes the auto-snap switch and only enables strength while snapping is on', async () => {
+    await render(<CanvasSettingsPanel onAdvanced={() => {}} />);
+    const slider = () => document.querySelector<HTMLInputElement>('input[aria-label="吸附强度"]')!;
+    expect(slider().disabled).toBe(true);
+    await click('自动吸附');
+    expect(useStore.getState().snapToGrid).toBe(true);
+    expect(slider().disabled).toBe(false);
+    await change('吸附强度', '6');
+    expect(useCanvasPreferences.getState().values.snapStrength).toBe(6);
+    await act(async () => useStore.getState().setSnapToGrid(false));
+    expect(slider().disabled).toBe(true);
+    expect(button('自动吸附').getAttribute('aria-checked')).toBe('false');
+    expect(useCanvasPreferences.getState().values.alignmentGuides).toBe(true);
+  });
   it('persists the selection highlight switch and animation switch independently for this account', async () => {
     await render(<CanvasSettingsPanel onAdvanced={() => {}} />);
     expect(button('选中节点时高亮关联连线').getAttribute('aria-checked')).toBe('true');

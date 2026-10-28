@@ -53,7 +53,7 @@ export const SIMPLE_PALETTES = [
 export const DEFAULT_CANVAS_PREFERENCES = {
   panSensitivity: 1.5, focusAnimationLimit: 100, submitDelay: 0, connectionRadius: 150,
   blankAction: 'double' as 'context' | 'double', wheelAction: 'pan' as 'pan' | 'zoom', mentionNaming: 'name' as 'name' | 'number',
-  snapToGrid: false, alignmentGuides: true, dragFocus: true, blurAfterSubmit: false, compactZoom: false, linkedPreview: true, hoverVideo: true,
+  snapToGrid: false, snapStrength: 3, alignmentGuides: true, dragFocus: true, blurAfterSubmit: false, compactZoom: false, linkedPreview: true, hoverVideo: true,
   reuseLastGenerationParams: false,
   notifyCompleted: true, notifyFailed: true, notifyWhen: 'away' as 'away' | 'always', systemNotifications: false, sound: false, onlyOwn: true, soundStyle: 'clear',
   edgeWidth: 2, edgeHitWidth: 12, edgeHover: true, edgeSelectionHighlight: true, edgeAnimation: true, onlyFocusedEdges: false,
@@ -65,6 +65,7 @@ export const DEFAULT_CANVAS_PREFERENCES = {
 export type CanvasPreferences = typeof DEFAULT_CANVAS_PREFERENCES;
 export const NUMERIC_PREFERENCE_LIMITS: Partial<Record<keyof CanvasPreferences, [number, number, number]>> = {
   panSensitivity: [.25, 3, .25], focusAnimationLimit: [0, 1000, 10], submitDelay: [0, 10, 1], connectionRadius: [10, 300, 10],
+  snapStrength: [1, 12, 1],
   edgeWidth: [1, 6, .5], edgeHitWidth: [4, 40, 2], gridGap: [10, 100, 2], gridDotSize: [1, 6, .5],
   horizontalGap: [20, 400, 10], verticalGap: [20, 400, 10], groupPadding: [8, 160, 4], groupLabelScale: [.5, 2, .1], topToolbarScale: [.7, 1.5, .1], bottomToolbarScale: [.7, 1.5, .1],
   backgroundOpacity: [0, 100, 1], backgroundBlur: [0, 30, 1], backgroundTileSize: [10, 200, 10],

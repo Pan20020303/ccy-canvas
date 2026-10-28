@@ -417,6 +417,10 @@ func (s *Service) TestChannelConnectivity(ctx context.Context, providerID string
 	if derr != nil {
 		return ChannelTestReport{OK: false, ErrorMsg: "key decrypt failed: " + derr.Error()}, nil
 	}
+	if isVisionularUpscale(cfg) {
+		// V2 BasicAuth, not Bearer /models; only a read-only storage probe.
+		return probeVisionularChannel(ctx, cfg.BaseURL, apiKey), nil
+	}
 
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/models"
 	started := time.Now()

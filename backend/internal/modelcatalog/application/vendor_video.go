@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Service) generateVideo(ctx context.Context, pc *domain.ProviderConfig, baseURL, apiKey string, req GenerateRequest) (*GenerateResult, error) {
+	if isVisionularUpscale(pc) {
+		return s.generateVideoVisionular(ctx, pc, baseURL, apiKey, req)
+	}
 	baseURL = resolveProfileBaseURL(pc, baseURL)
 	if isComfyLTX25Provider(pc, req.Model) {
 		return s.generateVideoComfyLTX25(ctx, baseURL, req)

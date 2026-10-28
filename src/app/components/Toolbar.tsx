@@ -204,11 +204,11 @@ export const Toolbar = () => {
           </button>
         </DockItem>
         <DockItem>
-          {/* 自动吸附 — moved here from the bottom-left strip (reference dock
-              keeps the pin at the right end). Toggles the 24px grid snap +
-              neighbor alignment guides. */}
+          {/* Master switch for both neighbor alignment and release-only grid snapping. */}
           <button
             onClick={() => setSnapToGrid(!snapToGrid)}
+            aria-label={language === 'zh' ? '自动吸附' : 'Auto snap'}
+            aria-pressed={snapToGrid}
             className={`group relative flex items-center justify-center rounded-full p-2.5 transition-all ${
               snapToGrid ? 'bg-white/10 text-cyan-300' : 'text-neutral-400 hover:bg-white/5 hover:text-cyan-300'
             }`}

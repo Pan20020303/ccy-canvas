@@ -76,6 +76,8 @@ import { useStore, useActiveProjectReadOnly } from '../../store';
 import Magnet from '../Magnet';
 import { ApiClientError, resolveApiUrl } from '../../api/client';
 import { createLocalVideoDepth, upscaleLocalSeedVR2 } from '../../api/models';
+import { VideoUpscaleModal } from './VideoUpscaleModal';
+import { VISIONULAR_UPSCALE_TIERS, visionularUpscaleProvider } from '../../video-upscale';
 import { toRenderableMediaUrl, extractOriginalMediaUrl, isProxyMediaUrl } from '../../reference-media';
 import { downloadMediaFile } from '../../media-download';
 import { rememberMediaDims, resolveMediaDims } from '../../media-dims';
@@ -247,7 +249,7 @@ function GenerationOverlay({
   };
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-[12px]">
+    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden rounded-[8px]">
       <RefineFrame
         status={refineStatus}
         className="generation-refine-frame"
@@ -487,7 +489,7 @@ function MediaEmptyPlaceholder({
   return (
     <div
       className={clsx(
-        'canvas-node-placeholder flex flex-col items-center justify-center gap-3 rounded-[12px] text-neutral-500',
+        'canvas-node-placeholder flex flex-col items-center justify-center gap-3 rounded-[8px] text-neutral-500',
         className,
       )}
       style={style}
@@ -3673,33 +3675,6 @@ function HdEnhanceModal({ sourceUrl, zh, modelAvailable, busy, onSubmit, onClose
   );
 }
 
-function VideoSeedVR2UpscaleModal({ sourceUrl, zh, busy, onSubmit, onClose }: {
-  sourceUrl: string;
-  zh: boolean;
-  busy: boolean;
-  onSubmit: (scale: number, quality: 'MEDIUM' | 'HIGH' | 'ULTRA') => void;
-  onClose: () => void;
-}) {
-  const [scale, setScale] = useState(2);
-  const [quality, setQuality] = useState<'MEDIUM' | 'HIGH' | 'ULTRA'>('ULTRA');
-  return createPortal(
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/85 p-6 backdrop-blur-md" onClick={onClose}>
-      <div className="flex h-[min(680px,84vh)] w-[min(1080px,94vw)] overflow-hidden rounded-2xl border border-white/10 bg-[#101218]" onClick={(event) => event.stopPropagation()}>
-        <div className="flex flex-1 items-center justify-center bg-black/40 p-6"><video src={toRenderableMediaUrl(sourceUrl)} controls className="max-h-full max-w-full rounded-lg" /></div>
-        <div className="flex w-[340px] shrink-0 flex-col border-l border-white/10">
-          <div className="flex items-center justify-between p-5"><div className="font-semibold text-neutral-100">{zh ? '视频超分' : 'Video upscale'}</div><button type="button" onClick={onClose}><X className="h-4 w-4 text-neutral-400" /></button></div>
-          <div className="flex-1 space-y-5 px-5">
-            <div className="rounded-xl border border-emerald-400/60 bg-emerald-500/10 p-3"><div className="flex items-center gap-2 text-sm font-semibold text-emerald-200">SeedVR2 3B INT8 <span className="rounded bg-emerald-500 px-1 text-[9px] text-white">LOCAL</span></div><p className="mt-2 text-xs leading-relaxed text-emerald-100/70">{zh ? '本机时序一致性修复超分，自动分块，保留原帧率与音轨。' : 'Local temporally consistent restoration with auto chunking, preserving FPS and audio.'}</p></div>
-            <div><div className="mb-2 text-xs text-neutral-400">{zh ? '放大倍率' : 'Scale'}</div><div className="flex gap-2">{[2, 3, 4].map((value) => <button key={value} type="button" onClick={() => setScale(value)} className={clsx('rounded-full border px-4 py-1.5 text-xs', scale === value ? 'border-white bg-white text-black' : 'border-white/15 text-neutral-300')}>{value}×</button>)}</div></div>
-            <div><div className="mb-2 text-xs text-neutral-400">{zh ? '质量' : 'Quality'}</div><div className="flex gap-2">{(['MEDIUM', 'HIGH', 'ULTRA'] as const).map((value) => <button key={value} type="button" onClick={() => setQuality(value)} className={clsx('rounded-full border px-3 py-1.5 text-[11px]', quality === value ? 'border-emerald-300 bg-emerald-400/15 text-emerald-100' : 'border-white/15 text-neutral-400')}>{value}</button>)}</div></div>
-            <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-3 text-[11px] leading-relaxed text-amber-100/70">{zh ? '视频越长、分辨率越高，处理时间和显存占用越大。' : 'Longer and larger videos require more processing time and VRAM.'}</div>
-          </div>
-          <div className="flex items-center justify-between border-t border-white/10 p-4"><span className="text-xs text-neutral-300">SeedVR2 · {scale}× · {quality}</span><button type="button" disabled={busy} onClick={() => onSubmit(scale, quality)} className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-black disabled:opacity-50">{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}</button></div>
-        </div>
-      </div>
-    </div>, document.body,
-  );
-}
 
 function ImageActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const language = useStore((state) => state.language);
@@ -4423,6 +4398,8 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
   const [trimOpen, setTrimOpen] = useState(false);
   const language = useStore((state) => state.language);
   const activeBackendProjectId = useStore((state) => state.activeBackendProjectId);
+  const backendModels = useStore((state) => state.backendModels);
+  const upscaleModels = VISIONULAR_UPSCALE_TIERS.filter(tier => visionularUpscaleProvider(backendModels, tier.model)).map(tier => tier.model);
   const nodes = useStore((state) => state.nodes);
   const addNode = useStore((state) => state.addNode);
   const updateNodeData = useStore((state) => state.updateNodeData);
@@ -4816,9 +4793,34 @@ function VideoActionToolbar({ sourceNodeId }: { sourceNodeId: string }) {
         />
       ) : null}
 
-      {hdOpen ? <VideoSeedVR2UpscaleModal sourceUrl={sourceUrl} zh={language === 'zh'} busy={busy} onClose={() => setHdOpen(false)} onSubmit={(scale, quality) => {
+      {hdOpen ? <VideoUpscaleModal sourceUrl={sourceUrl} zh={language === 'zh'} busy={busy} availableModels={upscaleModels} onClose={() => setHdOpen(false)} onSubmit={(selection) => {
         void (async () => {
           if (busy || !sourceNode) return;
+          if (selection.engine === 'visionular') {
+            const tier = VISIONULAR_UPSCALE_TIERS.find(item => item.resolution === selection.resolution)!;
+            const provider = visionularUpscaleProvider(backendModels, tier.model);
+            if (!provider) { toast.error(language === 'zh' ? '该档位的 Visionular 渠道尚未启用' : 'This upscale tier is not enabled'); return; }
+            setBusy(true);
+            setHdOpen(false);
+            const derivedId = `video-visionular-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            addNode({ id: derivedId, type: 'videoNode', position: { x: sourceNode.position.x + 380, y: sourceNode.position.y }, data: {
+              customTitle: `Visionular ${tier.resolution} ${language === 'zh' ? '超分视频' : 'upscaled video'}`,
+              status: 'idle', sourceKind: 'derived', derivedFromNodeId: sourceNodeId, derivationAction: 'visionular_upscale',
+              generationParams: { model: tier.model, vendor: provider.vendor, resolution: tier.resolution,
+                aspectRatio: sourceData.generationParams?.aspectRatio ?? 'auto', referenceVideo: extractOriginalMediaUrl(sourceUrl),
+                deriveFromNodeId: sourceNodeId, editOperation: 'enhance' },
+            } } as never);
+            onConnect({ source: sourceNodeId, target: derivedId, sourceHandle: null, targetHandle: null } as never);
+            try {
+              await runNode(derivedId, { prompt: `Visionular ${tier.resolution} 视频画质增强，保留完整视频。`, model: tier.model });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              updateNodeData(derivedId, { status: 'error', error: message });
+              toast.error(message);
+            } finally { setBusy(false); }
+            return;
+          }
+          const { scale, quality } = selection;
           setBusy(true);
           setHdOpen(false);
           const base = sourceNode.position ?? { x: 0, y: 0 };
@@ -5034,7 +5036,7 @@ export const TextNode = ({ id, data, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
-      <div className={clsx('w-full min-h-[88px] rounded-[12px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
+      <div className={clsx('w-full min-h-[88px] rounded-[8px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
         {data.content || (language === 'zh' ? '输入文本后结果会出现在这里...' : 'Generated text will appear here...')}
       </div>
     </BaseNode>
@@ -5749,7 +5751,7 @@ export const VideoNode = ({ id, data, selected }: any) => {
       >
         <div
           className={clsx(
-            'relative flex items-center justify-center overflow-hidden rounded-[12px] border text-violet-100/40',
+            'relative flex items-center justify-center overflow-hidden rounded-[8px] border text-violet-100/40',
             NODE_TONE_STYLES.video.surface,
             mediaAspectStyle ? 'min-h-[120px]' : aspectClass,
             data.url && 'cursor-zoom-in',
@@ -5916,7 +5918,7 @@ export const ReferenceVideoNode = ({ id, data: rawData, selected }: any) => {
         className={clsx(
           // Node width follows the video aspect; the box matches it exactly
           // (borderless, no padding). See ReferenceImageNode.
-          "relative w-full overflow-hidden rounded-[12px] cursor-zoom-in",
+          "relative w-full overflow-hidden rounded-[8px] cursor-zoom-in",
           NODE_TONE_STYLES.neutral.surface,
           mediaBox ? undefined : "aspect-video",
         )}
@@ -5967,7 +5969,7 @@ export const AudioNode = ({ id, data, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="audio" fallbackModel="qwen3-tts-voice-design-local" />}
     >
-      <div className={clsx('flex items-center space-x-3 rounded-[12px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+      <div className={clsx('flex items-center space-x-3 rounded-[8px] border p-3 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/18">
           <Music className="h-3.5 w-3.5 text-emerald-300" />
         </div>
@@ -6117,7 +6119,7 @@ function AudioWaveformPlayer({
   const playedBars = Math.round(progress * bars.length);
 
   return (
-    <div className={clsx('relative rounded-[12px] border p-3 pt-2.5 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
+    <div className={clsx('relative rounded-[8px] border p-3 pt-2.5 text-neutral-200 shadow-inner', NODE_TONE_STYLES.audio.surface)}>
       {playableUrl ? <audio ref={audioRef} src={playableUrl} preload="metadata" className="hidden" /> : null}
 
       {/* download — mirrors the reference's top-right affordance */}
@@ -6250,7 +6252,7 @@ export const PanoramaNode = ({ id, data: rawData, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
-        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[8px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
         onDoubleClick={() => data.url && setPanoramaPreview(true)}
       >
         {data.url ? (
@@ -6285,7 +6287,7 @@ const RenamableTextNode = ({ id, data: rawData, selected }: any) => {
       error={data.error}
       promptPanel={<PromptPanel nodeId={id} serviceType="text" fallbackModel="gpt-4.1-mini" />}
     >
-      <div className={clsx('w-full min-h-[88px] rounded-[12px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
+      <div className={clsx('w-full min-h-[88px] rounded-[8px] border p-3 text-xs text-neutral-300 shadow-inner', NODE_TONE_STYLES.text.surface)}>
         {data.content || (language === 'zh' ? '输入文本后结果会出现在这里...' : 'Generated text will appear here...')}
       </div>
     </BaseNode>
@@ -6419,7 +6421,7 @@ function ResilientImage({
           autoRetries.current = 0;
           setBust((n) => n + 1);
         }}
-        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[12px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
+        className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[8px] border border-rose-400/20 bg-rose-500/[0.04] text-[11px] text-rose-200 transition hover:bg-rose-500/10"
         title={src}
       >
         <ImageOff className="h-5 w-5" />
@@ -7134,7 +7136,7 @@ const RenamableVideoNode = ({ id, data: rawData, selected }: any) => {
       <div className="relative" onMouseEnter={data.url ? handleMouseEnter : undefined} onMouseLeave={data.url ? handleMouseLeave : undefined}>
         <div
           className={clsx(
-            'relative flex w-full items-center justify-center overflow-hidden rounded-[12px] text-violet-100/40 transition-[height] duration-300 ease-out motion-reduce:transition-none',
+            'relative flex w-full items-center justify-center overflow-hidden rounded-[8px] text-violet-100/40 transition-[height] duration-300 ease-out motion-reduce:transition-none',
             NODE_TONE_STYLES.video.surface,
             data.url && 'cursor-zoom-in',
           )}
@@ -7258,7 +7260,7 @@ const RenamablePanoramaNode = ({ id, data: rawData, selected }: any) => {
       promptPanel={<PromptPanel nodeId={id} serviceType="image" fallbackModel="gpt-image-2" />}
     >
       <div
-        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[12px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
+        className={clsx('relative flex items-center justify-center overflow-hidden rounded-[8px]', NODE_TONE_STYLES.neutral.surface, aspectClass, data.url && 'cursor-zoom-in')}
         onDoubleClick={() => data.url && setPanoramaPreview(true)}
       >
         {data.url ? (
@@ -7887,7 +7889,7 @@ const ModeTextNode = ({ id, data: rawData, selected }: any) => {
           // 非编辑态：正文里有按钮/输入框，保留 nodrag + 内框「surface」样式。
           // 编辑态：正文只读，单击可拖动整个节点(cursor-grab 提示)，双击放大编辑。
           activeMode !== 'editor'
-            ? clsx('nodrag nopan rounded-[12px] border shadow-inner', NODE_TONE_STYLES.text.surface)
+            ? clsx('nodrag nopan rounded-[8px] border shadow-inner', NODE_TONE_STYLES.text.surface)
             : 'cursor-grab active:cursor-grabbing',
         )}
         onMouseDown={activeMode === 'editor' ? undefined : stopNodeGesture}

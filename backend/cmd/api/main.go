@@ -150,6 +150,9 @@ func main() {
 		catalogService = catalogService.WithNewAPI(newapiClient)
 		log.Printf("[modelcatalog] NewAPI gateway enabled: %s (timeout=%ds)", cfg.NewAPIBaseURL, cfg.NewAPITimeout)
 	}
+	if err := catalogService.EnsureVisionularProviderFromEnv(context.Background()); err != nil {
+		log.Printf("[modelcatalog] Visionular channel bootstrap failed (check backend configuration)")
+	}
 	catalogHandler := modelhttp.NewHandler(catalogService, queries).WithCache(redisCache)
 
 	// Optional Asynq task queue. When REDIS_ADDR is set, the generation

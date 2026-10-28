@@ -1,5 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
+import { getNodeBounds, snapCanvasChanges, type GuideLine } from '../canvas-snapping';
 import { canvasViewportKey, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, useCanvasViewportMemory } from '../canvas-viewport';
 import { CanvasBackground } from './settings/CanvasPreferencesRuntime';
 import {
@@ -132,11 +133,6 @@ const FUTURE_NODE_OPTIONS = [
   { key: 'script', icon: SquarePen, zh: '脚本', en: 'Script', badge: 'Beta', subtitleZh: '创意脚本、生成故事板', subtitleEn: 'Create scripts and storyboards' },
 ] as const;
 
-// Grid spacing is shared by rendering and the actual snap math.
-/** Snap window in SCREEN pixels — divided by zoom before comparing flow
- *  coords, so the grab distance feels identical at 37% and 200%. */
-const GUIDE_THRESHOLD_SCREEN = 8;
-
 /** Node types whose edges keep their own default handles instead of being
  *  routed to the flush `edge-source-right` / `edge-target-left` anchors (see
  *  normalizedEdges). Agent + sticky nodes already expose small handles centered
@@ -150,105 +146,6 @@ const snapPosition = (position: { x: number; y: number }, grid = useCanvasPrefer
   y: Math.round(position.y / grid) * grid,
 });
 
-type GuideLine = { orientation: 'h' | 'v'; pos: number; from: number; to: number };
-
-function getNodeBounds(node: Node) {
-  const w = node.measured?.width ?? node.width ?? 300;
-  const h = node.measured?.height ?? node.height ?? 200;
-  const x = node.position.x;
-  const y = node.position.y;
-  return {
-    left: x,
-    right: x + w,
-    top: y,
-    bottom: y + h,
-    cx: x + w / 2,
-    cy: y + h / 2,
-  };
-}
-
-function computeGuides(dragged: Node, others: Node[], threshold: number): {
-  guides: GuideLine[];
-  snapDx: number;
-  snapDy: number;
-  hasSnapX: boolean;
-  hasSnapY: boolean;
-} {
-  const db = getNodeBounds(dragged);
-  const guides: GuideLine[] = [];
-
-  // hasSnapX/Y must be tracked separately from the delta: a PERFECT alignment
-  // yields snapDx === 0, which the caller used to misread as "no snap" and
-  // then grid-round the node right off its alignment.
-  let bestDistX = threshold;
-  let bestDistY = threshold;
-  let snapDx = 0;
-  let snapDy = 0;
-  let hasSnapX = false;
-  let hasSnapY = false;
-
-  const dragXAnchors = [db.left, db.cx, db.right];
-  const dragYAnchors = [db.top, db.cy, db.bottom];
-
-  for (const other of others) {
-    if (other.id === dragged.id) continue;
-    const ob = getNodeBounds(other);
-    const otherXAnchors = [ob.left, ob.cx, ob.right];
-    const otherYAnchors = [ob.top, ob.cy, ob.bottom];
-
-    for (const dx of dragXAnchors) {
-      for (const ox of otherXAnchors) {
-        const dist = Math.abs(dx - ox);
-        if (dist < bestDistX) {
-          bestDistX = dist;
-          snapDx = ox - dx;
-          hasSnapX = true;
-        }
-      }
-    }
-
-    for (const dy of dragYAnchors) {
-      for (const oy of otherYAnchors) {
-        const dist = Math.abs(dy - oy);
-        if (dist < bestDistY) {
-          bestDistY = dist;
-          snapDy = oy - dy;
-          hasSnapY = true;
-        }
-      }
-    }
-  }
-
-  const snappedLeft = db.left + snapDx;
-  const snappedRight = db.right + snapDx;
-  const snappedCx = db.cx + snapDx;
-  const snappedTop = db.top + snapDy;
-  const snappedBottom = db.bottom + snapDy;
-  const snappedCy = db.cy + snapDy;
-
-  for (const other of others) {
-    if (other.id === dragged.id) continue;
-    const ob = getNodeBounds(other);
-
-    for (const sx of [snappedLeft, snappedCx, snappedRight]) {
-      for (const ox of [ob.left, ob.cx, ob.right]) {
-        if (Math.abs(sx - ox) < 0.5) {
-          guides.push({ orientation: 'v', pos: ox, from: Math.min(snappedTop, ob.top), to: Math.max(snappedBottom, ob.bottom) });
-        }
-      }
-    }
-
-    for (const sy of [snappedTop, snappedCy, snappedBottom]) {
-      for (const oy of [ob.top, ob.cy, ob.bottom]) {
-        if (Math.abs(sy - oy) < 0.5) {
-          guides.push({ orientation: 'h', pos: oy, from: Math.min(snappedLeft, ob.left), to: Math.max(snappedRight, ob.right) });
-        }
-      }
-    }
-  }
-
-  return { guides, snapDx, snapDy, hasSnapX, hasSnapY };
-}
 
 /** In-progress connection line that follows the RAW cursor. React Flow snaps
  *  the default preview to the hovered handle — and since our full-card drop
@@ -1089,76 +986,23 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [activeBackendProjectId]);
 
+  useEffect(() => {
+    if (!snapToGrid || !preferences.alignmentGuides) {
+      setGuides(previous => previous.length ? [] : previous);
+    }
+  }, [snapToGrid, preferences.alignmentGuides]);
+
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
-    if (!snapToGrid && !preferences.alignmentGuides) {
-      onNodesChange(changes);
-      return;
-    }
-
-    const posChange = changes.find((change): change is NodeChange & { type: 'position'; id: string; position: { x: number; y: number }; dragging?: boolean } =>
-      change.type === 'position' && 'position' in change && change.position != null,
-    );
-
-    const draggedNode = posChange ? nodes.find((node) => node.id === posChange.id) : undefined;
-    if (posChange && draggedNode) {
-      // Snap window is defined in SCREEN pixels — at low zoom the old fixed
-      // flow-px threshold shrank to ~2 screen px and never engaged.
-      const zoom = viewportRef.current?.zoom || 1;
-      const threshold = GUIDE_THRESHOLD_SCREEN / zoom;
-      // In a multi-select drag the co-dragged nodes move too — aligning
-      // against them means chasing a moving target, so exclude them.
-      const isMultiDrag = Boolean(draggedNode.selected);
-      const others = nodes.filter((node) => node.id !== draggedNode.id && !(isMultiDrag && node.selected));
-      const virtual = { ...draggedNode, position: posChange.position };
-      const { guides: nextGuides, snapDx, snapDy, hasSnapX, hasSnapY } = preferences.alignmentGuides
-        ? computeGuides(virtual, others, threshold)
-        : { guides: [], snapDx: 0, snapDy: 0, hasSnapX: false, hasSnapY: false };
-
-      if (posChange.dragging) {
-        // Skip the setState when nothing changed (empty→empty is the common
-        // case) — a fresh [] every frame forced a second full re-render.
-        setGuides((prev) => (prev.length === 0 && nextGuides.length === 0 ? prev : nextGuides));
-      } else {
-        setGuides([]);
-      }
-
-      // While dragging: neighbor alignment wins, otherwise move freely (the
-      // old per-frame grid rounding made motion chunky). On RELEASE: keep the
-      // alignment if one is engaged — the old code grid-rounded the final
-      // position, destroying the alignment the guides had just shown — and
-      // grid-snap only the unaligned axes.
-      const snapped = {
-        x: hasSnapX ? posChange.position.x + snapDx : (posChange.dragging || !snapToGrid ? posChange.position.x : snapPosition(posChange.position).x),
-        y: hasSnapY ? posChange.position.y + snapDy : (posChange.dragging || !snapToGrid ? posChange.position.y : snapPosition(posChange.position).y),
-      };
-      const deltaX = snapped.x - posChange.position.x;
-      const deltaY = snapped.y - posChange.position.y;
-
-      onNodesChange(
-        changes.map((change) => {
-          if (change === posChange) return { ...posChange, position: snapped };
-          // Co-dragged nodes receive the SAME delta so the formation holds
-          // instead of only the primary node jumping onto the guide.
-          if (change.type === 'position' && 'position' in change && change.position) {
-            return { ...change, position: { x: change.position.x + deltaX, y: change.position.y + deltaY } };
-          }
-          return change;
-        }),
-      );
-      return;
-    }
-
-    if (posChange && !posChange.dragging) {
-      setGuides([]);
-    }
-
-    onNodesChange(
-      changes.map((change) => {
-        if (change.type !== 'position' || !('position' in change) || !change.position) return change;
-        return snapToGrid ? { ...change, position: snapPosition(change.position) } : change;
-      }),
-    );
-  }, [nodes, onNodesChange, snapToGrid, preferences.alignmentGuides]);
+    const result = snapCanvasChanges(changes, nodes, {
+      enabled: snapToGrid,
+      showGuides: preferences.alignmentGuides,
+      strength: preferences.snapStrength,
+      gridGap: preferences.gridGap,
+      zoom: viewportRef.current?.zoom || 1,
+    });
+    setGuides(previous => previous.length === 0 && result.guides.length === 0 ? previous : result.guides);
+    onNodesChange(result.changes);
+  }, [nodes, onNodesChange, snapToGrid, preferences.alignmentGuides, preferences.snapStrength, preferences.gridGap]);
 
   const openContextMenu = useCallback((event: { clientX: number; clientY: number }, mode: ContextMenuMode, fromConnection: boolean) => {
     if (!wrapperRef.current) return;
@@ -1879,8 +1723,9 @@ const InnerCanvas = ({ viewportKey }: { viewportKey: string | null }) => {
         nodeDragThreshold={4}
         selectNodesOnDrag={preferences.dragFocus}
         connectionRadius={preferences.connectionRadius}
-        snapToGrid={snapToGrid}
-        snapGrid={[preferences.gridGap, preferences.gridGap]}
+        /* Custom snapping owns the final position; native grid rounding would
+           quantize every pointer event before our strength setting can apply. */
+        snapToGrid={false}
         /* 关闭 xyflow 内置的 pane 双击缩放,让外层 wrapper 的
            onCanvasDoubleClick 能收到事件唤出"添加节点"菜单. */
         zoomOnDoubleClick={false}

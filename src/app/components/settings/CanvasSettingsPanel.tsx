@@ -72,8 +72,10 @@ export function CanvasSettingsPanel({ onAdvanced }: { onAdvanced: () => void }) 
             {range('panSensitivity','画布平移灵敏度','x')}{range('focusAnimationLimit','定位动画节点上限','')}
             {range('submitDelay','图 / 视 延迟提交','秒')}{range('connectionRadius','触摸点吸附范围')}
             {segment('blankAction','空白区域操作',[['context','右键菜单'],['double','双击菜单']])}{segment('wheelAction','滚轮默认操作',[['pan','平移'],['zoom','缩放']])}
-            {segment('mentionNaming','@ 引用命名',[['name','名称'],['number','数字']])}{toggle('snapToGrid','拖拽吸附网格')}
-            {toggle('alignmentGuides','对齐辅助线')}{toggle('dragFocus','拖动节点获取焦点')}
+            {segment('mentionNaming','@ 引用命名',[['name','名称'],['number','数字']])}{toggle('snapToGrid','自动吸附','与底部图钉按钮同步，统一控制节点对齐与网格吸附。')}
+            {range('snapStrength','吸附强度','px',!values.snapToGrid)}{toggle('alignmentGuides','对齐辅助线')}
+            <p className="canvas-settings-note" style={{ gridColumn: '1 / -1' }}>吸附强度越小越轻柔，越大越容易吸住；按屏幕距离计算。关闭后完全自由拖动；开启时，网格仅在松手且接近时吸附。</p>
+            {toggle('dragFocus','拖动节点获取焦点')}
             {toggle('blurAfterSubmit','节点提交后取消焦点')}{toggle('compactZoom','极简模式缩放','缩放小于 35% 时以色块概览节点，选择节点可恢复详情。')}
             {toggle('linkedPreview','联动预览画布素材')}{toggle('hoverVideo','视频悬停自动播放')}
             {toggle('reuseLastGenerationParams','新节点沿用上次模型和参数','按文本、图片、视频、音频分别记忆上次选择，刷新后仍保留。关闭后使用默认配置。')}
