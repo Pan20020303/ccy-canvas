@@ -88,7 +88,10 @@ export function CanvasSettingsPanel({ onAdvanced }: { onAdvanced: () => void }) 
           </>)}
           {card('edges','连线设置', <div className="canvas-settings-grid">
             {range('edgeWidth','连线显示粗细')}{range('edgeHitWidth','连线焦点范围')}
-            {toggle('edgeHover','连线悬停高亮')}{toggle('edgeAnimation','开启连线动画')}{toggle('onlyFocusedEdges','仅显示焦点连线')}
+            {toggle('edgeHover','连线悬停高亮')}
+            {toggle('edgeSelectionHighlight','选中节点时高亮关联连线','选中节点的入线和出线会亮起；配合连线动画可显示从左向右流动的条纹。')}
+            {toggle('edgeAnimation','开启连线动画','让选中或生成中的连线显示从左向右流动的条纹；关闭后保留静态高亮。')}
+            {toggle('onlyFocusedEdges','仅显示焦点连线')}
           </div>)}
           {card('grid','网格与显示', <div className="canvas-settings-grid">
             {range('gridGap','网格线间距')}{range('gridDotSize','网格点大小')}

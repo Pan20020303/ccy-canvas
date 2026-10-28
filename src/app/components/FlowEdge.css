@@ -1,0 +1,12 @@
+.canvas-flow-edge-motion {
+  animation: canvas-edge-stripe-flow 1.4s linear infinite;
+}
+
+@keyframes canvas-edge-stripe-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: var(--edge-flow-offset, -48px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-flow-edge-motion { animation: none; }
+}

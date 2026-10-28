@@ -2561,7 +2561,7 @@ const BaseNode = ({
           className={clsx(
             // Borderless full-bleed media: the node IS the media, no outer frame.
             'canvas-node-shell relative overflow-hidden text-neutral-100 transition-shadow duration-150',
-            bare ? 'rounded-none' : 'rounded-[14px]',
+            bare ? 'rounded-none' : 'rounded-[8px]',
             toneStyles.shell,
             selected && toneStyles.selected,
             connectTarget && 'node-connect-target',
@@ -2594,7 +2594,7 @@ const BaseNode = ({
         <Handle
           type="target"
           position={Position.Left}
-          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
+          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[8px] !border-0 !bg-transparent !opacity-0"
           style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType !== 'target' ? 'auto' : 'none' }}
         />
         {/* 全卡 source 命中区:只在「从左+(target)拉出的反向线」拖动时激活,
@@ -2604,7 +2604,7 @@ const BaseNode = ({
           type="source"
           position={Position.Right}
           id="edge-source-full"
-          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[14px] !border-0 !bg-transparent !opacity-0"
+          className="!left-0 !top-0 !h-full !w-full !cursor-default !rounded-[8px] !border-0 !bg-transparent !opacity-0"
           style={{ transform: 'none', pointerEvents: isConnectionDragging && connectionDragType === 'target' ? 'auto' : 'none' }}
         />
         {/* Flush render anchors. A FINISHED wire is drawn to these — they sit

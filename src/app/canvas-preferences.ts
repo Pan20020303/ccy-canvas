@@ -56,7 +56,7 @@ export const DEFAULT_CANVAS_PREFERENCES = {
   snapToGrid: false, alignmentGuides: true, dragFocus: true, blurAfterSubmit: false, compactZoom: false, linkedPreview: true, hoverVideo: true,
   reuseLastGenerationParams: false,
   notifyCompleted: true, notifyFailed: true, notifyWhen: 'away' as 'away' | 'always', systemNotifications: false, sound: false, onlyOwn: true, soundStyle: 'clear',
-  edgeWidth: 2, edgeHitWidth: 12, edgeHover: true, edgeAnimation: true, onlyFocusedEdges: false,
+  edgeWidth: 2, edgeHitWidth: 12, edgeHover: true, edgeSelectionHighlight: true, edgeAnimation: true, onlyFocusedEdges: false,
   gridGap: 24, gridDotSize: 2, showGrid: true, ambientGlow: false, showMiniMap: false,
   horizontalGap: 150, verticalGap: 140, groupPadding: 80, groupLabelScale: 1, topToolbarScale: 1, bottomToolbarScale: 1, groupOccludesEdges: true,
   backgroundEnabled: false, backgroundNodeId: '', backgroundOpacity: 25, backgroundBlur: 8, backgroundMode: 'cover' as 'cover' | 'contain' | 'tile', backgroundTileSize: 100,

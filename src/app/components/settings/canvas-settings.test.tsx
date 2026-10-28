@@ -97,6 +97,20 @@ describe('validated, account-scoped settings', () => {
 });
 
 describe('reference panel controls', () => {
+  it('persists the selection highlight switch and animation switch independently for this account', async () => {
+    await render(<CanvasSettingsPanel onAdvanced={() => {}} />);
+    expect(button('选中节点时高亮关联连线').getAttribute('aria-checked')).toBe('true');
+    await click('选中节点时高亮关联连线');
+    expect(useCanvasPreferences.getState().values).toMatchObject({ edgeSelectionHighlight: false, edgeAnimation: true });
+    await act(async () => bindCanvasPreferences('another-account'));
+    expect(useCanvasPreferences.getState().values.edgeSelectionHighlight).toBe(true);
+    await act(async () => bindCanvasPreferences('settings-test'));
+    expect(useCanvasPreferences.getState().values.edgeSelectionHighlight).toBe(false);
+    await click('开启连线动画');
+    expect(useCanvasPreferences.getState().values.edgeAnimation).toBe(false);
+    await click('恢复默认');
+    expect(useCanvasPreferences.getState().values).toMatchObject({ edgeSelectionHighlight: true, edgeAnimation: true });
+  });
   it('has nine sections, real switches and sliders without changing canvas content', async () => {
     const nodes = [node('real')]; useStore.setState({ nodes });
     await render(<CanvasSettingsPanel onAdvanced={() => {}} />);
@@ -168,8 +182,8 @@ describe('real layout and edge consumers', () => {
     expect(document.querySelector<SVGPathElement>('.react-flow__edge-path')?.style.strokeWidth).toBe('4');
     expect(document.querySelector<SVGPathElement>('.react-flow__edge-path')?.style.stroke).toBe('rgb(255, 136, 0)');
     expect(document.querySelector('.react-flow__edge-interaction')?.getAttribute('stroke-width')).toBe('24');
-    expect(document.querySelector('animate')).toBeTruthy();
-    await act(async () => set('edgeAnimation', false)); expect(document.querySelector('animate')).toBeNull();
+    expect(document.querySelector('.canvas-flow-edge-motion')).toBeTruthy();
+    await act(async () => set('edgeAnimation', false)); expect(document.querySelector('.canvas-flow-edge-motion')).toBeNull();
     await act(async () => set('onlyFocusedEdges', true)); expect(document.querySelector('path')).toBeNull();
     await act(async () => useStore.setState({ nodes: [{ ...node('a'), selected: true }, node('b')] })); expect(document.querySelector('path')).toBeTruthy();
   });

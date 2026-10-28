@@ -1,19 +1,19 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react';
-import { memo, useId, useState } from 'react';
+import { memo, useId, useState, type CSSProperties } from 'react';
 import { X } from 'lucide-react';
 import { useStore } from '../store';
 import { canvasQueries } from '../canvas-selectors';
 import { selectedEdgeColor, useCanvasPreferences } from '../canvas-preferences';
+import './FlowEdge.css';
 
 const EMPTY_GROUPS: never[] = [];
 
 /** Unified canvas edge.
  *  - Default: a single faint white bezier line, no arrowhead — matches the
  *    "暗夜灰" neowow aesthetic.
- *  - Linked: when either endpoint node is SELECTED, the wire brightens a
- *    touch so a node's connections read at a glance.
- *  - Active: when either endpoint node is running/generating, a white dashed
- *    overlay flows along the curve so you can spot the live wire at a glance.
+ *  - Linked: selected nodes highlight their incoming and outgoing wires.
+ *  - Motion: wave-like stripe packets travel left-to-right along selected or
+ *    generating wires. Both selection effects and motion have settings.
  *  - Selected: brightest, plus a ✕ button at the midpoint to delete the
  *    connection (edges also die with Backspace/Delete). */
 export const FlowEdge = memo(function FlowEdge({
@@ -64,7 +64,15 @@ export const FlowEdge = memo(function FlowEdge({
   const baseStroke = preferences.edgeColorId === 'default'
     ? (light ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.38)')
     : selectedEdgeColor(preferences);
-  const emphasized = selected || linkedToSelection || (hovered && preferences.edgeHover);
+  const selectionFocused = preferences.edgeSelectionHighlight && linkedToSelection;
+  const highlighted = Boolean(selected || selectionFocused);
+  const emphasized = highlighted || (hovered && preferences.edgeHover);
+  const focusedStroke = preferences.edgeColorId === 'default' ? (light ? '#0284c7' : '#38bdf8') : selectedEdgeColor(preferences);
+  const stroke = highlighted ? focusedStroke : baseStroke;
+  const animated = preferences.edgeAnimation && (active || highlighted);
+  // The Bezier can be stored in either direction. Screen-space motion always
+  // travels left to right, including an incoming edge whose source is on the right.
+  const flowOffset = targetX >= sourceX ? '-48px' : '48px';
   // Occlude unrelated wires passing behind a group, preserving the group's
   // own inbound/outbound/internal connections so the graph stays readable.
   const maskPadding = Math.max(Math.abs(targetX-sourceX), Math.abs(targetY-sourceY)) / 2 + 100;
@@ -88,30 +96,31 @@ export const FlowEdge = memo(function FlowEdge({
     <>
       {occluders.length > 0 && <defs><mask id={maskId} maskUnits="userSpaceOnUse" {...maskBounds}><rect {...maskBounds} fill="white" />{occluders.map(g => <rect key={g.id} x={g.position!.x} y={g.position!.y} width={g.width} height={g.height} fill="black" />)}</mask></defs>}
       <g onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)} mask={occluders.length ? `url(#${maskId})` : undefined}>
+      {highlighted && <path className="canvas-flow-edge-glow" d={edgePath} fill="none" stroke={stroke} strokeWidth={preferences.edgeWidth + 6} strokeOpacity={light ? .1 : .14} pointerEvents="none" />}
       <BaseEdge
         id={`${id}-base`}
         path={edgePath}
         interactionWidth={preferences.edgeHitWidth}
         style={{
-          stroke: baseStroke,
-          strokeWidth: preferences.edgeWidth,
-          strokeOpacity: emphasized ? .9 : .38,
+          stroke,
+          strokeWidth: preferences.edgeWidth + (highlighted ? .5 : 0),
+          strokeOpacity: highlighted ? 1 : emphasized ? .9 : .38,
           fill: 'none',
-          transition: 'stroke 0.15s ease',
+          transition: 'stroke 0.15s ease, stroke-opacity 0.15s ease, stroke-width 0.15s ease',
         }}
       />
-      {active && preferences.edgeAnimation ? (
+      {animated ? (
         <path
+          className="canvas-flow-edge-motion"
           d={edgePath}
           fill="none"
-          stroke={baseStroke}
-          strokeWidth={preferences.edgeWidth}
+          stroke={highlighted ? (light ? focusedStroke : '#c8f1ff') : baseStroke}
+          strokeWidth={preferences.edgeWidth + .5}
           pointerEvents="none"
           strokeLinecap="round"
-          strokeDasharray="6 10"
-        >
-          <animate attributeName="stroke-dashoffset" from="0" to="-16" dur="0.8s" repeatCount="indefinite" />
-        </path>
+          strokeDasharray="2 4 6 4 12 20"
+          style={{ '--edge-flow-offset': flowOffset } as CSSProperties}
+        />
       ) : null}
       </g>
       {selected && !readOnly ? (
