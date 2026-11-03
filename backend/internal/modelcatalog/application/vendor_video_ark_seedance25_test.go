@@ -72,7 +72,7 @@ func TestGenerateVideoArkSeedance25ReferenceContract(t *testing.T) {
 		t.Fatalf("result=%+v, polls=%d", result, polls)
 	}
 	for key, want := range map[string]any{
-		"model": req.Model, "ratio": "16:9", "duration": float64(15), "resolution": "1080p",
+		"model": req.Model, "ratio": "adaptive", "duration": float64(-1), "resolution": "1080p",
 		"generate_audio": true, "omni_reference_task_type": "reference", "output_format": "mov", "watermark": false,
 	} {
 		if submitted[key] != want {

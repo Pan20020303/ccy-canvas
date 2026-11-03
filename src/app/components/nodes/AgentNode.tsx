@@ -29,6 +29,7 @@ export function AgentNode({ id, data, selected }: any) {
   const updateNodeData = useStore((s) => s.updateNodeData);
   const nodes = useStore((s) => s.nodes);
   const edges = useStore((s) => s.edges);
+  const projectId = useStore((s) => s.activeBackendProjectId || s.activeProjectId);
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -38,6 +39,8 @@ export function AgentNode({ id, data, selected }: any) {
   const [conversationHistory, setConversationHistory] = useState<AgentConversationTurn[]>([]);
   const [loadedHistoryAgentId, setLoadedHistoryAgentId] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const currentProjectIdRef = useRef(projectId);
+  currentProjectIdRef.current = projectId;
   // patch 应用规则与线上面板共用一份实现（见 canvas-patch-apply.ts）。
   const patchApplier = useRef(
     createCanvasPatchApplier({
@@ -74,16 +77,25 @@ export function AgentNode({ id, data, selected }: any) {
   const boundSkills = selectedAgent ? getBoundSlashSkills(selectedAgent, skills) : [];
 
   useEffect(() => {
-    if (!agentId || loadedHistoryAgentId === agentId) {
+    if (!agentId || loadedHistoryAgentId === `${projectId}:${agentId}`) {
       return;
     }
-    void listAgentConversationHistory(agentId, HISTORY_LIMIT)
+    let cancelled = false;
+    setConversationHistory([]);
+    void listAgentConversationHistory(agentId, projectId, HISTORY_LIMIT)
       .then((items) => {
+        if (cancelled) return;
         setConversationHistory(conversationTurnsFromHistoryItems(items));
-        setLoadedHistoryAgentId(agentId);
+        setLoadedHistoryAgentId(`${projectId}:${agentId}`);
       })
       .catch(() => {});
-  }, [agentId, loadedHistoryAgentId]);
+    return () => { cancelled = true; };
+  }, [agentId, loadedHistoryAgentId, projectId]);
+
+  useEffect(() => () => {
+    abortRef.current?.();
+    abortRef.current = null;
+  }, [projectId]);
 
   const start = async () => {
     if (!agentId || !goal.trim() || running || !selectedAgent) {
@@ -96,17 +108,19 @@ export function AgentNode({ id, data, selected }: any) {
     setEvents([]);
     setRunning(true);
     patchApplier.reset(useStore.getState().canvasRevision);
-    abortRef.current = await runAgent(
+    const stopRun = await runAgent(
       agentId,
       {
         message: outbound.message,
         nodes: nodes as unknown[],
         edges: edges as unknown[],
         groups: useStore.getState().groups as unknown[],
+        project_id: projectId,
         canvas_revision: useStore.getState().canvasRevision,
         history: conversationHistory,
       },
       (event) => {
+        if (currentProjectIdRef.current !== projectId) return;
         setEvents((prev) => [...prev, event]);
         if (event.type === "message") {
           setConversationHistory((prev) => completeAgentConversationTurn(prev, rawGoal, event.data.content, HISTORY_LIMIT));
@@ -126,6 +140,11 @@ export function AgentNode({ id, data, selected }: any) {
         }
       },
     );
+    if (currentProjectIdRef.current !== projectId) {
+      stopRun();
+      return;
+    }
+    abortRef.current = stopRun;
   };
 
   const stop = () => {

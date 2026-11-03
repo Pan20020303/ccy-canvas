@@ -1,15 +1,12 @@
 package application
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"os"
 	"strings"
-	"time"
 )
 
 // analyze_image:让 agent 真正"看"画布上的图片。
@@ -34,8 +31,8 @@ type analyzeImageTool struct {
 	model     string
 }
 
-// BuildAnalyzeImageTool 构造看图工具。endpoints/model 指向一个视觉模型
-// (前端 pickVisionModel 挑选后经 run 请求体传入,handler 解析出端点)。
+// BuildAnalyzeImageTool keeps analysis on the user's selected model and its
+// same resolved endpoint; it never chooses or delegates to another model.
 func BuildAnalyzeImageTool(state *CanvasState, llm *LLMClient, endpoints []Endpoint, model string) Tool {
 	return &analyzeImageTool{state: state, llm: llm, endpoints: endpoints, model: model}
 }
@@ -46,7 +43,7 @@ func (t *analyzeImageTool) Description() string {
 		"传画布节点 node_id(自动取其图片)或直接传 image_url;question 写明你想了解什么(不写则输出通用画面分析)。"
 }
 func (t *analyzeImageTool) Parameters() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string","description":"画布图片节点 id(优先)"},"image_url":{"type":"string","description":"图片 URL(没有 node_id 时用)"},"question":{"type":"string","description":"想了解的问题,如:反推这张图的生成提示词"}},"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"node_id":{"type":"string","description":"画布图片节点 id(优先)"},"image_url":{"type":"string","description":"图片 URL(没有 node_id 时用)"},"question":{"type":"string","maxLength":4000,"description":"想了解的问题,如:反推这张图的生成提示词"}},"additionalProperties":false}`)
 }
 
 func (t *analyzeImageTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
@@ -55,8 +52,16 @@ func (t *analyzeImageTool) Execute(ctx context.Context, args json.RawMessage) (s
 		ImageURL string `json:"image_url"`
 		Question string `json:"question"`
 	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", err
+	decoder := json.NewDecoder(bytes.NewReader(args))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&p); err != nil {
+		return "", fmt.Errorf("图片分析参数格式无效")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return "", fmt.Errorf("图片分析参数只能包含一个对象")
+	}
+	if len([]rune(p.Question)) > 4000 {
+		return "", fmt.Errorf("图片分析问题请控制在 4000 字以内")
 	}
 
 	imageURL := strings.TrimSpace(p.ImageURL)
@@ -91,8 +96,11 @@ func (t *analyzeImageTool) Execute(ctx context.Context, args json.RawMessage) (s
 
 // imageURLFromNode 从画布节点数据里按字段优先级取图片 URL。
 func (t *analyzeImageTool) imageURLFromNode(nodeID string) (string, error) {
-	t.state.mu.Lock()
-	defer t.state.mu.Unlock()
+	if t.state == nil {
+		return "", fmt.Errorf("当前没有可读取的画布")
+	}
+	t.state.mu.RLock()
+	defer t.state.mu.RUnlock()
 	for _, n := range t.state.Nodes {
 		if n.ID != nodeID {
 			continue
@@ -110,73 +118,5 @@ func (t *analyzeImageTool) imageURLFromNode(nodeID string) (string, error) {
 		}
 		return "", fmt.Errorf("节点 %s 上没有找到图片(检查了 %s)", nodeID, strings.Join(imageFieldPriority, "/"))
 	}
-	return "", fmt.Errorf("node not found: %s", nodeID)
-}
-
-// fetchImageAsDataURL 下载图片并转成 data URL。相对路径(/uploads/..)拼本机
-// 服务地址;已是 data: 的原样返回。
-func fetchImageAsDataURL(ctx context.Context, rawURL string) (string, error) {
-	if strings.HasPrefix(rawURL, "data:") {
-		return rawURL, nil
-	}
-	url := rawURL
-	if strings.HasPrefix(url, "/") {
-		url = localServerBase() + url
-	}
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return "", fmt.Errorf("不支持的图片地址: %s", rawURL)
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("HTTP %d fetching image", resp.StatusCode)
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, visionImageMaxBytes+1))
-	if err != nil {
-		return "", err
-	}
-	if len(raw) > visionImageMaxBytes {
-		return "", fmt.Errorf("图片超过 %dMB,视觉模型无法接收", visionImageMaxBytes/1024/1024)
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(contentType, "image/") {
-		contentType = sniffImageContentType(raw)
-		if contentType == "" {
-			return "", fmt.Errorf("目标不是图片(Content-Type: %s)", resp.Header.Get("Content-Type"))
-		}
-	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
-}
-
-// sniffImageContentType 用魔数兜底识别常见图片格式(网关 Content-Type 缺失时)。
-func sniffImageContentType(b []byte) string {
-	ct := http.DetectContentType(b)
-	if strings.HasPrefix(ct, "image/") {
-		return ct
-	}
-	return ""
-}
-
-// localServerBase 返回本服务对自己可达的地址(相对 /uploads 路径用)。
-func localServerBase() string {
-	if v := strings.TrimSpace(os.Getenv("PUBLIC_API_BASE")); v != "" {
-		return strings.TrimRight(v, "/")
-	}
-	port := strings.TrimSpace(os.Getenv("PORT"))
-	if port == "" {
-		port = "9090"
-	}
-	return "http://127.0.0.1:" + port
+	return "", fmt.Errorf("未找到指定的图片节点")
 }

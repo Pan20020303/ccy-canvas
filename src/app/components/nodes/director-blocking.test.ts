@@ -63,6 +63,12 @@ describe('pickVisionModel', () => {
   it('忽略非 text 通道;无候选 → null', () => {
     expect(pickVisionModel([cfg(['qwen3.7-plus'], 'image'), cfg(['deepseek-chat'])])).toBeNull();
   });
+  it('识别 DeepSeek Flash 视觉模型，但不把 Pro 判为视觉模型', () => {
+    expect(pickVisionModel([cfg(['deepseek-flash'])])).toBe('deepseek-flash');
+    expect(pickVisionModel([cfg(['deepseek-v4-flash'])])).toBe('deepseek-v4-flash');
+    expect(pickVisionModel([cfg(['deepseek-v4-flash-vision-exp'])])).toBe('deepseek-v4-flash-vision-exp');
+    expect(pickVisionModel([cfg(['deepseek-v4-pro-vision-exp'])])).toBeNull();
+  });
 });
 
 describe('buildBlockingPrompt', () => {

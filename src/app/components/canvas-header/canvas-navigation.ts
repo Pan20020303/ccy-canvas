@@ -42,8 +42,8 @@ export async function switchHeaderProject(id: string, remote: boolean) {
   await prepareCanvasNavigation();
   if (!remote) { useStore.getState().switchProject(id); return; }
   const saved = useStore.getState();
-  await saved.switchBackendProject(id);
-  if (!useStore.getState().canvasHydrated) {
+  const switched = await saved.switchBackendProject(id);
+  if (switched === false || !useStore.getState().canvasHydrated) {
     const latest = useStore.getState();
     const restored = latest.projectStateById[saved.activeProjectId] ?? saved;
     useStore.setState({

@@ -325,6 +325,9 @@ export function getEndpointPreview(
   const isRelayBases = baseURL.toLowerCase().includes("relaybases");
 
   if (serviceType === "image") {
+    if (profile === "custom" && customQuery) {
+      return `提交 ${customSubmit || "/images/generations"} · 查询 ${customQuery}`;
+    }
     const gen =
       profile === "custom" && customSubmit
         ? customSubmit
@@ -1061,6 +1064,29 @@ export const VENDOR_TEMPLATES: Record<ServiceType, VendorTemplate[]> = {
     },
   ],
   image: [
+    {
+      vendor: "HopBase",
+      label: "HopBase · Midjourney V8.2（每次固定 4 张）",
+      baseURL: "https://api.hop-base.com",
+      apiSpec: "custom",
+      protocol: "native",
+      models: ["midjourney-v8-2"],
+      submitEndpoint: "/v1/images/generations",
+      queryEndpoint: "/v1/video/tasks/{taskId}",
+      iconKey: "midjourney",
+      parameterSchema: {
+        allowed_parameters: ["model", "prompt", "images", "n"],
+        resolution_options: ["1K", "2K"],
+        aspect_ratio_options: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+        supports_resolution: true,
+        supports_aspect_ratio: true,
+        supports_auto_aspect: false,
+        supports_quality: false,
+        supports_output_format: false,
+        defaults: { n: 4, resolution: "1K", aspect_ratio: "1:1" },
+        vendor_models: [{ modelName: "midjourney-v8-2", name: "Midjourney V8.2", type: "image" }],
+      },
+    },
     {
       vendor: "ManjuAPI",
       label: "ManjuAPI / Chat 图片生成",

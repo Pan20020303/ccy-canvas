@@ -22,12 +22,8 @@ import (
 //
 // Mirrors the OpenAI Agents SDK without the multi-agent / handoff machinery.
 //
-// Strategy:
-//
-//	"reactive" — the default tool-calling loop above (LLM decides each step).
-//	"scripted" — same loop but prefaces with a one-shot "make a plan first"
-//	             turn that's emitted as a `thought` event, giving the user a
-//	             preview of intent before any tool runs.
+// Plans are optional tool calls for complex work, not an extra model request.
+// Legacy reactive/scripted strategies share this same intent-aware loop.
 type Runner struct {
 	LLM *LLMClient
 	// Endpoints is the upstream provider list that serves the model.
@@ -55,6 +51,7 @@ type RunInput struct {
 	Strategy     string // "reactive" (default) or "scripted"
 	// Thinking 深度思考开关(nil=按模型默认)。透传到 LLM 请求的思考控制字段。
 	Thinking        *bool
+	ReasoningEffort string
 	Temperature     *float64
 	MaxOutputTokens int32
 }
@@ -73,6 +70,7 @@ type RunStats struct {
 	// handler 把它持久化为 role="tool_log" 会话消息,下一轮注入 system prompt,
 	// 让后续轮次"记得"之前执行过什么 —— 跨轮工具历史(长任务连续性)。
 	ToolTranscript []ToolTranscriptEntry
+	PublicProgress *TaskProgressSnapshot
 }
 
 // ToolTranscriptEntry 单条工具执行摘要。
@@ -84,8 +82,8 @@ type ToolTranscriptEntry struct {
 }
 
 // Run executes the agent loop, streaming events via emit.
-func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (RunStats, error) {
-	stats := RunStats{}
+func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (stats RunStats, runErr error) {
+	ctx = withVisionOptions(ctx, in.Thinking, in.ReasoningEffort)
 	max := r.MaxSteps
 	if max == 0 {
 		max = 24
@@ -100,9 +98,51 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	}
 
 	systemPrompt := in.SystemPrompt
-	if in.Strategy == "scripted" {
-		systemPrompt += "\n\nBefore taking any action, briefly describe your plan in 2-3 sentences. Then execute it with tool calls."
+	plan := progressTool(in.Tools)
+	if plan != nil {
+		systemPrompt += "\n\n" + AgentTaskProgressGuide
 	}
+	// Finish public plan state before the final message is persisted by the
+	// browser, and before done/error causes direct SSE readers to disconnect.
+	publicEmit := emit
+	var terminalEvent string
+	var terminalData, finalMessage any
+	emit = func(event string, data any) {
+		if event == EventMessage {
+			finalMessage = data
+			return
+		}
+		if event == EventDone || event == EventError {
+			terminalEvent, terminalData = event, data
+			return
+		}
+		publicEmit(event, data)
+	}
+	var latestProgress *TaskProgress
+	defer func() {
+		if plan != nil {
+			plan.finish(runErr != nil)
+			if plan.generationWait != "" {
+				waiting := TaskProgress{ID: "generation-wait", Phase: "generation", Label: plan.generationWait, Status: "waiting"}
+				emit(EventProgress, waiting)
+				latestProgress = &waiting
+			}
+		}
+		if latestProgress != nil || (plan != nil && len(plan.plan.Steps) > 0) {
+			stats.PublicProgress = &TaskProgressSnapshot{Progress: latestProgress}
+			if plan != nil && len(plan.plan.Steps) > 0 {
+				snapshot := plan.plan
+				snapshot.Steps = append([]TaskPlanStep(nil), snapshot.Steps...)
+				stats.PublicProgress.Plan = &snapshot
+			}
+		}
+		if finalMessage != nil {
+			publicEmit(EventMessage, finalMessage)
+		}
+		if terminalEvent != "" {
+			publicEmit(terminalEvent, terminalData)
+		}
+	}()
 
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
@@ -114,11 +154,15 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 	phantomRetried := false
 	executeToolCall := func(tc ToolCall) (string, error) {
 		stats.ToolCalls++
-		emit(EventToolCall, map[string]any{
-			"id":        tc.ID,
-			"name":      tc.Function.Name,
-			"arguments": tc.Function.Arguments,
-		})
+		isPlan := tc.Function.Name == "update_plan"
+		if !isPlan {
+			emit(EventProgress, publicToolProgress(tc, "", nil, false))
+			emit(EventToolCall, map[string]any{
+				"id":        tc.ID,
+				"name":      tc.Function.Name,
+				"arguments": tc.Function.Arguments,
+			})
+		}
 
 		tool := findTool(in.Tools, tc.Function.Name)
 		var (
@@ -142,13 +186,21 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			emitResult["ok"] = true
 			emitResult["result"] = result
 		}
-		emit(EventToolResult, emitResult)
-		stats.ToolTranscript = append(stats.ToolTranscript, ToolTranscriptEntry{
-			Name:   tc.Function.Name,
-			Args:   truncateForTranscript(tc.Function.Arguments, 200),
-			OK:     toolErr == nil,
-			Result: truncateForTranscript(result, 300),
-		})
+		if !isPlan {
+			emit(EventToolResult, emitResult)
+			progress := publicToolProgress(tc, result, toolErr, true)
+			emit(EventProgress, progress)
+			latestProgress = &progress
+			if plan != nil && progress.Status == "waiting" && (tc.Function.Name == "run_node" || tc.Function.Name == "create_generation_batch") {
+				plan.generationWait = progress.Label
+			}
+			stats.ToolTranscript = append(stats.ToolTranscript, ToolTranscriptEntry{
+				Name:   tc.Function.Name,
+				Args:   truncateForTranscript(tc.Function.Arguments, 200),
+				OK:     toolErr == nil,
+				Result: truncateForTranscript(result, 300),
+			})
+		}
 		return result, toolErr
 	}
 
@@ -177,14 +229,10 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 				streamedAnyText = true
 				emit("message_delta", map[string]string{"delta": delta})
 			},
-			// 思考流:reasoning token 实时推给前端(思考块流式增长 + 读秒)。
-			OnReasoning: func(delta string) {
-				if delta == "" {
-					return
-				}
-				emit(EventThoughtDelta, map[string]string{"delta": delta})
-			},
+			// Reasoning stays internal; public progress comes from validated
+			// plans and real tool events, never model reasoning tokens.
 			Thinking:        in.Thinking,
+			ReasoningEffort: in.ReasoningEffort,
 			Temperature:     in.Temperature,
 			MaxOutputTokens: in.MaxOutputTokens,
 		}, r.Health)
@@ -215,11 +263,9 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			if !phantomRetried && hasCanvasWriteTool(in.Tools) &&
 				claimsCanvasWrite(resp.Content) && !didCanvasWrite(stats.ToolTranscript) {
 				phantomRetried = true
-				emit(EventThought, map[string]string{
-					"content": "校验:回复声称已修改画布,但未调用任何画布工具 —— 已要求真实执行。",
-				})
+				emit(EventProgress, TaskProgress{ID: "verify", Phase: "verification", Label: "正在核对画布操作是否实际完成", Status: "running"})
 				messages = append(messages,
-					ChatMessage{Role: "assistant", Content: resp.Content},
+					ChatMessage{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent},
 					ChatMessage{Role: "user", Content: "(系统校验)你刚才声称已在画布上创建/修改了内容,但你没有调用任何画布工具,画布实际没有任何变化。请立即用工具真实执行(创建节点用 create_node 并把完整内容放进 data.content;需要连线用 connect_nodes),完成后再简短汇报。绝不要再声称已完成未真实执行的操作。"},
 				)
 				continue
@@ -236,15 +282,6 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 			return stats, nil
 		}
 
-		// Tool calls coming next. If the model also wrote some narrative text
-		// before requesting tools, surface it as a `thought` so the user sees
-		// the rationale. The streamed deltas have already painted it into the
-		// UI as a partial assistant bubble; emitting `thought` is for the
-		// timeline view.
-		if resp.Content != "" {
-			emit(EventThought, map[string]string{"content": resp.Content})
-		}
-
 		// Clarifying questions are a hard execution boundary. A model may emit
 		// several ask_user calls in one response; the UI presents them as one
 		// paged questionnaire. No other tool may run until the answers arrive in
@@ -252,9 +289,10 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		askCalls := toolCallsNamed(resp.ToolCalls, "ask_user")
 		if len(askCalls) > 0 {
 			messages = append(messages, ChatMessage{
-				Role:      "assistant",
-				Content:   resp.Content,
-				ToolCalls: askCalls,
+				Role:             "assistant",
+				Content:          resp.Content,
+				ReasoningContent: resp.ReasoningContent,
+				ToolCalls:        askCalls,
 			})
 
 			questions := make([]string, 0, len(askCalls))
@@ -284,9 +322,10 @@ func (r *Runner) Run(ctx context.Context, in RunInput, emit func(string, any)) (
 		}
 
 		messages = append(messages, ChatMessage{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          resp.Content,
+			ReasoningContent: resp.ReasoningContent,
+			ToolCalls:        resp.ToolCalls,
 		})
 
 		for _, tc := range resp.ToolCalls {
@@ -473,7 +512,16 @@ func BuildToolHistoryPrompt(logs []string, maxLogs int) string {
 	if maxLogs > 0 && len(logs) > maxLogs {
 		logs = logs[len(logs)-maxLogs:]
 	}
-	joined := strings.Join(logs, "\n---\n")
+	contextLogs := make([]string, 0, len(logs))
+	for _, log := range logs {
+		if cleaned := stripPublicProgressLog(log); cleaned != "" {
+			contextLogs = append(contextLogs, cleaned)
+		}
+	}
+	if len(contextLogs) == 0 {
+		return ""
+	}
+	joined := strings.Join(contextLogs, "\n---\n")
 	joined = truncateForTranscript(joined, 4000)
 	return "【最近工具执行记录】\n以下是你在本会话之前轮次里实际执行过的工具及结果(✓成功/✕失败),延续任务时不要重复已完成的操作:\n" + joined
 }

@@ -57,3 +57,11 @@ it('handles HappyHorse text-only, English, over-limit warnings and unknown capab
   expect(render(klein, { ...empty, images: 5 }, 'image', false)).toContain('Images: at most 4; currently 5');
   expect(render(resolveReferenceLimits({}))).toBe('');
 });
+
+it('can hide capacity labels without reserving space while retaining over-limit warnings', () => {
+  const limits = resolveReferenceLimits({ mode: 'first-frame' });
+  expect(renderToStaticMarkup(<ReferenceLimitsBar limits={limits} counts={empty} serviceType="video" zh hideCapacity />)).toBe('');
+  const warning = renderToStaticMarkup(<ReferenceLimitsBar limits={limits} counts={{ ...empty, images: 2 }} serviceType="video" zh hideCapacity />);
+  expect(warning).toContain('图片参考最多 1，当前 2');
+  expect(warning).not.toContain('图片 ≤ 1');
+});

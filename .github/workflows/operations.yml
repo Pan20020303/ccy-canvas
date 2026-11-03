@@ -1,0 +1,53 @@
+name: production-operations
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Production operation
+        type: choice
+        options: [status, rollback]
+        default: status
+      release:
+        description: Rollback to previous or a retained commit SHA
+        type: string
+        default: previous
+permissions:
+  contents: read
+concurrency:
+  group: canvas-production
+  cancel-in-progress: false
+jobs:
+  operation:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      OPERATION: ${{ inputs.action }}
+      RELEASE: ${{ inputs.release }}
+    steps:
+      - name: Configure restricted identity
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Run validated operation
+        run: |
+          case "$OPERATION" in
+            status) command=status ;;
+            rollback)
+              [[ "$RELEASE" == previous || "$RELEASE" =~ ^[0-9a-f]{40}$ ]]
+              command="rollback $RELEASE" ;;
+            *) exit 1 ;;
+          esac
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "$command" | tee operation.jsonl
+          cat operation.jsonl >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        run: rm -f ~/.ssh/id_ed25519

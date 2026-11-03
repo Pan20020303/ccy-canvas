@@ -61,6 +61,27 @@ describe("workspace project state", () => {
     toastWarningMock.mockReset();
   });
 
+  it("keeps canvas and agent node-pick modes active across multiple clicks until cancelled", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().addNode({ id: "pick-a", type: "imageNode", position: { x: 0, y: 0 }, data: { url: "a.png" } } as never);
+    useStore.getState().addNode({ id: "pick-b", type: "videoNode", position: { x: 200, y: 0 }, data: { url: "b.mp4" } } as never);
+
+    useStore.getState().startAgentNodePick();
+    useStore.getState().resolveAgentNodePick("pick-a");
+    expect(useStore.getState().agentNodePickActive).toBe(true);
+    expect(useStore.getState().agentPickedNode?.id).toBe("pick-a");
+    useStore.getState().clearAgentPickedNode();
+    useStore.getState().resolveAgentNodePick("pick-b");
+    expect(useStore.getState().agentNodePickActive).toBe(true);
+    expect(useStore.getState().agentPickedNode?.id).toBe("pick-b");
+
+    useStore.getState().startCanvasReferencePick("pick-b");
+    expect(useStore.getState().agentNodePickActive).toBe(false);
+    expect(useStore.getState().canvasReferencePickTargetId).toBe("pick-b");
+    useStore.getState().cancelCanvasReferencePick();
+    expect(useStore.getState().canvasReferencePickTargetId).toBeNull();
+  });
+
   it("rejects self-connections and exact duplicate edges", async () => {
     const { useStore } = await loadStore();
     const initialCount = useStore.getState().edges.length;
@@ -293,6 +314,41 @@ describe("workspace project state", () => {
     expect(state.groups.at(-1)?.position).toMatchObject({ x: 68, y: 8 });
     expect(state.nodes.find((node) => node.id === "group-image")?.position).toEqual({ x: 148, y: 124 });
     expect(state.nodes.find((node) => node.id === "group-text")?.position).toEqual({ x: 408, y: 224 });
+  });
+
+  it("keeps an empty group and its geometry when all members move out", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().createGroup(["1", "2"]);
+    const before = useStore.getState().groups.at(-1)!;
+
+    useStore.getState().setGroupMembers(before.id, []);
+    expect(useStore.getState().groups.at(-1)).toMatchObject({
+      id: before.id, nodeIds: [], position: before.position,
+      width: before.width, height: before.height,
+    });
+
+    useStore.getState().createProject("Another canvas");
+    useStore.getState().switchProject("p-default");
+    expect(useStore.getState().groups.at(-1)?.nodeIds).toEqual([]);
+  });
+
+  it("keeps an empty group after deleting its last nodes through either deletion path", async () => {
+    const { useStore } = await loadStore();
+    useStore.getState().createGroup(["1", "2"]);
+    const firstId = useStore.getState().groups.at(-1)!.id;
+    useStore.getState().deleteNodes(["1", "2"]);
+    expect(useStore.getState().groups.find((group) => group.id === firstId)?.nodeIds).toEqual([]);
+    useStore.getState().removeGroup(firstId);
+
+    useStore.getState().addNode({ id: "delete-a", type: "textNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().addNode({ id: "delete-b", type: "textNode", position: { x: 240, y: 0 }, data: {} } as never);
+    useStore.getState().createGroup(["delete-a", "delete-b"]);
+    const secondId = useStore.getState().groups.at(-1)!.id;
+    useStore.getState().onNodesChange([
+      { id: "delete-a", type: "remove" },
+      { id: "delete-b", type: "remove" },
+    ]);
+    expect(useStore.getState().groups.find((group) => group.id === secondId)?.nodeIds).toEqual([]);
   });
 
   it("undoes the last canvas mutation with ctrl-z semantics", async () => {
@@ -1647,6 +1703,203 @@ describe("workspace control bar state", () => {
       parameters: { steps: 8, sampler: "res_multistep", scheduler: "simple", lora: "none", lora_strength: 0.8 },
     });
     expect(JSON.parse(String(request![1].body)).parameters).not.toHaveProperty("output_format");
+  });
+
+  it("submits one four-image Midjourney task and stores every result in its source node", async () => {
+    const { useStore } = await loadStore();
+    const urls = [1, 2, 3, 4].map(index => `https://example.com/mj-${index}.png`);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: urls[0], content_list: urls, task_id: "mj-four" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "mj", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    useStore.getState().updateNodeGenerationParams("mj", {
+      model: "midjourney-v8-2", outputCount: 1, quality: "high", resolution: "2k",
+      aspectRatio: "auto", outputFormat: "webp", referenceVariant: "wan-group",
+    });
+    await useStore.getState().runNode("mj", { prompt: "a bookstore", model: "midjourney-v8-2" });
+    const requests = fetchMock.mock.calls.filter(([url]) => String(url).includes("/generate"));
+    expect(requests).toHaveLength(1);
+    const body = JSON.parse(String(requests[0][1].body));
+    expect(body).toMatchObject({ model: "midjourney-v8-2", output_count: 4, resolution: "2K", size: "1:1" });
+    for (const key of ["quality", "output_format", "parameters", "enable_sequential"]) expect(body).not.toHaveProperty(key);
+    const generated = useStore.getState().nodes.find(node => node.id === "mj")!;
+    expect(generated.data).toMatchObject({ url: urls[0], imageResults: urls, imageResultTaskId: "mj-four" });
+    expect(useStore.getState().nodes.filter(node => urls.includes(String(node.data.url)))).toHaveLength(1);
+  });
+
+  it("groups queued Midjourney results and keeps the selected primary through duplicate task delivery", async () => {
+    const { useStore } = await loadStore();
+    const { publishTaskUpdate } = await import("./task-events");
+    const urls = [1, 2, 3, 4].map(index => `/uploads/mj-recovered-${index}.png`);
+    useStore.getState().addNode({
+      id: "mj-recover", type: "imageNode", position: { x: 0, y: 0 },
+      data: { status: "running", taskId: "mj-recovery-task", generationParams: { model: "midjourney-v8-2", outputCount: 1 } },
+    } as never);
+    const task = {
+      id: "mj-recovery-task", node_id: "mj-recover", model: "midjourney-v8-2", service_type: "image",
+      status: "success", result_url: urls[0], result_urls: urls, error_msg: "", duration_ms: 1000,
+      created_at: new Date().toISOString(),
+    };
+    publishTaskUpdate(task);
+    useStore.getState().setNodePrimaryImage("mj-recover", urls[2]);
+    publishTaskUpdate(task);
+    // A single-URL notification must not shrink a previously delivered group.
+    publishTaskUpdate({ ...task, result_urls: undefined });
+    const generated = useStore.getState().nodes.find(node => node.id === "mj-recover")!;
+    expect(generated.data).toMatchObject({
+      imageResults: urls, imageResultTaskId: "mj-recovery-task", url: urls[2],
+      output: urls[2], originalUrl: urls[2], referenceValue: urls[2], status: "done",
+    });
+    expect(useStore.getState().nodes.filter(node => urls.includes(String(node.data.url)))).toHaveLength(1);
+    expect(generated.data.versions).toEqual([]);
+  });
+
+  it("keeps ordinary multi-image results together and resets the group for a new task", async () => {
+    const { useStore } = await loadStore();
+    const batches = [["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"], ["/uploads/new.png"]];
+    let submissions = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      if (String(input).includes("/api/app/generate")) {
+        const index = submissions++;
+        return new Response(JSON.stringify({ data: {
+          type: "url", content: batches[index][0], content_list: batches[index], task_id: `ordinary-${index}`,
+        } }), { headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ data: [] }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "ordinary-group", type: "imageNode", position: { x: 0, y: 0 }, data: { generationParams: { outputCount: 3 } } } as never);
+    const before = useStore.getState().nodes.length;
+    await useStore.getState().runNode("ordinary-group", { prompt: "three options", model: "gpt-image-2" });
+    expect(useStore.getState().nodes).toHaveLength(before);
+    expect(useStore.getState().nodes.find(node => node.id === "ordinary-group")?.data.imageResults).toEqual(batches[0]);
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/api/app/generate"));
+    expect(JSON.parse(String((request?.[1] as RequestInit)?.body)).output_count).toBe(3);
+    useStore.getState().setNodePrimaryImage("ordinary-group", batches[0][2]);
+    await useStore.getState().runNode("ordinary-group", { prompt: "new option", model: "gpt-image-2" });
+    expect(useStore.getState().nodes).toHaveLength(before);
+    expect(useStore.getState().nodes.find(node => node.id === "ordinary-group")?.data).toMatchObject({
+      imageResults: undefined, imageResultTaskId: undefined, url: batches[1][0], originalUrl: batches[1][0],
+    });
+  });
+
+  it("persists image groups and the selected primary through mirrors and reload", async () => {
+    const storage = createStorageMock();
+    const first = await loadStore(storage);
+    const { publishTaskUpdate } = await import("./task-events");
+    const urls = ["/uploads/group-a.png", "/uploads/group-b.png", "/uploads/group-c.png"];
+    first.useStore.getState().addNode({ id: "persist-group", type: "imageNode", position: { x: 0, y: 0 }, data: { status: "running", taskId: "persist-group-task" } } as never);
+    publishTaskUpdate({ id: "persist-group-task", node_id: "persist-group", service_type: "image", model: "gpt-image-2", status: "success", result_url: urls[0], result_urls: urls, error_msg: "", duration_ms: 10, created_at: new Date().toISOString() });
+    first.useStore.getState().setNodePrimaryImage("persist-group", urls[1]);
+    const state = first.useStore.getState();
+    expect(state.projectStateById[state.activeProjectId].nodes.find(node => node.id === "persist-group")?.data).toMatchObject({ imageResults: urls, url: urls[1] });
+    expect(state.spaceSnapshotsById[state.activeSpaceId].projectStateById[state.activeProjectId].nodes.find(node => node.id === "persist-group")?.data).toMatchObject({ imageResults: urls, url: urls[1] });
+    first.flushPendingPersist();
+    const second = await loadStore(storage);
+    expect(second.useStore.getState().nodes.find(node => node.id === "persist-group")?.data).toMatchObject({
+      imageResults: urls, imageResultTaskId: "persist-group-task", url: urls[1], output: urls[1], originalUrl: urls[1],
+    });
+  });
+
+  it("expands a group and its history only on request, with one undo step and clean copies", async () => {
+    const { useStore } = await loadStore();
+    const urls = [1, 2, 3, 4].map(index => `/uploads/group-${index}.png`);
+    useStore.getState().addNode({
+      id: "expand-group", type: "imageNode", position: { x: 100, y: 200 },
+      data: { url: urls[2], output: urls[2], imageResults: urls, imageResultTaskId: "expand-task", taskId: "expand-task", status: "done", runningStartedAt: 123, taskPhase: "complete", generationParams: { outputCount: 4 }, versions: [{ id: "old", url: "/uploads/old.png" }] },
+    } as never);
+    const initial = useStore.getState().nodes.length;
+    const undoBefore = useStore.getState().undoStack.length;
+    useStore.getState().addNodeImagesToCanvas("expand-group");
+    const copies = useStore.getState().nodes.filter(node => node.data.imageResultSourceNodeId === "expand-group");
+    expect(copies.map(node => node.data.url)).toEqual([...urls, "/uploads/old.png"]);
+    expect(copies.every(node => node.data.status === "done")).toBe(true);
+    for (const node of copies) {
+      for (const key of ["imageResults", "imageResultTaskId", "taskId", "taskPhase", "runningStartedAt", "generationParams", "versions"]) expect(node.data).not.toHaveProperty(key);
+    }
+    expect(useStore.getState().nodes).toHaveLength(initial + 5);
+    expect(useStore.getState().undoStack).toHaveLength(undoBefore + 1);
+    useStore.getState().addNodeImagesToCanvas("expand-group");
+    expect(useStore.getState().nodes).toHaveLength(initial + 5);
+    expect(useStore.getState().undoStack).toHaveLength(undoBefore + 1);
+    useStore.getState().undoCanvas();
+    expect(useStore.getState().nodes).toHaveLength(initial);
+    expect(useStore.getState().nodes.find(node => node.id === "expand-group")?.data.imageResults).toEqual(urls);
+    useStore.getState().redoCanvas();
+    expect(useStore.getState().nodes.filter(node => node.data.imageResultSourceNodeId === "expand-group").map(node => node.id)).toEqual(copies.map(node => node.id));
+  });
+
+  it("uses the chosen primary as the next node's reference instead of stale original or transient values", async () => {
+    const { useStore } = await loadStore();
+    const { setReferencePayloadValue } = await import("./reference-media");
+    const urls = ["https://example.com/first.png", "https://example.com/selected.png"];
+    useStore.getState().addNode({ id: "reference-group", type: "imageNode", position: { x: 0, y: 0 }, data: { url: urls[0], originalUrl: urls[0], referenceValue: urls[0], imageResults: urls, imageResultTaskId: "reference-task" } } as never);
+    useStore.getState().addNode({ id: "reference-consumer", type: "imageNode", position: { x: 500, y: 0 }, data: {} } as never);
+    useStore.getState().onConnect({ source: "reference-group", target: "reference-consumer", sourceHandle: null, targetHandle: null });
+    setReferencePayloadValue("reference-group", "https://example.com/stale.png");
+    useStore.getState().setNodePrimaryImage("reference-group", urls[1]);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+      data: String(input).includes("/api/app/generate") ? { type: "url", content: "/uploads/reference-result.png" } : [],
+    }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await useStore.getState().runNode("reference-consumer", { prompt: "edit chosen image", model: "gpt-image-2" });
+    const request = fetchMock.mock.calls.find(([url]) => String(url).includes("/api/app/generate"));
+    expect(JSON.parse(String(request?.[1]?.body)).reference_images).toEqual([urls[1]]);
+  });
+
+  it("upgrades every grouped URL and existing copies without changing the selected image", async () => {
+    const { useStore } = await loadStore();
+    const { publishTaskUpdate } = await import("./task-events");
+    const urls = [1, 2, 3].map(index => `https://media.example/result-${index}.png?token=old`);
+    let uploads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/app/proxy-media")) return new Response(new Blob(["image"], { type: "image/png" }));
+      if (String(input).includes("/api/app/upload")) {
+        uploads += 1;
+        return new Response(JSON.stringify({ data: { url: `/uploads/stable-${uploads}.png`, filename: "stable.png", content_type: "image/png" } }));
+      }
+      return new Response(JSON.stringify({ data: [] }));
+    }));
+    useStore.getState().addNode({ id: "upgrade-group", type: "imageNode", position: { x: 0, y: 0 }, data: { status: "running", taskId: "upgrade-task" } } as never);
+    const task = { id: "upgrade-task", node_id: "upgrade-group", service_type: "image", model: "gpt-image-2", status: "success", result_url: urls[0], result_urls: urls, error_msg: "", duration_ms: 10, created_at: new Date().toISOString() };
+    publishTaskUpdate(task);
+    useStore.getState().setNodePrimaryImage("upgrade-group", urls[1]);
+    useStore.getState().addNodeImagesToCanvas("upgrade-group");
+    await vi.waitFor(() => {
+      const data = useStore.getState().nodes.find(node => node.id === "upgrade-group")!.data;
+      expect((data.imageResults as string[]).every(url => url.startsWith("/uploads/"))).toBe(true);
+    });
+    const data = useStore.getState().nodes.find(node => node.id === "upgrade-group")!.data;
+    const stable = data.imageResults as string[];
+    expect(data).toMatchObject({ url: stable[1], originalUrl: stable[1], referenceValue: stable[1] });
+    expect(useStore.getState().nodes.filter(node => node.data.imageResultSourceNodeId === "upgrade-group").map(node => node.data.url)).toEqual(stable);
+    publishTaskUpdate(task); // late signed URLs cannot undo successful rehosting
+    expect(useStore.getState().nodes.find(node => node.id === "upgrade-group")!.data).toMatchObject({ imageResults: stable, url: stable[1] });
+  });
+
+  it.each([
+    { count: 0, prompt: "a bookstore", accepted: true },
+    { count: 1, prompt: "a bookstore", accepted: true },
+    { count: 2, prompt: "a bookstore", accepted: false },
+    { count: 1, prompt: "", accepted: false },
+    { count: 1, prompt: "--ar 16:9", accepted: false },
+  ])("validates Midjourney references and description: $count refs, '$prompt'", async ({ count, prompt, accepted }) => {
+    const { useStore } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, headers: new Headers({ "content-type": "application/json" }),
+      text: async () => JSON.stringify({ data: { type: "url", content: "https://example.com/mj.png" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    useStore.getState().addNode({ id: "mj-refs", type: "imageNode", position: { x: 0, y: 0 }, data: {} } as never);
+    const refs = Array.from({ length: count }, (_, index) => `/uploads/mj-reference-${index}.png`);
+    useStore.getState().updateNodeGenerationParams("mj-refs", { referenceImages: refs });
+    await useStore.getState().runNode("mj-refs", { prompt, model: "midjourney-v8-2" });
+    const requests = fetchMock.mock.calls.filter(([url]) => String(url).includes("/generate"));
+    expect(requests).toHaveLength(accepted ? 1 : 0);
+    if (accepted) expect(JSON.parse(String(requests[0][1].body)).reference_images ?? []).toEqual(refs);
+    else expect(useStore.getState().nodes.find(node => node.id === "mj-refs")?.data.status).toBe("error");
   });
 
   it.each(["flux2-klein-base-4b-local", "flux2-klein-base-9b-local", "krea2-turbo-local"])("sends model-specific parameters for %s", async (model) => {

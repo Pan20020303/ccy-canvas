@@ -1,0 +1,8 @@
+{
+  "backward_compatible": {
+    "053_login_sessions.sql": "e3f42df72ba67c5c612d655855f61261706e73faa3cbab4e0e7a2de57e2a1231",
+    "054_agent_conversations_project_scope.sql": "f7d676530a0a3ed73afdcf06800962d1c6d161c54b96e7ab4a8475010552873b",
+    "055_hopbase_minimax_h3.sql": "a47143a8cc6b7d2c557d0f9ad0680a9ffedc92f59542b9f847eee20f44ed2976",
+    "056_hopbase_midjourney_v82.sql": "7fd80b357b1bb3cead24dd1230b2bd1d8e8e19095e80b3de92a1fc904be29103"
+  }
+}

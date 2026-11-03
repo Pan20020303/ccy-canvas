@@ -65,7 +65,7 @@ func main() {
 	storageContext, stopStorageSync := context.WithCancel(ctx)
 	defer stopStorageSync()
 	go storageManager.Watch(storageContext)
-	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure)
+	sessionManager := session.NewManager(cfg.SessionSecret, cfg.CookieSecure).WithStore(session.NewPostgresStore(pool))
 	passwordService := password.NewService()
 
 	if report, err := skillsapp.EnsureCreatorSuiteSeeds(ctx, queries); err != nil {
@@ -200,9 +200,7 @@ func main() {
 		httpx.ApplyCORSHeaders(w, r, allowedOriginSet)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	router.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		httpx.WriteJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	router.Get("/api/health", readinessHandler(pool.Ping))
 
 	// File upload + static file serving.
 	workspacehttp.RegisterUploadRoutes(router, sessionManager)

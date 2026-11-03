@@ -57,6 +57,8 @@ export type ModelTemplate = {
   referenceRequirements?: Partial<Record<ReferenceModeKey, ReferenceRequirementOverride>>;
   /** Per-model image-reference bounds, narrowing the generic mode registry. */
   referenceImageRange?: { min: number; max: number };
+  /** One provider task always returns this many images; never split into runs. */
+  fixedOutputCount?: number;
   defaults?: {
     mode?: string;
     resolution?: string;
@@ -334,6 +336,16 @@ const APIMART_VIDEO_BASE = {
 } satisfies Omit<ModelTemplate, "vendor" | "modelName">;
 
 export const modelTemplates: Record<string, ModelTemplate> = {
+  // These DeepSeek aliases accept image_url input; do not infer Pro capabilities.
+  "deepseek-flash": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-flash", supportsVision: true,
+  },
+  "deepseek-v4-flash": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-v4-flash", supportsVision: true,
+  },
+  "deepseek-v4-flash-vision-exp": {
+    vendor: "DeepSeek", serviceType: "text", modelName: "deepseek-v4-flash-vision-exp", supportsVision: true,
+  },
   "gpt-4.1-mini": {
     vendor: "OpenAI",
     serviceType: "text",
@@ -1307,6 +1319,23 @@ export const modelTemplates: Record<string, ModelTemplate> = {
     vendor: "apimart",
     modelName: "z-image-turbo",
     ...APIMART_IMAGE_TEMPLATE,
+  },
+  // HopBase v8.2 returns four separately billed images in one asynchronous task.
+  // The backend maps ratio / resolution to --ar / --hd in the prompt.
+  "midjourney-v8-2": {
+    vendor: "Midjourney",
+    modelName: "midjourney-v8-2",
+    serviceType: "image",
+    supportsAspectRatio: true,
+    supportsAutoAspect: false,
+    supportsResolution: true,
+    supportsQuality: false,
+    supportsOutputFormat: false,
+    resolutionOptions: ["1K", "2K"],
+    aspectRatioOptions: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+    referenceImageRange: { min: 0, max: 1 },
+    fixedOutputCount: 4,
+    defaults: { resolution: "1K", aspectRatio: "1:1" },
   },
   // apimart Midjourney:走 /midjourney/generations，MJ 参数用 --ar(由比例映射)。
   // 无 apimart 分辨率档位；需显式比例(不给自适应)，默认 1:1。

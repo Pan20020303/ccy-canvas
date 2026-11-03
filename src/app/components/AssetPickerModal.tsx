@@ -56,10 +56,12 @@ export function AssetPickerModal({
   isOpen,
   onClose,
   onConfirm,
+  initialTab = 'history',
 }: {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (picked: PickedAsset[]) => void;
+  initialTab?: 'history' | 'library' | 'canvas';
 }) {
   const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
   const history = useStore((state) => state.history);
@@ -68,7 +70,7 @@ export function AssetPickerModal({
   const nodes = useStore((state) => state.nodes);
   const activeProjectId = useStore((state) => state.activeProjectId);
 
-  const [activeTab, setActiveTab] = useState<AssetTab>('history');
+  const [activeTab, setActiveTab] = useState<AssetTab>(initialTab);
   const [subFilter, setSubFilter] = useState<SubFilter>('current_canvas');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   // Grid cell size in px — controls `minmax(Npx, 1fr)`. Range matches the
@@ -80,13 +82,14 @@ export function AssetPickerModal({
   useEffect(() => {
     if (!isOpen) {
       setSelectedIds([]);
-      setActiveTab('history');
+      setActiveTab(initialTab);
       setSubFilter('current_canvas');
       setLibraryLoading(false);
       return;
     }
 
     let cancelled = false;
+    setActiveTab(initialTab);
     setLibraryLoading(true);
     Promise.resolve(hydrateAssets()).finally(() => {
       if (!cancelled) setLibraryLoading(false);
@@ -94,7 +97,7 @@ export function AssetPickerModal({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, hydrateAssets]);
+  }, [isOpen, hydrateAssets, initialTab]);
 
   /** Pull items from the active tab + sub-filter. Sources:
    *  - history: store.history, filtered by mediaType + projectId

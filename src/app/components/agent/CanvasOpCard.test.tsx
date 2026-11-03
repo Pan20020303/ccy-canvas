@@ -110,7 +110,11 @@ describe("buildAgentThreadMessages 注入画布 part", () => {
     const parts = runMessage.content as unknown as { type: string }[];
     const types = parts.map((part) => part.type);
     // 顺序：思考 → 工具 → 画布卡 → 工具（画布变更插在两次工具调用之间）
-    expect(types).toEqual(["reasoning", "tool-call", "data-canvas-op", "tool-call"]);
+    // Public task progress owns tool activity; canvas parts remain independent.
+    expect(types).toEqual(["data-canvas-op"]);
+    expect(runMessage.metadata?.custom?.progress).toMatchObject({
+      activities: [{ tool_name: "canvas_overview" }, { tool_name: "create_image_node" }],
+    });
 
     const canvasPart = parts.find((part) => part.type === "data-canvas-op") as unknown as CanvasOperationPart;
     expect(canvasPart.data).toMatchObject({ op: "add_node", revision: 1 });
@@ -144,7 +148,7 @@ describe("buildAgentThreadMessages 注入画布 part", () => {
       true,
       true,
     );
-    const parts = messages[messages.length - 1].content as unknown as { type: string }[];
+    const parts = messages.flatMap(message => typeof message.content === 'string' ? [] : [...message.content]) as unknown as { type: string }[];
     expect(parts.some((part) => part.type === "data-canvas-op")).toBe(false);
   });
 });

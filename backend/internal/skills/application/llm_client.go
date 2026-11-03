@@ -4,14 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccy-canvas/backend/internal/shared/apperror"
@@ -22,11 +25,12 @@ import (
 // already uses several — Niuma, Qwen, Doubao, etc.).
 
 type ChatMessage struct {
-	Role       string     `json:"role"` // "system" | "user" | "assistant" | "tool"
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // only for "assistant"
-	ToolCallID string     `json:"tool_call_id,omitempty"` // only for "tool"
-	Name       string     `json:"name,omitempty"`         // tool name for "tool" messages
+	Role             string     `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content          string     `json:"content,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`   // only for "assistant"
+	ToolCallID       string     `json:"tool_call_id,omitempty"` // only for "tool"
+	Name             string     `json:"name,omitempty"`         // tool name for "tool" messages
 }
 
 type ToolCall struct {
@@ -63,10 +67,11 @@ type Usage struct {
 
 // ChatResponse is the agent-relevant subset of the upstream response.
 type ChatResponse struct {
-	Content      string
-	ToolCalls    []ToolCall
-	FinishReason string
-	Usage        Usage
+	Content          string
+	ReasoningContent string
+	ToolCalls        []ToolCall
+	FinishReason     string
+	Usage            Usage
 }
 
 // StreamCallback is invoked for each text delta as it arrives on the wire.
@@ -87,6 +92,7 @@ type StreamOpts struct {
 	// Thinking 深度思考开关:nil=按模型默认;true/false=显式开/关。
 	// 仅对已知思考类模型下发控制字段(见 applyThinkingControl),不影响其它模型。
 	Thinking        *bool
+	ReasoningEffort string
 	Temperature     *float64
 	MaxOutputTokens int32
 }
@@ -111,12 +117,17 @@ func isThinkingCapableModel(model string) bool {
 		strings.Contains(m, "glm-4.5") || strings.Contains(m, "glm-4.6")
 }
 
-// applyThinkingControl 按开关与模型家族设置请求体的思考控制字段:
-//   - nil(未指定):保持既有行为 —— qwen3.7 hybrid 显式关(agent 工具循环不需要
-//     数分钟的 reasoning 空转),其它模型不动(deepseek 等默认自带思考)。
-//   - true:qwen3.7 显式开;其它思考类模型默认已开,不发字段。
-//   - false:所有思考类模型发 enable_thinking=false。
+// DeepSeek uses thinking.type; Qwen and compatible hybrid gateways use
+// enable_thinking. Never send provider-specific controls to unknown models.
 func applyThinkingControl(body map[string]any, model string, thinking *bool) {
+	if thinking != nil && strings.Contains(strings.ToLower(model), "deepseek") {
+		mode := "disabled"
+		if *thinking {
+			mode = "enabled"
+		}
+		body["thinking"] = map[string]string{"type": mode}
+		return
+	}
 	switch {
 	case thinking == nil:
 		if isQwenHybridThinkingModel(model) {
@@ -130,6 +141,21 @@ func applyThinkingControl(body map[string]any, model string, thinking *bool) {
 		if isThinkingCapableModel(model) {
 			body["enable_thinking"] = false
 		}
+	}
+}
+
+func applyReasoningEffort(body map[string]any, model string, opts StreamOpts) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if opts.Thinking != nil && !*opts.Thinking {
+		return
+	}
+	if !(m == "deepseek-flash" || m == "deepseek-pro" || strings.HasPrefix(m, "deepseek-flash-") || strings.HasPrefix(m, "deepseek-pro-") || strings.Contains(m, "deepseek-v4")) {
+		return
+	}
+	switch opts.ReasoningEffort {
+	case "low", "high", "max":
+		body["reasoning_effort"] = opts.ReasoningEffort
+		body["thinking"] = map[string]string{"type": "enabled"}
 	}
 }
 
@@ -193,6 +219,9 @@ func messagesWithObjectToolArgs(messages []ChatMessage) []any {
 			})
 		}
 		mm := map[string]any{"role": m.Role, "tool_calls": tcs}
+		if m.ReasoningContent != "" {
+			mm["reasoning_content"] = m.ReasoningContent
+		}
 		if m.Content != "" {
 			mm["content"] = m.Content
 		}
@@ -207,8 +236,19 @@ type LLMClient struct {
 
 func NewLLMClient() *LLMClient {
 	// Long timeout so streaming responses that take minutes don't get cut.
-	return &LLMClient{httpClient: &http.Client{Timeout: 10 * time.Minute}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// The default 10s TLS limit can expire well before the model request is
+	// sent. Keep this separate from the overall streaming deadline.
+	transport.TLSHandshakeTimeout = 30 * time.Second
+	return &LLMClient{httpClient: &http.Client{Timeout: 10 * time.Minute, Transport: transport}}
 }
+
+// Marks an observed TLS handshake failure before any HTTP connection was
+// handed to the request writer. Retrying cannot duplicate a model submission.
+type llmPreflightTimeout struct{ cause error }
+
+func (e *llmPreflightTimeout) Error() string { return e.cause.Error() }
+func (e *llmPreflightTimeout) Unwrap() error { return e.cause }
 
 // Chat is the non-streaming entrypoint kept for callers that don't care about
 // progressive output. Internally it just collects the stream and returns the
@@ -302,7 +342,24 @@ func (c *LLMClient) ChatStreamMultiOpts(
 		objectArgs := false
 		triedObjectArgs := false
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, opts, objectArgs)
+			if ctx.Err() != nil {
+				return nil, apperror.ProviderRequestFailure(ctx.Err())
+			}
+			emitted := false
+			attemptOpts := opts
+			attemptOpts.OnDelta = func(delta string) {
+				emitted = emitted || delta != ""
+				if opts.OnDelta != nil {
+					opts.OnDelta(delta)
+				}
+			}
+			attemptOpts.OnReasoning = func(delta string) {
+				emitted = emitted || delta != ""
+				if opts.OnReasoning != nil {
+					opts.OnReasoning(delta)
+				}
+			}
+			resp, err := c.doStream(ctx, ep.BaseURL, ep.APIKey, model, messages, tools, attemptOpts, objectArgs)
 			if err == nil {
 				if health != nil && ep.ProviderID != "" {
 					health.OnEndpointSuccess(ctx, ep.ProviderID)
@@ -317,6 +374,13 @@ func (c *LLMClient) ChatStreamMultiOpts(
 				lastErr = publicErr
 			}
 			endpointLastErr = err
+			// Never replay partial assistant text/reasoning or a cancelled run.
+			if emitted || ctx.Err() != nil {
+				if health != nil && ep.ProviderID != "" {
+					health.OnEndpointFailure(ctx, ep.ProviderID, providerErrorStatus(err), apperror.Diagnostic(err))
+				}
+				return nil, classifyLLMFailure(err, model)
+			}
 			// If the error isn't transient we don't bother retrying the same
 			// endpoint — but we DO continue to the next endpoint if available,
 			// because a 5xx / 401 / etc. from one provider doesn't tell us
@@ -375,6 +439,7 @@ func (c *LLMClient) doStream(
 	// 严格按模型名 gate,不影响非思考类模型 —— 与 modelcatalog.applyQwenThinkingDefaults
 	// 同规则(包间不互相 import,故此处内联)。
 	applyThinkingControl(body, model, opts.Thinking)
+	applyReasoningEffort(body, model, opts)
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
@@ -395,8 +460,22 @@ func (c *LLMClient) doStream(
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
+	var handshakeTimedOut, gotConnection atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { gotConnection.Store(true) },
+		TLSHandshakeDone: func(_ tls.ConnectionState, handshakeErr error) {
+			var timeout interface{ Timeout() bool }
+			if errors.As(handshakeErr, &timeout) && timeout.Timeout() {
+				handshakeTimedOut.Store(true)
+			}
+		},
+	}))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if ctx.Err() == nil && handshakeTimedOut.Load() && !gotConnection.Load() {
+			return nil, apperror.Wrap(apperror.CodeTimeout,
+				"连接模型服务超时（安全连接未建立），本轮模型请求尚未发送；请稍后重试", &llmPreflightTimeout{cause: err})
+		}
 		return nil, apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
@@ -514,10 +593,11 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	var (
-		contentBuilder strings.Builder
-		toolCalls      []ToolCall
-		finishReason   string
-		usage          Usage
+		contentBuilder   strings.Builder
+		reasoningBuilder strings.Builder
+		toolCalls        []ToolCall
+		finishReason     string
+		usage            Usage
 	)
 
 	for scanner.Scan() {
@@ -583,8 +663,11 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		}
 		choice := chunk.Choices[0]
 
-		if rDelta := choice.Delta.ReasoningContent + choice.Delta.Reasoning; rDelta != "" && opts.OnReasoning != nil {
-			opts.OnReasoning(rDelta)
+		if rDelta := choice.Delta.ReasoningContent + choice.Delta.Reasoning; rDelta != "" {
+			reasoningBuilder.WriteString(rDelta)
+			if opts.OnReasoning != nil {
+				opts.OnReasoning(rDelta)
+			}
 		}
 
 		if delta := choice.Delta.Content; delta != "" {
@@ -632,10 +715,11 @@ func parseSSE(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 	}
 
 	return &ChatResponse{
-		Content:      contentBuilder.String(),
-		ToolCalls:    toolCalls,
-		FinishReason: finishReason,
-		Usage:        usage,
+		Content:          contentBuilder.String(),
+		ReasoningContent: reasoningBuilder.String(),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
 	}, nil
 }
 
@@ -700,10 +784,11 @@ func parseOneShot(r io.Reader, opts StreamOpts) (*ChatResponse, error) {
 		})
 	}
 	return &ChatResponse{
-		Content:      choice.Message.Content,
-		ToolCalls:    toolCalls,
-		FinishReason: choice.FinishReason,
-		Usage:        parsed.Usage,
+		Content:          choice.Message.Content,
+		ReasoningContent: choice.Message.ReasoningContent,
+		ToolCalls:        toolCalls,
+		FinishReason:     choice.FinishReason,
+		Usage:            parsed.Usage,
 	}, nil
 }
 
@@ -717,31 +802,10 @@ func (c *LLMClient) VisionOneShot(
 	imageURL string,
 	prompt string,
 ) (string, error) {
-	if len(endpoints) == 0 {
-		return "", apperror.New(apperror.CodeUpstreamUnavailable, "当前视觉模型没有可用渠道，请检查模型绑定及渠道启用状态")
-	}
-	body := map[string]any{
-		"model":  model,
-		"stream": false,
-		"messages": []map[string]any{{
-			"role": "user",
-			"content": []map[string]any{
-				{"type": "text", "text": prompt},
-				{"type": "image_url", "image_url": map[string]string{"url": imageURL}},
-			},
-		}},
-	}
-	bodyJSON, _ := json.Marshal(body)
-
-	var lastErr error
-	for _, ep := range endpoints {
-		answer, err := c.visionOnce(ctx, ep, model, bodyJSON)
-		if err == nil {
-			return answer, nil
-		}
-		lastErr = err
-	}
-	return "", lastErr
+	return c.visionContentOneShot(ctx, endpoints, model, []map[string]any{
+		{"type": "text", "text": prompt},
+		{"type": "image_url", "image_url": map[string]string{"url": imageURL}},
+	})
 }
 
 func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, bodyJSON []byte) (string, error) {
@@ -751,12 +815,19 @@ func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, b
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+ep.APIKey)
-
-	resp, err := c.httpClient.Do(req)
+	// Never replay a potentially billed analysis POST on redirects or a
+	// transport retry, and never silently move it to another provider.
+	req.GetBody = nil
+	client := *c.httpClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", apperror.ProviderRequestFailure(err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return "", apperror.New(apperror.CodeUpstreamUnavailable, "视觉模型接口返回重定向，未自动重复提交，请检查渠道地址")
+	}
 	if resp.StatusCode >= 400 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return "", newLLMHTTPError(resp.StatusCode, strings.ReplaceAll(string(raw), apiKeyOrSentinel(ep.APIKey), "[已脱敏]"), model)
@@ -764,6 +835,9 @@ func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, b
 	parsed, err := parseOneShot(resp.Body, StreamOpts{})
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(parsed.Content) == "" || parsed.FinishReason == "length" {
+		return "", apperror.New(apperror.CodeUpstreamUnavailable, "视觉模型未返回完整分析，请缩小分析范围或稍后重试")
 	}
 	return parsed.Content, nil
 }
@@ -773,6 +847,10 @@ func (c *LLMClient) visionOnce(ctx context.Context, ep Endpoint, model string, b
 func isTransientStreamError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var preflight *llmPreflightTimeout
+	if errors.As(err, &preflight) {
+		return true
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true

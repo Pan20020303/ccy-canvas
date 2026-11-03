@@ -103,6 +103,11 @@ func seedFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *fixture
 	if err != nil {
 		t.Fatalf("造 job 失败: %v", err)
 	}
+	// Production claims the job before entering the bridge. Successful history
+	// persistence deliberately rejects jobs that are still queued or cancelled.
+	if err := q.MarkAgentRunRunning(ctx, job.ID); err != nil {
+		t.Fatalf("启动测试 job 失败: %v", err)
+	}
 
 	return &fixture{tx: tx, q: q, userID: userID, agentID: agentID, conversation: conversation, job: job}
 }
