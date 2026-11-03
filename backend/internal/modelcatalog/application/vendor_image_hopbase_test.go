@@ -66,7 +66,7 @@ func TestGenerateImageHopBaseParsesBase64Response(t *testing.T) {
 
 func TestHopBaseSeedreamLiteDefaultsToSupportedMinimum(t *testing.T) {
 	got := hopBaseImageSize(GenerateRequest{Model: "seedream-5-0-lite", Resolution: "1K", Size: "1:1"})
-	if got != "2K" {
-		t.Fatalf("size = %q, want 2K", got)
+	if got != "2048x2048" {
+		t.Fatalf("size = %q, want the square 2K pixel dimensions 2048x2048", got)
 	}
 }

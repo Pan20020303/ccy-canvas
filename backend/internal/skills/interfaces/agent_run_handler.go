@@ -131,9 +131,12 @@ type agentRunRequest struct {
 	Model string `json:"model,omitempty"`
 	// 深度思考开关(composer 的「深度思考」按钮)。nil=按模型默认;
 	// true/false 显式开关,仅对思考类模型生效(见 application.applyThinkingControl)。
-	Thinking *bool `json:"thinking,omitempty"`
-	// 视觉模型(前端 pickVisionModel 挑选)。设置后注册 analyze_image 工具,
-	// agent 可以"看"画布上的图片(描述/反推提示词/分析构图)。
+	Thinking        *bool  `json:"thinking,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Missing/true requires approval. Only explicit false opts into auto-generation.
+	ManualConfirmation *bool `json:"manual_confirmation,omitempty"`
+	// Current model's declared visual capability. A different model is ignored;
+	// known DeepSeek vision aliases also work with older clients that omit it.
 	VisionModel string `json:"vision_model,omitempty"`
 }
 
@@ -149,7 +152,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 		return
 	}
-	claims, err := rt.sessions.Parse(cookie.Value)
+	claims, err := rt.sessions.ParseContext(r.Context(), cookie.Value)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 		return
@@ -223,22 +226,17 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 
 	// 5) Build the agent's tool set: canvas tools (if enabled) + bound skills.
 	canvas := skillsapp.NewCanvasStateAtRevision(req.Nodes, req.Edges, req.CanvasRevision, emitter.Emit)
+	canvas.AutomaticGeneration = req.ManualConfirmation != nil && !*req.ManualConfirmation
+	canvas.Groups = req.Groups
 	tools := []skillsapp.Tool{}
+	mediaEnabled := false
 	if agent.CanvasTools {
 		tools = append(tools, skillsapp.BuildCanvasTools(canvas)...)
-		// 看图工具:前端挑好视觉模型传进来,解析得到端点才注册 ——
-		// 没配视觉模型时 agent 不见此工具,不会瞎调。
-		if vm := strings.TrimSpace(req.VisionModel); vm != "" {
-			if vres, verr := rt.catalogSvc.ResolveModelEndpoints(r.Context(), vm); verr == nil && len(vres) > 0 {
-				veps := make([]skillsapp.Endpoint, 0, len(vres))
-				for _, ep := range vres {
-					veps = append(veps, skillsapp.Endpoint{ProviderID: ep.ProviderID, BaseURL: ep.BaseURL, APIKey: ep.APIKey})
-				}
-				tools = append(tools, skillsapp.BuildAnalyzeImageTool(canvas, rt.llm, veps, vm))
-			}
-		}
+		mediaTools := skillsapp.BuildAgentMediaTools(canvas, rt.llm, endpoints, catalogModel, req.VisionModel)
+		mediaEnabled = len(mediaTools) > 0
+		tools = append(tools, mediaTools...)
 	}
-	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ConversationID)
+	conversation, err := rt.ensureAgentConversation(r.Context(), userID, agent, req.ProjectID, req.ConversationID)
 	if err != nil {
 		httpx.WriteJSON(w, r, http.StatusInternalServerError, map[string]string{"error": "Failed to load conversation"})
 		return
@@ -261,13 +259,11 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	tools = append(tools, skillsapp.BuildSkillToolsFromRows(rt.executor, boundSkills)...)
 	tools = append(tools, skillsapp.BuildDeepRetrieveTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
 	tools = append(tools, skillsapp.BuildSaveMemoryTool(rt.q, userID, agent.ID, req.ProjectID, req.WorkspaceID))
-	tools = append(tools, rt.delegationTools(r.Context(), agent, userID, emitter.Emit)...)
 	tools = append(tools, skillsapp.BuildAskUserTool(emitter.Emit))
+	tools = append(tools, skillsapp.BuildTaskProgressTool(emitter.Emit))
 	resolvedMessage, invokedSkill := skillsapp.ResolveSlashSkillMessage(req.Message, boundSkills)
 	if invokedSkill != "" {
-		emitter.Emit("thought", map[string]string{
-			"content": "Resolved slash skill " + invokedSkill + " before starting the agent loop.",
-		})
+		emitter.Emit(skillsapp.EventProgress, skillsapp.TaskProgress{ID: "skill", Phase: "skill", Label: "已加载所选技能", Status: "completed"})
 	}
 
 	// 6) Persist a pending agent_runs row before kicking the loop.
@@ -279,20 +275,19 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Inject a complete canvas snapshot into the system prompt so the agent
-	// already knows every node up-front and won't遍历-read each node via read_node.
-	// This is re-built per run, so every new conversation / turn sees the latest
-	// canvas state.
+	// Keep canvas assets server-side for on-demand tools. A normal greeting
+	// must not preload or narrate the entire canvas.
 	systemPrompt := agent.SystemPrompt
 	if agent.CanvasTools {
 		systemPrompt = strings.TrimSpace(systemPrompt + fmt.Sprintf("\n\n[Canvas revision: %d]", req.CanvasRevision))
 	}
-	if overview := skillsapp.BuildCanvasOverview(req.Nodes, req.Edges, req.Groups); overview != "" {
-		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n（以下是本次对话最新的画布状态）\n" + overview)
-	}
 	// Interaction guide: analyse intent first; for ambiguous requests offer a
 	// multiple-choice question via ask_user instead of guessing.
 	systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" + skillsapp.AgentInteractionGuide)
+	if mediaEnabled {
+		systemPrompt += "\n\n" + skillsapp.AgentMediaGuide
+	}
+	systemPrompt += "\n\n" + canvas.GenerationPolicyGuide()
 	// 真实执行军规:画布只认工具调用,防"模拟执行"式幻觉(声称已创建实际没动)。
 	if agent.CanvasTools {
 		systemPrompt = strings.TrimSpace(systemPrompt + "\n\n" +
@@ -345,6 +340,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		Tools:           tools,
 		Strategy:        agent.Strategy,
 		Thinking:        req.Thinking,
+		ReasoningEffort: req.ReasoningEffort,
 		Temperature:     &route.Temperature,
 		MaxOutputTokens: route.MaxOutputTokens,
 	}, emitter.Emit)
@@ -374,7 +370,7 @@ func (rt *AgentRunRouter) runAgent(w http.ResponseWriter, r *http.Request) {
 		})
 		// 紧凑工具记录(P3):持久化本轮工具执行摘要,供下一轮注入 system prompt。
 		// 放在 user 之后、assistant 之前,保持时间序。前端历史读 agent_runs,不受影响。
-		if transcript := skillsapp.FormatToolTranscript(stats.ToolTranscript); transcript != "" {
+		if transcript := skillsapp.FormatConversationToolLog(stats); transcript != "" {
 			_, _ = rt.q.InsertAgentConversationMessage(r.Context(), sqlc.InsertAgentConversationMessageParams{
 				ConversationID: conversation.ID,
 				Role:           "tool_log",
@@ -452,34 +448,23 @@ func toRunHistoryFromMessages(messages []sqlc.AgentConversationMessage) []skills
 
 // ensureAgentConversation resolves which thread this run belongs to. Priority:
 //  1. explicit conversation_id from the request body (user picked one)
-//  2. the most recently updated thread for (user, agent)
+//  2. the most recently updated thread for (user, agent, canvas)
 //  3. brand-new thread (first ever run)
-func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent, conversationID string) (sqlc.AgentConversation, error) {
+func (rt *AgentRunRouter) ensureAgentConversation(ctx context.Context, userID pgtype.UUID, agent sqlc.Agent, projectID, conversationID string) (sqlc.AgentConversation, error) {
 	if conversationID != "" {
 		cid, err := parseUUID(conversationID)
 		if err != nil {
 			return sqlc.AgentConversation{}, err
 		}
-		return rt.q.GetAgentConversationByID(ctx, sqlc.GetAgentConversationByIDParams{
-			ID:      cid,
-			UserID:  userID,
-			AgentID: agent.ID,
-		})
+		return rt.q.GetScopedAgentConversation(ctx, cid, userID, agent.ID, projectID)
 	}
 
-	conversation, err := rt.q.GetAgentConversationByUserAndAgent(ctx, sqlc.GetAgentConversationByUserAndAgentParams{
-		UserID:  userID,
-		AgentID: agent.ID,
-	})
+	conversation, err := rt.q.GetLatestScopedAgentConversation(ctx, userID, agent.ID, projectID)
 	if err == nil {
 		return conversation, nil
 	}
 	if err != pgx.ErrNoRows {
 		return sqlc.AgentConversation{}, err
 	}
-	return rt.q.InsertAgentConversation(ctx, sqlc.InsertAgentConversationParams{
-		UserID:  userID,
-		AgentID: agent.ID,
-		Title:   "",
-	})
+	return rt.q.InsertScopedAgentConversation(ctx, userID, agent.ID, projectID, "")
 }

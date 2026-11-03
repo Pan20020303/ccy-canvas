@@ -79,6 +79,9 @@ func (g *generationCapacity) acquire(ctx context.Context, req modelapp.GenerateR
 	}
 	key, token := g.prefix+family, uuid.NewString()
 	ttl := timeoutForServiceType(req.ServiceType) + time.Minute
+	if req.ServiceType == "image" && strings.EqualFold(strings.TrimSpace(req.Model), "midjourney-v8-2") {
+		ttl = modelapp.MidjourneyTaskRuntimeBudget + time.Minute
+	}
 	if isLongRunningMiniMaxModel(req.Model) {
 		ttl = 3*time.Hour + time.Minute
 	}

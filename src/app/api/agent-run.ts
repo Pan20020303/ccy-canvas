@@ -7,11 +7,14 @@ import { toUserMessage } from "./errors";
 import { safeFailureMessage } from "./failure-message";
 
 export type AgentSSEEventType =
+  | "plan" | "progress"
   | "thought" | "thought_delta" | "tool_call" | "tool_result"
   | "message" | "message_delta" | "canvas_patch"
   | "conversation" | "ask_user" | "usage" | "runtime" | "delegation" | "connection_status" | "error" | "done";
 
 export type AgentSSEEvent =
+  | { type: "plan"; data: AgentPlanEventData }
+  | { type: "progress"; data: AgentProgressEventData }
   | { type: "runtime"; data: { agent_name: string; model: string; policy: string } }
   | { type: "delegation"; data: { id: string; agent_name: string; status: string; model: string } }
   | { type: "thought"; data: { content: string } }
@@ -27,6 +30,19 @@ export type AgentSSEEvent =
   | { type: "connection_status"; data: { state: "reconnecting" | "connected"; attempts: number } }
   | { type: "error"; data: { message: string; job_id?: string } }
   | { type: "done"; data: { steps: number } };
+
+export type AgentPlanEventData = {
+  steps: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" | "blocked" }>;
+  summary?: string;
+};
+export type AgentProgressEventData = {
+  id: string;
+  label: string;
+  phase?: string;
+  tool_name?: string;
+  node_ids?: string[];
+  status: "running" | "completed" | "failed" | "waiting";
+};
 
 export type AgentEventMeta = {
   id: number;
@@ -47,7 +63,7 @@ export type CanvasPatch = (
   | { op: "add_node"; node: Node }
   | { op: "add_edge"; edge: Edge }
   | { op: "patch_node_data"; node_id: string; patch: Record<string, unknown> }
-  | { op: "run_node"; node_id: string; prompt?: string; model?: string; requires_confirmation?: boolean }
+  | { op: "run_node"; node_id: string; prompt?: string; model?: string; aspect_ratio?: string; resolution?: string; requires_confirmation?: boolean }
   | { op: "move_node"; node_id: string; position: { x: number; y: number }; from_position?: { x: number; y: number } }
   | { op: "move_nodes"; moves: Array<{ node_id: string; position: { x: number; y: number }; from_position: { x: number; y: number } }> }
   | { op: "delete_node"; node_id: string }
@@ -104,21 +120,25 @@ export type AgentRunBody = {
   task_context?: unknown;
   generation_models?: Record<string, string[]>;
   thinking?: boolean;
+  reasoning_effort?: 'low' | 'high' | 'max';
+  manual_confirmation?: boolean;
   vision_model?: string;
 };
 
 export async function cancelAgentJob(job: ActiveAgentJob): Promise<void> {
   const response = await fetch(`${apiBase}/api/app/agent-jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: 'POST', credentials: 'include' });
   if (!response.ok) throw await readApiError(response);
-  clearActiveJob(job.agentId, job.jobId);
+  clearActiveJob(job.agentId, job.projectId ?? "", job.jobId);
 }
 
 export type ActiveAgentJob = {
   agentId: string;
+  projectId?: string;
   jobId: string;
   conversationId: string;
   after: number;
   message?: string;
+  manualConfirmation?: boolean;
 };
 
 type AgentJobState = {
@@ -131,33 +151,35 @@ type AgentJobState = {
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const ACTIVE_JOB_PREFIX = "ccy:agent-job:";
 
-function activeJobKey(agentId: string) {
-  return `${ACTIVE_JOB_PREFIX}${agentId}`;
+function activeJobKey(agentId: string, projectId = "") {
+  return `${ACTIVE_JOB_PREFIX}${agentId}${projectId ? `:${encodeURIComponent(projectId)}` : ""}`;
 }
 
 function saveActiveJob(job: ActiveAgentJob) {
-  try { localStorage.setItem(activeJobKey(job.agentId), JSON.stringify(job)); } catch { /* optional */ }
+  try { localStorage.setItem(activeJobKey(job.agentId, job.projectId), JSON.stringify(job)); } catch { /* optional */ }
 }
 
-function clearActiveJob(agentId: string, jobId: string) {
+function clearActiveJob(agentId: string, projectId: string, jobId: string) {
   try {
-    const current = getActiveAgentJob(agentId);
-    if (!current || current.jobId === jobId) localStorage.removeItem(activeJobKey(agentId));
+    const current = getActiveAgentJob(agentId, projectId);
+    if (!current || current.jobId === jobId) localStorage.removeItem(activeJobKey(agentId, projectId));
   } catch { /* optional */ }
 }
 
-export function getActiveAgentJob(agentId: string): ActiveAgentJob | null {
+export function getActiveAgentJob(agentId: string, projectId = ""): ActiveAgentJob | null {
   try {
-    const raw = localStorage.getItem(activeJobKey(agentId));
+    const raw = localStorage.getItem(activeJobKey(agentId, projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ActiveAgentJob>;
     if (!parsed.agentId || !parsed.jobId) return null;
     return {
       agentId: parsed.agentId,
+      ...(parsed.projectId ? { projectId: parsed.projectId } : {}),
       jobId: parsed.jobId,
       conversationId: parsed.conversationId ?? "",
       after: Number.isFinite(parsed.after) ? Number(parsed.after) : 0,
       message: typeof parsed.message === "string" ? parsed.message : undefined,
+      manualConfirmation: parsed.manualConfirmation !== false,
     };
   } catch {
     return null;
@@ -193,10 +215,12 @@ export async function runAgent(
 
       const job: ActiveAgentJob = {
         agentId,
+        ...(body.project_id ? { projectId: body.project_id } : {}),
         jobId: created.job_id,
         conversationId: created.conversation_id ?? "",
         after: 0,
         message: displayMessage?.trim() || body.message,
+        manualConfirmation: body.manual_confirmation !== false,
       };
       saveActiveJob(job);
       if (job.conversationId) onEvent({ type: "conversation", data: { id: job.conversationId } });
@@ -363,7 +387,7 @@ async function observeAgentJob(
   } finally {
     window.clearInterval(watchdog);
     signal.removeEventListener("abort", stopStream);
-    if (terminal) clearActiveJob(job.agentId, job.jobId);
+    if (terminal) clearActiveJob(job.agentId, job.projectId ?? "", job.jobId);
   }
 }
 

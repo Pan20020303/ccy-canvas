@@ -193,6 +193,7 @@ type StaleGeneration struct {
 	UserID      string
 	NodeID      string
 	ServiceType string
+	Model       string
 	Status      string
 	CreditCost  int32
 	ProjectID   string

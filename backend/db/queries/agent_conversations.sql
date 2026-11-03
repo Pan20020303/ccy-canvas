@@ -49,19 +49,26 @@ WHERE user_id = $1
   AND agent_id = $2;
 
 -- name: InsertAgentConversationMessage :one
-INSERT INTO agent_conversation_messages (conversation_id, role, content)
-VALUES ($1, $2, $3)
+-- now() is shared by every message in a transaction; record each insert's time.
+INSERT INTO agent_conversation_messages (conversation_id, role, content, created_at)
+VALUES ($1, $2, $3, clock_timestamp())
 RETURNING id, conversation_id, role, content, created_at;
 
 -- name: ListAgentConversationMessages :many
 -- 取「最新」N 行再按时间正序返回:长会话时 UI 与 LLM 历史都应看到最近的
 -- 轮次,而不是最早的(旧版 ASC LIMIT 会把新消息截掉)。
+-- Legacy turns share a transaction timestamp. Break ties by conversational role,
+-- with exactly reversed ordering inside LIMIT so it still selects the true tail.
 SELECT id, conversation_id, role, content, created_at
 FROM (
     SELECT id, conversation_id, role, content, created_at
     FROM agent_conversation_messages
     WHERE conversation_id = $1
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC,
+        CASE role WHEN 'user' THEN 0 WHEN 'tool_log' THEN 1 WHEN 'assistant' THEN 2 ELSE 3 END DESC,
+        id DESC
     LIMIT $2
 ) tail
-ORDER BY created_at ASC;
+ORDER BY created_at ASC,
+    CASE role WHEN 'user' THEN 0 WHEN 'tool_log' THEN 1 WHEN 'assistant' THEN 2 ELSE 3 END ASC,
+    id ASC;

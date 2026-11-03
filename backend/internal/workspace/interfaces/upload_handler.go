@@ -43,7 +43,7 @@ func RegisterUploadRoutes(r chi.Router, sm session.Manager) {
 			httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Authentication required"})
 			return
 		}
-		claims, err := sm.Parse(cookie.Value)
+		claims, err := sm.ParseContext(r.Context(), cookie.Value)
 		if err != nil {
 			httpx.WriteJSON(w, r, http.StatusUnauthorized, map[string]string{"error": "Invalid session"})
 			return
@@ -134,7 +134,7 @@ func localMediaThumbnailHandler(sm session.Manager, cache *mediaCache) http.Hand
 			http.Error(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
-		if _, err := sm.Parse(cookie.Value); err != nil {
+		if _, err := sm.ParseContext(r.Context(), cookie.Value); err != nil {
 			http.Error(w, "Invalid session", http.StatusUnauthorized)
 			return
 		}
@@ -210,7 +210,7 @@ func proxyMediaHandler(sm session.Manager, cache *mediaCache) http.HandlerFunc {
 			http.Error(w, "Authentication required", http.StatusUnauthorized)
 			return
 		}
-		if _, err := sm.Parse(cookie.Value); err != nil {
+		if _, err := sm.ParseContext(r.Context(), cookie.Value); err != nil {
 			http.Error(w, "Invalid session", http.StatusUnauthorized)
 			return
 		}

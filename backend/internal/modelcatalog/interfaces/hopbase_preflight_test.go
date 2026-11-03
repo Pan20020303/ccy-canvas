@@ -56,3 +56,31 @@ func TestHopBaseRejectsInvalidReferencesBeforeCreditsLogsOrQueue(t *testing.T) {
 		t.Fatalf("credit reserves = %d, want 0", credits.reserves)
 	}
 }
+
+func TestMidjourneyRejectsInvalidGroupBeforeCharging(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	encrypted, err := crypto.Encrypt(key, "offline-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &hopBasePreflightRepo{config: domain.ProviderConfig{
+		ID: "mj", Vendor: "HopBase", ServiceType: "image", Status: "enabled",
+		BaseURL: "https://api.hop-base.com", ModelList: []string{"midjourney-v8-2"}, EncryptedAPIKey: encrypted,
+	}}
+	credits := &hopBasePreflightCredits{}
+	h := &Handler{svc: application.NewService(repo, key).WithCredits(credits)}
+	input := &generateInput{}
+	input.Body.ServiceType, input.Body.Model = "image", "midjourney-v8-2"
+	input.Body.Prompt, input.Body.OutputCount = "A forest", 1
+	_, err = h.generate(context.Background(), input)
+	status, ok := err.(huma.StatusError)
+	if !ok || status.GetStatus() != 400 || credits.reserves != 0 {
+		t.Fatalf("invalid group reached credit/log/queue: err=%v reserves=%d", err, credits.reserves)
+	}
+	input.Body.OutputCount, input.Body.Prompt = 4, "A forest --draft"
+	_, err = h.generate(context.Background(), input)
+	status, ok = err.(huma.StatusError)
+	if !ok || status.GetStatus() != 400 || credits.reserves != 0 {
+		t.Fatalf("invalid prompt reached credit/log/queue: err=%v reserves=%d", err, credits.reserves)
+	}
+}

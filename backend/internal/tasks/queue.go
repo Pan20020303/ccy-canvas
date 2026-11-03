@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	modelapp "ccy-canvas/backend/internal/modelcatalog/application"
+
 	"github.com/hibiken/asynq"
 )
 
@@ -175,6 +177,9 @@ func isComfyQueuedVideoModel(model string) bool {
 }
 
 func timeoutForGenerationPayload(p GenerationPayload) time.Duration {
+	if p.ServiceType == "image" && strings.EqualFold(strings.TrimSpace(p.Model), "midjourney-v8-2") {
+		return modelapp.MidjourneyTaskRuntimeBudget
+	}
 	executionBudget := timeoutForServiceType(p.ServiceType)
 	if isLongRunningMiniMaxModel(p.Model) {
 		executionBudget = 3 * time.Hour

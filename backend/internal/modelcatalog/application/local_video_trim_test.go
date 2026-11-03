@@ -24,10 +24,24 @@ func TestTrimRangeValidation(t *testing.T) {
 func TestTrimArgs(t *testing.T) {
 	a := trimFFmpegArgs("input.media", "clip.mp4", LocalVideoTrimRequest{Start: 1.25, End: 3.75})
 	s := strings.Join(a, " ")
-	for _, part := range []string{"-ss 1.250000", "-t 2.500000", "-map 0:a:0?", "-c:v libx264", "-movflags +faststart", "-protocol_whitelist file", "-format_whitelist mov,matroska,webm,avi"} {
+	for _, part := range []string{"-ss 1.250000", "-t 2.500000", "-map 0:a:0?", "-c:v libx264", "-movflags +faststart", "-protocol_whitelist file"} {
 		if !strings.Contains(s, part) {
 			t.Fatalf("missing %s", part)
 		}
+	}
+	var formats string
+	for i, argument := range a {
+		if argument == "-format_whitelist" && i+1 < len(a) {
+			formats = "," + a[i+1] + ","
+		}
+	}
+	for _, allowed := range []string{"mov", "mp4", "matroska", "webm", "avi"} {
+		if !strings.Contains(formats, ","+allowed+",") {
+			t.Fatalf("missing allowed local format %s", allowed)
+		}
+	}
+	if strings.Contains(formats, "hls") || strings.Contains(formats, "concat") {
+		t.Fatal("unsafe playlist format allowed")
 	}
 	s = strings.Join(trimFFmpegArgs("in", "out", LocalVideoTrimRequest{Start: 0, End: 1, Mute: true}), " ")
 	if !strings.Contains(s, "-an") || strings.Contains(s, "-map 0:a") {

@@ -93,7 +93,7 @@ func ChiMiddleware(q *sqlc.Queries, sessions session.Manager) func(http.Handler)
 				next.ServeHTTP(w, r)
 				return
 			}
-			claims, err := sessions.Parse(cookie.Value)
+			claims, err := sessions.ParseContext(r.Context(), cookie.Value)
 			if err != nil || claims.Role != "admin" {
 				next.ServeHTTP(w, r)
 				return

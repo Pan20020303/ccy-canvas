@@ -1,0 +1,214 @@
+/* PromptBar-inspired surface. Keep the existing agent actions and menus wired up. */
+.agent-effort-trigger { display: inline-flex; flex-shrink: 0; align-items: center; gap: 4px; min-height: 32px; padding: 0 8px; border: 1px solid #696274; border-radius: 16px; color: #ded2ff; background: #b39dff16; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.agent-effort-trigger[data-level="off"] { color: #9b9ba2; border-color: #414147; background: #ffffff09; }
+.agent-effort-trigger[data-level="max"] { background: #b39dff; border-color: #cbb8ff; color: #231734; box-shadow: 0 0 12px #b39dff33; }
+.agent-effort-trigger:disabled { opacity: .5; cursor: default; }
+.agent-effort-trigger:focus-visible { outline: 2px solid #cbb8ff; outline-offset: 2px; }
+.agent-effort-popover { z-index: 10000; width: 278px; max-width: calc(100vw - 24px); padding: 16px; border: 1px solid #52515b; border-radius: 16px; background: #323236; color: #f5f5f5; box-shadow: 0 12px 35px #0007; }
+.agent-effort-heading { display: flex; justify-content: space-between; font-size: 13px; }
+.agent-effort-heading strong { color: #d2c3ff; }
+.agent-effort-popover p { margin: 8px 0 16px; font-size: 11px; line-height: 1.7; color: #b3b3bc; }
+.agent-effort-popover input[type="range"] { display: block; width: 100%; height: 18px; accent-color: #b39dff; cursor: pointer; }
+.agent-effort-levels { display: flex; justify-content: space-between; margin: 7px -7px 0; }
+.agent-effort-levels button { padding: 4px 7px; font-size: 11px; border-radius: 6px; color: #aaaab4; cursor: pointer; }
+.agent-effort-levels button[aria-pressed="true"] { background: #b39dff24; color: #e0d5ff; }
+.agent-effort-note { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ffffff13; font-size: 10px; color: #92929f; }
+.agent-workbench .agent-workbench-compose > .agent-prompt-bar[data-effort="max"] { background: radial-gradient(ellipse at 65% 0%, #b39dff30, transparent 80%), #27272a; border-color: #b39dff; box-shadow: 0 0 20px #b39dff19; }
+.agent-workbench {
+  --agent-surface: #323236;
+  --agent-border: #38383d;
+  --agent-prompt-accent: #b39dff;
+}
+
+.agent-workbench .agent-workbench-compose {
+  padding: 12px;
+  background: linear-gradient(0deg, var(--agent-bg) 82%, transparent);
+}
+
+.agent-workbench .agent-workbench-compose > .agent-prompt-bar {
+  position: relative;
+  min-height: 103px;
+  padding: 12px 12px 10px;
+  border: 1px solid #414147;
+  border-radius: 16px;
+  background: #27272a;
+  color: #f5f5f5;
+  box-shadow: 0 8px 28px #0004, inset 0 1px #ffffff0b;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.agent-workbench .agent-workbench-compose > .agent-prompt-bar:focus-within {
+  border-color: #8b78c0;
+  box-shadow: 0 10px 32px #0005, 0 0 0 3px #b39dff19, inset 0 1px #ffffff14;
+}
+
+.agent-workbench .agent-workbench-compose > .agent-prompt-bar[data-active="true"]:not(:focus-within) {
+  border-color: #5b526b;
+}
+
+.agent-workbench .agent-prompt-bar[data-thinking="true"]:focus-within {
+  background: radial-gradient(ellipse 85% 65% at 70% 0%, #b39dff12, transparent 90%), #27272a;
+}
+
+.agent-prompt-attachments {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ffffff13;
+}
+
+.agent-prompt-attachments > span {
+  max-width: 100%;
+  border-color: #4b4854;
+  border-radius: 9px;
+  background: #393840;
+}
+
+.agent-prompt-attachments button:focus-visible,
+.agent-prompt-tool:focus-visible,
+.agent-prompt-model:focus-visible,
+.agent-prompt-mic:focus-visible,
+.agent-prompt-send:focus-visible {
+  outline: 2px solid var(--agent-prompt-accent);
+  outline-offset: 2px;
+}
+
+.agent-prompt-skill { padding-bottom: 5px; }
+
+.agent-workbench .agent-prompt-bar .agent-prompt-input {
+  display: block;
+  min-height: 35px;
+  padding: 2px 1px 4px;
+  color: #f5f5f5;
+  font-size: 13px;
+  line-height: 22px;
+  caret-color: var(--agent-prompt-accent);
+}
+
+.agent-prompt-input::placeholder { color: #9b9ba2; }
+
+.agent-prompt-toolbar {
+  min-height: 35px;
+  margin-top: 4px;
+  gap: 5px;
+  border-top: 1px solid #ffffff0b;
+  padding-top: 8px;
+}
+
+.agent-prompt-toolbar .agent-prompt-tool {
+  border-color: transparent;
+  background: #ffffff09;
+  color: #c9c9d0;
+}
+
+.agent-prompt-toolbar .agent-prompt-tool:hover:not(:disabled),
+.agent-prompt-toolbar .agent-prompt-tool[aria-expanded="true"] {
+  border-color: #b39dff55;
+  background: #b39dff1e;
+  color: #ddd4ff;
+}
+
+.agent-prompt-toolbar .agent-prompt-model {
+  min-height: 29px;
+  border-color: #ffffff15;
+  background: #ffffff0a;
+  color: #c9c9d0;
+}
+
+.agent-prompt-toolbar .agent-prompt-model:hover { border-color: #b39dff55; color: #f5f5f5; }
+
+.agent-prompt-model-menu {
+  border-color: #52515b;
+  background: #323236;
+  box-shadow: 0 16px 40px #0009;
+}
+
+.agent-prompt-attach-menu {
+  border-color: #52515b;
+  box-shadow: 0 16px 40px #0009;
+}
+
+.agent-prompt-toolbar .agent-manual-policy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #797184;
+  border-radius: 16px;
+  cursor: pointer;
+}
+.agent-prompt-toolbar .agent-manual-policy[data-automatic="true"] {
+  color: #fcd89c;
+  background: #6f471d55;
+  border-color: #a77c42;
+}
+.agent-prompt-toolbar .agent-manual-policy:disabled { opacity: .5; cursor: default; }
+.agent-prompt-toolbar .agent-manual-policy:focus-visible { outline: 2px solid #cbb8ff; outline-offset: 2px; }
+.agent-prompt-toolbar .agent-prompt-mic { color: #bcbcc4; }
+.agent-prompt-toolbar .agent-prompt-mic:hover { background: #ffffff10; color: white; }
+
+.agent-prompt-toolbar .agent-prompt-send {
+  position: relative;
+  height: 34px;
+  width: 34px;
+  border-radius: 11px;
+  background: #f5f5f5;
+  color: #27272a;
+  box-shadow: 0 1px 6px #0004;
+  transition: background-color 180ms ease, color 180ms ease, transform 160ms ease, box-shadow 180ms ease;
+}
+
+.agent-prompt-send:hover:not(:disabled) { background: #e2d8ff; box-shadow: 0 0 0 3px #b39dff26; }
+.agent-prompt-send:active:not(:disabled) { transform: scale(.96); }
+.agent-prompt-toolbar .agent-prompt-send:disabled { background: #414147; color: #8c8c93; box-shadow: none; }
+.agent-prompt-toolbar .agent-prompt-send[data-busy="true"] { background: #f5f5f5; color: #27272a; }
+
+.agent-prompt-send-arrow,
+.agent-prompt-send-stop {
+  position: absolute;
+  transition: opacity 160ms ease, transform 240ms cubic-bezier(.77, 0, .175, 1);
+}
+
+.agent-prompt-send-arrow { opacity: 1; transform: scale(1) rotate(0); }
+.agent-prompt-send-stop { opacity: 0; transform: scale(.6) rotate(-8deg); }
+.agent-prompt-send[data-busy="true"] .agent-prompt-send-arrow { opacity: 0; transform: scale(.6) rotate(8deg); }
+.agent-prompt-send[data-busy="true"] .agent-prompt-send-stop { opacity: 1; transform: scale(1) rotate(0); }
+
+.agent-workbench .agent-prompt-toolbar [class*="text-cyan-"] { color: #d2c3ff; }
+.agent-workbench .agent-prompt-toolbar [class*="border-cyan-"] { border-color: #8f7bba; }
+.agent-workbench .agent-prompt-toolbar [class*="bg-cyan-"] { background-color: #4b3d6d; }
+
+@media (max-width: 600px) {
+  .agent-workbench .agent-workbench-compose { padding: 9px; }
+  .agent-workbench .agent-workbench-compose > .agent-prompt-bar { padding: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-prompt-bar,
+  .agent-prompt-send,
+  .agent-prompt-send-arrow,
+  .agent-prompt-send-stop { transition: none !important; }
+}
+
+[data-theme="light"] .agent-workbench {
+  --agent-surface: #fff;
+  --agent-border: #d5d5dc;
+}
+
+[data-theme="light"] .agent-workbench .agent-workbench-compose > .agent-prompt-bar {
+  border-color: #d2d0db;
+  background: #fff;
+  color: #25242a;
+  box-shadow: 0 8px 24px #0000000e;
+}
+
+[data-theme="light"] .agent-workbench .agent-prompt-bar[data-thinking="true"]:focus-within {
+  background: radial-gradient(ellipse 85% 65% at 70% 0%, #b39dff19, transparent 90%), #fff;
+}
+
+[data-theme="light"] .agent-workbench .agent-prompt-bar .agent-prompt-input { color: #25242a; }
+[data-theme="light"] .agent-prompt-input::placeholder { color: #85838c; }
+[data-theme="light"] .agent-prompt-toolbar .agent-prompt-tool,
+[data-theme="light"] .agent-prompt-toolbar .agent-prompt-model { background: #f1f0f4; color: #595761; }
+[data-theme="light"] .agent-prompt-toolbar .agent-prompt-send { background: #25242a; color: white; }
+[data-theme="light"] .agent-prompt-toolbar .agent-prompt-send:disabled { background: #e3e2e8; color: #9c9aa5; }
+[data-theme="light"] .agent-prompt-attachments > span { background: #f2f0f7; color: #333; }

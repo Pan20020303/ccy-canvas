@@ -29,14 +29,9 @@ describe("buildAgentThreadMessages", () => {
     expect(afterTool[1]?.content).toEqual([
       { type: "text", text: "正在创建节点" },
     ]);
-    expect(afterTool[0]?.content).toEqual([
-      {
-        type: "tool-call",
-        toolCallId: "call-create-node",
-        toolName: "create_node",
-        argsText: '{"type":"textNode"}',
-      },
-    ]);
+    expect(afterTool[0]?.content).toEqual([{ type: "text", text: "" }]);
+    expect(afterTool[0]?.metadata?.custom?.progress).toMatchObject({ activities: [{ label: "创建画布节点", status: "running" }] });
+    expect(JSON.stringify(afterTool)).not.toContain('textNode');
   });
 
   it("places the finished tool timeline before the persisted assistant reply", () => {
