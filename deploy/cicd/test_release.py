@@ -14,6 +14,12 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_approved_migration_checksums_match_committed_sql(self):
+        root = Path(__file__).resolve().parents[2]
+        policy = json.loads((root / 'deploy/cicd/migration-policy.json').read_text())
+        for name, digest in policy['backward_compatible'].items():
+            self.assertEqual(hashlib.sha256((root / 'backend/db/migrations' / name).read_bytes()).hexdigest(), digest, name)
+
     def bundle(self, name, kind=None):
         output = io.BytesIO()
         with tarfile.open(fileobj=output, mode='w:gz') as archive:
