@@ -996,7 +996,10 @@ function generationView(getRaw: () => AppState, setRaw: GenerationSetter): Gener
       addHistory: item => {
         if (!valid()) return;
         const normalized = normalizeHistoryItem(item, initial.activeSpaceId, initial.activeSpaceType, initial.activeProjectId);
-        setRaw(state => ({ history: [normalized, ...state.history].slice(0, 200) }));
+        setRaw(state => {
+          const history = [normalized, ...state.history].slice(0, 200);
+          return { history, ...syncActiveSpaceSnapshot(state, { history }) };
+        });
         void saveHistoryToServer(normalized).catch(() => {});
       },
       pushUndoSnapshot: () => { if (visible()) getRaw().pushUndoSnapshot(); },
@@ -1007,13 +1010,14 @@ function generationView(getRaw: () => AppState, setRaw: GenerationSetter): Gener
     const patch = typeof update === 'function' ? update(getView()) : update;
     if ('activeRun' in patch) activeRun = patch.activeRun ?? null;
     if (visible()) { setRaw(patch); return; }
-    setRaw(state => ({
-      ...(patch.history ? { history: patch.history } : {}),
-      projectStateById: { ...state.projectStateById,
+    setRaw(state => {
+      const projectStateById = { ...state.projectStateById,
         [initial.activeProjectId]: { ...(state.projectStateById[initial.activeProjectId] ?? initial),
           ...(patch.nodes ? { nodes: patch.nodes } : {}), ...(patch.edges ? { edges: patch.edges } : {}),
-          ...(patch.groups ? { groups: patch.groups } : {}) } },
-    }));
+          ...(patch.groups ? { groups: patch.groups } : {}) } };
+      return { ...(patch.history ? { history: patch.history } : {}), projectStateById,
+        ...syncActiveSpaceSnapshot(state, { projectStateById, ...(patch.history ? { history: patch.history } : {}) }) };
+    });
     if (patch.nodes) {
       dirty = true;
       clearTimeout(saveTimer);
