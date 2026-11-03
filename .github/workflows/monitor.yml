@@ -13,11 +13,18 @@ jobs:
       - name: Check the publicly deployed release
         run: |
           python3 - <<'PY'
-          import json,urllib.request
+          import json,time,urllib.request
           def get(url):
-              with urllib.request.urlopen(url,timeout=15) as response:return json.load(response)
-          api=get('http://152.136.110.180/ccyapi/api/health')['data']
-          web=get('http://152.136.110.180/release.json')
-          assert api['status']=='ok' and api['version']==web['commit'], 'Canvas unhealthy or release versions differ'
-          print('Healthy release:',web['commit'])
+              with urllib.request.urlopen(url,timeout=5) as response:return json.load(response)
+          deadline=time.monotonic()+120
+          while True:
+              try:
+                  api=get('http://152.136.110.180/ccyapi/api/health')['data']
+                  web=get('http://152.136.110.180/release.json')
+                  assert api['status']=='ok' and api.get('version','legacy')==web['commit'], 'Canvas unhealthy or release versions differ'
+                  print('Healthy release:',web['commit'])
+                  break
+              except Exception:
+                  if time.monotonic()>=deadline:raise
+                  time.sleep(5)
           PY

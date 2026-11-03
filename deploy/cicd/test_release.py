@@ -6,7 +6,8 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import zipfile
 
 spec = importlib.util.spec_from_file_location('release', Path(__file__).with_name('release.py'))
 release = importlib.util.module_from_spec(spec)
@@ -14,6 +15,49 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_download_url_rejects_non_storage_destinations(self):
+        for url in ['http://example.blob.core.windows.net/a', 'https://127.0.0.1/a',
+                    'https://example.blob.core.windows.net.evil.test/a',
+                    'https://user@example.blob.core.windows.net/a', 'https://example.blob.core.windows.net:8443/a']:
+            with self.subTest(url=url), self.assertRaises(RuntimeError):
+                release.validate_artifact_url(url)
+        release.validate_artifact_url('https://example.blob.core.windows.net/artifact?sig=short-lived')
+
+    def test_parallel_ranges_reassemble_the_exact_archive(self):
+        content = bytes(range(256)) * 10000
+        class Response(io.BytesIO):
+            status = 206
+            def __init__(self, start, end):
+                super().__init__(content[start:end+1])
+                self.headers = {'Content-Range': f'bytes {start}-{end}/{len(content)}'}
+        def request(req, **kwargs):
+            start, end = map(int, req.get_header('Range').removeprefix('bytes=').split('-'))
+            return Response(start, end)
+        with patch.object(release.urllib.request, 'build_opener', return_value=Mock(open=request)), tempfile.TemporaryFile() as target:
+            release.download_artifact('https://example.blob.core.windows.net/artifact?sig=test', target)
+            self.assertEqual(target.read(), content)
+
+    def test_pull_rejects_unexpected_zip_entries(self):
+        def download(url, target):
+            with zipfile.ZipFile(target, 'w') as bundle:
+                bundle.writestr('../outside', b'unsafe')
+            target.seek(0)
+        with patch.object(release, 'download_artifact', side_effect=download), patch.object(release, 'deploy') as deploy:
+            with self.assertRaisesRegex(RuntimeError, 'ZIP contents'):
+                release.pull({}, 'a' * 40, 'b' * 64, 'unused-in-this-test')
+            deploy.assert_not_called()
+
+    def test_pull_rejects_checksum_metadata_mismatch(self):
+        def download(url, target):
+            with zipfile.ZipFile(target, 'w') as bundle:
+                bundle.writestr('release.tar.gz', b'package')
+                bundle.writestr('release.tar.gz.sha256', 'c' * 64 + '  release.tar.gz\n')
+            target.seek(0)
+        with patch.object(release, 'download_artifact', side_effect=download), patch.object(release, 'deploy') as deploy:
+            with self.assertRaisesRegex(RuntimeError, 'checksum metadata'):
+                release.pull({}, 'a' * 40, 'b' * 64, 'unused-in-this-test')
+            deploy.assert_not_called()
+
     def test_approved_migration_checksums_match_committed_sql(self):
         root = Path(__file__).resolve().parents[2]
         policy = json.loads((root / 'deploy/cicd/migration-policy.json').read_text())

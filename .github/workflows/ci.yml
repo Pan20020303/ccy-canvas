@@ -109,6 +109,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      checksum: ${{ steps.bundle.outputs.checksum }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -120,6 +123,7 @@ jobs:
           name: backend-${{ github.sha }}
           path: release
       - name: Package the exact tested binaries
+        id: bundle
         env:
           RELEASE_SHA: ${{ github.sha }}
         run: |
@@ -136,7 +140,9 @@ jobs:
           epoch=$(git show -s --format=%ct HEAD)
           tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -C release -cf - . | gzip -n > release.tar.gz
           sha256sum release.tar.gz > release.tar.gz.sha256
+          printf 'checksum=%s\n' "$(cut -d ' ' -f 1 release.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
+        id: upload
         with:
           name: release-${{ github.sha }}
           path: |
@@ -152,6 +158,9 @@ jobs:
       url: http://152.136.110.180/
     runs-on: ubuntu-24.04
     timeout-minutes: 85
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: canvas-production
       cancel-in-progress: false
@@ -160,10 +169,9 @@ jobs:
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
       RELEASE_SHA: ${{ github.sha }}
+      ARTIFACT_ID: ${{ needs.package.outputs.artifact_id }}
+      RELEASE_DIGEST: ${{ needs.package.outputs.checksum }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-${{ github.sha }}
       - name: Configure restricted deployment credential
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -176,10 +184,28 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
       - name: Deploy verified artifact with rolling restart
         id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sha256sum --check release.tar.gz.sha256
-          digest=$(sha256sum release.tar.gz | cut -d ' ' -f 1)
-          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_SHA $digest" < release.tar.gz
+          python3 - <<'PY'
+          import json,os,subprocess,urllib.request,urllib.error
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,*args,**kwargs):return None
+          request=urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/artifacts/{os.environ['ARTIFACT_ID']}/zip",
+              headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+          try:
+              urllib.request.build_opener(NoRedirect()).open(request,timeout=30)
+              raise RuntimeError('Expected a signed artifact download redirect')
+          except urllib.error.HTTPError as response:
+              if response.code!=302:raise
+              url=response.headers['Location']
+          print('::add-mask::'+url,flush=True)
+          subprocess.run(['ssh','-o','StrictHostKeyChecking=yes','-o','BatchMode=yes','-o','ConnectTimeout=15',
+              '-o','ServerAliveInterval=15','-p',os.environ['DEPLOY_PORT'],os.environ['DEPLOY_USER']+'@'+os.environ['DEPLOY_HOST'],
+              'pull '+os.environ['RELEASE_SHA']+' '+os.environ['RELEASE_DIGEST']],
+              input=json.dumps({'url':url}).encode(),check=True)
+          PY
       - name: Verify from the public internet
         run: |
           python3 - <<'PY'
