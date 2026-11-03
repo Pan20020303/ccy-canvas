@@ -5,7 +5,7 @@
 1. 从 `main` 建功能分支，提交并推送代码，创建 Pull Request。
 2. `frontend` 执行全量前端测试和 TypeScript/Vite 构建；`backend` 在独立 PostgreSQL/Redis 上执行迁移、竞态检测、Go 检查和实际启动检查。失败时不能合并。
 3. 合并至 `main` 后重新验证该提交，只打包测试通过的前端和后端文件，保留提交号和 SHA-256 校验和。
-4. GitHub 使用专用部署账号上传发布包。服务器备份数据库及配置、验证迁移、逐个更新 9091 和 9090 实例，再切换前端。领取新任务会先暂停，已开始的任务有最多 35 分钟退出时间。
+4. GitHub 使用专用部署账号发送短期签名下载地址，服务器通过 HTTPS 分段并行下载同一个发布包并核对 SHA-256，GitHub 访问令牌不传入服务器。随后备份数据库及配置、验证迁移、逐个更新 9091 和 9090 实例，再切换前端。领取新任务会先暂停，已开始的任务有最多 35 分钟退出时间。
 5. 服务和公网检查必须同时通过，前后端提交号必须一致。失败时恢复前后端至上一发布版本。每次发布结果在 Actions 中保留。
 
 入口：https://github.com/Pan20020303/ccy-canvas/actions
@@ -35,7 +35,7 @@
 - 发布目录：`/opt/ccy-canvas-runtime/releases/<commit>`。
 - 后端指针：`/opt/ccy-canvas-runtime/current`；前端指针：`/opt/ccy-canvas-runtime/web`。
 - 用户数据与配置：`/opt/ccy-canvas` 下的原有持久化目录和环境文件。
-- 受限入口：`/usr/local/sbin/ccy-deploy`，只接受 `status`、`deploy`、`rollback`。
+- 受限入口：`/usr/local/sbin/ccy-deploy`，只接受 `status`、`deploy`、`pull`、`rollback`。
 - 配置：`/etc/ccy-cicd.json`；备份：`/var/backups/ccy-cicd`，保留两份发布前快照。
 - 日志：GitHub Actions 发布日志，以及两个 systemd 服务日志。
 

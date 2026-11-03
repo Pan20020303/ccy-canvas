@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Root-owned, restricted deployment gateway for the existing CCY systemd pair."""
 import fcntl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 from html.parser import HTMLParser
 import json
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -15,6 +17,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 
 CONFIG = Path('/etc/ccy-cicd.json')
 REVISION = re.compile(r'[0-9a-f]{40}')
@@ -26,8 +29,12 @@ def run(arguments, **kwargs):
 
 
 def event(name, **values):
-    print(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                      'event': name, **values}), flush=True)
+    try:
+        print(json.dumps({'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                          'event': name, **values}), flush=True)
+    except BrokenPipeError:
+        # Complete a safe activation/rollback even if its SSH observer leaves.
+        sys.stdout = open(os.devnull, 'w')
 
 
 def read(path):
@@ -271,6 +278,74 @@ def unpack(stream, destination, digest):
                     path.chmod(0o755 if Path(member.name).as_posix() == 'bin/ccy-canvas-api' else 0o644)
 
 
+def validate_artifact_url(url):
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or '').lower()
+    allowed = host.endswith('.blob.core.windows.net') or host.endswith('.actions.githubusercontent.com')
+    if parsed.scheme != 'https' or not allowed or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise RuntimeError('Artifact URL must be a signed GitHub Actions storage URL')
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+def download_artifact(url, destination):
+    """Bounded range downloads avoid the slow single SSH data connection."""
+    validate_artifact_url(url)
+    deadline = time.monotonic() + 900
+    def open_range(start, end):
+        request = urllib.request.Request(url, headers={'Range': f'bytes={start}-{end}'})
+        return urllib.request.build_opener(NoRedirect()).open(request, timeout=30)
+    with open_range(0, 0) as response:
+        header = response.headers.get('Content-Range', '')
+        match = re.fullmatch(r'bytes 0-0/(\d+)', header)
+        if response.status != 206 or not match:
+            raise RuntimeError('Artifact storage did not honor the range request')
+        size = int(match[1])
+    if not 0 < size <= 220 * 1024 * 1024:
+        raise RuntimeError('Artifact download exceeds its size limit')
+    os.ftruncate(destination.fileno(), size)
+    chunk_size = 1024 * 1024
+    def download(start):
+        end = min(start + chunk_size, size) - 1
+        with open_range(start, end) as response:
+            if response.status != 206 or response.headers.get('Content-Range') != f'bytes {start}-{end}/{size}':
+                raise RuntimeError('Artifact range response does not match the requested bytes')
+            data = bytearray()
+            while block := response.read(min(65536, end - start + 2 - len(data))):
+                data.extend(block)
+                if len(data) > end - start + 1 or time.monotonic() > deadline:
+                    raise RuntimeError('Artifact range exceeded its size or time limit')
+        if len(data) != end - start + 1:
+            raise RuntimeError('Incomplete artifact range')
+        os.pwrite(destination.fileno(), data, start)
+        return len(data)
+    received = 0
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        for completed in as_completed([workers.submit(download, offset) for offset in range(0, size, chunk_size)]):
+            received += completed.result()
+            event('artifact_download_progress', received=received, total=size)
+    destination.seek(0)
+
+
+def pull(config, revision, digest, url):
+    with tempfile.TemporaryFile() as archive:
+        download_artifact(url, archive)
+        with zipfile.ZipFile(archive) as bundle:
+            required = {'release.tar.gz', 'release.tar.gz.sha256'}
+            if len(bundle.infolist()) != 2 or set(bundle.namelist()) != required:
+                raise RuntimeError('Unexpected artifact ZIP contents')
+            if bundle.getinfo('release.tar.gz').file_size > 200 * 1024 * 1024 or bundle.getinfo('release.tar.gz.sha256').file_size > 1024:
+                raise RuntimeError('Artifact ZIP extraction limits exceeded')
+            checksum = bundle.read('release.tar.gz.sha256').decode().split()
+            if len(checksum) != 2 or checksum != [digest, 'release.tar.gz']:
+                raise RuntimeError('Artifact checksum metadata does not match the release')
+            with bundle.open('release.tar.gz') as source:
+                deploy(config, revision, digest, source)
+
+
 def deploy(config, revision, digest, stream):
     root = Path(config['root'])
     release = root / 'releases' / revision
@@ -320,6 +395,7 @@ def main():
     if os.geteuid() != 0 or len(sys.argv) != 2:
         raise SystemExit('Use the restricted deployment entrypoint')
     os.umask(0o022)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     config = read(CONFIG)
     command = sys.argv[1].split()
     root = Path(config['root'])
@@ -327,6 +403,11 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         if len(command) == 3 and command[0] == 'deploy' and REVISION.fullmatch(command[1]) and DIGEST.fullmatch(command[2]):
             deploy(config, command[1], command[2], sys.stdin.buffer)
+        elif len(command) == 3 and command[0] == 'pull' and REVISION.fullmatch(command[1]) and DIGEST.fullmatch(command[2]):
+            payload = sys.stdin.buffer.read(16385)
+            if len(payload) > 16384:
+                raise RuntimeError('Artifact request metadata is too large')
+            pull(config, command[1], command[2], json.loads(payload)['url'])
         elif command == ['status']:
             target = (root / 'current').resolve(strict=True)
             revision = read(target / 'release.json')['commit']
@@ -341,7 +422,7 @@ def main():
             activate(config, target)
             event('rollback_passed', release=target.name)
         else:
-            raise SystemExit('Allowed: status | deploy <commit> <sha256> | rollback <previous|commit>')
+            raise SystemExit('Allowed: status | deploy/pull <commit> <sha256> | rollback <previous|commit>')
 
 
 if __name__ == '__main__':
