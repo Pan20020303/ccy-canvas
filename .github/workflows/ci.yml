@@ -1,0 +1,198 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+        env:
+          VITE_API_BASE_URL: /ccyapi
+      - run: python3 -m unittest discover -s deploy/cicd -p 'test_*.py' -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: ccy_canvas
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U postgres -d ccy_canvas" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      CCY_TEST_DATABASE_URL: postgres://postgres:test-only@127.0.0.1:5432/ccy_canvas?sslmode=disable
+      PGPASSWORD: test-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Verify a fresh database can migrate
+        run: |
+          for file in backend/db/migrations/*.sql; do
+            psql -X -h 127.0.0.1 -U postgres -d ccy_canvas -v ON_ERROR_STOP=1 -f "$file"
+          done
+      - run: go test -race ./...
+        working-directory: backend
+      - run: go vet ./...
+        working-directory: backend
+      - name: Build and smoke test the release binary
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          DATABASE_URL: postgres://postgres:test-only@127.0.0.1:5432/ccy_canvas?sslmode=disable
+          SESSION_SECRET: ci-session-secret-for-disposable-tests-only
+          CCY_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+          HTTP_ADDR: 127.0.0.1:18080
+          REDIS_ADDR: 127.0.0.1:6379
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p release/bin
+          (cd backend && go build -trimpath -ldflags "-s -w -X main.buildCommit=$RELEASE_SHA" -o ../release/bin/ccy-canvas-api ./cmd/api)
+          mkdir -p release/backend/scripts release/node_modules
+          cp backend/scripts/provider_ts_runner.mjs release/backend/scripts/
+          cp -R node_modules/typescript release/node_modules/typescript
+          release/bin/ccy-canvas-api > /tmp/ccy-smoke.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for attempt in {1..40}; do
+            if curl -fsS http://127.0.0.1:18080/api/health > /tmp/ccy-health.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/ccy-smoke.log
+          python3 - <<'PY'
+          import json,os
+          data=json.load(open('/tmp/ccy-health.json'))['data']
+          assert data['status']=='ok' and data['version']==os.environ['RELEASE_SHA']
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+  package:
+    needs: [frontend, backend]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-${{ github.sha }}
+          path: release/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-${{ github.sha }}
+          path: release
+      - name: Package the exact tested binaries
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          chmod 755 release/bin/ccy-canvas-api
+          cp -R backend/db/migrations release/migrations
+          cp deploy/cicd/migration-policy.json release/migration-policy.json
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          metadata={'commit':os.environ['RELEASE_SHA'],'repository':os.environ['GITHUB_REPOSITORY']}
+          for filename in ['release/release.json','release/dist/release.json']:
+              Path(filename).write_text(json.dumps(metadata)+'\n')
+          PY
+          epoch=$(git show -s --format=%ct HEAD)
+          tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner -C release -cf - . | gzip -n > release.tar.gz
+          sha256sum release.tar.gz > release.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            release.tar.gz
+            release.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error
+  deploy:
+    needs: package
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    environment:
+      name: production
+      url: http://152.136.110.180/
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    concurrency:
+      group: canvas-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+      - name: Configure restricted deployment credential
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_KEY" && test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Deploy verified artifact with rolling restart
+        id: publish
+        run: |
+          sha256sum --check release.tar.gz.sha256
+          digest=$(sha256sum release.tar.gz | cut -d ' ' -f 1)
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "deploy $RELEASE_SHA $digest" < release.tar.gz
+      - name: Verify from the public internet
+        run: |
+          python3 - <<'PY'
+          import json,os,urllib.request
+          def get(url):
+              with urllib.request.urlopen(url,timeout=20) as response:return json.load(response)
+          assert get('http://152.136.110.180/release.json')['commit']==os.environ['RELEASE_SHA']
+          assert get('http://152.136.110.180/ccyapi/api/health')['data']['version']==os.environ['RELEASE_SHA']
+          PY
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" status
+          printf 'Published commit `%s` to the canvas.\n' "$RELEASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Roll back failed public verification
+        if: failure() && steps.publish.outcome == 'success'
+        run: ssh -o StrictHostKeyChecking=yes -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'rollback previous'
+      - if: always()
+        run: rm -f ~/.ssh/id_ed25519

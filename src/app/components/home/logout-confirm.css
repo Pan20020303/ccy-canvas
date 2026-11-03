@@ -1,0 +1,14 @@
+.logout-confirm-overlay { position: fixed; inset: 0; z-index: 1300; background: rgb(7 7 10 / 72%); backdrop-filter: blur(10px); }
+.logout-confirm { position: fixed; z-index: 1301; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 32px)); padding: 22px 20px 16px; border-radius: 20px; color: #ededee; background: linear-gradient(155deg, #202023, #151518); box-shadow: 0 24px 80px #0008; outline: none; font-size: 13px; }
+.logout-confirm h2 { margin: 0 40px 16px 0; font-size: 15px; font-weight: 600; }
+.logout-confirm p { display: flex; align-items: center; gap: 10px; margin: 0; color: #aaa9ad; line-height: 1.6; }
+.logout-confirm p svg { flex-shrink: 0; }
+.logout-confirm button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 16px; background: #242427; color: #aaa9ad; border: 0; border-radius: 9px; cursor: pointer; font: inherit; font-weight: 600; }
+.logout-confirm button:hover { background: #323236; color: #fff; }
+.logout-confirm button:focus-visible { outline: 2px solid #ddd; outline-offset: 3px; }
+.logout-confirm button:disabled { opacity: .5; cursor: wait; }
+.logout-confirm .logout-confirm-close { position: absolute; top: 18px; right: 20px; min-height: 30px; width: 30px; padding: 0; }
+.logout-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.logout-confirm .logout-confirm-submit { background: #eee; color: #171719; }
+.logout-confirm .logout-confirm-submit:hover { background: white; color: #171719; }
+.logout-confirm .logout-confirm-error { margin-top: 12px; color: #f2a7ac; overflow-wrap: anywhere; }

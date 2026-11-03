@@ -1,0 +1,6 @@
+interface:
+  display_name: "SD-05 打鬥導演"
+  short_description: "以專業SD-05為底，將幾句感覺轉成有重量、攻防、衝擊幀與特色的完整打鬥提示詞"
+  default_prompt: "用 $sd05-fight-director 把我描述的感覺直接寫成完整打鬥片段提示詞，合理補齊未提供的創作設定。"
+policy:
+  allow_implicit_invocation: true

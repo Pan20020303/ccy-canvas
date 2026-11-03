@@ -1,0 +1,21 @@
+FROM golang:1.26-bookworm AS build
+
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ccy-canvas-api ./cmd/api
+
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=build /out/ccy-canvas-api /app/ccy-canvas-api
+COPY backend/scripts /app/backend/scripts
+
+EXPOSE 8080
+CMD ["/app/ccy-canvas-api"]

@@ -1,0 +1,33 @@
+# 画布 MCP 工具挂载 —— 让 DSH 直接以原生工具调用 ccy 画布。
+#
+# 渲染后的公开工具名：mcp__ccy__<tool>，例如 mcp__ccy__create_image_node。
+#
+# 叠加方式（改完即时生效，无需重启 dsh 安装）：
+#   dsh --profile ccy --patch <此文件>            # 叠到任意 profile，仅本次启动
+#   或把 `- insert:` 下的内容并进 ~/.dsh/profiles/<profile>/cordis.patch.yml 常驻
+#
+# 注意（踩过的坑）：
+#   1) DSH 的 patch 文件不是"条目列表"，而是**对已有条目做 id 定位改写的补丁列表**；
+#      想新增条目必须用顶层 `- insert: [...]`（无 id 时追加到根）。
+#   2) command 用 process.execPath，避免依赖 PATH。
+#   3) MCP 子进程环境是被清洗过的，工作区路径必须显式传；cwd 同理。
+#      这里优先读 CCY_MCP_WORKSPACE（由 agent bridge 注入），回退到 CCY_WORKSPACE
+#      （手动 headless 调试时 shell 里设的那个）。两个都没有会让 cwd 变成 undefined，
+#      schema 校验直接失败 —— 那是刻意的：宁可不启动，也不要一个没有画布工具的智能体。
+#   4) failOnStartupError: true —— 画布工具是本 profile 的核心能力，连不上就应当
+#      启动失败，而不是静默降级成"没有画布工具"（那样模型会退化成假装改画布）。
+
+- insert:
+    - id: mcp-ccy-canvas
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ccy
+        transport: stdio
+        command: !!js process.execPath
+        args: ['C:\ccy迁移\code\ccy-canvas\scripts\canvas-cli\mcp-server.mjs']
+        cwd: !!js process.env.CCY_MCP_WORKSPACE || process.env.CCY_WORKSPACE
+        env:
+          CCY_WORKSPACE: !!js process.env.CCY_MCP_WORKSPACE || process.env.CCY_WORKSPACE
+          PATH: !!js process.env.PATH
+        toolCallTimeoutMs: 30000
+        failOnStartupError: true

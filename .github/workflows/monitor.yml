@@ -1,0 +1,23 @@
+name: production-health
+on:
+  schedule:
+    - cron: '23,53 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  health:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check the publicly deployed release
+        run: |
+          python3 - <<'PY'
+          import json,urllib.request
+          def get(url):
+              with urllib.request.urlopen(url,timeout=15) as response:return json.load(response)
+          api=get('http://152.136.110.180/ccyapi/api/health')['data']
+          web=get('http://152.136.110.180/release.json')
+          assert api['status']=='ok' and api['version']==web['commit'], 'Canvas unhealthy or release versions differ'
+          print('Healthy release:',web['commit'])
+          PY

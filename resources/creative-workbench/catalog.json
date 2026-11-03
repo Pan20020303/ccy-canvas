@@ -1,0 +1,30 @@
+{
+  "version": "2.5.2",
+  "skills": [
+    { "id": "ai-film-workbench", "name": "智能体创作工作台", "stages": ["write", "extract", "describe", "split"], "description": "共用状态与成果交接；保持已有剧情、资产及版本，不重复从头制作。" },
+    { "id": "screenwriter", "name": "剧本医生", "stages": ["write", "doctor"], "description": "编剧与剧本完善：因果、情绪、动作清晰度及节奏；独立优化步骤始终读取核心章节。" },
+    { "id": "haoge-storyboard", "name": "豪哥分镜", "stages": ["write", "extract", "split"], "description": "场次、人物称呼与剧情节点整理，忠实衔接原剧本。" },
+    { "id": "haoge-film-director-flex", "name": "豪哥导演", "stages": ["extract", "describe", "split"], "description": "人物、场景、道具参考图描述及空间连续性。" },
+    { "id": "gpt-image", "name": "GPT 制图提示词", "stages": ["extract", "describe", "split"], "description": "主体与风格分离、参考图职责与构图；不限定实际生图模型。" },
+    { "id": "seedance-agent", "name": "咸鱼分镜", "stages": ["split"], "description": "镜头编排、情绪表演、走位与衔接；按需读取参考库。" },
+    { "id": "sd05-fight-director", "name": "SD-05 打斗导演", "stages": ["write", "split"], "description": "含打斗内容时补充攻防因果、受力反馈、相机和声音节奏。" }
+  ],
+  "documents": [
+    { "id": "handoff", "skill": "ai-film-workbench", "title": "状态与成品交接", "path": "ai-film-workbench/SKILL.md", "sections": ["共用狀態與成品"], "stages": ["write", "extract", "describe", "split"] },
+    { "id": "script-diagnosis", "skill": "screenwriter", "title": "剧情、情绪与动作诊断", "path": "screenwriter/references/script-doctor.md", "sections": ["八項檢查", "小說式情緒與動作補全（使用者指定）", "動作清晰度的實際驗收"], "stages": ["write", "doctor"] },
+    { "id": "script-causality", "skill": "screenwriter", "title": "编剧因果与人物转变", "path": "screenwriter/methodology.md", "stages": ["write", "doctor"] },
+    { "id": "script-timing", "skill": "screenwriter", "title": "剧本时长与删减边界", "path": "screenwriter/timing-and-cutting.md", "stages": ["doctor"] },
+    { "id": "script-style", "skill": "screenwriter", "title": "情绪细写与人物语言", "path": "screenwriter/style-rules.md", "sections": ["本包劇本醫生的例外", "角色的語言辨識度", "保留並運用"], "stages": ["doctor"] },
+    { "id": "adaptation", "skill": "haoge-storyboard", "title": "场次与人物称呼整理", "path": "haoge-storyboard/references/workflow.md", "sections": ["三、统一改编规则"], "stages": ["write", "extract", "split"] },
+    { "id": "character-design", "skill": "haoge-film-director-flex", "title": "人物身份与服装描述", "path": "haoge-film-director-flex/references/character_assets.md", "sections": ["1. 先建立依赖图", "2. 第一阶段：9:16单人确认稿", "3. 依赖解锁"], "stages": ["extract", "describe"], "assetType": "character" },
+    { "id": "scene-design", "skill": "haoge-film-director-flex", "title": "场景空间与光线描述", "path": "haoge-film-director-flex/references/scene_assets.md", "sections": ["3. 时间与光线状态", "6. 单张场景母板"], "stages": ["extract", "describe"], "assetType": "scene" },
+    { "id": "prop-design", "skill": "haoge-film-director-flex", "title": "道具筛选与形态描述", "path": "haoge-film-director-flex/references/prop_assets.md", "sections": ["1. 阶段位置与筛选", "2. 呈现方式", "3. 通用提示词模板"], "stages": ["extract", "describe"], "assetType": "prop" },
+    { "id": "image-fidelity", "skill": "gpt-image", "title": "主体风格与输入忠实度", "path": "gpt-image/SKILL.md", "sections": ["主体与风格分离", "忠于输入硬规则"], "stages": ["extract", "describe", "split"] },
+    { "id": "image-reference", "skill": "gpt-image", "title": "参考图职责与构图", "path": "gpt-image/SKILL.md", "sections": ["镜头与构图纪律", "参考图处理"], "stages": ["describe", "split"] },
+    { "id": "director", "skill": "haoge-film-director-flex", "title": "导演表演与动作因果", "path": "haoge-film-director-flex/references/director_rules.md", "sections": ["1. 先设计观众情绪", "3. 拆分生成单元", "5. 活人感与因果链", "6. 台词表演", "7. 机位、构图、焦点", "8. 空间与位移", "10. 时长与剪辑柄"], "stages": ["split"] },
+    { "id": "shot-decisions", "skill": "seedance-agent", "title": "分镜与切镜决策", "path": "seedance-agent/references/动态分镜决策树.md", "sections": ["三、流体剪辑技巧详解", "五、场景类型快速判定表", "六、场景切换处理规则"], "stages": ["split"] },
+    { "id": "performance", "skill": "seedance-agent", "title": "情绪微表演", "path": "seedance-agent/references/表演细节参考库.md", "sections": ["五大表演细节库", "高级技巧"], "stages": ["split"] },
+    { "id": "continuity", "skill": "seedance-agent", "title": "镜头衔接与连续性", "path": "seedance-agent/references/镜头衔接与连续性参考库.md", "stages": ["split"] },
+    { "id": "fight", "skill": "sd05-fight-director", "title": "打斗的攻防、受力与镜头", "path": "sd05-fight-director/SKILL.md", "sections": ["第一層 戰鬥類型與機制", "第二層 打擊力學與物理", "第三層 對手運動與反應", "第四層 武器與技能身份", "第五層 相機與視角", "第六層 聲音與節奏"], "stages": ["write", "split"], "when": "fight" }
+  ]
+}
